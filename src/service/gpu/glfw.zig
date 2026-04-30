@@ -1,3 +1,7 @@
+//! Responsibility: GLFW OpenGL presentation backend.
+//! Ownership: GL context setup, texture allocation, and screen present.
+//! Reason: isolate GLFW-specific GL usage from host/widget layers.
+
 const win = @import("../window-service.zig");
 const glfw_backend = @import("../window/glfw.zig");
 const c = @cImport({
@@ -9,16 +13,19 @@ var texture_id: c_uint = 0;
 var texture_w: c_int = 1;
 var texture_h: c_int = 1;
 
+/// Return required window flags for this backend.
 pub fn windowFlags() win.CreateFlags {
     return win.CREATE_RESIZABLE;
 }
 
+/// Initialize GL context and target texture.
 pub fn init(window: win.WindowPtr) !void {
     gc.glfwMakeContextCurrent(window);
     gc.glfwSwapInterval(1);
     try initTexture();
 }
 
+/// Release GL resources.
 pub fn deinit() void {
     if (texture_id != 0) {
         c.glDeleteTextures(1, @ptrCast(&texture_id));
@@ -28,15 +35,18 @@ pub fn deinit() void {
     texture_h = 1;
 }
 
+/// Present current texture to swapchain.
 pub fn present(window: win.WindowPtr) void {
     drawTextureQuad();
     gc.glfwSwapBuffers(window);
 }
 
+/// Return render target texture id.
 pub fn texture() c_uint {
     return texture_id;
 }
 
+/// Ensure render target texture matches requested size.
 pub fn ensureTextureSize(width: c_int, height: c_int) void {
     if (texture_id == 0) return;
     const w = @max(width, 1);

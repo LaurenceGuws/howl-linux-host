@@ -1,3 +1,7 @@
+//! Responsibility: Linux host process entrypoint.
+//! Ownership: event loop, wake orchestration, and render/present cadence.
+//! Reason: keep host behavior explicit and minimal.
+
 const std = @import("std");
 const win_svc = @import("service/window-service.zig");
 const term_sfc = @import("widget/terminal-surface.zig");
@@ -14,6 +18,7 @@ fn wakeWorker(ctx: *WakeCtx) void {
     }
 }
 
+/// Main process entrypoint.
 pub fn main() !void {
     if (!win_svc.initVideo()) {
         std.debug.print("window init failed: {s}\n", .{win_svc.lastError()});
@@ -42,10 +47,16 @@ pub fn main() !void {
     var render_requested = true;
     var grid_size = win_svc.windowSize(window);
     var render_size = grid_size;
+    var input_buf: [256]u8 = undefined;
     while (running) {
         if (win_svc.waitEventSignal(window, -1) == .quit) {
             running = false;
             continue;
+        }
+        const input_n = win_svc.drainInput(&input_buf);
+        if (input_n > 0) {
+            term_sfc.feedBytes(input_buf[0..input_n]);
+            render_requested = true;
         }
 
         const next_size = win_svc.windowSize(window);

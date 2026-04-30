@@ -1,3 +1,7 @@
+//! Responsibility: SDL OpenGL presentation backend.
+//! Ownership: GL context setup, texture allocation, and screen present.
+//! Reason: isolate SDL-specific GL usage from host/widget layers.
+
 const sdl = @import("../window-service.zig");
 const sdl_backend = @import("../window/sdl.zig");
 const sc = sdl_backend.SDL;
@@ -10,10 +14,12 @@ var texture_id: c_uint = 0;
 var texture_w: c_int = 1;
 var texture_h: c_int = 1;
 
+/// Return required window flags for this backend.
 pub fn windowFlags() sdl.CreateFlags {
     return sdl.CREATE_RESIZABLE | sc.SDL_WINDOW_OPENGL;
 }
 
+/// Initialize GL context and target texture.
 pub fn init(window: sdl.WindowPtr) !void {
     if (!sc.SDL_GL_SetAttribute(sc.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!sc.SDL_GL_SetAttribute(sc.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
@@ -26,6 +32,7 @@ pub fn init(window: sdl.WindowPtr) !void {
     try initTexture();
 }
 
+/// Release GL resources.
 pub fn deinit() void {
     if (texture_id != 0) {
         c.glDeleteTextures(1, @ptrCast(&texture_id));
@@ -39,15 +46,18 @@ pub fn deinit() void {
     }
 }
 
+/// Present current texture to swapchain.
 pub fn present(window: sdl.WindowPtr) void {
     drawTextureQuad();
     _ = sc.SDL_GL_SwapWindow(window);
 }
 
+/// Return render target texture id.
 pub fn texture() c_uint {
     return texture_id;
 }
 
+/// Ensure render target texture matches requested size.
 pub fn ensureTextureSize(width: c_int, height: c_int) void {
     if (texture_id == 0) return;
     const w = @max(width, 1);
