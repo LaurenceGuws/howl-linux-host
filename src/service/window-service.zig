@@ -32,6 +32,14 @@ pub fn pollEventSignal(window: WindowPtr) EventSignal {
     return backend.pollEventSignal(window);
 }
 
+pub fn waitEventSignal(window: WindowPtr, timeout_ms: c_int) EventSignal {
+    return backend.waitEventSignal(window, timeout_ms);
+}
+
+pub fn wakeEventLoop() void {
+    backend.wakeEventLoop();
+}
+
 pub fn windowSize(window: WindowPtr) Size {
     return backend.windowSize(window);
 }

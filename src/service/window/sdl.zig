@@ -1,3 +1,4 @@
+const std = @import("std");
 const c = @cImport({
     @cInclude("SDL3/SDL.h");
 });
@@ -44,6 +45,34 @@ pub fn pollEventSignal(window: WindowPtr) EventSignal {
         }
     }
     return .none;
+}
+
+pub fn waitEventSignal(window: WindowPtr, timeout_ms: c_int) EventSignal {
+    var event: c.SDL_Event = undefined;
+    if (timeout_ms < 0) {
+        if (c.SDL_WaitEvent(&event)) {
+            switch (event.type) {
+                c.SDL_EVENT_QUIT => return .quit,
+                c.SDL_EVENT_KEY_DOWN => if (event.key.key == c.SDLK_ESCAPE) return .quit,
+                else => {},
+            }
+        }
+        return pollEventSignal(window);
+    }
+    if (c.SDL_WaitEventTimeout(&event, timeout_ms)) {
+        switch (event.type) {
+            c.SDL_EVENT_QUIT => return .quit,
+            c.SDL_EVENT_KEY_DOWN => if (event.key.key == c.SDLK_ESCAPE) return .quit,
+            else => {},
+        }
+    }
+    return pollEventSignal(window);
+}
+
+pub fn wakeEventLoop() void {
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_USER;
+    _ = c.SDL_PushEvent(&event);
 }
 
 pub fn windowSize(window: WindowPtr) Size {

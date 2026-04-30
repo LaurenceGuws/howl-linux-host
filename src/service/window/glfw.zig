@@ -45,6 +45,22 @@ pub fn pollEventSignal(window: WindowPtr) EventSignal {
     return .none;
 }
 
+pub fn waitEventSignal(window: WindowPtr, timeout_ms: c_int) EventSignal {
+    if (timeout_ms < 0) {
+        c.glfwWaitEvents();
+    } else {
+        const timeout_s: f64 = @as(f64, @floatFromInt(timeout_ms)) / 1000.0;
+        c.glfwWaitEventsTimeout(timeout_s);
+    }
+    if (c.glfwWindowShouldClose(window) == c.GLFW_TRUE) return .quit;
+    if (c.glfwGetKey(window, c.GLFW_KEY_ESCAPE) == c.GLFW_PRESS) return .quit;
+    return .none;
+}
+
+pub fn wakeEventLoop() void {
+    c.glfwPostEmptyEvent();
+}
+
 pub fn windowSize(window: WindowPtr) Size {
     var width: c_int = 0;
     var height: c_int = 0;

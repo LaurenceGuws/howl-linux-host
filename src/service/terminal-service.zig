@@ -44,14 +44,40 @@ pub fn deinit() void {
 }
 
 pub fn renderFrame(width: c_int, height: c_int) void {
+    renderFrameSized(width, height, width, height);
+}
+
+pub fn renderFrameSized(render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
     const rt = &(term_rt orelse return);
-    const w: u16 = @intCast(@max(width, 1));
-    const h: u16 = @intCast(@max(height, 1));
-    rt.renderFrame(w, h, texture_id) catch |err| {
+    const rw: u16 = @intCast(@max(render_width, 1));
+    const rh: u16 = @intCast(@max(render_height, 1));
+    const gw: u16 = @intCast(@max(grid_width, 1));
+    const gh: u16 = @intCast(@max(grid_height, 1));
+    rt.renderFrameSized(rw, rh, gw, gh, texture_id) catch |err| {
         lifecycle_state = .failed;
         std.log.err("terminal render failed: {s}", .{@errorName(err)});
         return;
     };
+}
+
+pub const DirtyState = enum(c_int) {
+    none = 0,
+    partial = 1,
+    full = 2,
+    unavailable = -1,
+};
+
+pub fn dirtyState() DirtyState {
+    const rt = term_rt orelse return .unavailable;
+    return switch (rt.dirtySnapshot().dirty) {
+        .none => .none,
+        .partial => .partial,
+        .full => .full,
+    };
+}
+
+pub fn acknowledgePresented() void {
+    if (term_rt) |*rt| rt.acknowledgePresented();
 }
 
 pub fn state() LifecycleState {
@@ -61,4 +87,9 @@ pub fn state() LifecycleState {
 pub fn hasOutputProof() bool {
     const rt = term_rt orelse return false;
     return rt.hasOutputProof();
+}
+
+pub fn waitForWake(timeout_ms: i32) bool {
+    const rt = &(term_rt orelse return false);
+    return rt.waitForWake(timeout_ms) catch false;
 }
