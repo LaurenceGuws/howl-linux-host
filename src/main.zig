@@ -21,12 +21,5 @@ pub fn main() !void {
     var running = true;
     while (running) {
         if (win_svc.pollEventSignal(window) == .quit) running = false;
-        const size = win_svc.windowSize(window);
-        term_sfc.renderFrame(size.width, size.height);
-        if (term_sfc.terminalState() == .failed) {
-            std.log.err("terminal lifecycle state failed", .{});
-            running = false;
-        }
-        term_sfc.present(window);
     }
 }
