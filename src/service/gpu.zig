@@ -1,6 +1,5 @@
 //! Responsibility: win_svc_impl-agnostic GPU facade.
 //! Ownership: GPU win_svc_impl selection and passthrough calls.
-//! Reason: keep render-surface code independent from SDL/GLFW GL setup.
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -11,32 +10,32 @@ const win_svc_impl = if (std.mem.eql(u8, build_options.win_svc_impl, "glfw"))
 else
     @import("gpu/sdl.zig");
 
-/// Return window flags required by GPU win_svc_impl.
+pub const State = win_svc_impl.State;
+
+pub fn initState(state: *State) void {
+    win_svc_impl.initState(state);
+}
+
 pub fn windowFlags() win.CreateFlags {
     return win_svc_impl.windowFlags();
 }
 
-/// Initialize GPU win_svc_impl for the window.
-pub fn init(window: win.WindowPtr) !void {
-    try win_svc_impl.init(window);
+pub fn init(state: *State, window: win.WindowPtr) !void {
+    try win_svc_impl.init(state, window);
 }
 
-/// Deinitialize GPU win_svc_impl state.
-pub fn deinit() void {
-    win_svc_impl.deinit();
+pub fn deinit(state: *State) void {
+    win_svc_impl.deinit(state);
 }
 
-/// Present current frame.
-pub fn present(window: win.WindowPtr) void {
-    win_svc_impl.present(window);
+pub fn present(state: *State, window: win.WindowPtr) void {
+    win_svc_impl.present(state, window);
 }
 
-/// Return target texture id used by runtime renderer.
-pub fn texture() c_uint {
-    return win_svc_impl.texture();
+pub fn texture(state: *State) c_uint {
+    return win_svc_impl.texture(state);
 }
 
-/// Ensure target texture is sized for current render dimensions.
-pub fn ensureTextureSize(width: c_int, height: c_int) void {
-    win_svc_impl.ensureTextureSize(width, height);
+pub fn ensureTextureSize(state: *State, width: c_int, height: c_int) void {
+    win_svc_impl.ensureTextureSize(state, width, height);
 }

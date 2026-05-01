@@ -1,26 +1,22 @@
-//! Responsibility: Linux host process entrypoint.
-//! Ownership: event loop, wake orchestration, and render/present cadence.
-//! Reason: keep host behavior explicit and minimal.
-
 const std = @import("std");
 const win_svc = @import("service/window.zig");
-const term_sfc = @import("widget/term-instance.zig");
+const term_inst_mod = @import("widget/term-instance.zig");
 
 const WakeCtx = struct {
     stop: std.atomic.Value(bool),
     render_wake: std.atomic.Value(bool),
+    term_inst: *term_inst_mod.TermInstance,
 };
 
 fn wakeWorker(ctx: *WakeCtx) void {
     while (!ctx.stop.load(.acquire)) {
-        if (term_sfc.waitRenderWake(1000)) {
+        if (ctx.term_inst.waitRenderWake(1000)) {
             ctx.render_wake.store(true, .release);
             win_svc.wakeEventLoop();
         }
     }
 }
 
-/// Main process entrypoint.
 pub fn main() !void {
     if (!win_svc.initVideo()) {
         std.debug.print("window init failed: {s}\n", .{win_svc.lastError()});
@@ -28,18 +24,25 @@ pub fn main() !void {
     }
     defer win_svc.quit();
 
-    const window = win_svc.createWindow("Howl Term", 960, 600, term_sfc.windowFlags()) orelse {
+    var term_inst = term_inst_mod.TermInstance{ .gpu = undefined };
+
+    const window = win_svc.createWindow("Howl Term", 960, 600, term_inst.windowFlags()) orelse {
         std.debug.print("window create failed: {s}\n", .{win_svc.lastError()});
         return error.WindowCreateFailed;
     };
     defer win_svc.destroyWindow(window);
 
-    try term_sfc.init(window);
-    defer term_sfc.deinit();
+    var input_state: win_svc.InputState = undefined;
+    win_svc.initInputState(&input_state);
+    win_svc.bindInputState(window, &input_state);
+
+    try term_inst.init(window);
+    defer term_inst.deinit();
 
     var wake_ctx = WakeCtx{
         .stop = std.atomic.Value(bool).init(false),
         .render_wake = std.atomic.Value(bool).init(false),
+        .term_inst = &term_inst,
     };
     var wake_thread = try std.Thread.spawn(.{}, wakeWorker, .{&wake_ctx});
     defer {
@@ -56,19 +59,19 @@ pub fn main() !void {
 
     while (running) {
         if (need_present_ack) {
-            term_sfc.presentAck();
+            term_inst.presentAck();
             need_present_ack = false;
         }
 
-        const signal = win_svc.waitEventSignal(window, -1);
+        const signal = win_svc.waitEventSignal(&input_state, window, -1);
         if (signal == .quit) {
             running = false;
             continue;
         }
 
-        const input_n = win_svc.drainInput(&input_buf);
+        const input_n = win_svc.drainInput(&input_state, &input_buf);
         if (input_n > 0) {
-            term_sfc.publishInputBytes(input_buf[0..input_n]);
+            term_inst.publishInputBytes(input_buf[0..input_n]);
         }
 
         const next_size = win_svc.windowSize(window);
@@ -85,12 +88,12 @@ pub fn main() !void {
 
         if (!should_render) continue;
 
-        term_sfc.renderFrameSized(render_size.width, render_size.height, grid_size.width, grid_size.height);
-        if (term_sfc.terminalState() == .failed) {
+        term_inst.renderFrameSized(render_size.width, render_size.height, grid_size.width, grid_size.height);
+        if (term_inst.terminalState() == .failed) {
             running = false;
             continue;
         }
-        term_sfc.present(window);
+        term_inst.present(window);
         need_present_ack = true;
     }
 }
