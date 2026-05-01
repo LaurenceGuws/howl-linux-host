@@ -26,7 +26,7 @@ var lifecycle_state: LifecycleState = .stopped;
 pub fn init(texture: u32) !void {
     lifecycle_state = .starting;
     texture_id = texture;
-    const pty_impl = try howl_term.initPtyWithConfig(std.heap.c_allocator, "/bin/sh", null);
+    const pty_impl = try howl_term.initPtyWithConfig(std.heap.c_allocator, "/bin/bash", null);
     term_rt = try howl_term.HowlTerm.init(std.heap.c_allocator, pty_impl, 120, 40, cell_px, texture);
     errdefer {
         term_rt = null;
