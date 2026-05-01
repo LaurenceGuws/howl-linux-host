@@ -14,7 +14,8 @@ pub fn main() !void {
     defer cfg.deinit(std.heap.c_allocator);
 
     var term_inst = term_inst_mod.TermInst{
-        .gpu_inst = undefined,
+        .gpu_svc_inst = undefined,
+        .term_svc_inst = .{},
         .cfg = &cfg,
         .px_w = 1,
         .px_h = 1,
@@ -31,9 +32,9 @@ pub fn main() !void {
     };
     defer win_svc.destroyWindow(window);
 
-    var input_state: win_svc.InputState = undefined;
-    win_svc.initInputState(&input_state);
-    win_svc.bindInputState(window, &input_state);
+    var input_state: win_svc.InputInst = undefined;
+    win_svc.initInputInst(&input_state);
+    win_svc.bindInputInst(window, &input_state);
 
     const initial_size = win_svc.windowSize(window);
     try term_inst.init(window, initial_size.width, initial_size.height);

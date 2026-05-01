@@ -5,6 +5,7 @@ pub const Term = struct {
     shell: []u8,
     start_path: ?[]u8,
     command: ?[]u8,
+    font_size: u16,
 
     pub fn deinit(self: *Term, alloc: std.mem.Allocator) void {
         alloc.free(self.shell);
@@ -134,6 +135,7 @@ pub fn load(alloc: std.mem.Allocator) !Config {
             .shell = shell,
             .start_path = start_path,
             .command = command,
+            .font_size = @intCast(term_reader.intField("font_size") orelse 16),
         },
         .window = .{
             .title = title,

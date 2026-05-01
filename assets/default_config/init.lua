@@ -14,7 +14,9 @@ return {
     shell = "$SHELL",
     -- Path must exist
     start_path = "$HOME",
-    -- optional command string
+    -- Default font size
+    font_size = 16,
+    -- Optional command string
     command = nil,
   },
 }
