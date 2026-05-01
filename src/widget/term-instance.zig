@@ -2,9 +2,9 @@
 //! Ownership: surface lifecycle and render/present delegation.
 //! Reason: keep top-level host loop minimal.
 
-const gpu_svc = @import("../service/gpu-service.zig");
-const win_svc = @import("../service/window-service.zig");
-const term_svc = @import("../service/terminal-service.zig");
+const gpu_svc = @import("../service/gpu.zig");
+const win_svc = @import("../service/window.zig");
+const term_svc = @import("../service/term.zig");
 
 /// Initialize widget services.
 pub fn init(window: win_svc.WindowPtr) !void {

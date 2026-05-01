@@ -3,32 +3,8 @@
 //! Reason: keep host behavior explicit and minimal.
 
 const std = @import("std");
-const win_svc = @import("service/window-service.zig");
-const term_sfc = @import("widget/terminal-surface.zig");
-
-pub const std_options: std.Options = .{
-    .logFn = logFn,
-};
-
-var log_start_us: i128 = 0;
-
-fn logFn(
-    comptime level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
-    comptime format: []const u8,
-    args: anytype,
-) void {
-    const now_us: i128 = @divTrunc(std.time.nanoTimestamp(), std.time.ns_per_us);
-    if (log_start_us == 0) log_start_us = now_us;
-    const dt_us: i128 = now_us - log_start_us;
-    const dt_s: i128 = @divTrunc(dt_us, 1_000_000);
-    const dt_sub_us: i128 = @mod(dt_us, 1_000_000);
-    _ = level;
-    _ = scope;
-    var msg_buf: [512]u8 = undefined;
-    const body = std.fmt.bufPrint(&msg_buf, format, args) catch "log_format_err";
-    std.debug.print("{d}S-{d:0>6}u,{s}\n", .{ dt_s, dt_sub_us, body });
-}
+const win_svc = @import("service/window.zig");
+const term_sfc = @import("widget/term-instance.zig");
 
 const WakeCtx = struct {
     stop: std.atomic.Value(bool),

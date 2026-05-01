@@ -3,7 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const backend = b.option([]const u8, "window-backend", "linux window backend: sdl|glfw") orelse "sdl";
+    const win_svc_impl = b.option([]const u8, "window-win_svc_impl", "linux window win_svc_impl: sdl|glfw") orelse "sdl";
 
     const howl_term_dep = b.dependency("howl_term", .{
         .target = target,
@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
     const howl_term_mod = howl_term_dep.module("howl_term");
 
     const build_options = b.addOptions();
-    build_options.addOption([]const u8, "window_backend", backend);
+    build_options.addOption([]const u8, "win_svc_impl", win_svc_impl);
 
     const exe = b.addExecutable(.{
         .name = "howl_term",
@@ -30,7 +30,7 @@ pub fn build(b: *std.Build) void {
     });
     exe.use_llvm = true;
 
-    if (std.mem.eql(u8, backend, "sdl")) {
+    if (std.mem.eql(u8, win_svc_impl, "sdl")) {
         const sdl_dep = b.dependency("sdl", .{
             .target = target,
             .optimize = optimize,
@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
         const sdl_lib = sdl_dep.artifact("SDL3");
         exe.root_module.addIncludePath(sdl_dep.path("include"));
         exe.root_module.linkLibrary(sdl_lib);
-    } else if (std.mem.eql(u8, backend, "glfw")) {
+    } else if (std.mem.eql(u8, win_svc_impl, "glfw")) {
         const glfw_dep = b.dependency("glfw", .{
             .target = target,
             .optimize = optimize,
@@ -52,7 +52,7 @@ pub fn build(b: *std.Build) void {
         exe.root_module.addIncludePath(glfw_dep.path("libs/glfw/include"));
         exe.root_module.linkLibrary(glfw_lib);
     } else {
-        @panic("invalid -Dwindow-backend (expected sdl|glfw)");
+        @panic("invalid -Dwindow-win_svc_impl (expected sdl|glfw)");
     }
 
     exe.linkSystemLibrary("GL");
