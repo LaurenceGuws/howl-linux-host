@@ -39,14 +39,9 @@ pub fn renderFrameSized(render_width: c_int, render_height: c_int, grid_width: c
     term_svc.renderFrameSized(render_width, render_height, grid_width, grid_height);
 }
 
-/// Read core dirty state.
-pub fn dirtyState() term_svc.DirtyState {
-    return term_svc.dirtyState();
-}
-
-/// Acknowledge successful present.
-pub fn acknowledgePresented() void {
-    term_svc.acknowledgePresented();
+/// Publish successful present ack.
+pub fn presentAck() void {
+    term_svc.presentAck();
 }
 
 /// Read terminal lifecycle state.
@@ -60,11 +55,11 @@ pub fn hasOutputProof() bool {
 }
 
 /// Block on runtime wake.
-pub fn waitForWake(timeout_ms: i32) bool {
-    return term_svc.waitForWake(timeout_ms);
+pub fn waitRenderWake(timeout_ms: i32) bool {
+    return term_svc.waitRenderWake(timeout_ms);
 }
 
-/// Feed host input bytes into runtime.
-pub fn feedBytes(bytes: []const u8) void {
-    term_svc.feedBytes(bytes);
+/// Publish host input bytes into runtime.
+pub fn publishInputBytes(bytes: []const u8) void {
+    term_svc.publishInputBytes(bytes);
 }

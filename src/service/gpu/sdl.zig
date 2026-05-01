@@ -100,13 +100,13 @@ fn drawTextureQuad() void {
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
 
     c.glBegin(c.GL_QUADS);
-    c.glTexCoord2f(0.0, 1.0);
-    c.glVertex2f(-1.0, -1.0);
-    c.glTexCoord2f(1.0, 1.0);
-    c.glVertex2f(1.0, -1.0);
-    c.glTexCoord2f(1.0, 0.0);
-    c.glVertex2f(1.0, 1.0);
     c.glTexCoord2f(0.0, 0.0);
+    c.glVertex2f(-1.0, -1.0);
+    c.glTexCoord2f(1.0, 0.0);
+    c.glVertex2f(1.0, -1.0);
+    c.glTexCoord2f(1.0, 1.0);
+    c.glVertex2f(1.0, 1.0);
+    c.glTexCoord2f(0.0, 1.0);
     c.glVertex2f(-1.0, 1.0);
     c.glEnd();
 }

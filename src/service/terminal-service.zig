@@ -2,7 +2,7 @@
 //! Ownership: one runtime instance lifecycle and host-facing calls.
 //! Reason: keep UI layers free of direct `howl-term` details.
 
-const howl_term = @import("howl_term");
+const howl_term = @import("howl_term").HowlTermModule;
 const std = @import("std");
 
 const cell_px = howl_term.HowlTerm.RenderCellSize{
@@ -62,34 +62,18 @@ pub fn renderFrameSized(render_width: c_int, render_height: c_int, grid_width: c
     const rh: u16 = @intCast(@max(render_height, 1));
     const gw: u16 = @intCast(@max(grid_width, 1));
     const gh: u16 = @intCast(@max(grid_height, 1));
-    rt.renderFrameSized(rw, rh, gw, gh, texture_id) catch |err| {
+    rt.renderFrameSized(rw, rh, gw, gh, texture_id) catch {
         lifecycle_state = .failed;
-        std.log.err("terminal render failed: {s}", .{@errorName(err)});
+        std.log.err("terminal render failed", .{});
         return;
     };
 }
 
-/// Host-facing dirty state enum.
-pub const DirtyState = enum(c_int) {
-    none = 0,
-    partial = 1,
-    full = 2,
-    unavailable = -1,
-};
-
-/// Read current dirty state.
-pub fn dirtyState() DirtyState {
-    const rt = term_rt orelse return .unavailable;
-    return switch (rt.dirtySnapshot().dirty) {
-        .none => .none,
-        .partial => .partial,
-        .full => .full,
-    };
-}
-
-/// Acknowledge successful present and clear dirty state.
-pub fn acknowledgePresented() void {
-    if (term_rt) |*rt| rt.acknowledgePresented();
+/// Publish successful present ack to terminal runtime.
+pub fn presentAck() void {
+    if (term_rt) |*rt| {
+        rt.presentAck();
+    }
 }
 
 /// Read current lifecycle state.
@@ -103,18 +87,24 @@ pub fn hasOutputProof() bool {
     return rt.hasOutputProof();
 }
 
-/// Feed host input bytes into runtime.
-pub fn feedBytes(bytes: []const u8) void {
+/// Publish host input bytes into runtime.
+pub fn publishInputBytes(bytes: []const u8) void {
     if (bytes.len == 0) return;
     const rt = &(term_rt orelse return);
-    rt.feedBytes(bytes) catch |err| {
-        lifecycle_state = .failed;
-        std.log.err("terminal input failed: {s}", .{@errorName(err)});
+    rt.publishInputBytes(bytes) catch |err| switch (err) {
+        error.QueueFull => {
+            // Backpressure path under burst key-repeat; keep runtime alive.
+            std.log.warn("terminal input dropped due to full queue", .{});
+        },
+        else => {
+            lifecycle_state = .failed;
+            std.log.err("terminal input publish failed", .{});
+        },
     };
 }
 
 /// Block for wake-worthy runtime activity.
-pub fn waitForWake(timeout_ms: i32) bool {
+pub fn waitRenderWake(timeout_ms: i32) bool {
     const rt = &(term_rt orelse return false);
-    return rt.waitForWake(timeout_ms) catch false;
+    return rt.waitRenderWake(timeout_ms) catch false;
 }

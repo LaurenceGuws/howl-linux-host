@@ -37,6 +37,10 @@ pub fn deinit() void {
 
 /// Present current texture to swapchain.
 pub fn present(window: win.WindowPtr) void {
+    var fb_w: c_int = 0;
+    var fb_h: c_int = 0;
+    gc.glfwGetFramebufferSize(window, &fb_w, &fb_h);
+    c.glViewport(0, 0, @max(fb_w, 1), @max(fb_h, 1));
     drawTextureQuad();
     gc.glfwSwapBuffers(window);
 }
@@ -89,13 +93,13 @@ fn drawTextureQuad() void {
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
 
     c.glBegin(c.GL_QUADS);
-    c.glTexCoord2f(0.0, 1.0);
-    c.glVertex2f(-1.0, -1.0);
-    c.glTexCoord2f(1.0, 1.0);
-    c.glVertex2f(1.0, -1.0);
-    c.glTexCoord2f(1.0, 0.0);
-    c.glVertex2f(1.0, 1.0);
     c.glTexCoord2f(0.0, 0.0);
+    c.glVertex2f(-1.0, -1.0);
+    c.glTexCoord2f(1.0, 0.0);
+    c.glVertex2f(1.0, -1.0);
+    c.glTexCoord2f(1.0, 1.0);
+    c.glVertex2f(1.0, 1.0);
+    c.glTexCoord2f(0.0, 1.0);
     c.glVertex2f(-1.0, 1.0);
     c.glEnd();
 }

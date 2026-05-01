@@ -116,14 +116,60 @@ fn handleEvent(event: *const c.SDL_Event) EventSignal {
     switch (event.type) {
         c.SDL_EVENT_QUIT => return .quit,
         c.SDL_EVENT_TEXT_INPUT => {
-            const p = @as([*:0]const u8, @ptrCast(&event.text.text));
-            appendBytes(std.mem.span(p));
+            if (event.text.text != null) {
+                const p: [*:0]const u8 = @ptrCast(event.text.text);
+                appendBytes(std.mem.span(p));
+            }
         },
         c.SDL_EVENT_KEY_DOWN => {
-            if (event.key.key == c.SDLK_ESCAPE) return .quit;
-            if (event.key.key == c.SDLK_RETURN or event.key.key == c.SDLK_KP_ENTER) appendByte('\r');
-            if (event.key.key == c.SDLK_BACKSPACE) appendByte(0x7f);
-            if (event.key.key == c.SDLK_TAB) appendByte('\t');
+            if (event.key.key == c.SDLK_RETURN or event.key.key == c.SDLK_KP_ENTER) {
+                appendByte('\r');
+                return .none;
+            }
+            if (event.key.key == c.SDLK_BACKSPACE) {
+                appendByte(0x7f);
+                return .none;
+            }
+            if (event.key.key == c.SDLK_TAB) {
+                appendByte('\t');
+                return .none;
+            }
+            if (event.key.key == c.SDLK_UP) {
+                appendBytes("\x1b[A");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_DOWN) {
+                appendBytes("\x1b[B");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_RIGHT) {
+                appendBytes("\x1b[C");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_LEFT) {
+                appendBytes("\x1b[D");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_HOME) {
+                appendBytes("\x1b[H");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_END) {
+                appendBytes("\x1b[F");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_PAGEUP) {
+                appendBytes("\x1b[5~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_PAGEDOWN) {
+                appendBytes("\x1b[6~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_DELETE) {
+                appendBytes("\x1b[3~");
+                return .none;
+            }
         },
         else => {},
     }
