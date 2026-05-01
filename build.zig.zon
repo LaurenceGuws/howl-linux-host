@@ -15,6 +15,9 @@
             .url = "git+https://github.com/LaurenceGuws/howl-glfw#main",
             .hash = "zglfw-0.10.0-dev-zgVDNIy4IQDJNRy4jrP1As-SZxfJpuWhU1iJ-wBab_VD",
         },
+        .howl_lua = .{
+            .path = "../vendor/howl-lua",
+        },
     },
     .paths = .{
         "build.zig",
