@@ -1,5 +1,6 @@
 const std = @import("std");
-const win_svc = @import("service/window.zig");
+const win_svc = @import("service/window/window.zig");
+const key_input_svc = @import("service/key-input/key-input.zig");
 const cfg_svc = @import("service/config.zig");
 const term_inst_mod = @import("widget/term-instance.zig");
 
@@ -32,9 +33,9 @@ pub fn main() !void {
     };
     defer win_svc.destroyWindow(window);
 
-    var input_state: win_svc.InputInst = undefined;
-    win_svc.initInputInst(&input_state);
-    win_svc.bindInputInst(window, &input_state);
+    var key_input_inst: key_input_svc.KeyInputInst = undefined;
+    key_input_svc.initKeyInputInst(&key_input_inst);
+    key_input_svc.bindKeyInputInst(window, &key_input_inst);
 
     const initial_size = win_svc.windowSize(window);
     try term_inst.init(window, initial_size.width, initial_size.height);
@@ -42,7 +43,7 @@ pub fn main() !void {
 
     var running = true;
     var need_present_ack = false;
-    var input_buf: [256]u8 = undefined;
+    var term_input_buf: [256]u8 = undefined;
 
     while (running) {
         if (need_present_ack) {
@@ -50,14 +51,14 @@ pub fn main() !void {
             need_present_ack = false;
         }
 
-        const signal = win_svc.waitEventSignal(&input_state, window, -1);
+        const signal = win_svc.waitEventSignal(window, -1);
         if (signal == .quit) {
             running = false;
             continue;
         }
 
-        const input_n = win_svc.drainInput(&input_state, &input_buf);
-        if (input_n > 0) term_inst.publishInputBytes(input_buf[0..input_n]);
+        const key_input_n = key_input_svc.drainKeyInput(&key_input_inst, &term_input_buf);
+        if (key_input_n > 0) term_inst.publishInputBytes(term_input_buf[0..key_input_n]);
 
         const size = win_svc.windowSize(window);
         term_inst.resize(size.width, size.height);

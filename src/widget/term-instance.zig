@@ -1,6 +1,6 @@
 const std = @import("std");
-const gpu_svc = @import("../service/gpu.zig");
-const win_svc = @import("../service/window.zig");
+const gpu_svc = @import("../service/gpu/gpu.zig");
+const win_svc = @import("../service/window/window.zig");
 const term_svc = @import("../service/term.zig");
 const cfg_svc = @import("../service/config.zig");
 
@@ -31,15 +31,16 @@ pub const TermInst = struct {
         try gpu_svc.init(&self.gpu_svc_inst, window);
         const cols: u16 = @intCast(@max(@divFloor(self.px_w, @as(c_int, self.cell_w)), 1));
         const rows: u16 = @intCast(@max(@divFloor(self.px_h, @as(c_int, self.cell_h)), 1));
-        try self.term_svc_inst.init(gpu_svc.texture(&self.gpu_svc_inst), .{
-            .shell = self.cfg.term.shell,
-            .start_path = self.cfg.term.start_path,
-            .command = self.cfg.term.command,
-            .cols = cols,
-            .rows = rows,
-            .cell_width = self.cell_w,
-            .cell_height = self.cell_h,
-        });
+        try self.term_svc_inst.init(
+            gpu_svc.texture(&self.gpu_svc_inst),
+            self.cfg.term.shell,
+            self.cfg.term.start_path,
+            self.cfg.term.command,
+            cols,
+            rows,
+            self.cell_w,
+            self.cell_h,
+        );
         self.wake_thread = try std.Thread.spawn(.{}, wakeWorker, .{self});
     }
 

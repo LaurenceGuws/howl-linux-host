@@ -4,16 +4,6 @@
 const howl_term = @import("howl_term").HowlTermModule;
 const std = @import("std");
 
-pub const InstanceConfig = struct {
-    shell: []const u8,
-    start_path: ?[]const u8,
-    command: ?[]const u8,
-    cols: u16,
-    rows: u16,
-    cell_width: u16,
-    cell_height: u16,
-};
-
 pub const LifecycleState = enum {
     stopped,
     starting,
@@ -26,24 +16,34 @@ pub const TermInst = struct {
     texture_id: u32 = 0,
     lifecycle_state: LifecycleState = .stopped,
 
-    pub fn init(self: *TermInst, texture: u32, launch: InstanceConfig) !void {
+    pub fn init(
+        self: *TermInst,
+        texture: u32,
+        shell: []const u8,
+        start_path: ?[]const u8,
+        command: ?[]const u8,
+        cols: u16,
+        rows: u16,
+        cell_width: u16,
+        cell_height: u16,
+    ) !void {
         self.lifecycle_state = .starting;
         self.texture_id = texture;
 
-        const pty_command = if (launch.start_path) |path| blk: {
-            if (launch.command) |cmd| {
+        const pty_command = if (start_path) |path| blk: {
+            if (command) |cmd| {
                 break :blk try std.fmt.allocPrint(std.heap.c_allocator, "cd '{s}' && {s}", .{ path, cmd });
             }
-            break :blk try std.fmt.allocPrint(std.heap.c_allocator, "cd '{s}' && exec '{s}' -i", .{ path, launch.shell });
-        } else launch.command;
-        defer if (launch.start_path != null) if (pty_command) |cmd| std.heap.c_allocator.free(cmd);
+            break :blk try std.fmt.allocPrint(std.heap.c_allocator, "cd '{s}' && exec '{s}' -i", .{ path, shell });
+        } else command;
+        defer if (start_path != null) if (pty_command) |cmd| std.heap.c_allocator.free(cmd);
 
         const cell_px = howl_term.HowlTerm.RenderCellSize{
-            .width = launch.cell_width,
-            .height = launch.cell_height,
+            .width = cell_width,
+            .height = cell_height,
         };
-        const pty_impl = try howl_term.initPty(std.heap.c_allocator, launch.shell, pty_command);
-        self.term = try howl_term.HowlTerm.init(std.heap.c_allocator, pty_impl, launch.cols, launch.rows, cell_px, texture);
+        const pty_impl = try howl_term.initPty(std.heap.c_allocator, shell, pty_command);
+        self.term = try howl_term.HowlTerm.init(std.heap.c_allocator, pty_impl, cols, rows, cell_px, texture);
         errdefer {
             self.term = null;
             self.lifecycle_state = .failed;
