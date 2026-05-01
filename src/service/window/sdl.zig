@@ -122,6 +122,12 @@ fn handleEvent(event: *const c.SDL_Event) EventSignal {
             }
         },
         c.SDL_EVENT_KEY_DOWN => {
+            const ctrl = (event.key.mod & c.SDL_KMOD_CTRL) != 0;
+            const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
+            if (event.key.key == c.SDLK_ESCAPE) {
+                appendByte(0x1b);
+                return .none;
+            }
             if (event.key.key == c.SDLK_RETURN or event.key.key == c.SDLK_KP_ENTER) {
                 appendByte('\r');
                 return .none;
@@ -168,6 +174,91 @@ fn handleEvent(event: *const c.SDL_Event) EventSignal {
             }
             if (event.key.key == c.SDLK_DELETE) {
                 appendBytes("\x1b[3~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_INSERT) {
+                appendBytes("\x1b[2~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F1) {
+                appendBytes("\x1bOP");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F2) {
+                appendBytes("\x1bOQ");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F3) {
+                appendBytes("\x1bOR");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F4) {
+                appendBytes("\x1bOS");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F5) {
+                appendBytes("\x1b[15~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F6) {
+                appendBytes("\x1b[17~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F7) {
+                appendBytes("\x1b[18~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F8) {
+                appendBytes("\x1b[19~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F9) {
+                appendBytes("\x1b[20~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F10) {
+                appendBytes("\x1b[21~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F11) {
+                appendBytes("\x1b[23~");
+                return .none;
+            }
+            if (event.key.key == c.SDLK_F12) {
+                appendBytes("\x1b[24~");
+                return .none;
+            }
+            if (ctrl) {
+                if (event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
+                    const code: u8 = @intCast((event.key.key - c.SDLK_A) + 1);
+                    appendByte(code);
+                    return .none;
+                }
+                if (event.key.key == c.SDLK_LEFTBRACKET) {
+                    appendByte(0x1b);
+                    return .none;
+                }
+                if (event.key.key == c.SDLK_BACKSLASH) {
+                    appendByte(0x1c);
+                    return .none;
+                }
+                if (event.key.key == c.SDLK_RIGHTBRACKET) {
+                    appendByte(0x1d);
+                    return .none;
+                }
+                if (event.key.key == c.SDLK_6) {
+                    appendByte(0x1e);
+                    return .none;
+                }
+                if (event.key.key == c.SDLK_MINUS or event.key.key == c.SDLK_SLASH) {
+                    appendByte(0x1f);
+                    return .none;
+                }
+            }
+            if (alt and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
+                appendByte(0x1b);
+                const ch: u8 = @intCast((event.key.key - c.SDLK_A) + 'a');
+                appendByte(ch);
                 return .none;
             }
         },

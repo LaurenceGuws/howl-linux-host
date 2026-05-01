@@ -125,11 +125,55 @@ fn charCallback(window: ?*c.GLFWwindow, codepoint: c_uint) callconv(.c) void {
 fn keyCallback(window: ?*c.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
     _ = window;
     _ = scancode;
-    _ = mods;
     if (action != c.GLFW_PRESS and action != c.GLFW_REPEAT) return;
-    if (key == c.GLFW_KEY_ENTER or key == c.GLFW_KEY_KP_ENTER) appendByte('\r');
-    if (key == c.GLFW_KEY_BACKSPACE) appendByte(0x7f);
-    if (key == c.GLFW_KEY_TAB) appendByte('\t');
+    const ctrl = (mods & c.GLFW_MOD_CONTROL) != 0;
+    const alt = (mods & c.GLFW_MOD_ALT) != 0;
+    if (key == c.GLFW_KEY_ENTER or key == c.GLFW_KEY_KP_ENTER) return appendByte('\r');
+    if (key == c.GLFW_KEY_BACKSPACE) return appendByte(0x7f);
+    if (key == c.GLFW_KEY_TAB) return appendByte('\t');
+    if (key == c.GLFW_KEY_ESCAPE) return appendByte(0x1b);
+    if (key == c.GLFW_KEY_UP) return appendBytes("\x1b[A");
+    if (key == c.GLFW_KEY_DOWN) return appendBytes("\x1b[B");
+    if (key == c.GLFW_KEY_RIGHT) return appendBytes("\x1b[C");
+    if (key == c.GLFW_KEY_LEFT) return appendBytes("\x1b[D");
+    if (key == c.GLFW_KEY_HOME) return appendBytes("\x1b[H");
+    if (key == c.GLFW_KEY_END) return appendBytes("\x1b[F");
+    if (key == c.GLFW_KEY_PAGE_UP) return appendBytes("\x1b[5~");
+    if (key == c.GLFW_KEY_PAGE_DOWN) return appendBytes("\x1b[6~");
+    if (key == c.GLFW_KEY_DELETE) return appendBytes("\x1b[3~");
+    if (key == c.GLFW_KEY_INSERT) return appendBytes("\x1b[2~");
+    if (key == c.GLFW_KEY_F1) return appendBytes("\x1bOP");
+    if (key == c.GLFW_KEY_F2) return appendBytes("\x1bOQ");
+    if (key == c.GLFW_KEY_F3) return appendBytes("\x1bOR");
+    if (key == c.GLFW_KEY_F4) return appendBytes("\x1bOS");
+    if (key == c.GLFW_KEY_F5) return appendBytes("\x1b[15~");
+    if (key == c.GLFW_KEY_F6) return appendBytes("\x1b[17~");
+    if (key == c.GLFW_KEY_F7) return appendBytes("\x1b[18~");
+    if (key == c.GLFW_KEY_F8) return appendBytes("\x1b[19~");
+    if (key == c.GLFW_KEY_F9) return appendBytes("\x1b[20~");
+    if (key == c.GLFW_KEY_F10) return appendBytes("\x1b[21~");
+    if (key == c.GLFW_KEY_F11) return appendBytes("\x1b[23~");
+    if (key == c.GLFW_KEY_F12) return appendBytes("\x1b[24~");
+
+    if (ctrl) {
+        if (key >= c.GLFW_KEY_A and key <= c.GLFW_KEY_Z) {
+            const code: u8 = @intCast((key - c.GLFW_KEY_A) + 1);
+            return appendByte(code);
+        }
+        if (key == c.GLFW_KEY_LEFT_BRACKET) return appendByte(0x1b);
+        if (key == c.GLFW_KEY_BACKSLASH) return appendByte(0x1c);
+        if (key == c.GLFW_KEY_RIGHT_BRACKET) return appendByte(0x1d);
+        if (key == c.GLFW_KEY_6) return appendByte(0x1e);
+        if (key == c.GLFW_KEY_SLASH or key == c.GLFW_KEY_MINUS) return appendByte(0x1f);
+    }
+
+    if (alt) {
+        if (key >= c.GLFW_KEY_A and key <= c.GLFW_KEY_Z) {
+            appendByte(0x1b);
+            const ch: u8 = @intCast((key - c.GLFW_KEY_A) + 'a');
+            return appendByte(ch);
+        }
+    }
 }
 
 fn appendBytes(bytes: []const u8) void {
