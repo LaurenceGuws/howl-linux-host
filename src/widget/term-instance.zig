@@ -1,13 +1,13 @@
 const std = @import("std");
-const gpu_svc = @import("../service/gpu/gpu.zig");
-const win_svc = @import("../service/window/window.zig");
-const term_svc = @import("../service/term.zig");
-const cfg_svc = @import("../service/config.zig");
+const gpu_svc = @import("../service/gpu/gpu.zig").GpuSvc;
+const win_svc = @import("../service/window/window.zig").WindowSvc;
+const term_svc = @import("../service/term.zig").TermSvc;
+const cfg_svc = @import("../service/config.zig").ConfigSvc;
 
 pub const TermInst = struct {
-    gpu_svc_inst: gpu_svc.GpuInst,
-    term_svc_inst: term_svc.TermInst,
-    cfg: *const cfg_svc.Config,
+    gpu_svc_inst: gpu_svc.Inst,
+    term_svc_inst: term_svc.Inst,
+    cfg: *const cfg_svc.Value,
     px_w: c_int,
     px_h: c_int,
     cell_w: u16,
@@ -16,7 +16,7 @@ pub const TermInst = struct {
     wake_thread: ?std.Thread,
     stop_wake: std.atomic.Value(bool),
 
-    pub fn init(self: *TermInst, window: win_svc.WindowPtr, width: c_int, height: c_int) !void {
+    pub fn init(self: *TermInst, window: win_svc.Ptr, width: c_int, height: c_int) !void {
         self.px_w = @max(width, 1);
         self.px_h = @max(height, 1);
         const font_px: u16 = @max(self.cfg.term.font_size, 8);
@@ -27,7 +27,7 @@ pub const TermInst = struct {
         self.wake_thread = null;
         self.term_svc_inst = .{};
 
-        gpu_svc.initGpuInst(&self.gpu_svc_inst);
+        gpu_svc.initInst(&self.gpu_svc_inst);
         try gpu_svc.init(&self.gpu_svc_inst, window);
         const cols: u16 = @intCast(@max(@divFloor(self.px_w, @as(c_int, self.cell_w)), 1));
         const rows: u16 = @intCast(@max(@divFloor(self.px_h, @as(c_int, self.cell_h)), 1));
@@ -53,7 +53,7 @@ pub const TermInst = struct {
         gpu_svc.deinit(&self.gpu_svc_inst);
     }
 
-    pub fn windowFlags(_: *TermInst) win_svc.CreateFlags {
+    pub fn windowFlags(_: *TermInst) win_svc.Flags {
         return gpu_svc.windowFlags();
     }
 
@@ -77,7 +77,7 @@ pub const TermInst = struct {
         self.term_svc_inst.renderFrameSized(self.px_w, self.px_h, cols, rows);
     }
 
-    pub fn present(self: *TermInst, window: win_svc.WindowPtr) void {
+    pub fn present(self: *TermInst, window: win_svc.Ptr) void {
         gpu_svc.present(&self.gpu_svc_inst, window);
     }
 
@@ -85,7 +85,7 @@ pub const TermInst = struct {
         self.term_svc_inst.presentAck();
     }
 
-    pub fn termInstState(self: *TermInst) term_svc.LifecycleState {
+    pub fn termInstState(self: *TermInst) term_svc.State {
         return self.term_svc_inst.state();
     }
 

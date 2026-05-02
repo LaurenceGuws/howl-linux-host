@@ -1,7 +1,8 @@
 const std = @import("std");
-const win_svc = @import("service/window/window.zig");
-const key_input_svc = @import("service/key-input/key-input.zig");
-const cfg_svc = @import("service/config.zig");
+const win_svc = @import("service/window/window.zig").WindowSvc;
+const key_input_svc = @import("service/key-input/key-input.zig").KeyInputSvc;
+const cfg_mod = @import("service/config.zig");
+const cfg_svc = cfg_mod.ConfigSvc;
 const term_inst_mod = @import("widget/term-instance.zig");
 
 pub fn main() !void {
@@ -11,13 +12,13 @@ pub fn main() !void {
     }
     defer win_svc.quit();
 
-    var cfg = try cfg_svc.load(std.heap.c_allocator);
+    var cfg = try cfg_mod.load(std.heap.c_allocator);
     defer cfg.deinit(std.heap.c_allocator);
 
     var term_inst = term_inst_mod.TermInst{
         .gpu_svc_inst = undefined,
         .term_svc_inst = .{},
-        .cfg = &cfg,
+        .cfg = @as(*const cfg_svc.Value, &cfg),
         .px_w = 1,
         .px_h = 1,
         .cell_w = 12,
@@ -33,9 +34,9 @@ pub fn main() !void {
     };
     defer win_svc.destroyWindow(window);
 
-    var key_input_inst: key_input_svc.KeyInputInst = undefined;
-    key_input_svc.initKeyInputInst(&key_input_inst);
-    key_input_svc.bindKeyInputInst(window, &key_input_inst);
+    var key_input_inst: key_input_svc.Inst = undefined;
+    key_input_svc.initInst(&key_input_inst);
+    key_input_svc.bindInst(window, &key_input_inst);
 
     const initial_size = win_svc.windowSize(window);
     try term_inst.init(window, initial_size.width, initial_size.height);
@@ -57,7 +58,7 @@ pub fn main() !void {
             continue;
         }
 
-        const key_input_n = key_input_svc.drainKeyInput(&key_input_inst, &term_input_buf);
+        const key_input_n = key_input_svc.drain(&key_input_inst, &term_input_buf);
         if (key_input_n > 0) term_inst.publishInputBytes(term_input_buf[0..key_input_n]);
 
         const size = win_svc.windowSize(window);

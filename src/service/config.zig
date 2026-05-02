@@ -34,6 +34,10 @@ pub const Config = struct {
     }
 };
 
+pub const ConfigSvc = struct {
+    pub const Value = Config;
+};
+
 fn expandEnvOrDup(alloc: std.mem.Allocator, raw: []const u8) ![]u8 {
     if (raw.len >= 2 and raw[0] == '$') {
         return std.process.getEnvVarOwned(alloc, raw[1..]) catch |err| switch (err) {

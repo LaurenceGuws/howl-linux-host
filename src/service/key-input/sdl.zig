@@ -1,6 +1,6 @@
 const std = @import("std");
-const win_svc_impl = @import("../window/sdl.zig");
-pub const c_key_input = win_svc_impl.c_win;
+const win_svc = @import("../window/window.zig").WindowSvc;
+pub const c_key_input = win_svc.c_win;
 
 pub const KeyInputInst = struct {
     key_input_buf: [8192]u8,
@@ -14,7 +14,7 @@ pub fn initKeyInputInst(inst: *KeyInputInst) void {
     inst.* = .{ .key_input_buf = undefined, .key_input_len = 0 };
 }
 
-pub fn bindKeyInputInst(window: *c_key_input.SDL_Window, inst: *KeyInputInst) void {
+pub fn bindKeyInputInst(window: win_svc.Ptr, inst: *KeyInputInst) void {
     _ = window;
     active_inst = inst;
     if (!watch_registered) {
@@ -45,42 +45,40 @@ pub fn processEvent(event: *const c_key_input.SDL_Event) void {
         c_key_input.SDL_EVENT_KEY_DOWN => {
             const ctrl = (event.key.mod & c_key_input.SDL_KMOD_CTRL) != 0;
             const alt = (event.key.mod & c_key_input.SDL_KMOD_ALT) != 0;
-            if (event.key.key == c_key_input.SDLK_ESCAPE) { appendByte(inst, 0x1b); return; }
-            if (event.key.key == c_key_input.SDLK_RETURN or event.key.key == c_key_input.SDLK_KP_ENTER) { appendByte(inst, '\r'); return; }
-            if (event.key.key == c_key_input.SDLK_BACKSPACE) { appendByte(inst, 0x7f); return; }
-            if (event.key.key == c_key_input.SDLK_TAB) { appendByte(inst, '\t'); return; }
-            if (event.key.key == c_key_input.SDLK_UP) { appendBytes(inst, "\x1b[A"); return; }
-            if (event.key.key == c_key_input.SDLK_DOWN) { appendBytes(inst, "\x1b[B"); return; }
-            if (event.key.key == c_key_input.SDLK_RIGHT) { appendBytes(inst, "\x1b[C"); return; }
-            if (event.key.key == c_key_input.SDLK_LEFT) { appendBytes(inst, "\x1b[D"); return; }
-            if (event.key.key == c_key_input.SDLK_HOME) { appendBytes(inst, "\x1b[H"); return; }
-            if (event.key.key == c_key_input.SDLK_END) { appendBytes(inst, "\x1b[F"); return; }
-            if (event.key.key == c_key_input.SDLK_PAGEUP) { appendBytes(inst, "\x1b[5~"); return; }
-            if (event.key.key == c_key_input.SDLK_PAGEDOWN) { appendBytes(inst, "\x1b[6~"); return; }
-            if (event.key.key == c_key_input.SDLK_DELETE) { appendBytes(inst, "\x1b[3~"); return; }
-            if (event.key.key == c_key_input.SDLK_INSERT) { appendBytes(inst, "\x1b[2~"); return; }
-            if (event.key.key == c_key_input.SDLK_F1) { appendBytes(inst, "\x1bOP"); return; }
-            if (event.key.key == c_key_input.SDLK_F2) { appendBytes(inst, "\x1bOQ"); return; }
-            if (event.key.key == c_key_input.SDLK_F3) { appendBytes(inst, "\x1bOR"); return; }
-            if (event.key.key == c_key_input.SDLK_F4) { appendBytes(inst, "\x1bOS"); return; }
-            if (event.key.key == c_key_input.SDLK_F5) { appendBytes(inst, "\x1b[15~"); return; }
-            if (event.key.key == c_key_input.SDLK_F6) { appendBytes(inst, "\x1b[17~"); return; }
-            if (event.key.key == c_key_input.SDLK_F7) { appendBytes(inst, "\x1b[18~"); return; }
-            if (event.key.key == c_key_input.SDLK_F8) { appendBytes(inst, "\x1b[19~"); return; }
-            if (event.key.key == c_key_input.SDLK_F9) { appendBytes(inst, "\x1b[20~"); return; }
-            if (event.key.key == c_key_input.SDLK_F10) { appendBytes(inst, "\x1b[21~"); return; }
-            if (event.key.key == c_key_input.SDLK_F11) { appendBytes(inst, "\x1b[23~"); return; }
-            if (event.key.key == c_key_input.SDLK_F12) { appendBytes(inst, "\x1b[24~"); return; }
+            if (event.key.key == c_key_input.SDLK_ESCAPE) return appendByte(inst, 0x1b);
+            if (event.key.key == c_key_input.SDLK_RETURN or event.key.key == c_key_input.SDLK_KP_ENTER) return appendByte(inst, '\r');
+            if (event.key.key == c_key_input.SDLK_BACKSPACE) return appendByte(inst, 0x7f);
+            if (event.key.key == c_key_input.SDLK_TAB) return appendByte(inst, '\t');
+            if (event.key.key == c_key_input.SDLK_UP) return appendBytes(inst, "\x1b[A");
+            if (event.key.key == c_key_input.SDLK_DOWN) return appendBytes(inst, "\x1b[B");
+            if (event.key.key == c_key_input.SDLK_RIGHT) return appendBytes(inst, "\x1b[C");
+            if (event.key.key == c_key_input.SDLK_LEFT) return appendBytes(inst, "\x1b[D");
+            if (event.key.key == c_key_input.SDLK_HOME) return appendBytes(inst, "\x1b[H");
+            if (event.key.key == c_key_input.SDLK_END) return appendBytes(inst, "\x1b[F");
+            if (event.key.key == c_key_input.SDLK_PAGEUP) return appendBytes(inst, "\x1b[5~");
+            if (event.key.key == c_key_input.SDLK_PAGEDOWN) return appendBytes(inst, "\x1b[6~");
+            if (event.key.key == c_key_input.SDLK_DELETE) return appendBytes(inst, "\x1b[3~");
+            if (event.key.key == c_key_input.SDLK_INSERT) return appendBytes(inst, "\x1b[2~");
+            if (event.key.key == c_key_input.SDLK_F1) return appendBytes(inst, "\x1bOP");
+            if (event.key.key == c_key_input.SDLK_F2) return appendBytes(inst, "\x1bOQ");
+            if (event.key.key == c_key_input.SDLK_F3) return appendBytes(inst, "\x1bOR");
+            if (event.key.key == c_key_input.SDLK_F4) return appendBytes(inst, "\x1bOS");
+            if (event.key.key == c_key_input.SDLK_F5) return appendBytes(inst, "\x1b[15~");
+            if (event.key.key == c_key_input.SDLK_F6) return appendBytes(inst, "\x1b[17~");
+            if (event.key.key == c_key_input.SDLK_F7) return appendBytes(inst, "\x1b[18~");
+            if (event.key.key == c_key_input.SDLK_F8) return appendBytes(inst, "\x1b[19~");
+            if (event.key.key == c_key_input.SDLK_F9) return appendBytes(inst, "\x1b[20~");
+            if (event.key.key == c_key_input.SDLK_F10) return appendBytes(inst, "\x1b[21~");
+            if (event.key.key == c_key_input.SDLK_F11) return appendBytes(inst, "\x1b[23~");
+            if (event.key.key == c_key_input.SDLK_F12) return appendBytes(inst, "\x1b[24~");
             if (ctrl and event.key.key >= c_key_input.SDLK_A and event.key.key <= c_key_input.SDLK_Z) {
                 const code: u8 = @intCast((event.key.key - c_key_input.SDLK_A) + 1);
-                appendByte(inst, code);
-                return;
+                return appendByte(inst, code);
             }
             if (alt and event.key.key >= c_key_input.SDLK_A and event.key.key <= c_key_input.SDLK_Z) {
                 appendByte(inst, 0x1b);
                 const ch: u8 = @intCast((event.key.key - c_key_input.SDLK_A) + 'a');
-                appendByte(inst, ch);
-                return;
+                return appendByte(inst, ch);
             }
         },
         else => {},

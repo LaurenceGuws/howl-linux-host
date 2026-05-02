@@ -1,9 +1,8 @@
-const win_svc = @import("../window/window.zig");
-const win_svc_impl = @import("../window/glfw.zig");
+const win_svc = @import("../window/window.zig").WindowSvc;
 const c_gpu = @cImport({
     @cInclude("GL/gl.h");
 });
-const c_win = win_svc_impl.c_win;
+const c_win = win_svc.c_win;
 
 pub const GpuInst = struct {
     texture_id: c_uint,
@@ -15,11 +14,11 @@ pub fn initGpuInst(gpu_inst: *GpuInst) void {
     gpu_inst.* = .{ .texture_id = 0, .texture_w = 1, .texture_h = 1 };
 }
 
-pub fn windowFlags() win_svc.CreateFlags {
-    return win_svc.CREATE_RESIZABLE;
+pub fn windowFlags() win_svc.Flags {
+    return win_svc.RESIZABLE;
 }
 
-pub fn init(gpu_inst: *GpuInst, window: win_svc.WindowPtr) !void {
+pub fn init(gpu_inst: *GpuInst, window: win_svc.Ptr) !void {
     c_win.glfwMakeContextCurrent(window);
     c_win.glfwSwapInterval(1);
     try initTexture(gpu_inst);
@@ -34,7 +33,7 @@ pub fn deinit(gpu_inst: *GpuInst) void {
     gpu_inst.texture_h = 1;
 }
 
-pub fn present(gpu_inst: *GpuInst, window: win_svc.WindowPtr) void {
+pub fn present(gpu_inst: *GpuInst, window: win_svc.Ptr) void {
     var fb_w: c_int = 0;
     var fb_h: c_int = 0;
     c_win.glfwGetFramebufferSize(window, &fb_w, &fb_h);

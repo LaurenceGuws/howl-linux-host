@@ -1,17 +1,6 @@
 const std = @import("std");
-pub const c_key_input = @cImport({
-    @cInclude("GLFW/glfw3.h");
-});
-
-pub const Size = struct {
-    width: c_int,
-    height: c_int,
-};
-
-pub const EventSignal = enum {
-    none,
-    quit,
-};
+const win_svc = @import("../window/window.zig").WindowSvc;
+pub const c_key_input = win_svc.c_win;
 
 pub const KeyInputInst = struct {
     input_buf: [8192]u8,
@@ -22,56 +11,10 @@ pub fn initKeyInputInst(inst: *KeyInputInst) void {
     inst.* = .{ .input_buf = undefined, .input_len = 0 };
 }
 
-pub fn initVideo() bool {
-    return c_key_input.glfwInit() == c_key_input.GLFW_TRUE;
-}
-
-pub fn quit() void {
-    c_key_input.glfwTerminate();
-}
-
-pub fn createWindow(title: [*:0]const u8, width: c_int, height: c_int, flags: c_uint) ?*c_key_input.GLFWwindow {
-    _ = flags;
-    c_key_input.glfwWindowHint(c_key_input.GLFW_RESIZABLE, c_key_input.GLFW_TRUE);
-    c_key_input.glfwWindowHint(c_key_input.GLFW_CONTEXT_VERSION_MAJOR, 2);
-    c_key_input.glfwWindowHint(c_key_input.GLFW_CONTEXT_VERSION_MINOR, 1);
-    c_key_input.glfwWindowHint(c_key_input.GLFW_OPENGL_PROFILE, c_key_input.GLFW_OPENGL_ANY_PROFILE);
-    return c_key_input.glfwCreateWindow(width, height, title, null, null);
-}
-
-pub fn bindKeyInputInst(window: *c_key_input.GLFWwindow, inst: *KeyInputInst) void {
+pub fn bindKeyInputInst(window: win_svc.Ptr, inst: *KeyInputInst) void {
     c_key_input.glfwSetWindowUserPointer(window, @ptrCast(inst));
     _ = c_key_input.glfwSetCharCallback(window, charCallback);
     _ = c_key_input.glfwSetKeyCallback(window, keyCallback);
-}
-
-pub fn destroyWindow(window: *c_key_input.GLFWwindow) void {
-    c_key_input.glfwDestroyWindow(window);
-}
-
-pub fn pollEventSignal(inst: *KeyInputInst, window: *c_key_input.GLFWwindow) EventSignal {
-    _ = inst;
-    c_key_input.glfwPollEvents();
-    if (c_key_input.glfwWindowShouldClose(window) == c_key_input.GLFW_TRUE) return .quit;
-    if (c_key_input.glfwGetKey(window, c_key_input.GLFW_KEY_ESCAPE) == c_key_input.GLFW_PRESS) return .quit;
-    return .none;
-}
-
-pub fn waitEventSignal(inst: *KeyInputInst, window: *c_key_input.GLFWwindow, timeout_ms: c_int) EventSignal {
-    _ = inst;
-    if (timeout_ms < 0) {
-        c_key_input.glfwWaitEvents();
-    } else {
-        const timeout_s: f64 = @as(f64, @floatFromInt(timeout_ms)) / 1000.0;
-        c_key_input.glfwWaitEventsTimeout(timeout_s);
-    }
-    if (c_key_input.glfwWindowShouldClose(window) == c_key_input.GLFW_TRUE) return .quit;
-    if (c_key_input.glfwGetKey(window, c_key_input.GLFW_KEY_ESCAPE) == c_key_input.GLFW_PRESS) return .quit;
-    return .none;
-}
-
-pub fn wakeEventLoop() void {
-    c_key_input.glfwPostEmptyEvent();
 }
 
 pub fn drainKeyInput(inst: *KeyInputInst, out_buf: []u8) usize {
@@ -82,20 +25,6 @@ pub fn drainKeyInput(inst: *KeyInputInst, out_buf: []u8) usize {
     std.mem.copyForwards(u8, inst.input_buf[0..remaining], inst.input_buf[n..inst.input_len]);
     inst.input_len = remaining;
     return n;
-}
-
-pub fn windowSize(window: *c_key_input.GLFWwindow) Size {
-    var width: c_int = 0;
-    var height: c_int = 0;
-    c_key_input.glfwGetFramebufferSize(window, &width, &height);
-    return .{ .width = width, .height = height };
-}
-
-pub fn lastError() [*:0]const u8 {
-    var desc: [*c]const u8 = null;
-    _ = c_key_input.glfwGetError(&desc);
-    if (desc != null) return desc.?;
-    return "glfw_error";
 }
 
 fn inputInstFromWindow(window: ?*c_key_input.GLFWwindow) ?*KeyInputInst {

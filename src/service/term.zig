@@ -102,3 +102,8 @@ pub const TermInst = struct {
         return inst.waitRenderWake(timeout_ms) catch false;
     }
 };
+
+pub const TermSvc = struct {
+    pub const Inst = TermInst;
+    pub const State = LifecycleState;
+};
