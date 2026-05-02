@@ -7,18 +7,20 @@ const key_in_variant = if (std.mem.eql(u8, build_options.window_variant, "glfw")
 else
     @import("sdl.zig");
 
-pub const KeyInput = key_in_variant.KeyInput;
+pub const KeyInput = struct {
+    state: key_in_variant.KeyInput,
 
-pub fn init(key_in: *KeyInput) void {
-    key_in_variant.initKeyInput(key_in);
-}
-
-pub fn bind(win: window.Ptr, key_in: *KeyInput) void {
-    if (@hasDecl(key_in_variant, "bindKeyInput")) {
-        key_in_variant.bindKeyInput(win, key_in);
+    pub fn init(self: *KeyInput) void {
+        key_in_variant.initKeyInput(&self.state);
     }
-}
 
-pub fn drain(key_in: *KeyInput, out_buf: []u8) usize {
-    return key_in_variant.drainKeyInput(key_in, out_buf);
-}
+    pub fn bind(self: *KeyInput, win: window.Ptr) void {
+        if (@hasDecl(key_in_variant, "bindKeyInput")) {
+            key_in_variant.bindKeyInput(win, &self.state);
+        }
+    }
+
+    pub fn drain(self: *KeyInput, out_buf: []u8) usize {
+        return key_in_variant.drainKeyInput(&self.state, out_buf);
+    }
+};

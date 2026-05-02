@@ -1,6 +1,7 @@
 const std = @import("std");
 const gpu = @import("../service/gpu/Gpu.zig");
 const window = @import("../service/window/Window.zig").Window;
+const key_input = @import("../service/key-input/KeyInput.zig");
 const term_mod = @import("../service/HowlTerm.zig");
 const howl_term = term_mod.HowlTerm;
 const Config = @import("../service/Config.zig").Config;
@@ -92,6 +93,11 @@ pub const Terminal = struct {
 
     pub fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
         self.term.publishInputBytes(bytes);
+    }
+
+    pub fn drainInput(self: *Terminal, key_in: *key_input.KeyInput, scratch: []u8) void {
+        const n = key_in.drain(scratch);
+        if (n > 0) self.publishInputBytes(scratch[0..n]);
     }
 
     pub fn waitRenderWake(self: *Terminal, timeout_ms: i32) bool {

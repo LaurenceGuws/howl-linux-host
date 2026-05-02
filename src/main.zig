@@ -34,8 +34,8 @@ pub fn main() !void {
     defer window.destroyWindow(win);
 
     var key_input_state: key_input.KeyInput = undefined;
-    key_input.init(&key_input_state);
-    key_input.bind(win, &key_input_state);
+    key_input_state.init();
+    key_input_state.bind(win);
 
     const initial_size = window.windowSize(win);
     try term_inst.init(win, initial_size.width, initial_size.height);
@@ -57,8 +57,7 @@ pub fn main() !void {
             continue;
         }
 
-        const key_input_n = key_input.drain(&key_input_state, &term_input_buf);
-        if (key_input_n > 0) term_inst.publishInputBytes(term_input_buf[0..key_input_n]);
+        term_inst.drainInput(&key_input_state, &term_input_buf);
 
         const size = window.windowSize(win);
         term_inst.resize(size.width, size.height);

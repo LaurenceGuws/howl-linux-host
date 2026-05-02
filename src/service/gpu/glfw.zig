@@ -1,84 +1,84 @@
-const window_svc = @import("../window/Window.zig").Window;
+const window = @import("../window/Window.zig").Window;
 const c_gpu = @cImport({
     @cInclude("GL/gl.h");
 });
-const c_win = window_svc.c_win;
+const c_win = window.c_win;
 
 pub const Gpu = struct {
-    window: ?window_svc.Ptr,
+    window: ?window.Ptr,
     texture_id: c_uint,
     texture_w: c_int,
     texture_h: c_int,
 };
 
-pub fn initGpuInst(gpu_inst: *Gpu) void {
-    gpu_inst.* = .{ .window = null, .texture_id = 0, .texture_w = 1, .texture_h = 1 };
+pub fn initGpu(gpu: *Gpu) void {
+    gpu.* = .{ .window = null, .texture_id = 0, .texture_w = 1, .texture_h = 1 };
 }
 
-pub fn windowFlags() window_svc.Flags {
-    return window_svc.RESIZABLE;
+pub fn windowFlags() window.Flags {
+    return window.RESIZABLE;
 }
 
-pub fn init(gpu_inst: *Gpu, win: window_svc.Ptr) !void {
-    gpu_inst.window = win;
+pub fn init(gpu: *Gpu, win: window.Ptr) !void {
+    gpu.window = win;
     c_win.glfwMakeContextCurrent(win);
     c_win.glfwSwapInterval(1);
-    try initTexture(gpu_inst);
+    try initTexture(gpu);
 }
 
-pub fn deinit(gpu_inst: *Gpu) void {
-    if (gpu_inst.texture_id != 0) {
-        c_gpu.glDeleteTextures(1, @ptrCast(&gpu_inst.texture_id));
-        gpu_inst.texture_id = 0;
+pub fn deinit(gpu: *Gpu) void {
+    if (gpu.texture_id != 0) {
+        c_gpu.glDeleteTextures(1, @ptrCast(&gpu.texture_id));
+        gpu.texture_id = 0;
     }
-    gpu_inst.texture_w = 1;
-    gpu_inst.texture_h = 1;
-    gpu_inst.window = null;
+    gpu.texture_w = 1;
+    gpu.texture_h = 1;
+    gpu.window = null;
 }
 
-pub fn present(gpu_inst: *Gpu) void {
-    const win = gpu_inst.window orelse return;
+pub fn present(gpu: *Gpu) void {
+    const win = gpu.window orelse return;
     var fb_w: c_int = 0;
     var fb_h: c_int = 0;
     c_win.glfwGetFramebufferSize(win, &fb_w, &fb_h);
     c_gpu.glViewport(0, 0, @max(fb_w, 1), @max(fb_h, 1));
-    drawTextureQuad(gpu_inst);
+    drawTextureQuad(gpu);
     c_win.glfwSwapBuffers(win);
 }
 
-pub fn texture(gpu_inst: *Gpu) c_uint {
-    return gpu_inst.texture_id;
+pub fn texture(gpu: *Gpu) c_uint {
+    return gpu.texture_id;
 }
 
-pub fn ensureTextureSize(gpu_inst: *Gpu, width: c_int, height: c_int) void {
-    if (gpu_inst.texture_id == 0) return;
+pub fn ensureTextureSize(gpu: *Gpu, width: c_int, height: c_int) void {
+    if (gpu.texture_id == 0) return;
     const w = @max(width, 1);
     const h = @max(height, 1);
-    if (w == gpu_inst.texture_w and h == gpu_inst.texture_h) return;
-    gpu_inst.texture_w = w;
-    gpu_inst.texture_h = h;
-    c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, gpu_inst.texture_id);
-    c_gpu.glTexImage2D(c_gpu.GL_TEXTURE_2D, 0, c_gpu.GL_RGBA, gpu_inst.texture_w, gpu_inst.texture_h, 0, c_gpu.GL_RGBA, c_gpu.GL_UNSIGNED_BYTE, null);
+    if (w == gpu.texture_w and h == gpu.texture_h) return;
+    gpu.texture_w = w;
+    gpu.texture_h = h;
+    c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, gpu.texture_id);
+    c_gpu.glTexImage2D(c_gpu.GL_TEXTURE_2D, 0, c_gpu.GL_RGBA, gpu.texture_w, gpu.texture_h, 0, c_gpu.GL_RGBA, c_gpu.GL_UNSIGNED_BYTE, null);
     c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, 0);
 }
 
-fn initTexture(gpu_inst: *Gpu) !void {
-    if (gpu_inst.texture_id != 0) return;
-    c_gpu.glGenTextures(1, @ptrCast(&gpu_inst.texture_id));
-    if (gpu_inst.texture_id == 0) return error.TextureInitFailed;
-    c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, gpu_inst.texture_id);
+fn initTexture(gpu: *Gpu) !void {
+    if (gpu.texture_id != 0) return;
+    c_gpu.glGenTextures(1, @ptrCast(&gpu.texture_id));
+    if (gpu.texture_id == 0) return error.TextureInitFailed;
+    c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, gpu.texture_id);
     c_gpu.glTexParameteri(c_gpu.GL_TEXTURE_2D, c_gpu.GL_TEXTURE_MIN_FILTER, c_gpu.GL_NEAREST);
     c_gpu.glTexParameteri(c_gpu.GL_TEXTURE_2D, c_gpu.GL_TEXTURE_MAG_FILTER, c_gpu.GL_NEAREST);
     c_gpu.glTexParameteri(c_gpu.GL_TEXTURE_2D, c_gpu.GL_TEXTURE_WRAP_S, c_gpu.GL_CLAMP_TO_EDGE);
     c_gpu.glTexParameteri(c_gpu.GL_TEXTURE_2D, c_gpu.GL_TEXTURE_WRAP_T, c_gpu.GL_CLAMP_TO_EDGE);
     c_gpu.glTexImage2D(c_gpu.GL_TEXTURE_2D, 0, c_gpu.GL_RGBA, 1, 1, 0, c_gpu.GL_RGBA, c_gpu.GL_UNSIGNED_BYTE, null);
-    gpu_inst.texture_w = 1;
-    gpu_inst.texture_h = 1;
+    gpu.texture_w = 1;
+    gpu.texture_h = 1;
     c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, 0);
 }
 
-fn drawTextureQuad(gpu_inst: *Gpu) void {
-    if (gpu_inst.texture_id == 0) {
+fn drawTextureQuad(gpu: *Gpu) void {
+    if (gpu.texture_id == 0) {
         c_gpu.glClearColor(0.06, 0.09, 0.14, 1.0);
         c_gpu.glClear(c_gpu.GL_COLOR_BUFFER_BIT);
         return;
@@ -88,7 +88,7 @@ fn drawTextureQuad(gpu_inst: *Gpu) void {
     c_gpu.glClear(c_gpu.GL_COLOR_BUFFER_BIT);
     c_gpu.glEnable(c_gpu.GL_TEXTURE_2D);
     defer c_gpu.glDisable(c_gpu.GL_TEXTURE_2D);
-    c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, gpu_inst.texture_id);
+    c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, gpu.texture_id);
     defer c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, 0);
 
     c_gpu.glBegin(c_gpu.GL_QUADS);
