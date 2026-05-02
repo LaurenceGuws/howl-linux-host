@@ -16,6 +16,11 @@ pub fn initKeyInput(key_in: *KeyInput) void {
 
 pub fn bindKeyInput(win: window.Ptr, key_in: *KeyInput) void {
     _ = win;
+    if (active_key_in) |bound| {
+        if (bound != key_in) {
+            std.debug.panic("sdl key-input only supports one bound instance per process", .{});
+        }
+    }
     active_key_in = key_in;
     if (!watch_registered) {
         _ = c_key_in.SDL_AddEventWatch(eventWatch, null);

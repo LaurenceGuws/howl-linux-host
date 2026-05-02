@@ -5,10 +5,17 @@ const std = @import("std");
 const build_options = @import("build_options");
 const window = @import("../window/Window.zig").Window;
 
-const gpu_backend = if (std.mem.eql(u8, build_options.window_variant, "glfw"))
-    @import("glfw.zig")
-else
-    @import("sdl.zig");
+comptime {
+    if (!@hasDecl(build_options, "window_variant")) {
+        @compileError("missing build option: window_variant");
+    }
+}
+
+const gpu_backend = blk: {
+    if (std.mem.eql(u8, build_options.window_variant, "glfw")) break :blk @import("glfw.zig");
+    if (std.mem.eql(u8, build_options.window_variant, "sdl")) break :blk @import("sdl.zig");
+    @compileError("invalid build_options.window_variant (expected \"sdl\" or \"glfw\")");
+};
 
 pub const Gpu = gpu_backend.Gpu;
 pub const Surface = window.Ptr;

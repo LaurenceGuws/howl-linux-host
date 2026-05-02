@@ -33,13 +33,9 @@ pub const HowlTerm = struct {
         self.lifecycle_state = .starting;
         self.texture_id = texture;
 
-        const pty_command = if (start_path) |path| blk: {
-            if (command) |cmd| {
-                break :blk try std.fmt.allocPrint(std.heap.c_allocator, "cd '{s}' && {s}", .{ path, cmd });
-            }
-            break :blk try std.fmt.allocPrint(std.heap.c_allocator, "cd '{s}' && exec '{s}' -i", .{ path, shell });
-        } else command;
-        defer if (start_path != null) if (pty_command) |cmd| std.heap.c_allocator.free(cmd);
+        const pty_command_owned = if (start_path) |path| try buildPtyCommand(std.heap.c_allocator, shell, path, command) else null;
+        defer if (pty_command_owned) |cmd| std.heap.c_allocator.free(cmd);
+        const pty_command = pty_command_owned orelse command;
 
         const cell_px = howl_term.HowlTerm.RenderCellSize{
             .width = cell_width,
@@ -76,9 +72,9 @@ pub const HowlTerm = struct {
         const rh: u16 = @intCast(@max(render_height, 1));
         const gw: u16 = @intCast(@max(grid_width, 1));
         const gh: u16 = @intCast(@max(grid_height, 1));
-        inst.renderFrameSized(rw, rh, gw, gh, self.texture_id) catch {
+        inst.renderFrameSized(rw, rh, gw, gh, self.texture_id) catch |err| {
             self.lifecycle_state = .failed;
-            std.log.err("terminal render failed", .{});
+            std.debug.panic("linux-host HowlTerm.renderFrameSized failed: {s}", .{@errorName(err)});
         };
     }
 
@@ -104,6 +100,38 @@ pub const HowlTerm = struct {
 
     pub fn waitRenderWake(self: *HowlTerm, timeout_ms: i32) bool {
         const inst = &(self.term orelse return false);
-        return inst.waitRenderWake(timeout_ms) catch false;
+        return inst.waitRenderWake(timeout_ms) catch |err| {
+            self.lifecycle_state = .failed;
+            std.debug.panic("linux-host HowlTerm.waitRenderWake failed: {s}", .{@errorName(err)});
+        };
     }
 };
+
+fn buildPtyCommand(alloc: std.mem.Allocator, shell: []const u8, start_path: []const u8, command: ?[]const u8) ![]u8 {
+    const path = start_path;
+    const path_q = try shellQuote(alloc, path);
+    defer alloc.free(path_q);
+
+    if (command) |cmd| {
+        return std.fmt.allocPrint(alloc, "cd -- {s} && {s}", .{ path_q, cmd });
+    }
+
+    const shell_q = try shellQuote(alloc, shell);
+    defer alloc.free(shell_q);
+    return std.fmt.allocPrint(alloc, "cd -- {s} && exec {s} -i", .{ path_q, shell_q });
+}
+
+fn shellQuote(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(alloc);
+    try out.append(alloc, '\'');
+    for (s) |ch| {
+        if (ch == '\'') {
+            try out.appendSlice(alloc, "'\"'\"'");
+        } else {
+            try out.append(alloc, ch);
+        }
+    }
+    try out.append(alloc, '\'');
+    return out.toOwnedSlice(alloc);
+}

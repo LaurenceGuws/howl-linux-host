@@ -1,10 +1,17 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
-const win_backend = if (std.mem.eql(u8, build_options.window_variant, "glfw"))
-    @import("glfw.zig")
-else
-    @import("sdl.zig");
+comptime {
+    if (!@hasDecl(build_options, "window_variant")) {
+        @compileError("missing build option: window_variant");
+    }
+}
+
+const win_backend = blk: {
+    if (std.mem.eql(u8, build_options.window_variant, "glfw")) break :blk @import("glfw.zig");
+    if (std.mem.eql(u8, build_options.window_variant, "sdl")) break :blk @import("sdl.zig");
+    @compileError("invalid build_options.window_variant (expected \"sdl\" or \"glfw\")");
+};
 
 pub const Window = struct {
     pub const c_win = win_backend.c_win;

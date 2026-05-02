@@ -197,12 +197,11 @@ fn loadStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []c
     if (n == 0) return try alloc.alloc([:0]u8, 0);
 
     const out = try alloc.alloc([:0]u8, n);
+    var written: usize = 0;
     errdefer {
-        for (out) |s| alloc.free(s);
+        for (out[0..written]) |s| alloc.free(s);
         alloc.free(out);
     }
-
-    var written: usize = 0;
     var i: usize = 1;
     while (i <= n) : (i += 1) {
         arr_reader.state.rawGetIndex(arr_reader.index, i);
