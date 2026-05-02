@@ -73,10 +73,9 @@ pub const Terminal = struct {
     }
 
     pub fn render(self: *Terminal) void {
-        const cols: c_int = @max(@divFloor(self.px_w, @as(c_int, self.cell_w)), 1);
-        const rows: c_int = @max(@divFloor(self.px_h, @as(c_int, self.cell_h)), 1);
         gpu.ensureTextureSize(&self.gpu, self.px_w, self.px_h);
-        self.term.renderFrameSized(self.px_w, self.px_h, cols, rows);
+        // HowlTerm expects grid dimensions in pixels, not pre-divided cols/rows.
+        self.term.renderFrameSized(self.px_w, self.px_h, self.px_w, self.px_h);
     }
 
     pub fn present(self: *Terminal) void {
