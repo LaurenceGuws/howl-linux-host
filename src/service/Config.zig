@@ -59,10 +59,12 @@ pub const Config = struct {
 
 fn expandEnvOrDup(alloc: std.mem.Allocator, raw: []const u8) ![]u8 {
     if (raw.len >= 2 and raw[0] == '$') {
-        return std.process.getEnvVarOwned(alloc, raw[1..]) catch |err| switch (err) {
-            error.EnvironmentVariableNotFound => try alloc.dupe(u8, raw),
-            else => err,
-        };
+        const key_z = try alloc.dupeZ(u8, raw[1..]);
+        defer alloc.free(key_z);
+        if (std.c.getenv(key_z)) |val_z| {
+            return try alloc.dupe(u8, std.mem.span(val_z));
+        }
+        return try alloc.dupe(u8, raw);
     }
     return try alloc.dupe(u8, raw);
 }

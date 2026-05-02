@@ -68,8 +68,8 @@ pub fn build(b: *std.Build) void {
         @panic("invalid -Dwindow-variant (expected sdl|glfw)");
     }
 
-    exe.linkSystemLibrary("GL");
-    exe.linkLibC();
+    exe.root_module.linkSystemLibrary("GL", .{});
+    exe.root_module.link_libc = true;
 
     b.installArtifact(exe);
 

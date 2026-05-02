@@ -122,7 +122,7 @@ fn buildPtyCommand(alloc: std.mem.Allocator, shell: []const u8, start_path: []co
 }
 
 fn shellQuote(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = std.ArrayListUnmanaged(u8).empty;
     errdefer out.deinit(alloc);
     try out.append(alloc, '\'');
     for (s) |ch| {
