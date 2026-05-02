@@ -1,37 +1,37 @@
-const win_svc = @import("../window/window.zig").WindowSvc;
-const c_win = win_svc.c_win;
+const window_svc = @import("../window/window.zig").Window;
+const c_win = window_svc.c_win;
 const c_gpu = @cImport({
     @cInclude("SDL3/SDL_opengl.h");
 });
 
-pub const GpuInst = struct {
+pub const Gpu = struct {
     gl_context: ?c_win.SDL_GLContext,
     texture_id: c_uint,
     texture_w: c_int,
     texture_h: c_int,
 };
 
-pub fn initGpuInst(gpu_inst: *GpuInst) void {
+pub fn initGpuInst(gpu_inst: *Gpu) void {
     gpu_inst.* = .{ .gl_context = null, .texture_id = 0, .texture_w = 1, .texture_h = 1 };
 }
 
-pub fn windowFlags() win_svc.Flags {
-    return win_svc.RESIZABLE | c_win.SDL_WINDOW_OPENGL;
+pub fn windowFlags() window_svc.Flags {
+    return window_svc.RESIZABLE | c_win.SDL_WINDOW_OPENGL;
 }
 
-pub fn init(gpu_inst: *GpuInst, window: win_svc.Ptr) !void {
+pub fn init(gpu_inst: *Gpu, win: window_svc.Ptr) !void {
     if (!c_win.SDL_GL_SetAttribute(c_win.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c_win.SDL_GL_SetAttribute(c_win.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
     if (!c_win.SDL_GL_SetAttribute(c_win.SDL_GL_CONTEXT_PROFILE_MASK, c_win.SDL_GL_CONTEXT_PROFILE_COMPATIBILITY)) return error.GlAttrFailed;
 
-    const ctx = c_win.SDL_GL_CreateContext(window) orelse return error.GlContextFailed;
+    const ctx = c_win.SDL_GL_CreateContext(win) orelse return error.GlContextFailed;
     gpu_inst.gl_context = ctx;
-    _ = c_win.SDL_GL_MakeCurrent(window, ctx);
+    _ = c_win.SDL_GL_MakeCurrent(win, ctx);
     _ = c_win.SDL_GL_SetSwapInterval(1);
     try initTexture(gpu_inst);
 }
 
-pub fn deinit(gpu_inst: *GpuInst) void {
+pub fn deinit(gpu_inst: *Gpu) void {
     if (gpu_inst.texture_id != 0) {
         c_gpu.glDeleteTextures(1, @ptrCast(&gpu_inst.texture_id));
         gpu_inst.texture_id = 0;
@@ -44,16 +44,16 @@ pub fn deinit(gpu_inst: *GpuInst) void {
     }
 }
 
-pub fn present(gpu_inst: *GpuInst, window: win_svc.Ptr) void {
+pub fn present(gpu_inst: *Gpu, win: window_svc.Ptr) void {
     drawTextureQuad(gpu_inst);
-    _ = c_win.SDL_GL_SwapWindow(window);
+    _ = c_win.SDL_GL_SwapWindow(win);
 }
 
-pub fn texture(gpu_inst: *GpuInst) c_uint {
+pub fn texture(gpu_inst: *Gpu) c_uint {
     return gpu_inst.texture_id;
 }
 
-pub fn ensureTextureSize(gpu_inst: *GpuInst, width: c_int, height: c_int) void {
+pub fn ensureTextureSize(gpu_inst: *Gpu, width: c_int, height: c_int) void {
     if (gpu_inst.texture_id == 0) return;
     const w = @max(width, 1);
     const h = @max(height, 1);
@@ -65,7 +65,7 @@ pub fn ensureTextureSize(gpu_inst: *GpuInst, width: c_int, height: c_int) void {
     c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, 0);
 }
 
-fn initTexture(gpu_inst: *GpuInst) !void {
+fn initTexture(gpu_inst: *Gpu) !void {
     if (gpu_inst.texture_id != 0) return;
     c_gpu.glGenTextures(1, @ptrCast(&gpu_inst.texture_id));
     if (gpu_inst.texture_id == 0) return error.TextureInitFailed;
@@ -80,7 +80,7 @@ fn initTexture(gpu_inst: *GpuInst) !void {
     c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, 0);
 }
 
-fn drawTextureQuad(gpu_inst: *GpuInst) void {
+fn drawTextureQuad(gpu_inst: *Gpu) void {
     if (gpu_inst.texture_id == 0) {
         c_gpu.glClearColor(0.06, 0.09, 0.14, 1.0);
         c_gpu.glClear(c_gpu.GL_COLOR_BUFFER_BIT);

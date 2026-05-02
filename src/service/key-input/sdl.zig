@@ -1,21 +1,21 @@
 const std = @import("std");
-const win_svc = @import("../window/window.zig").WindowSvc;
-pub const c_key_input = win_svc.c_win;
+const window_svc = @import("../window/window.zig").Window;
+pub const c_key_input = window_svc.c_win;
 
-pub const KeyInputInst = struct {
+pub const KeyInput = struct {
     key_input_buf: [8192]u8,
     key_input_len: usize,
 };
 
-var active_inst: ?*KeyInputInst = null;
+var active_inst: ?*KeyInput = null;
 var watch_registered: bool = false;
 
-pub fn initKeyInputInst(inst: *KeyInputInst) void {
+pub fn initKeyInputInst(inst: *KeyInput) void {
     inst.* = .{ .key_input_buf = undefined, .key_input_len = 0 };
 }
 
-pub fn bindKeyInputInst(window: win_svc.Ptr, inst: *KeyInputInst) void {
-    _ = window;
+pub fn bindKeyInputInst(win: window_svc.Ptr, inst: *KeyInput) void {
+    _ = win;
     active_inst = inst;
     if (!watch_registered) {
         _ = c_key_input.SDL_AddEventWatch(eventWatch, null);
@@ -23,7 +23,7 @@ pub fn bindKeyInputInst(window: win_svc.Ptr, inst: *KeyInputInst) void {
     }
 }
 
-pub fn drainKeyInput(inst: *KeyInputInst, out_buf: []u8) usize {
+pub fn drainKeyInput(inst: *KeyInput, out_buf: []u8) usize {
     const n = @min(out_buf.len, inst.key_input_len);
     if (n == 0) return 0;
     @memcpy(out_buf[0..n], inst.key_input_buf[0..n]);
@@ -91,7 +91,7 @@ fn eventWatch(_: ?*anyopaque, event: [*c]c_key_input.SDL_Event) callconv(.c) boo
     return false;
 }
 
-fn appendBytes(inst: *KeyInputInst, bytes: []const u8) void {
+fn appendBytes(inst: *KeyInput, bytes: []const u8) void {
     if (bytes.len == 0) return;
     const free = inst.key_input_buf.len - inst.key_input_len;
     const n = @min(free, bytes.len);
@@ -100,7 +100,7 @@ fn appendBytes(inst: *KeyInputInst, bytes: []const u8) void {
     inst.key_input_len += n;
 }
 
-fn appendByte(inst: *KeyInputInst, b: u8) void {
+fn appendByte(inst: *KeyInput, b: u8) void {
     if (inst.key_input_len >= inst.key_input_buf.len) return;
     inst.key_input_buf[inst.key_input_len] = b;
     inst.key_input_len += 1;

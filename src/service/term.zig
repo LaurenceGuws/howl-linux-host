@@ -11,13 +11,13 @@ pub const LifecycleState = enum {
     failed,
 };
 
-pub const TermInst = struct {
+pub const Term = struct {
     term: ?howl_term.HowlTerm = null,
     texture_id: u32 = 0,
     lifecycle_state: LifecycleState = .stopped,
 
     pub fn init(
-        self: *TermInst,
+        self: *Term,
         texture: u32,
         shell: []const u8,
         start_path: ?[]const u8,
@@ -55,7 +55,7 @@ pub const TermInst = struct {
         self.lifecycle_state = .ready;
     }
 
-    pub fn deinit(self: *TermInst) void {
+    pub fn deinit(self: *Term) void {
         if (self.term) |*inst| {
             inst.stop();
             inst.deinit();
@@ -65,7 +65,7 @@ pub const TermInst = struct {
         self.lifecycle_state = .stopped;
     }
 
-    pub fn renderFrameSized(self: *TermInst, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
+    pub fn renderFrameSized(self: *Term, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
         const inst = &(self.term orelse return);
         const rw: u16 = @intCast(@max(render_width, 1));
         const rh: u16 = @intCast(@max(render_height, 1));
@@ -77,15 +77,15 @@ pub const TermInst = struct {
         };
     }
 
-    pub fn presentAck(self: *TermInst) void {
+    pub fn presentAck(self: *Term) void {
         if (self.term) |*inst| inst.presentAck();
     }
 
-    pub fn state(self: *const TermInst) LifecycleState {
+    pub fn state(self: *const Term) LifecycleState {
         return self.lifecycle_state;
     }
 
-    pub fn publishInputBytes(self: *TermInst, bytes: []const u8) void {
+    pub fn publishInputBytes(self: *Term, bytes: []const u8) void {
         if (bytes.len == 0) return;
         const inst = &(self.term orelse return);
         inst.publishInputBytes(bytes) catch |err| switch (err) {
@@ -97,13 +97,8 @@ pub const TermInst = struct {
         };
     }
 
-    pub fn waitRenderWake(self: *TermInst, timeout_ms: i32) bool {
+    pub fn waitRenderWake(self: *Term, timeout_ms: i32) bool {
         const inst = &(self.term orelse return false);
         return inst.waitRenderWake(timeout_ms) catch false;
     }
-};
-
-pub const TermSvc = struct {
-    pub const Inst = TermInst;
-    pub const State = LifecycleState;
 };
