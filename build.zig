@@ -12,6 +12,12 @@ pub fn build(b: *std.Build) void {
         .@"session-pty-variant" = "unix_pty",
     });
     const howl_term_mod = howl_term_dep.module("howl_term");
+    const howl_session_dep = b.dependency("howl_session", .{
+        .target = target,
+        .optimize = optimize,
+        .@"pty-variant" = "unix_pty",
+    });
+    const howl_session_mod = howl_session_dep.module("howl_session");
     const howl_lua_dep = b.dependency("howl_lua", .{
         .target = target,
         .optimize = optimize,
@@ -29,6 +35,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "howl_term", .module = howl_term_mod },
+                .{ .name = "howl_session", .module = howl_session_mod },
                 .{ .name = "howl_lua", .module = howl_lua_mod },
                 .{ .name = "build_options", .module = build_options.createModule() },
             },

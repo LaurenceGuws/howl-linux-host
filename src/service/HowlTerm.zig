@@ -2,6 +2,7 @@
 //! Ownership: per-instance runtime lifecycle and host-facing calls.
 
 const howl_term = @import("howl_term").HowlTerm;
+const howl_session = @import("howl_session").HowlSession;
 const std = @import("std");
 
 pub const LifecycleState = enum {
@@ -44,7 +45,7 @@ pub const HowlTerm = struct {
             .width = cell_width,
             .height = cell_height,
         };
-        const pty_impl = try howl_term.initPty(std.heap.c_allocator, shell, pty_command);
+        const pty_impl = try howl_session.initPty(std.heap.c_allocator, shell, pty_command);
         self.term = try howl_term.HowlTerm.init(std.heap.c_allocator, pty_impl, cols, rows, cell_px, texture);
         self.term.?.setPrimaryFontPath(font_primary);
         self.term.?.setFallbackFontPaths(font_fallbacks);
