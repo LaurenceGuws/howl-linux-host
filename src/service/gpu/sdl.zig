@@ -1,10 +1,11 @@
-const window_svc = @import("../window/window.zig").Window;
+const window_svc = @import("../window/Window.zig").Window;
 const c_win = window_svc.c_win;
 const c_gpu = @cImport({
     @cInclude("SDL3/SDL_opengl.h");
 });
 
 pub const Gpu = struct {
+    window: ?window_svc.Ptr,
     gl_context: ?c_win.SDL_GLContext,
     texture_id: c_uint,
     texture_w: c_int,
@@ -12,7 +13,7 @@ pub const Gpu = struct {
 };
 
 pub fn initGpuInst(gpu_inst: *Gpu) void {
-    gpu_inst.* = .{ .gl_context = null, .texture_id = 0, .texture_w = 1, .texture_h = 1 };
+    gpu_inst.* = .{ .window = null, .gl_context = null, .texture_id = 0, .texture_w = 1, .texture_h = 1 };
 }
 
 pub fn windowFlags() window_svc.Flags {
@@ -20,6 +21,7 @@ pub fn windowFlags() window_svc.Flags {
 }
 
 pub fn init(gpu_inst: *Gpu, win: window_svc.Ptr) !void {
+    gpu_inst.window = win;
     if (!c_win.SDL_GL_SetAttribute(c_win.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c_win.SDL_GL_SetAttribute(c_win.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
     if (!c_win.SDL_GL_SetAttribute(c_win.SDL_GL_CONTEXT_PROFILE_MASK, c_win.SDL_GL_CONTEXT_PROFILE_COMPATIBILITY)) return error.GlAttrFailed;
@@ -42,9 +44,11 @@ pub fn deinit(gpu_inst: *Gpu) void {
         _ = c_win.SDL_GL_DestroyContext(ctx);
         gpu_inst.gl_context = null;
     }
+    gpu_inst.window = null;
 }
 
-pub fn present(gpu_inst: *Gpu, win: window_svc.Ptr) void {
+pub fn present(gpu_inst: *Gpu) void {
+    const win = gpu_inst.window orelse return;
     drawTextureQuad(gpu_inst);
     _ = c_win.SDL_GL_SwapWindow(win);
 }

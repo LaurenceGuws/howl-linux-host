@@ -11,13 +11,13 @@ pub const LifecycleState = enum {
     failed,
 };
 
-pub const Term = struct {
+pub const HowlTerm = struct {
     term: ?howl_term.HowlTerm = null,
     texture_id: u32 = 0,
     lifecycle_state: LifecycleState = .stopped,
 
     pub fn init(
-        self: *Term,
+        self: *HowlTerm,
         texture: u32,
         shell: []const u8,
         start_path: ?[]const u8,
@@ -55,7 +55,7 @@ pub const Term = struct {
         self.lifecycle_state = .ready;
     }
 
-    pub fn deinit(self: *Term) void {
+    pub fn deinit(self: *HowlTerm) void {
         if (self.term) |*inst| {
             inst.stop();
             inst.deinit();
@@ -65,7 +65,7 @@ pub const Term = struct {
         self.lifecycle_state = .stopped;
     }
 
-    pub fn renderFrameSized(self: *Term, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
+    pub fn renderFrameSized(self: *HowlTerm, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
         const inst = &(self.term orelse return);
         const rw: u16 = @intCast(@max(render_width, 1));
         const rh: u16 = @intCast(@max(render_height, 1));
@@ -77,15 +77,15 @@ pub const Term = struct {
         };
     }
 
-    pub fn presentAck(self: *Term) void {
+    pub fn presentAck(self: *HowlTerm) void {
         if (self.term) |*inst| inst.presentAck();
     }
 
-    pub fn state(self: *const Term) LifecycleState {
+    pub fn state(self: *const HowlTerm) LifecycleState {
         return self.lifecycle_state;
     }
 
-    pub fn publishInputBytes(self: *Term, bytes: []const u8) void {
+    pub fn publishInputBytes(self: *HowlTerm, bytes: []const u8) void {
         if (bytes.len == 0) return;
         const inst = &(self.term orelse return);
         inst.publishInputBytes(bytes) catch |err| switch (err) {
@@ -97,7 +97,7 @@ pub const Term = struct {
         };
     }
 
-    pub fn waitRenderWake(self: *Term, timeout_ms: i32) bool {
+    pub fn waitRenderWake(self: *HowlTerm, timeout_ms: i32) bool {
         const inst = &(self.term orelse return false);
         return inst.waitRenderWake(timeout_ms) catch false;
     }

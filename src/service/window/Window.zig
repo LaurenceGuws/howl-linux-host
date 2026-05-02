@@ -1,12 +1,12 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
-pub const Window = struct {
-    const window_variant = if (std.mem.eql(u8, build_options.window_variant, "glfw"))
-        @import("glfw.zig")
-    else
-        @import("sdl.zig");
+const window_variant = if (std.mem.eql(u8, build_options.window_variant, "glfw"))
+    @import("glfw.zig")
+else
+    @import("sdl.zig");
 
+pub const Window = struct {
     pub const c_win = window_variant.c_win;
     pub const Ptr = std.meta.Child(@typeInfo(@TypeOf(window_variant.createWindow)).@"fn".return_type.?);
     pub const Flags = c_uint;

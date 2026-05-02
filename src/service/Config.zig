@@ -1,36 +1,42 @@
 const std = @import("std");
 const howl_lua = @import("howl_lua");
 
-pub const Term = struct {
-    shell: []u8,
-    start_path: ?[]u8,
-    command: ?[]u8,
-    font_size: u16,
-
-    pub fn deinit(self: *Term, alloc: std.mem.Allocator) void {
-        alloc.free(self.shell);
-        if (self.start_path) |p| alloc.free(p);
-        if (self.command) |cmd| alloc.free(cmd);
-    }
-};
-
-pub const Window = struct {
-    title: [:0]u8,
-    width: c_int,
-    height: c_int,
-
-    pub fn deinit(self: *Window, alloc: std.mem.Allocator) void {
-        alloc.free(self.title);
-    }
-};
-
 pub const Config = struct {
-    term: Term,
-    window: Window,
+    pub const Term = struct {
+        shell: []u8,
+        start_path: ?[]u8,
+        command: ?[]u8,
+        font_size: u16,
 
-    pub fn deinit(self: *Config, alloc: std.mem.Allocator) void {
-        self.term.deinit(alloc);
-        self.window.deinit(alloc);
+        pub fn deinit(self: *Term, alloc: std.mem.Allocator) void {
+            alloc.free(self.shell);
+            if (self.start_path) |p| alloc.free(p);
+            if (self.command) |cmd| alloc.free(cmd);
+        }
+    };
+
+    pub const Window = struct {
+        title: [:0]u8,
+        width: c_int,
+        height: c_int,
+
+        pub fn deinit(self: *Window, alloc: std.mem.Allocator) void {
+            alloc.free(self.title);
+        }
+    };
+
+    pub const Value = struct {
+        term: Term,
+        window: Window,
+
+        pub fn deinit(self: *Value, alloc: std.mem.Allocator) void {
+            self.term.deinit(alloc);
+            self.window.deinit(alloc);
+        }
+    };
+
+    pub fn load(alloc: std.mem.Allocator) !Value {
+        return loadConfig(alloc);
     }
 };
 
@@ -93,7 +99,7 @@ test "expandEnvOrDup fuzz" {
     }
 }
 
-pub fn load(alloc: std.mem.Allocator) !Config {
+fn loadConfig(alloc: std.mem.Allocator) !Config.Value {
     // 1) Start a Lua instance and run the config file.
     var lua_inst = try howl_lua.api.State.init();
     defer lua_inst.deinit();

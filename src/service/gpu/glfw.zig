@@ -1,17 +1,18 @@
-const window_svc = @import("../window/window.zig").Window;
+const window_svc = @import("../window/Window.zig").Window;
 const c_gpu = @cImport({
     @cInclude("GL/gl.h");
 });
 const c_win = window_svc.c_win;
 
 pub const Gpu = struct {
+    window: ?window_svc.Ptr,
     texture_id: c_uint,
     texture_w: c_int,
     texture_h: c_int,
 };
 
 pub fn initGpuInst(gpu_inst: *Gpu) void {
-    gpu_inst.* = .{ .texture_id = 0, .texture_w = 1, .texture_h = 1 };
+    gpu_inst.* = .{ .window = null, .texture_id = 0, .texture_w = 1, .texture_h = 1 };
 }
 
 pub fn windowFlags() window_svc.Flags {
@@ -19,6 +20,7 @@ pub fn windowFlags() window_svc.Flags {
 }
 
 pub fn init(gpu_inst: *Gpu, win: window_svc.Ptr) !void {
+    gpu_inst.window = win;
     c_win.glfwMakeContextCurrent(win);
     c_win.glfwSwapInterval(1);
     try initTexture(gpu_inst);
@@ -31,9 +33,11 @@ pub fn deinit(gpu_inst: *Gpu) void {
     }
     gpu_inst.texture_w = 1;
     gpu_inst.texture_h = 1;
+    gpu_inst.window = null;
 }
 
-pub fn present(gpu_inst: *Gpu, win: window_svc.Ptr) void {
+pub fn present(gpu_inst: *Gpu) void {
+    const win = gpu_inst.window orelse return;
     var fb_w: c_int = 0;
     var fb_h: c_int = 0;
     c_win.glfwGetFramebufferSize(win, &fb_w, &fb_h);
