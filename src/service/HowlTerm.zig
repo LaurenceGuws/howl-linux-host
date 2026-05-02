@@ -1,7 +1,7 @@
 //! Responsibility: host-local terminal runtime facade.
 //! Ownership: per-instance runtime lifecycle and host-facing calls.
 
-const howl_term = @import("howl_term").HowlTermModule;
+const howl_term = @import("howl_term").HowlTerm;
 const std = @import("std");
 
 pub const LifecycleState = enum {
