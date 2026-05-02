@@ -1,14 +1,15 @@
 const std = @import("std");
-const gpu = @import("../service/gpu/Gpu.zig");
+const GpuSvc = @import("../service/gpu/Gpu.zig");
+const Gpu = GpuSvc.Gpu;
 const window = @import("../service/window/Window.zig").Window;
-const key_input = @import("../service/key-input/KeyInput.zig");
-const term_mod = @import("../service/HowlTerm.zig");
-const howl_term = term_mod.HowlTerm;
+const KeyInput = @import("../service/key-input/KeyInput.zig").KeyInput;
+const HowlTerm = @import("../service/HowlTerm.zig").HowlTerm;
+const LifecycleState = @import("../service/HowlTerm.zig").LifecycleState;
 const Config = @import("../service/Config.zig").Config;
 
 pub const Terminal = struct {
-    gpu: gpu.Gpu,
-    term: howl_term,
+    gpu: Gpu,
+    term: HowlTerm,
     conf: *const Config.Value,
     px_w: c_int,
     px_h: c_int,
@@ -18,7 +19,7 @@ pub const Terminal = struct {
     wake_thread: ?std.Thread,
     stop_wake: std.atomic.Value(bool),
 
-    pub fn init(self: *Terminal, surface: gpu.Surface, width: c_int, height: c_int) !void {
+    pub fn init(self: *Terminal, surface: GpuSvc.Surface, width: c_int, height: c_int) !void {
         self.px_w = @max(width, 1);
         self.px_h = @max(height, 1);
         const font_px: u16 = @max(self.conf.term.font_size, 8);
@@ -29,12 +30,14 @@ pub const Terminal = struct {
         self.wake_thread = null;
         self.term = .{};
 
-        gpu.init(&self.gpu);
-        try gpu.setup(&self.gpu, surface);
+        GpuSvc.init(&self.gpu);
+        try GpuSvc.setup(&self.gpu, surface);
         const cols: u16 = @intCast(@max(@divFloor(self.px_w, @as(c_int, self.cell_w)), 1));
         const rows: u16 = @intCast(@max(@divFloor(self.px_h, @as(c_int, self.cell_h)), 1));
+        var font_fallbacks_buf: [32][:0]const u8 = undefined;
+        const font_fallbacks = flattenFallbacks(self.conf.term.fonts, font_fallbacks_buf[0..]);
         try self.term.init(
-            gpu.texture(&self.gpu),
+            GpuSvc.texture(&self.gpu),
             self.conf.term.shell,
             self.conf.term.start_path,
             self.conf.term.command,
@@ -42,6 +45,9 @@ pub const Terminal = struct {
             rows,
             self.cell_w,
             self.cell_h,
+            self.conf.term.fonts.primary,
+            font_fallbacks,
+            self.conf.term.fonts.use_embedded_fonts,
         );
         self.wake_thread = try std.Thread.spawn(.{}, wakeWorker, .{self});
     }
@@ -52,11 +58,11 @@ pub const Terminal = struct {
         if (self.wake_thread) |t| t.join();
         self.wake_thread = null;
         self.term.deinit();
-        gpu.deinit(&self.gpu);
+        GpuSvc.deinit(&self.gpu);
     }
 
     pub fn windowFlags(_: *Terminal) c_uint {
-        return gpu.windowFlags();
+        return GpuSvc.windowFlags();
     }
 
     pub fn resize(self: *Terminal, width: c_int, height: c_int) void {
@@ -73,20 +79,20 @@ pub const Terminal = struct {
     }
 
     pub fn render(self: *Terminal) void {
-        gpu.ensureTextureSize(&self.gpu, self.px_w, self.px_h);
+        GpuSvc.ensureTextureSize(&self.gpu, self.px_w, self.px_h);
         // HowlTerm expects grid dimensions in pixels, not pre-divided cols/rows.
         self.term.renderFrameSized(self.px_w, self.px_h, self.px_w, self.px_h);
     }
 
     pub fn present(self: *Terminal) void {
-        gpu.present(&self.gpu);
+        GpuSvc.present(&self.gpu);
     }
 
     pub fn presentAck(self: *Terminal) void {
         self.term.presentAck();
     }
 
-    pub fn termState(self: *Terminal) term_mod.LifecycleState {
+    pub fn termState(self: *Terminal) LifecycleState {
         return self.term.state();
     }
 
@@ -94,7 +100,7 @@ pub const Terminal = struct {
         self.term.publishInputBytes(bytes);
     }
 
-    pub fn drainInput(self: *Terminal, key_in: *key_input.KeyInput, scratch: []u8) void {
+    pub fn drainInput(self: *Terminal, key_in: *KeyInput, scratch: []u8) void {
         const n = key_in.drain(scratch);
         if (n > 0) self.publishInputBytes(scratch[0..n]);
     }
@@ -115,4 +121,24 @@ fn wakeWorker(self: *Terminal) void {
             window.wakeEventLoop();
         }
     }
+}
+
+fn flattenFallbacks(fonts: Config.FontStack, buf: [][:0]const u8) []const [:0]const u8 {
+    var n: usize = 0;
+    for (fonts.mono) |p| {
+        if (n >= buf.len) return buf[0..n];
+        buf[n] = p;
+        n += 1;
+    }
+    for (fonts.symbols) |p| {
+        if (n >= buf.len) return buf[0..n];
+        buf[n] = p;
+        n += 1;
+    }
+    for (fonts.emoji) |p| {
+        if (n >= buf.len) return buf[0..n];
+        buf[n] = p;
+        n += 1;
+    }
+    return buf[0..n];
 }

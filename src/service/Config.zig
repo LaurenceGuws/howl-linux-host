@@ -1,17 +1,35 @@
 const std = @import("std");
 const howl_lua = @import("howl_lua");
+const Lua = howl_lua.HowlLua;
 
 pub const Config = struct {
+    pub const FontStack = struct {
+        primary: ?[:0]u8,
+        mono: []const [:0]u8,
+        symbols: []const [:0]u8,
+        emoji: []const [:0]u8,
+        use_embedded_fonts: bool,
+
+        pub fn deinit(self: *FontStack, alloc: std.mem.Allocator) void {
+            if (self.primary) |p| alloc.free(p);
+            freeZSlice(alloc, self.mono);
+            freeZSlice(alloc, self.symbols);
+            freeZSlice(alloc, self.emoji);
+        }
+    };
+
     pub const Term = struct {
         shell: []u8,
         start_path: ?[]u8,
         command: ?[]u8,
         font_size: u16,
+        fonts: FontStack,
 
         pub fn deinit(self: *Term, alloc: std.mem.Allocator) void {
             alloc.free(self.shell);
             if (self.start_path) |p| alloc.free(p);
             if (self.command) |cmd| alloc.free(cmd);
+            self.fonts.deinit(alloc);
         }
     };
 
@@ -101,11 +119,11 @@ test "expandEnvOrDup fuzz" {
 
 fn loadConfig(alloc: std.mem.Allocator) !Config.Value {
     // 1) Start a Lua instance and run the config file.
-    var lua_inst = try howl_lua.api.State.init();
-    defer lua_inst.deinit();
-    try lua_inst.loadFile(alloc, "assets/default_config/init.lua");
-    if (!lua_inst.topIsTable()) return error.InvalidConfig;
-    const default = howl_lua.reader.Reader.init(lua_inst, alloc, -1);
+    var lua = try Lua.Api.State.init();
+    defer lua.deinit();
+    try lua.loadFile(alloc, "assets/default_config/init.lua");
+    if (!lua.topIsTable()) return error.InvalidConfig;
+    const default = Lua.Reader.init(lua, alloc, -1);
 
     // 2) Read the `term` section: shell + optional start path + optional command.
     const term_reader = default.child("term") orelse return error.InvalidConfig;
@@ -123,6 +141,21 @@ fn loadConfig(alloc: std.mem.Allocator) !Config.Value {
     var command: ?[]u8 = null;
     try term_reader.optionalStringOwned("command", &command);
     errdefer if (command) |cmd| alloc.free(cmd);
+
+    var font_primary: ?[:0]u8 = null;
+    if (term_reader.fieldString("font_primary")) |primary_raw| {
+        const expanded = try expandEnvOrDup(alloc, primary_raw);
+        defer alloc.free(expanded);
+        font_primary = try alloc.dupeZ(u8, expanded);
+    }
+    errdefer if (font_primary) |p| alloc.free(p);
+
+    const fallback_mono = try loadStringArrayField(alloc, term_reader, "fallback_mono");
+    errdefer freeZSlice(alloc, fallback_mono);
+    const fallback_symbols = try loadStringArrayField(alloc, term_reader, "fallback_symbols");
+    errdefer freeZSlice(alloc, fallback_symbols);
+    const fallback_emoji = try loadStringArrayField(alloc, term_reader, "fallback_emoji");
+    errdefer freeZSlice(alloc, fallback_emoji);
 
     // 3) Read the `window` section: title and initial size.
     const window_reader = default.child("window") orelse return error.InvalidConfig;
@@ -142,6 +175,13 @@ fn loadConfig(alloc: std.mem.Allocator) !Config.Value {
             .start_path = start_path,
             .command = command,
             .font_size = @intCast(term_reader.intField("font_size") orelse 16),
+            .fonts = .{
+                .primary = font_primary,
+                .mono = fallback_mono,
+                .symbols = fallback_symbols,
+                .emoji = fallback_emoji,
+                .use_embedded_fonts = term_reader.boolField("use_embedded_fonts") orelse false,
+            },
         },
         .window = .{
             .title = title,
@@ -149,4 +189,40 @@ fn loadConfig(alloc: std.mem.Allocator) !Config.Value {
             .height = height,
         },
     };
+}
+
+fn loadStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []const u8) ![]const [:0]u8 {
+    const arr_reader = parent.child(field) orelse return try alloc.alloc([:0]u8, 0);
+    defer arr_reader.finish();
+
+    const n = arr_reader.arrayLen();
+    if (n == 0) return try alloc.alloc([:0]u8, 0);
+
+    const out = try alloc.alloc([:0]u8, n);
+    errdefer {
+        for (out) |s| alloc.free(s);
+        alloc.free(out);
+    }
+
+    var written: usize = 0;
+    var i: usize = 1;
+    while (i <= n) : (i += 1) {
+        arr_reader.state.rawGetIndex(arr_reader.index, i);
+        defer arr_reader.state.pop(1);
+        const raw = arr_reader.state.readString(-1) orelse return error.InvalidConfig;
+        const expanded = try expandEnvOrDup(alloc, raw);
+        defer alloc.free(expanded);
+        out[written] = try alloc.dupeZ(u8, expanded);
+        written += 1;
+    }
+    return out[0..written];
+}
+
+fn freeZSlice(alloc: std.mem.Allocator, items: []const [:0]u8) void {
+    if (items.len == 0) {
+        alloc.free(items);
+        return;
+    }
+    for (items) |s| alloc.free(s);
+    alloc.free(items);
 }

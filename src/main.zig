@@ -1,8 +1,8 @@
 const std = @import("std");
 const window = @import("service/window/Window.zig").Window;
-const key_input = @import("service/key-input/KeyInput.zig");
+const key_input = @import("service/key-input/KeyInput.zig").KeyInput;
 const config = @import("service/Config.zig").Config;
-const terminal = @import("widget/Terminal.zig");
+const Terminal = @import("widget/Terminal.zig").Terminal;
 
 pub fn main() !void {
     if (!window.initVideo()) {
@@ -14,7 +14,7 @@ pub fn main() !void {
     var conf = try config.load(std.heap.c_allocator);
     defer conf.deinit(std.heap.c_allocator);
 
-    var term_inst = terminal.Terminal{
+    var term_inst = Terminal{
         .gpu = undefined,
         .term = .{},
         .conf = @as(*const config.Value, &conf),
@@ -33,7 +33,7 @@ pub fn main() !void {
     };
     defer window.destroyWindow(win);
 
-    var key_input_state: key_input.KeyInput = undefined;
+    var key_input_state: key_input = undefined;
     key_input_state.init();
     key_input_state.bind(win);
 

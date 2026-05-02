@@ -26,6 +26,9 @@ pub const HowlTerm = struct {
         rows: u16,
         cell_width: u16,
         cell_height: u16,
+        font_primary: ?[:0]const u8,
+        font_fallbacks: []const [:0]const u8,
+        use_embedded_fonts: bool,
     ) !void {
         self.lifecycle_state = .starting;
         self.texture_id = texture;
@@ -44,6 +47,9 @@ pub const HowlTerm = struct {
         };
         const pty_impl = try howl_term.initPty(std.heap.c_allocator, shell, pty_command);
         self.term = try howl_term.HowlTerm.init(std.heap.c_allocator, pty_impl, cols, rows, cell_px, texture);
+        self.term.?.setPrimaryFontPath(font_primary);
+        self.term.?.setFallbackFontPaths(font_fallbacks);
+        self.term.?.useEmbeddedFonts(use_embedded_fonts);
         errdefer {
             self.term = null;
             self.lifecycle_state = .failed;
