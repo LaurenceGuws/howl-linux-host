@@ -8,7 +8,6 @@ pub const Config = struct {
         mono: []const [:0]u8,
         symbols: []const [:0]u8,
         emoji: []const [:0]u8,
-        use_embedded_fonts: bool,
 
         pub fn deinit(self: *FontStack, alloc: std.mem.Allocator) void {
             if (self.primary) |p| alloc.free(p);
@@ -180,7 +179,6 @@ fn loadConfig(alloc: std.mem.Allocator) !Config.Value {
                 .mono = fallback_mono,
                 .symbols = fallback_symbols,
                 .emoji = fallback_emoji,
-                .use_embedded_fonts = term_reader.boolField("use_embedded_fonts") orelse false,
             },
         },
         .window = .{

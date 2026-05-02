@@ -4,14 +4,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const window_variant = b.option([]const u8, "window-variant", "linux window variant: sdl|glfw") orelse "sdl";
-    const embed_font_assets = b.option(bool, "embed-font-assets", "Embed renderer font assets + OFL notices") orelse false;
 
     const howl_term_dep = b.dependency("howl_term", .{
         .target = target,
         .optimize = optimize,
         .@"render-variant" = "gl",
         .@"session-pty-variant" = "unix_pty",
-        .@"embed-font-assets" = embed_font_assets,
     });
     const howl_term_mod = howl_term_dep.module("howl_term");
     const howl_lua_dep = b.dependency("howl_lua", .{

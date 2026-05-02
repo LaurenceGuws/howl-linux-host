@@ -22,8 +22,6 @@ return {
     fallback_mono = {"/home/home/personal/zide/assets/fonts/IosevkaTermNerdFontMono-Regular.ttf"},
     fallback_symbols = {},
     fallback_emoji = {},
-    -- Use embedded fonts if backend was built with them
-    use_embedded_fonts = false,
     -- Optional command string
     command = nil,
   },

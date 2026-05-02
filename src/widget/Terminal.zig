@@ -47,7 +47,6 @@ pub const Terminal = struct {
             self.cell_h,
             self.conf.term.fonts.primary,
             font_fallbacks,
-            self.conf.term.fonts.use_embedded_fonts,
         );
         self.wake_thread = try std.Thread.spawn(.{}, wakeWorker, .{self});
     }
