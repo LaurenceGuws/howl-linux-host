@@ -146,8 +146,16 @@ pub const Terminal = struct {
     }
 
     fn scrollByRows(self: *Terminal, delta_rows: i32) void {
-        const history_count: i32 = @intCast(self.term.currentScrollbackCount());
-        const current: i32 = @intCast(self.term.currentScrollbackOffset());
+        const history_count_usize = self.term.currentScrollbackCount();
+        const current_usize = self.term.currentScrollbackOffset();
+        const history_count: i32 = if (history_count_usize > @as(usize, std.math.maxInt(i32)))
+            std.math.maxInt(i32)
+        else
+            @intCast(history_count_usize);
+        const current: i32 = if (current_usize > @as(usize, std.math.maxInt(i32)))
+            std.math.maxInt(i32)
+        else
+            @intCast(current_usize);
         const target = std.math.clamp(current + delta_rows, 0, history_count);
         if (target == current) return;
         const changed = if (target == 0)

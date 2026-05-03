@@ -135,19 +135,19 @@ pub const HowlTerm = struct {
     }
 
     /// Report the total current scrollback history row count.
-    pub fn currentScrollbackCount(self: *const HowlTerm) u16 {
+    pub fn currentScrollbackCount(self: *const HowlTerm) usize {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackCount();
     }
 
     /// Report the current scrollback offset from the live bottom.
-    pub fn currentScrollbackOffset(self: *const HowlTerm) u16 {
+    pub fn currentScrollbackOffset(self: *const HowlTerm) usize {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackOffset();
     }
 
     /// Set the active scrollback offset.
-    pub fn setScrollbackOffset(self: *HowlTerm, offset_rows: u16) bool {
+    pub fn setScrollbackOffset(self: *HowlTerm, offset_rows: usize) bool {
         const inst = &(self.term orelse return false);
         return inst.setScrollbackOffset(offset_rows);
     }
