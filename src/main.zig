@@ -2,7 +2,7 @@ const std = @import("std");
 const window = @import("Window.zig").Window;
 const key_input = @import("KeyInput.zig").KeyInput;
 const config = @import("Config.zig").Config;
-const Terminal = @import("widget/Terminal.zig").Terminal;
+const Terminal = @import("Terminal.zig").Terminal;
 
 pub fn main() !void {
     if (!window.initVideo()) {
