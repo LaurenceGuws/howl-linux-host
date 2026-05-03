@@ -79,4 +79,43 @@ pub fn build(b: *std.Build) void {
 
     const run_step = b.step("run", "Run host window");
     run_step.dependOn(&run_cmd.step);
+
+    const config_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/service/Config.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "howl_lua", .module = howl_lua_mod },
+        },
+    });
+
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/test/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "howl_lua", .module = howl_lua_mod },
+            .{ .name = "howl_linux_host_config", .module = config_test_mod },
+        },
+    });
+
+    const mod_tests = b.addTest(.{
+        .name = "test-unit",
+        .root_module = test_mod,
+        .filters = b.args orelse &.{},
+    });
+    mod_tests.use_llvm = true;
+    mod_tests.root_module.link_libc = true;
+    mod_tests.root_module.linkSystemLibrary("lua5.4", .{ .use_pkg_config = .force });
+    const run_mod_tests = b.addRunArtifact(mod_tests);
+    if (b.args != null) {
+        run_mod_tests.has_side_effects = true;
+    }
+
+    const test_step = b.step("test", "Run all tests");
+    const test_unit_step = b.step("test:unit", "Run unit tests");
+    const test_unit_build_step = b.step("test:unit:build", "Build unit tests");
+    test_unit_build_step.dependOn(&b.addInstallArtifact(mod_tests, .{}).step);
+    test_unit_step.dependOn(&run_mod_tests.step);
+    test_step.dependOn(test_unit_step);
 }
