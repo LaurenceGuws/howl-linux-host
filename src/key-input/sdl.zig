@@ -1,5 +1,5 @@
 const std = @import("std");
-const window = @import("../window/Window.zig").Window;
+const window = @import("../Window.zig").Window;
 pub const c_key_in = window.c_win;
 
 pub const KeyInput = struct {

@@ -1,4 +1,4 @@
-const window = @import("../window/Window.zig").Window;
+const window = @import("../Window.zig").Window;
 const c_gpu = @cImport({
     @cInclude("GL/gl.h");
 });

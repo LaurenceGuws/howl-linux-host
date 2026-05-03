@@ -1,4 +1,4 @@
-const window = @import("../window/Window.zig").Window;
+const window = @import("../Window.zig").Window;
 const c_win = window.c_win;
 const c_gpu = @cImport({
     @cInclude("SDL3/SDL_opengl.h");

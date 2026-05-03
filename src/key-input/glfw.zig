@@ -1,6 +1,6 @@
 const std = @import("std");
-const window = @import("../window/Window.zig").Window;
-pub const c_key_in = @import("../window/Window.zig").Window.c_win;
+const window = @import("../Window.zig").Window;
+pub const c_key_in = @import("../Window.zig").Window.c_win;
 
 pub const KeyInput = struct {
     input_buf: [8192]u8,

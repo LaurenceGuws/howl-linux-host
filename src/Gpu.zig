@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const build_options = @import("build_options");
-const window = @import("../window/Window.zig").Window;
+const window = @import("Window.zig").Window;
 
 comptime {
     if (!@hasDecl(build_options, "window_variant")) {
@@ -12,8 +12,8 @@ comptime {
 }
 
 const gpu_backend = blk: {
-    if (std.mem.eql(u8, build_options.window_variant, "glfw")) break :blk @import("glfw.zig");
-    if (std.mem.eql(u8, build_options.window_variant, "sdl")) break :blk @import("sdl.zig");
+    if (std.mem.eql(u8, build_options.window_variant, "glfw")) break :blk @import("gpu/glfw.zig");
+    if (std.mem.eql(u8, build_options.window_variant, "sdl")) break :blk @import("gpu/sdl.zig");
     @compileError("invalid build_options.window_variant (expected \"sdl\" or \"glfw\")");
 };
 

@@ -1,11 +1,11 @@
 const std = @import("std");
-const GpuSvc = @import("../service/gpu/Gpu.zig");
+const GpuSvc = @import("../Gpu.zig");
 const Gpu = GpuSvc.Gpu;
-const window = @import("../service/window/Window.zig").Window;
-const KeyInput = @import("../service/key-input/KeyInput.zig").KeyInput;
-const HowlTerm = @import("../service/HowlTerm.zig").HowlTerm;
-const LifecycleState = @import("../service/HowlTerm.zig").LifecycleState;
-const Config = @import("../service/Config.zig").Config;
+const window = @import("../Window.zig").Window;
+const KeyInput = @import("../KeyInput.zig").KeyInput;
+const HowlTerm = @import("../HowlTerm.zig").HowlTerm;
+const LifecycleState = @import("../HowlTerm.zig").LifecycleState;
+const Config = @import("../Config.zig").Config;
 
 pub const Terminal = struct {
     gpu: Gpu,

@@ -81,7 +81,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     const config_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/service/Config.zig"),
+        .root_source_file = b.path("src/Config.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{

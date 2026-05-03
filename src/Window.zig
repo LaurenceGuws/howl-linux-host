@@ -8,8 +8,8 @@ comptime {
 }
 
 const win_backend = blk: {
-    if (std.mem.eql(u8, build_options.window_variant, "glfw")) break :blk @import("glfw.zig");
-    if (std.mem.eql(u8, build_options.window_variant, "sdl")) break :blk @import("sdl.zig");
+    if (std.mem.eql(u8, build_options.window_variant, "glfw")) break :blk @import("window/glfw.zig");
+    if (std.mem.eql(u8, build_options.window_variant, "sdl")) break :blk @import("window/sdl.zig");
     @compileError("invalid build_options.window_variant (expected \"sdl\" or \"glfw\")");
 };
 
@@ -17,7 +17,7 @@ pub const Window = struct {
     pub const c_win = win_backend.c_win;
     pub const Ptr = std.meta.Child(@typeInfo(@TypeOf(win_backend.createWindow)).@"fn".return_type.?);
     pub const Flags = c_uint;
-    pub const RESIZABLE: Flags = if (std.mem.eql(u8, build_options.window_variant, "glfw")) 0 else @intCast(@import("sdl.zig").c_win.SDL_WINDOW_RESIZABLE);
+    pub const RESIZABLE: Flags = if (std.mem.eql(u8, build_options.window_variant, "glfw")) 0 else @intCast(@import("window/sdl.zig").c_win.SDL_WINDOW_RESIZABLE);
     pub const Size = win_backend.Size;
     pub const Signal = win_backend.EventSignal;
 

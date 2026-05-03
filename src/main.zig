@@ -1,7 +1,7 @@
 const std = @import("std");
-const window = @import("service/window/Window.zig").Window;
-const key_input = @import("service/key-input/KeyInput.zig").KeyInput;
-const config = @import("service/Config.zig").Config;
+const window = @import("Window.zig").Window;
+const key_input = @import("KeyInput.zig").KeyInput;
+const config = @import("Config.zig").Config;
 const Terminal = @import("widget/Terminal.zig").Terminal;
 
 pub fn main() !void {
