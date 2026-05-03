@@ -5,16 +5,19 @@ pub const c_key_in = @import("../window/Window.zig").Window.c_win;
 pub const KeyInput = struct {
     input_buf: [8192]u8,
     input_len: usize,
+    scroll_lines: i32,
+    scroll_pages: i32,
 };
 
 pub fn initKeyInput(key_in: *KeyInput) void {
-    key_in.* = .{ .input_buf = undefined, .input_len = 0 };
+    key_in.* = .{ .input_buf = undefined, .input_len = 0, .scroll_lines = 0, .scroll_pages = 0 };
 }
 
 pub fn bindKeyInput(win: window.Ptr, key_in: *KeyInput) void {
     c_key_in.glfwSetWindowUserPointer(win, @ptrCast(key_in));
     _ = c_key_in.glfwSetCharCallback(win, charCallback);
     _ = c_key_in.glfwSetKeyCallback(win, keyCallback);
+    _ = c_key_in.glfwSetScrollCallback(win, scrollCallback);
 }
 
 pub fn drainKeyInput(key_in: *KeyInput, out_buf: []u8) usize {
@@ -25,6 +28,18 @@ pub fn drainKeyInput(key_in: *KeyInput, out_buf: []u8) usize {
     std.mem.copyForwards(u8, key_in.input_buf[0..remaining], key_in.input_buf[n..key_in.input_len]);
     key_in.input_len = remaining;
     return n;
+}
+
+pub fn drainScrollLines(key_in: *KeyInput) i32 {
+    const out = key_in.scroll_lines;
+    key_in.scroll_lines = 0;
+    return out;
+}
+
+pub fn drainScrollPages(key_in: *KeyInput) i32 {
+    const out = key_in.scroll_pages;
+    key_in.scroll_pages = 0;
+    return out;
 }
 
 fn inputFromWindow(window_ptr: ?*c_key_in.GLFWwindow) ?*KeyInput {
@@ -47,6 +62,7 @@ fn keyCallback(window_ptr: ?*c_key_in.GLFWwindow, key: c_int, scancode: c_int, a
     if (action != c_key_in.GLFW_PRESS and action != c_key_in.GLFW_REPEAT) return;
     const ctrl = (mods & c_key_in.GLFW_MOD_CONTROL) != 0;
     const alt = (mods & c_key_in.GLFW_MOD_ALT) != 0;
+    const shift = (mods & c_key_in.GLFW_MOD_SHIFT) != 0;
     if (key == c_key_in.GLFW_KEY_ENTER or key == c_key_in.GLFW_KEY_KP_ENTER) return appendByte(input, '\r');
     if (key == c_key_in.GLFW_KEY_BACKSPACE) return appendByte(input, 0x7f);
     if (key == c_key_in.GLFW_KEY_TAB) return appendByte(input, '\t');
@@ -57,8 +73,20 @@ fn keyCallback(window_ptr: ?*c_key_in.GLFWwindow, key: c_int, scancode: c_int, a
     if (key == c_key_in.GLFW_KEY_LEFT) return appendBytes(input, "\x1b[D");
     if (key == c_key_in.GLFW_KEY_HOME) return appendBytes(input, "\x1b[H");
     if (key == c_key_in.GLFW_KEY_END) return appendBytes(input, "\x1b[F");
-    if (key == c_key_in.GLFW_KEY_PAGE_UP) return appendBytes(input, "\x1b[5~");
-    if (key == c_key_in.GLFW_KEY_PAGE_DOWN) return appendBytes(input, "\x1b[6~");
+    if (key == c_key_in.GLFW_KEY_PAGE_UP) {
+        if (shift and !ctrl and !alt) {
+            input.scroll_pages += 1;
+            return;
+        }
+        return appendBytes(input, "\x1b[5~");
+    }
+    if (key == c_key_in.GLFW_KEY_PAGE_DOWN) {
+        if (shift and !ctrl and !alt) {
+            input.scroll_pages -= 1;
+            return;
+        }
+        return appendBytes(input, "\x1b[6~");
+    }
     if (key == c_key_in.GLFW_KEY_DELETE) return appendBytes(input, "\x1b[3~");
     if (key == c_key_in.GLFW_KEY_INSERT) return appendBytes(input, "\x1b[2~");
     if (key == c_key_in.GLFW_KEY_F1) return appendBytes(input, "\x1bOP");
@@ -91,6 +119,13 @@ fn keyCallback(window_ptr: ?*c_key_in.GLFWwindow, key: c_int, scancode: c_int, a
         const ch: u8 = @intCast((key - c_key_in.GLFW_KEY_A) + 'a');
         return appendByte(input, ch);
     }
+}
+
+fn scrollCallback(window_ptr: ?*c_key_in.GLFWwindow, xoffset: f64, yoffset: f64) callconv(.c) void {
+    _ = xoffset;
+    const input = inputFromWindow(window_ptr) orelse return;
+    const whole: i32 = @intFromFloat(@round(yoffset));
+    input.scroll_lines += whole * 3;
 }
 
 fn appendBytes(input: *KeyInput, bytes: []const u8) void {

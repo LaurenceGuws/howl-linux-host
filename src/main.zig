@@ -18,8 +18,12 @@ pub fn main() !void {
         .gpu = undefined,
         .term = .{},
         .conf = @as(*const config.Value, &conf),
-        .px_w = 1,
-        .px_h = 1,
+        .render_px_w = 1,
+        .render_px_h = 1,
+        .grid_px_w = 1,
+        .grid_px_h = 1,
+        .pending_grid_px_w = 1,
+        .pending_grid_px_h = 1,
         .cell_w = 12,
         .cell_h = 24,
         .dirty = std.atomic.Value(bool).init(true),
@@ -51,16 +55,18 @@ pub fn main() !void {
             need_present_ack = false;
         }
 
-        const signal = window.waitEventSignal(win, -1);
+        const signal = window.waitEventSignal(win, term_inst.nextWaitTimeoutMs());
         if (signal == .quit) {
             running = false;
             continue;
         }
 
         term_inst.drainInput(&key_input_state, &term_input_buf);
+        term_inst.handleScrollInput(&key_input_state);
 
         const size = window.windowSize(win);
         term_inst.resize(size.width, size.height);
+        term_inst.maybeCommitGridResize();
 
         if (!term_inst.hasRenderWork()) continue;
 

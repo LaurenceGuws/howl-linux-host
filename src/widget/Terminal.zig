@@ -11,8 +11,12 @@ pub const Terminal = struct {
     gpu: Gpu,
     term: HowlTerm,
     conf: *const Config.Value,
-    px_w: c_int,
-    px_h: c_int,
+    render_px_w: c_int,
+    render_px_h: c_int,
+    grid_px_w: c_int,
+    grid_px_h: c_int,
+    pending_grid_px_w: c_int,
+    pending_grid_px_h: c_int,
     cell_w: u16,
     cell_h: u16,
     dirty: std.atomic.Value(bool),
@@ -20,8 +24,12 @@ pub const Terminal = struct {
     stop_wake: std.atomic.Value(bool),
 
     pub fn init(self: *Terminal, surface: GpuSvc.Surface, width: c_int, height: c_int) !void {
-        self.px_w = @max(width, 1);
-        self.px_h = @max(height, 1);
+        self.render_px_w = @max(width, 1);
+        self.render_px_h = @max(height, 1);
+        self.grid_px_w = self.render_px_w;
+        self.grid_px_h = self.render_px_h;
+        self.pending_grid_px_w = self.grid_px_w;
+        self.pending_grid_px_h = self.grid_px_h;
         const font_px: u16 = @max(self.conf.term.font_size, 8);
         self.cell_h = font_px;
         self.cell_w = @max(@divFloor(font_px, 2), 4);
@@ -32,8 +40,8 @@ pub const Terminal = struct {
 
         GpuSvc.init(&self.gpu);
         try GpuSvc.setup(&self.gpu, surface);
-        const cols: u16 = @intCast(@max(@divFloor(self.px_w, @as(c_int, self.cell_w)), 1));
-        const rows: u16 = @intCast(@max(@divFloor(self.px_h, @as(c_int, self.cell_h)), 1));
+        const cols: u16 = @intCast(@max(@divFloor(self.grid_px_w, @as(c_int, self.cell_w)), 1));
+        const rows: u16 = @intCast(@max(@divFloor(self.grid_px_h, @as(c_int, self.cell_h)), 1));
         var font_fallbacks_buf: [32][:0]const u8 = undefined;
         const font_fallbacks = flattenFallbacks(self.conf.term.fonts, font_fallbacks_buf[0..]);
         try self.term.init(
@@ -67,10 +75,23 @@ pub const Terminal = struct {
     pub fn resize(self: *Terminal, width: c_int, height: c_int) void {
         const w = @max(width, 1);
         const h = @max(height, 1);
-        if (w == self.px_w and h == self.px_h) return;
-        self.px_w = w;
-        self.px_h = h;
+        if (w == self.render_px_w and h == self.render_px_h and w == self.pending_grid_px_w and h == self.pending_grid_px_h) return;
+        self.render_px_w = w;
+        self.render_px_h = h;
+        self.pending_grid_px_w = w;
+        self.pending_grid_px_h = h;
+        self.grid_px_w = w;
+        self.grid_px_h = h;
         self.dirty.store(true, .release);
+    }
+
+    pub fn nextWaitTimeoutMs(self: *Terminal) c_int {
+        _ = self;
+        return -1;
+    }
+
+    pub fn maybeCommitGridResize(self: *Terminal) void {
+        _ = self;
     }
 
     pub fn hasRenderWork(self: *Terminal) bool {
@@ -78,9 +99,9 @@ pub const Terminal = struct {
     }
 
     pub fn render(self: *Terminal) void {
-        GpuSvc.ensureTextureSize(&self.gpu, self.px_w, self.px_h);
-        // HowlTerm expects grid dimensions in pixels, not pre-divided cols/rows.
-        self.term.renderFrameSized(self.px_w, self.px_h, self.px_w, self.px_h);
+        GpuSvc.ensureTextureSize(&self.gpu, self.render_px_w, self.render_px_h);
+        // Hosts own geometry policy: render pixels may diverge from grid-driving pixels.
+        self.term.renderFrameSized(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
     }
 
     pub fn present(self: *Terminal) void {
@@ -104,12 +125,36 @@ pub const Terminal = struct {
         if (n > 0) self.publishInputBytes(scratch[0..n]);
     }
 
+    pub fn handleScrollInput(self: *Terminal, key_in: *KeyInput) void {
+        var delta_rows: i32 = key_in.drainScrollLines();
+        const page_steps = key_in.drainScrollPages();
+        if (page_steps != 0) {
+            const row_px = @as(c_int, @intCast(@max(self.cell_h, 1)));
+            const visible_rows: i32 = @intCast(@max(@divFloor(@max(self.render_px_h, 1), row_px), 1));
+            const page_rows: i32 = @max(visible_rows - 1, 1);
+            delta_rows += page_steps * page_rows;
+        }
+        if (delta_rows != 0) self.scrollByRows(delta_rows);
+    }
+
     pub fn waitRenderWake(self: *Terminal, timeout_ms: i32) bool {
         if (self.term.waitRenderWake(timeout_ms)) {
             self.dirty.store(true, .release);
             return true;
         }
         return false;
+    }
+
+    fn scrollByRows(self: *Terminal, delta_rows: i32) void {
+        const history_count: i32 = @intCast(self.term.currentScrollbackCount());
+        const current: i32 = @intCast(self.term.currentScrollbackOffset());
+        const target = std.math.clamp(current + delta_rows, 0, history_count);
+        if (target == current) return;
+        const changed = if (target == 0)
+            self.term.followLiveBottom()
+        else
+            self.term.setScrollbackOffset(@intCast(target));
+        if (changed) self.dirty.store(true, .release);
     }
 };
 

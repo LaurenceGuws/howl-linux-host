@@ -5,13 +5,15 @@ pub const c_key_in = window.c_win;
 pub const KeyInput = struct {
     key_in_buf: [8192]u8,
     key_in_len: usize,
+    scroll_lines: i32,
+    scroll_pages: i32,
 };
 
 var active_key_in: ?*KeyInput = null;
 var watch_registered: bool = false;
 
 pub fn initKeyInput(key_in: *KeyInput) void {
-    key_in.* = .{ .key_in_buf = undefined, .key_in_len = 0 };
+    key_in.* = .{ .key_in_buf = undefined, .key_in_len = 0, .scroll_lines = 0, .scroll_pages = 0 };
 }
 
 pub fn bindKeyInput(win: window.Ptr, key_in: *KeyInput) void {
@@ -38,6 +40,18 @@ pub fn drainKeyInput(key_in: *KeyInput, out_buf: []u8) usize {
     return n;
 }
 
+pub fn drainScrollLines(key_in: *KeyInput) i32 {
+    const out = key_in.scroll_lines;
+    key_in.scroll_lines = 0;
+    return out;
+}
+
+pub fn drainScrollPages(key_in: *KeyInput) i32 {
+    const out = key_in.scroll_pages;
+    key_in.scroll_pages = 0;
+    return out;
+}
+
 pub fn processEvent(event: *const c_key_in.SDL_Event) void {
     const key_in = active_key_in orelse return;
     switch (event.type) {
@@ -50,6 +64,7 @@ pub fn processEvent(event: *const c_key_in.SDL_Event) void {
         c_key_in.SDL_EVENT_KEY_DOWN => {
             const ctrl = (event.key.mod & c_key_in.SDL_KMOD_CTRL) != 0;
             const alt = (event.key.mod & c_key_in.SDL_KMOD_ALT) != 0;
+            const shift = (event.key.mod & c_key_in.SDL_KMOD_SHIFT) != 0;
             if (event.key.key == c_key_in.SDLK_ESCAPE) return appendByte(key_in, 0x1b);
             if (event.key.key == c_key_in.SDLK_RETURN or event.key.key == c_key_in.SDLK_KP_ENTER) return appendByte(key_in, '\r');
             if (event.key.key == c_key_in.SDLK_BACKSPACE) return appendByte(key_in, 0x7f);
@@ -60,8 +75,20 @@ pub fn processEvent(event: *const c_key_in.SDL_Event) void {
             if (event.key.key == c_key_in.SDLK_LEFT) return appendBytes(key_in, "\x1b[D");
             if (event.key.key == c_key_in.SDLK_HOME) return appendBytes(key_in, "\x1b[H");
             if (event.key.key == c_key_in.SDLK_END) return appendBytes(key_in, "\x1b[F");
-            if (event.key.key == c_key_in.SDLK_PAGEUP) return appendBytes(key_in, "\x1b[5~");
-            if (event.key.key == c_key_in.SDLK_PAGEDOWN) return appendBytes(key_in, "\x1b[6~");
+            if (event.key.key == c_key_in.SDLK_PAGEUP) {
+                if (shift and !ctrl and !alt) {
+                    key_in.scroll_pages += 1;
+                    return;
+                }
+                return appendBytes(key_in, "\x1b[5~");
+            }
+            if (event.key.key == c_key_in.SDLK_PAGEDOWN) {
+                if (shift and !ctrl and !alt) {
+                    key_in.scroll_pages -= 1;
+                    return;
+                }
+                return appendBytes(key_in, "\x1b[6~");
+            }
             if (event.key.key == c_key_in.SDLK_DELETE) return appendBytes(key_in, "\x1b[3~");
             if (event.key.key == c_key_in.SDLK_INSERT) return appendBytes(key_in, "\x1b[2~");
             if (event.key.key == c_key_in.SDLK_F1) return appendBytes(key_in, "\x1bOP");
@@ -85,6 +112,11 @@ pub fn processEvent(event: *const c_key_in.SDL_Event) void {
                 const ch: u8 = @intCast((event.key.key - c_key_in.SDLK_A) + 'a');
                 return appendByte(key_in, ch);
             }
+        },
+        c_key_in.SDL_EVENT_MOUSE_WHEEL => {
+            var ticks: i32 = event.wheel.integer_y;
+            if (ticks == 0) ticks = @intFromFloat(@round(event.wheel.y));
+            key_in.scroll_lines += ticks * 3;
         },
         else => {},
     }

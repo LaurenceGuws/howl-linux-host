@@ -30,4 +30,18 @@ pub const KeyInput = struct {
     pub fn drain(self: *KeyInput, out_buf: []u8) usize {
         return key_in_variant.drainKeyInput(&self.state, out_buf);
     }
+
+    pub fn drainScrollLines(self: *KeyInput) i32 {
+        if (@hasDecl(key_in_variant, "drainScrollLines")) {
+            return key_in_variant.drainScrollLines(&self.state);
+        }
+        return 0;
+    }
+
+    pub fn drainScrollPages(self: *KeyInput) i32 {
+        if (@hasDecl(key_in_variant, "drainScrollPages")) {
+            return key_in_variant.drainScrollPages(&self.state);
+        }
+        return 0;
+    }
 };
