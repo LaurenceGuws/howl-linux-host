@@ -1,10 +1,12 @@
 //! Responsibility: host-local terminal runtime facade.
 //! Ownership: per-instance runtime lifecycle and host-facing calls.
+//! Reason: keep the Linux host on one boring runtime owner.
 
 const howl_term = @import("howl_term").HowlTerm;
 const howl_session = @import("howl_session").HowlSession;
 const std = @import("std");
 
+/// Host-local lifecycle state for the embedded terminal runtime.
 pub const LifecycleState = enum {
     stopped,
     starting,
@@ -12,6 +14,7 @@ pub const LifecycleState = enum {
     failed,
 };
 
+/// Host-local terminal runtime owner.
 pub const HowlTerm = struct {
     term: ?howl_term.HowlTerm = null,
     texture_id: u32 = 0,
@@ -25,6 +28,7 @@ pub const HowlTerm = struct {
     last_glyph_quads: usize = 0,
     frame_counter: u32 = 0,
 
+    /// Initialize the host-local runtime and start the embedded session.
     pub fn init(
         self: *HowlTerm,
         texture: u32,
@@ -72,6 +76,7 @@ pub const HowlTerm = struct {
         self.last_glyph_quads = 0;
     }
 
+    /// Release the embedded runtime and reset host-local state.
     pub fn deinit(self: *HowlTerm) void {
         if (self.term) |*inst| {
             inst.stop();
@@ -82,6 +87,7 @@ pub const HowlTerm = struct {
         self.lifecycle_state = .stopped;
     }
 
+    /// Render one frame with independent render and grid geometry.
     pub fn renderFrameSized(self: *HowlTerm, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
         const inst = &(self.term orelse return);
         const rw: u16 = @intCast(@max(render_width, 1));
@@ -96,14 +102,17 @@ pub const HowlTerm = struct {
         if (self.frame_counter % 30 == 0) self.logRenderTelemetry(inst);
     }
 
+    /// Acknowledge presentation on the embedded runtime.
     pub fn presentAck(self: *HowlTerm) void {
         if (self.term) |*inst| inst.presentAck();
     }
 
+    /// Report the current host-local lifecycle state.
     pub fn state(self: *const HowlTerm) LifecycleState {
         return self.lifecycle_state;
     }
 
+    /// Publish raw host input bytes into the embedded runtime.
     pub fn publishInputBytes(self: *HowlTerm, bytes: []const u8) void {
         if (bytes.len == 0) return;
         const inst = &(self.term orelse return);
@@ -116,6 +125,7 @@ pub const HowlTerm = struct {
         };
     }
 
+    /// Wait until render work is armed or the timeout expires.
     pub fn waitRenderWake(self: *HowlTerm, timeout_ms: i32) bool {
         const inst = &(self.term orelse return false);
         return inst.waitRenderWake(timeout_ms) catch |err| {
@@ -124,21 +134,25 @@ pub const HowlTerm = struct {
         };
     }
 
+    /// Report the total current scrollback history row count.
     pub fn currentScrollbackCount(self: *const HowlTerm) u16 {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackCount();
     }
 
+    /// Report the current scrollback offset from the live bottom.
     pub fn currentScrollbackOffset(self: *const HowlTerm) u16 {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackOffset();
     }
 
+    /// Set the active scrollback offset.
     pub fn setScrollbackOffset(self: *HowlTerm, offset_rows: u16) bool {
         const inst = &(self.term orelse return false);
         return inst.setScrollbackOffset(offset_rows);
     }
 
+    /// Return the viewport to the live bottom.
     pub fn followLiveBottom(self: *HowlTerm) bool {
         const inst = &(self.term orelse return false);
         return inst.followLiveBottom();
