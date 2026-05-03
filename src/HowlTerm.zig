@@ -35,10 +35,11 @@ pub const HowlTerm = struct {
         shell: []const u8,
         start_path: ?[]const u8,
         command: ?[]const u8,
-        cols: u16,
-        rows: u16,
-        cell_width: u16,
-        cell_height: u16,
+        render_width: u16,
+        render_height: u16,
+        grid_width: u16,
+        grid_height: u16,
+        font_size_px: u16,
         font_primary: ?[:0]const u8,
         font_fallbacks: []const [:0]const u8,
     ) !void {
@@ -49,12 +50,9 @@ pub const HowlTerm = struct {
         defer if (pty_command_owned) |cmd| std.heap.c_allocator.free(cmd);
         const pty_command = pty_command_owned orelse command;
 
-        const cell_px = howl_term.HowlTerm.RenderCellSize{
-            .width = cell_width,
-            .height = cell_height,
-        };
         const transport = try howl_session.initPty(std.heap.c_allocator, shell, pty_command);
-        self.term = try howl_term.HowlTerm.init(std.heap.c_allocator, transport, cols, rows, cell_px, texture);
+        self.term = try howl_term.HowlTerm.init(std.heap.c_allocator, transport, 1, 1, .{ .width = 1, .height = 1 }, texture);
+        self.term.?.setFontSizePx(font_size_px);
         self.term.?.setPrimaryFontPath(font_primary);
         self.term.?.setFallbackFontPaths(font_fallbacks);
         errdefer {
@@ -65,6 +63,7 @@ pub const HowlTerm = struct {
             self.lifecycle_state = .failed;
             return err;
         };
+        try self.term.?.syncFrameGeometry(render_width, render_height, grid_width, grid_height);
         self.lifecycle_state = .ready;
         self.frame_counter = 0;
         self.last_missing_glyphs = 0;
@@ -156,6 +155,21 @@ pub const HowlTerm = struct {
     pub fn followLiveBottom(self: *HowlTerm) bool {
         const inst = &(self.term orelse return false);
         return inst.followLiveBottom();
+    }
+
+    pub fn setFontSizePx(self: *HowlTerm, font_size_px: u16) void {
+        const inst = &(self.term orelse return);
+        inst.setFontSizePx(font_size_px);
+    }
+
+    pub fn copyTabTitle(self: *const HowlTerm, out_buf: []u8) usize {
+        const inst = &(self.term orelse return 0);
+        return inst.copyCurrentTitle(out_buf);
+    }
+
+    pub fn viewportRows(self: *const HowlTerm) u16 {
+        const inst = &(self.term orelse return 1);
+        return inst.viewportRows();
     }
 
     fn logRenderTelemetry(self: *HowlTerm, inst: *howl_term.HowlTerm) void {

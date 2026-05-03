@@ -1,21 +1,9 @@
-//! Responsibility: own the public window surface for the Linux host.
-//! Ownership: backend selection and window/event facade entrypoints.
-//! Reason: keep platform window details behind one boring owner.
+//! Responsibility: own the public SDL window surface for the Linux host.
+//! Ownership: SDL window/event facade entrypoints.
+//! Reason: keep Linux host on one boring platform path.
 
 const std = @import("std");
-const build_options = @import("build_options");
-
-comptime {
-    if (!@hasDecl(build_options, "window_variant")) {
-        @compileError("missing build option: window_variant");
-    }
-}
-
-const win_backend = blk: {
-    if (std.mem.eql(u8, build_options.window_variant, "glfw")) break :blk @import("window/glfw.zig");
-    if (std.mem.eql(u8, build_options.window_variant, "sdl")) break :blk @import("window/sdl.zig");
-    @compileError("invalid build_options.window_variant (expected \"sdl\" or \"glfw\")");
-};
+const win_backend = @import("window/sdl.zig");
 
 /// Canonical Linux-host window owner.
 pub const Window = struct {
@@ -26,7 +14,7 @@ pub const Window = struct {
     /// Window flag bitfield type.
     pub const Flags = c_uint;
     /// Resizable window flag.
-    pub const RESIZABLE: Flags = if (std.mem.eql(u8, build_options.window_variant, "glfw")) 0 else @intCast(@import("window/sdl.zig").c_win.SDL_WINDOW_RESIZABLE);
+    pub const RESIZABLE: Flags = @intCast(win_backend.c_win.SDL_WINDOW_RESIZABLE);
     /// Window size payload.
     pub const Size = win_backend.Size;
     /// Event-loop signal enum.

@@ -1,27 +1,26 @@
-//! Responsibility: window-variant-agnostic GPU facade.
-//! Ownership: GPU variant selection and passthrough calls.
-//! Reason: keep platform GPU details behind one boring owner.
+//! Responsibility: own the public SDL GPU facade for the Linux host.
+//! Ownership: SDL GPU passthrough calls.
+//! Reason: keep Linux host on one boring platform path.
 
-const std = @import("std");
-const build_options = @import("build_options");
 const window = @import("Window.zig").Window;
-
-comptime {
-    if (!@hasDecl(build_options, "window_variant")) {
-        @compileError("missing build option: window_variant");
-    }
-}
-
-const gpu_backend = blk: {
-    if (std.mem.eql(u8, build_options.window_variant, "glfw")) break :blk @import("gpu/glfw.zig");
-    if (std.mem.eql(u8, build_options.window_variant, "sdl")) break :blk @import("gpu/sdl.zig");
-    @compileError("invalid build_options.window_variant (expected \"sdl\" or \"glfw\")");
-};
+const gpu_backend = @import("gpu/sdl.zig");
 
 /// Selected backend GPU state owner.
 pub const Gpu = gpu_backend.Gpu;
 /// Selected backend rendering surface handle.
 pub const Surface = window.Ptr;
+pub const Rect = struct {
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+};
+pub const PresentLayout = struct {
+    texture_rect: Rect,
+    tab_count: usize,
+    active_tab: usize,
+    tab_labels: []const []const u8,
+};
 
 /// Initialize selected backend GPU state.
 pub fn init(gpu: *Gpu) void {
@@ -44,8 +43,8 @@ pub fn deinit(gpu: *Gpu) void {
 }
 
 /// Present the current GPU frame.
-pub fn present(gpu: *Gpu) void {
-    gpu_backend.present(gpu);
+pub fn present(gpu: *Gpu, layout: PresentLayout) void {
+    gpu_backend.present(gpu, layout);
 }
 
 /// Return the selected backend texture handle.

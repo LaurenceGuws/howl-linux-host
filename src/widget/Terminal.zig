@@ -1,6 +1,4 @@
 const std = @import("std");
-const GpuSvc = @import("../Gpu.zig");
-const Gpu = GpuSvc.Gpu;
 const window = @import("../Window.zig").Window;
 const KeyInput = @import("../KeyInput.zig").KeyInput;
 const HowlTerm = @import("../HowlTerm.zig").HowlTerm;
@@ -8,7 +6,6 @@ const LifecycleState = @import("../HowlTerm.zig").LifecycleState;
 const Config = @import("../Config.zig").Config;
 
 pub const Terminal = struct {
-    gpu: Gpu,
     term: HowlTerm,
     conf: *const Config.Value,
     render_px_w: c_int,
@@ -17,45 +14,46 @@ pub const Terminal = struct {
     grid_px_h: c_int,
     pending_grid_px_w: c_int,
     pending_grid_px_h: c_int,
-    cell_w: u16,
-    cell_h: u16,
+    font_size_px: u16,
+    default_font_size_px: u16,
+    tab_label_buf: [128]u8,
+    tab_label_len: usize,
     dirty: std.atomic.Value(bool),
     wake_thread: ?std.Thread,
     stop_wake: std.atomic.Value(bool),
 
-    pub fn init(self: *Terminal, surface: GpuSvc.Surface, width: c_int, height: c_int) !void {
+    pub fn init(self: *Terminal, texture: u32, width: c_int, height: c_int) !void {
         self.render_px_w = @max(width, 1);
         self.render_px_h = @max(height, 1);
         self.grid_px_w = self.render_px_w;
         self.grid_px_h = self.render_px_h;
         self.pending_grid_px_w = self.grid_px_w;
         self.pending_grid_px_h = self.grid_px_h;
-        const font_px: u16 = @max(self.conf.term.font_size, 8);
-        self.cell_h = font_px;
-        self.cell_w = @max(@divFloor(font_px, 2), 4);
+        self.font_size_px = @max(self.conf.term.font_size, 1);
+        self.default_font_size_px = self.font_size_px;
+        self.tab_label_buf = undefined;
+        self.tab_label_len = 0;
         self.dirty = std.atomic.Value(bool).init(true);
         self.stop_wake = std.atomic.Value(bool).init(false);
         self.wake_thread = null;
         self.term = .{};
 
-        GpuSvc.init(&self.gpu);
-        try GpuSvc.setup(&self.gpu, surface);
-        const cols: u16 = @intCast(@max(@divFloor(self.grid_px_w, @as(c_int, self.cell_w)), 1));
-        const rows: u16 = @intCast(@max(@divFloor(self.grid_px_h, @as(c_int, self.cell_h)), 1));
         var font_fallbacks_buf: [32][:0]const u8 = undefined;
         const font_fallbacks = flattenFallbacks(self.conf.term.fonts, font_fallbacks_buf[0..]);
         try self.term.init(
-            GpuSvc.texture(&self.gpu),
+            texture,
             self.conf.term.shell,
             self.conf.term.start_path,
             self.conf.term.command,
-            cols,
-            rows,
-            self.cell_w,
-            self.cell_h,
+            @intCast(self.render_px_w),
+            @intCast(self.render_px_h),
+            @intCast(self.grid_px_w),
+            @intCast(self.grid_px_h),
+            self.font_size_px,
             self.conf.term.fonts.primary,
             font_fallbacks,
         );
+        self.refreshTabLabel();
         self.wake_thread = try std.Thread.spawn(.{}, wakeWorker, .{self});
     }
 
@@ -65,11 +63,6 @@ pub const Terminal = struct {
         if (self.wake_thread) |t| t.join();
         self.wake_thread = null;
         self.term.deinit();
-        GpuSvc.deinit(&self.gpu);
-    }
-
-    pub fn windowFlags(_: *Terminal) c_uint {
-        return GpuSvc.windowFlags();
     }
 
     pub fn resize(self: *Terminal, width: c_int, height: c_int) void {
@@ -99,13 +92,8 @@ pub const Terminal = struct {
     }
 
     pub fn render(self: *Terminal) void {
-        GpuSvc.ensureTextureSize(&self.gpu, self.render_px_w, self.render_px_h);
         // Hosts own geometry policy: render pixels may diverge from grid-driving pixels.
         self.term.renderFrameSized(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
-    }
-
-    pub fn present(self: *Terminal) void {
-        GpuSvc.present(&self.gpu);
     }
 
     pub fn presentAck(self: *Terminal) void {
@@ -129,8 +117,7 @@ pub const Terminal = struct {
         var delta_rows: i32 = key_in.drainScrollLines();
         const page_steps = key_in.drainScrollPages();
         if (page_steps != 0) {
-            const row_px = @as(c_int, @intCast(@max(self.cell_h, 1)));
-            const visible_rows: i32 = @intCast(@max(@divFloor(@max(self.render_px_h, 1), row_px), 1));
+            const visible_rows: i32 = @intCast(@max(self.term.viewportRows(), 1));
             const page_rows: i32 = @max(visible_rows - 1, 1);
             delta_rows += page_steps * page_rows;
         }
@@ -143,6 +130,34 @@ pub const Terminal = struct {
             return true;
         }
         return false;
+    }
+
+    pub fn requestRedraw(self: *Terminal) void {
+        self.dirty.store(true, .release);
+    }
+
+    pub fn tabLabel(self: *const Terminal) []const u8 {
+        return self.tab_label_buf[0..self.tab_label_len];
+    }
+
+    pub fn adjustFontSize(self: *Terminal, delta: i16) bool {
+        const min_font_px: i32 = 8;
+        const max_font_px: i32 = 72;
+        const current: i32 = self.font_size_px;
+        const next: u16 = @intCast(std.math.clamp(current + delta, min_font_px, max_font_px));
+        if (next == self.font_size_px) return false;
+        self.font_size_px = next;
+        self.term.setFontSizePx(next);
+        self.requestRedraw();
+        return true;
+    }
+
+    pub fn resetFontSize(self: *Terminal) bool {
+        if (self.font_size_px == self.default_font_size_px) return false;
+        self.font_size_px = self.default_font_size_px;
+        self.term.setFontSizePx(self.default_font_size_px);
+        self.requestRedraw();
+        return true;
     }
 
     fn scrollByRows(self: *Terminal, delta_rows: i32) void {
@@ -164,15 +179,31 @@ pub const Terminal = struct {
             self.term.setScrollbackOffset(@intCast(target));
         if (changed) self.dirty.store(true, .release);
     }
+
+    fn refreshTabLabel(self: *Terminal) void {
+        self.tab_label_len = baseTabLabel(self.term.copyTabTitle(self.tab_label_buf[0..]), self.tab_label_buf[0..]);
+    }
 };
 
 fn wakeWorker(self: *Terminal) void {
     while (!self.stop_wake.load(.acquire)) {
         if (self.term.waitRenderWake(1000)) {
+            self.refreshTabLabel();
             self.dirty.store(true, .release);
             window.wakeEventLoop();
         }
     }
+}
+
+fn baseTabLabel(title_len: usize, buf: []u8) usize {
+    const title = std.mem.trim(u8, buf[0..title_len], " \t\r\n");
+    if (title.len > 0 and !std.mem.eql(u8, title, "Terminal")) {
+        if (title.ptr != buf.ptr) std.mem.copyForwards(u8, buf[0..title.len], title);
+        return title.len;
+    }
+    const fallback = "Terminal";
+    @memcpy(buf[0..fallback.len], fallback);
+    return fallback.len;
 }
 
 fn flattenFallbacks(fonts: Config.FontStack, buf: [][:0]const u8) []const [:0]const u8 {

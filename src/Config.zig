@@ -4,10 +4,48 @@
 
 const std = @import("std");
 const howl_lua = @import("howl_lua");
+const keys = @import("Keys.zig");
 const Lua = howl_lua.HowlLua;
 
 /// Canonical Linux-host config owner.
 pub const Config = struct {
+    pub const ShortcutKey = keys.Key;
+
+    pub const ShortcutAction = enum {
+        zoom_in,
+        zoom_out,
+        zoom_reset,
+        terminal_new_tab,
+        terminal_close_tab,
+        terminal_next_tab,
+        terminal_prev_tab,
+        terminal_focus_tab_1,
+        terminal_focus_tab_2,
+        terminal_focus_tab_3,
+        terminal_focus_tab_4,
+        terminal_focus_tab_5,
+        terminal_focus_tab_6,
+        terminal_focus_tab_7,
+        terminal_focus_tab_8,
+        terminal_focus_tab_9,
+    };
+
+    pub const ShortcutBinding = struct {
+        action: ShortcutAction,
+        key: ShortcutKey,
+        ctrl: bool = false,
+        shift: bool = false,
+        alt: bool = false,
+    };
+
+    pub const ShortcutMap = struct {
+        bindings: []const ShortcutBinding,
+
+        pub fn deinit(self: *ShortcutMap, alloc: std.mem.Allocator) void {
+            alloc.free(self.bindings);
+        }
+    };
+
     /// Terminal font stack configuration.
     pub const FontStack = struct {
         primary: ?[:0]u8,
@@ -31,6 +69,7 @@ pub const Config = struct {
         command: ?[]u8,
         font_size: u16,
         fonts: FontStack,
+        shortcuts: ShortcutMap,
 
         /// Release owned terminal configuration storage.
         pub fn deinit(self: *Term, alloc: std.mem.Allocator) void {
@@ -38,6 +77,7 @@ pub const Config = struct {
             if (self.start_path) |p| alloc.free(p);
             if (self.command) |cmd| alloc.free(cmd);
             self.fonts.deinit(alloc);
+            self.shortcuts.deinit(alloc);
         }
     };
 
@@ -46,10 +86,21 @@ pub const Config = struct {
         title: [:0]u8,
         width: c_int,
         height: c_int,
+        shortcuts: ShortcutMap,
 
         /// Release owned window configuration storage.
         pub fn deinit(self: *Window, alloc: std.mem.Allocator) void {
             alloc.free(self.title);
+            self.shortcuts.deinit(alloc);
+        }
+    };
+
+    pub const TabBar = struct {
+        height: u16,
+        shortcuts: ShortcutMap,
+
+        pub fn deinit(self: *TabBar, alloc: std.mem.Allocator) void {
+            self.shortcuts.deinit(alloc);
         }
     };
 
@@ -57,17 +108,27 @@ pub const Config = struct {
     pub const Value = struct {
         term: Term,
         window: Window,
+        tab_bar: TabBar,
 
         /// Release all owned config storage.
         pub fn deinit(self: *Value, alloc: std.mem.Allocator) void {
             self.term.deinit(alloc);
             self.window.deinit(alloc);
+            self.tab_bar.deinit(alloc);
         }
     };
 
-    /// Load the effective Linux-host config from disk.
-    pub fn load(alloc: std.mem.Allocator) !Value {
-        return loadConfig(alloc);
+    pub fn loadLua(alloc: std.mem.Allocator) !Lua.Api.State {
+        var lua = try Lua.Api.State.init();
+        errdefer lua.deinit();
+        try lua.loadFile(alloc, "assets/default_config/init.lua");
+        if (!lua.topIsTable()) return error.InvalidConfig;
+        return lua;
+    }
+
+    /// Load the effective Linux-host config from an app-owned Lua state.
+    pub fn loadFromLua(alloc: std.mem.Allocator, lua: Lua.Api.State) !Value {
+        return loadConfigFromLua(alloc, lua);
     }
 };
 
@@ -132,12 +193,7 @@ test "expandEnvOrDup fuzz" {
     }
 }
 
-fn loadConfig(alloc: std.mem.Allocator) !Config.Value {
-    // 1) Start a Lua instance and run the config file.
-    var lua = try Lua.Api.State.init();
-    defer lua.deinit();
-    try lua.loadFile(alloc, "assets/default_config/init.lua");
-    if (!lua.topIsTable()) return error.InvalidConfig;
+fn loadConfigFromLua(alloc: std.mem.Allocator, lua: Lua.Api.State) !Config.Value {
     const default = Lua.Reader.init(lua, alloc, -1);
 
     // 2) Read the `term` section: shell + optional start path + optional command.
@@ -171,6 +227,11 @@ fn loadConfig(alloc: std.mem.Allocator) !Config.Value {
     errdefer freeZSlice(alloc, fallback_symbols);
     const fallback_emoji = try loadStringArrayField(alloc, term_reader, "fallback_emoji");
     errdefer freeZSlice(alloc, fallback_emoji);
+    const term_shortcuts = try loadShortcutMap(alloc, term_reader.child("shortcuts"), &term_shortcut_specs);
+    errdefer {
+        var shortcuts_mut = term_shortcuts;
+        shortcuts_mut.deinit(alloc);
+    }
 
     // 3) Read the `window` section: title and initial size.
     const window_reader = default.child("window") orelse return error.InvalidConfig;
@@ -182,6 +243,20 @@ fn loadConfig(alloc: std.mem.Allocator) !Config.Value {
     const height_i64 = window_reader.intField("height") orelse return error.MissingKey;
     const width: c_int = @intCast(width_i64);
     const height: c_int = @intCast(height_i64);
+    const window_shortcuts = try loadShortcutMap(alloc, window_reader.child("shortcuts"), &window_shortcut_specs);
+    errdefer {
+        var shortcuts_mut = window_shortcuts;
+        shortcuts_mut.deinit(alloc);
+    }
+
+    const tab_bar_reader = default.child("tab_bar") orelse return error.InvalidConfig;
+    defer tab_bar_reader.finish();
+    const tab_bar_shortcuts = try loadShortcutMap(alloc, tab_bar_reader.child("shortcuts"), &tab_bar_shortcut_specs);
+    errdefer {
+        var shortcuts_mut = tab_bar_shortcuts;
+        shortcuts_mut.deinit(alloc);
+    }
+    const tab_bar_height: u16 = @intCast(tab_bar_reader.intField("height") orelse 30);
 
     // 4) Build the final typed config object and return it.
     return .{
@@ -196,13 +271,130 @@ fn loadConfig(alloc: std.mem.Allocator) !Config.Value {
                 .symbols = fallback_symbols,
                 .emoji = fallback_emoji,
             },
+            .shortcuts = term_shortcuts,
         },
         .window = .{
             .title = title,
             .width = width,
             .height = height,
+            .shortcuts = window_shortcuts,
+        },
+        .tab_bar = .{
+            .height = tab_bar_height,
+            .shortcuts = tab_bar_shortcuts,
         },
     };
+}
+
+const ShortcutSpec = struct {
+    field: []const u8,
+    action: Config.ShortcutAction,
+};
+
+const term_shortcut_specs = [_]ShortcutSpec{
+    .{ .field = "zoom_in", .action = .zoom_in },
+    .{ .field = "zoom_out", .action = .zoom_out },
+    .{ .field = "zoom_reset", .action = .zoom_reset },
+};
+
+const window_shortcut_specs = [_]ShortcutSpec{};
+
+const tab_bar_shortcut_specs = [_]ShortcutSpec{
+    .{ .field = "new_tab", .action = .terminal_new_tab },
+    .{ .field = "close_tab", .action = .terminal_close_tab },
+    .{ .field = "next_tab", .action = .terminal_next_tab },
+    .{ .field = "prev_tab", .action = .terminal_prev_tab },
+    .{ .field = "focus_tab_1", .action = .terminal_focus_tab_1 },
+    .{ .field = "focus_tab_2", .action = .terminal_focus_tab_2 },
+    .{ .field = "focus_tab_3", .action = .terminal_focus_tab_3 },
+    .{ .field = "focus_tab_4", .action = .terminal_focus_tab_4 },
+    .{ .field = "focus_tab_5", .action = .terminal_focus_tab_5 },
+    .{ .field = "focus_tab_6", .action = .terminal_focus_tab_6 },
+    .{ .field = "focus_tab_7", .action = .terminal_focus_tab_7 },
+    .{ .field = "focus_tab_8", .action = .terminal_focus_tab_8 },
+    .{ .field = "focus_tab_9", .action = .terminal_focus_tab_9 },
+};
+
+fn loadShortcutMap(alloc: std.mem.Allocator, shortcuts_reader_opt: ?Lua.Reader, specs: []const ShortcutSpec) !Config.ShortcutMap {
+    const shortcuts_reader = shortcuts_reader_opt orelse return .{ .bindings = try alloc.alloc(Config.ShortcutBinding, 0) };
+    defer shortcuts_reader.finish();
+
+    var out = std.ArrayList(Config.ShortcutBinding).empty;
+    errdefer out.deinit(alloc);
+
+    for (specs) |spec| {
+        const values = try loadPlainStringArrayField(alloc, shortcuts_reader, spec.field);
+        defer freePlainSlice(alloc, values);
+        for (values) |raw| {
+            try out.append(alloc, try parseShortcutBinding(raw, spec.action));
+        }
+    }
+
+    return .{ .bindings = try out.toOwnedSlice(alloc) };
+}
+
+fn loadPlainStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []const u8) ![]const []u8 {
+    const arr_reader = parent.child(field) orelse return try alloc.alloc([]u8, 0);
+    defer arr_reader.finish();
+
+    const n = arr_reader.arrayLen();
+    if (n == 0) return try alloc.alloc([]u8, 0);
+
+    const out = try alloc.alloc([]u8, n);
+    var written: usize = 0;
+    errdefer {
+        for (out[0..written]) |s| alloc.free(s);
+        alloc.free(out);
+    }
+    var i: usize = 1;
+    while (i <= n) : (i += 1) {
+        arr_reader.state.rawGetIndex(arr_reader.index, i);
+        defer arr_reader.state.pop(1);
+        const raw = arr_reader.state.readString(-1) orelse return error.InvalidConfig;
+        out[written] = try alloc.dupe(u8, raw);
+        written += 1;
+    }
+    return out[0..written];
+}
+
+fn freePlainSlice(alloc: std.mem.Allocator, items: []const []u8) void {
+    if (items.len == 0) {
+        alloc.free(items);
+        return;
+    }
+    for (items) |s| alloc.free(s);
+    alloc.free(items);
+}
+
+fn parseShortcutBinding(raw: []const u8, action: Config.ShortcutAction) !Config.ShortcutBinding {
+    var binding = Config.ShortcutBinding{ .action = action, .key = undefined };
+    var parts = std.mem.splitScalar(u8, raw, '+');
+    var saw_key = false;
+    while (parts.next()) |part_raw| {
+        const part = std.mem.trim(u8, part_raw, " \t\r\n");
+        if (part.len == 0) continue;
+        if (std.ascii.eqlIgnoreCase(part, "ctrl")) {
+            binding.ctrl = true;
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(part, "shift")) {
+            binding.shift = true;
+            continue;
+        }
+        if (std.ascii.eqlIgnoreCase(part, "alt")) {
+            binding.alt = true;
+            continue;
+        }
+        if (saw_key) return error.InvalidConfig;
+        binding.key = parseShortcutKey(part) orelse return error.InvalidConfig;
+        saw_key = true;
+    }
+    if (!saw_key) return error.InvalidConfig;
+    return binding;
+}
+
+fn parseShortcutKey(raw: []const u8) ?Config.ShortcutKey {
+    return keys.parseLabel(raw);
 }
 
 fn loadStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []const u8) ![]const [:0]u8 {

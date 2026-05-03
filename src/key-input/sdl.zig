@@ -1,5 +1,6 @@
 const std = @import("std");
 const window = @import("../Window.zig").Window;
+const ShortCuts = @import("../ShortCuts.zig");
 pub const c_key_in = window.c_win;
 
 pub const KeyInput = struct {
@@ -7,13 +8,15 @@ pub const KeyInput = struct {
     key_in_len: usize,
     scroll_lines: i32,
     scroll_pages: i32,
+    shortcut_buf: [64]ShortCuts.Action,
+    shortcut_len: usize,
 };
 
 var active_key_in: ?*KeyInput = null;
 var watch_registered: bool = false;
 
 pub fn initKeyInput(key_in: *KeyInput) void {
-    key_in.* = .{ .key_in_buf = undefined, .key_in_len = 0, .scroll_lines = 0, .scroll_pages = 0 };
+    key_in.* = .{ .key_in_buf = undefined, .key_in_len = 0, .scroll_lines = 0, .scroll_pages = 0, .shortcut_buf = undefined, .shortcut_len = 0 };
 }
 
 pub fn bindKeyInput(win: window.Ptr, key_in: *KeyInput) void {
@@ -52,6 +55,16 @@ pub fn drainScrollPages(key_in: *KeyInput) i32 {
     return out;
 }
 
+pub fn drainShortcutAction(key_in: *KeyInput) ?ShortCuts.Action {
+    if (key_in.shortcut_len == 0) return null;
+    const out = key_in.shortcut_buf[0];
+    key_in.shortcut_len -= 1;
+    if (key_in.shortcut_len > 0) {
+        std.mem.copyForwards(ShortCuts.Action, key_in.shortcut_buf[0..key_in.shortcut_len], key_in.shortcut_buf[1 .. key_in.shortcut_len + 1]);
+    }
+    return out;
+}
+
 pub fn processEvent(event: *const c_key_in.SDL_Event) void {
     const key_in = active_key_in orelse return;
     switch (event.type) {
@@ -65,6 +78,10 @@ pub fn processEvent(event: *const c_key_in.SDL_Event) void {
             const ctrl = (event.key.mod & c_key_in.SDL_KMOD_CTRL) != 0;
             const alt = (event.key.mod & c_key_in.SDL_KMOD_ALT) != 0;
             const shift = (event.key.mod & c_key_in.SDL_KMOD_SHIFT) != 0;
+            if (ShortCuts.resolveSdl(@intCast(event.key.key), ctrl, shift, alt)) |shortcut| {
+                appendShortcut(key_in, shortcut);
+                return;
+            }
             if (event.key.key == c_key_in.SDLK_ESCAPE) return appendByte(key_in, 0x1b);
             if (event.key.key == c_key_in.SDLK_RETURN or event.key.key == c_key_in.SDLK_KP_ENTER) return appendByte(key_in, '\r');
             if (event.key.key == c_key_in.SDLK_BACKSPACE) return appendByte(key_in, 0x7f);
@@ -141,4 +158,10 @@ fn appendByte(key_in: *KeyInput, b: u8) void {
     if (key_in.key_in_len >= key_in.key_in_buf.len) return;
     key_in.key_in_buf[key_in.key_in_len] = b;
     key_in.key_in_len += 1;
+}
+
+fn appendShortcut(key_in: *KeyInput, action: ShortCuts.Action) void {
+    if (key_in.shortcut_len >= key_in.shortcut_buf.len) return;
+    key_in.shortcut_buf[key_in.shortcut_len] = action;
+    key_in.shortcut_len += 1;
 }
