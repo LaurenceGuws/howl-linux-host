@@ -1,14 +1,21 @@
+//! Responsibility: own the public config surface for the Linux host.
+//! Ownership: config data shapes and config-file loading.
+//! Reason: keep host configuration behind one boring owner.
+
 const std = @import("std");
 const howl_lua = @import("howl_lua");
 const Lua = howl_lua.HowlLua;
 
+/// Canonical Linux-host config owner.
 pub const Config = struct {
+    /// Terminal font stack configuration.
     pub const FontStack = struct {
         primary: ?[:0]u8,
         mono: []const [:0]u8,
         symbols: []const [:0]u8,
         emoji: []const [:0]u8,
 
+        /// Release owned font-path storage.
         pub fn deinit(self: *FontStack, alloc: std.mem.Allocator) void {
             if (self.primary) |p| alloc.free(p);
             freeZSlice(alloc, self.mono);
@@ -17,6 +24,7 @@ pub const Config = struct {
         }
     };
 
+    /// Terminal launch and rendering configuration.
     pub const Term = struct {
         shell: []u8,
         start_path: ?[]u8,
@@ -24,6 +32,7 @@ pub const Config = struct {
         font_size: u16,
         fonts: FontStack,
 
+        /// Release owned terminal configuration storage.
         pub fn deinit(self: *Term, alloc: std.mem.Allocator) void {
             alloc.free(self.shell);
             if (self.start_path) |p| alloc.free(p);
@@ -32,26 +41,31 @@ pub const Config = struct {
         }
     };
 
+    /// Host window configuration.
     pub const Window = struct {
         title: [:0]u8,
         width: c_int,
         height: c_int,
 
+        /// Release owned window configuration storage.
         pub fn deinit(self: *Window, alloc: std.mem.Allocator) void {
             alloc.free(self.title);
         }
     };
 
+    /// Top-level typed config payload.
     pub const Value = struct {
         term: Term,
         window: Window,
 
+        /// Release all owned config storage.
         pub fn deinit(self: *Value, alloc: std.mem.Allocator) void {
             self.term.deinit(alloc);
             self.window.deinit(alloc);
         }
     };
 
+    /// Load the effective Linux-host config from disk.
     pub fn load(alloc: std.mem.Allocator) !Value {
         return loadConfig(alloc);
     }
