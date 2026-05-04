@@ -3,7 +3,6 @@
 //! Reason: keep the Linux host on one boring runtime owner.
 
 const howl_term = @import("howl_term").HowlTerm;
-const howl_session = @import("howl_session").HowlSession;
 const std = @import("std");
 
 /// Host-local lifecycle state for the embedded terminal runtime.
@@ -27,6 +26,8 @@ pub const HowlTerm = struct {
     last_atlas_uploads: usize = 0,
     last_atlas_uploads_committed: usize = 0,
     last_glyph_quads: usize = 0,
+    last_full_redraws: u64 = 0,
+    last_partial_redraws: u64 = 0,
     frame_counter: u32 = 0,
 
     /// Initialize the host-local runtime and start the embedded session.
@@ -49,8 +50,7 @@ pub const HowlTerm = struct {
         defer if (pty_command_owned) |cmd| std.heap.c_allocator.free(cmd);
         const pty_command = pty_command_owned orelse command;
 
-        const transport = try howl_session.initPty(std.heap.c_allocator, shell, pty_command);
-        self.term = try howl_term.HowlTerm.init(std.heap.c_allocator, transport, 1, 1, .{ .width = 1, .height = 1 });
+        self.term = try howl_term.HowlTerm.initPty(std.heap.c_allocator, shell, pty_command, 1, 1, .{ .width = 1, .height = 1 });
         self.term.?.setFontSizePx(font_size_px);
         self.term.?.setPrimaryFontPath(font_primary);
         self.term.?.setFallbackFontPaths(font_fallbacks);
@@ -72,6 +72,8 @@ pub const HowlTerm = struct {
         self.last_atlas_uploads = 0;
         self.last_atlas_uploads_committed = 0;
         self.last_glyph_quads = 0;
+        self.last_full_redraws = 0;
+        self.last_partial_redraws = 0;
     }
 
     /// Release the embedded runtime and reset host-local state.
@@ -184,12 +186,15 @@ pub const HowlTerm = struct {
         const d_uploads: isize = @as(isize, @intCast(telem.atlas_uploads)) - @as(isize, @intCast(self.last_atlas_uploads));
         const d_committed: isize = @as(isize, @intCast(telem.atlas_uploads_committed)) - @as(isize, @intCast(self.last_atlas_uploads_committed));
         const d_quads: isize = @as(isize, @intCast(telem.glyph_quads)) - @as(isize, @intCast(self.last_glyph_quads));
-        if (d_missing == 0 and d_hits == 0 and d_misses == 0 and d_shaped == 0 and d_uploads == 0 and d_committed == 0 and d_quads == 0) return;
+        const d_full: i128 = @as(i128, telem.full_redraws) - @as(i128, self.last_full_redraws);
+        const d_partial: i128 = @as(i128, telem.partial_redraws) - @as(i128, self.last_partial_redraws);
+        if (d_missing == 0 and d_hits == 0 and d_misses == 0 and d_shaped == 0 and d_uploads == 0 and d_committed == 0 and d_quads == 0 and d_full == 0 and d_partial == 0) return;
         std.debug.print(
-            "render.telemetry frame={} stage={s} missing={} (+{}) fallback_hits={} (+{}) fallback_misses={} (+{}) shaped={} (+{}) atlas_uploads={} ({}) committed={} ({}) glyph_quads={} ({})\n",
+            "render.telemetry frame={} stage={s} mode={s} missing={} (+{}) fallback_hits={} (+{}) fallback_misses={} (+{}) shaped={} (+{}) atlas_uploads={} ({}) committed={} ({}) glyph_quads={} ({}) full_redraws={} (+{}) partial_redraws={} (+{})\n",
             .{
                 self.frame_counter,
                 stageName(telem.resolve_stage),
+                if (telem.last_full_redraw) "full" else "partial",
                 telem.missing_glyphs,
                 d_missing,
                 telem.fallback_hits,
@@ -204,6 +209,10 @@ pub const HowlTerm = struct {
                 d_committed,
                 telem.glyph_quads,
                 d_quads,
+                telem.full_redraws,
+                d_full,
+                telem.partial_redraws,
+                d_partial,
             },
         );
         self.last_missing_glyphs = telem.missing_glyphs;
@@ -213,6 +222,8 @@ pub const HowlTerm = struct {
         self.last_atlas_uploads = telem.atlas_uploads;
         self.last_atlas_uploads_committed = telem.atlas_uploads_committed;
         self.last_glyph_quads = telem.glyph_quads;
+        self.last_full_redraws = telem.full_redraws;
+        self.last_partial_redraws = telem.partial_redraws;
     }
 };
 
