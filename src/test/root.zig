@@ -1,3 +1,4 @@
 test {
-    _ = @import("howl_linux_host_config");
+    _ = @import("../Config.zig");
+    _ = @import("../widget/Terminal.zig");
 }

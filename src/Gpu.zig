@@ -15,9 +15,19 @@ pub const Rect = struct {
     width: c_int,
     height: c_int,
 };
+pub const ScrollbarLayout = struct {
+    visible: bool,
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+    thumb_y: c_int,
+    thumb_height: c_int,
+};
 pub const PresentLayout = struct {
     texture_id: u32,
     texture_rect: Rect,
+    scrollbar: ScrollbarLayout,
     tab_count: usize,
     active_tab: usize,
     tab_labels: []const []const u8,

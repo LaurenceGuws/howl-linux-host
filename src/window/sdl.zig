@@ -69,6 +69,30 @@ pub fn windowSize(window: *c_win.SDL_Window) Size {
     return .{ .width = width, .height = height };
 }
 
+pub fn windowLogicalSize(window: *c_win.SDL_Window) Size {
+    var width: c_int = 0;
+    var height: c_int = 0;
+    _ = c_win.SDL_GetWindowSize(window, &width, &height);
+    return .{ .width = width, .height = height };
+}
+
+pub fn hasInputFocus(window: *c_win.SDL_Window) bool {
+    return (c_win.SDL_GetWindowFlags(window) & c_win.SDL_WINDOW_INPUT_FOCUS) != 0;
+}
+
+pub fn getClipboardText(allocator: std.mem.Allocator) !?[]u8 {
+    const text_z = c_win.SDL_GetClipboardText() orelse return null;
+    defer c_win.SDL_free(text_z);
+    return try allocator.dupe(u8, std.mem.span(text_z));
+}
+
+pub fn setClipboardText(text: []const u8) bool {
+    const z = std.heap.c_allocator.allocSentinel(u8, text.len, 0) catch return false;
+    defer std.heap.c_allocator.free(z);
+    @memcpy(z[0..text.len], text);
+    return c_win.SDL_SetClipboardText(z.ptr) == true;
+}
+
 pub fn lastError() [*:0]const u8 {
     return c_win.SDL_GetError();
 }

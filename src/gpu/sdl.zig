@@ -61,6 +61,7 @@ fn drawFrame(gpu: *Gpu, fb_w: c_int, fb_h: c_int, layout: anytype) void {
     defer c_gpu.glBindTexture(c_gpu.GL_TEXTURE_2D, 0);
 
     drawTextureRect(fb_w, fb_h, layout.texture_rect.x, layout.texture_rect.y, layout.texture_rect.width, layout.texture_rect.height);
+    drawScrollbar(fb_w, fb_h, layout.scrollbar);
 }
 
 fn drawTabBar(fb_w: c_int, fb_h: c_int, layout: anytype) void {
@@ -148,6 +149,11 @@ fn drawTextureRect(fb_w: c_int, fb_h: c_int, x: c_int, y: c_int, width: c_int, h
     c_gpu.glTexCoord2f(0.0, 1.0);
     c_gpu.glVertex2f(left, top);
     c_gpu.glEnd();
+}
+
+fn drawScrollbar(fb_w: c_int, fb_h: c_int, scrollbar: anytype) void {
+    if (!scrollbar.visible or scrollbar.width <= 0 or scrollbar.thumb_height <= 0) return;
+    drawSolidRect(fb_w, fb_h, scrollbar.x, scrollbar.thumb_y, scrollbar.width, scrollbar.thumb_height, 0.72, 0.80, 0.92, 0.78);
 }
 
 fn drawSolidRect(fb_w: c_int, fb_h: c_int, x: c_int, y: c_int, width: c_int, height: c_int, r: f32, g: f32, b: f32, a: f32) void {

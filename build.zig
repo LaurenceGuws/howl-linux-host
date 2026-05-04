@@ -55,22 +55,13 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run host window");
     run_step.dependOn(&run_cmd.step);
 
-    const config_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/Config.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "howl_lua", .module = howl_lua_mod },
-        },
-    });
-
     const test_mod = b.createModule(.{
-        .root_source_file = b.path("src/test/root.zig"),
+        .root_source_file = b.path("src/test_entry.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "howl_lua", .module = howl_lua_mod },
-            .{ .name = "howl_linux_host_config", .module = config_test_mod },
+            .{ .name = "howl_term", .module = howl_term_mod },
         },
     });
 
@@ -80,6 +71,8 @@ pub fn build(b: *std.Build) void {
         .filters = b.args orelse &.{},
     });
     mod_tests.use_llvm = true;
+    mod_tests.root_module.addIncludePath(sdl_dep.path("include"));
+    mod_tests.root_module.linkLibrary(sdl_lib);
     mod_tests.root_module.link_libc = true;
     mod_tests.root_module.linkSystemLibrary("lua5.4", .{ .use_pkg_config = .force });
     const run_mod_tests = b.addRunArtifact(mod_tests);

@@ -25,10 +25,14 @@ return {
     fallback_emoji = {},
     -- Optional command string
     command = nil,
+    clipboard = {
+      osc_52 = "deny",
+    },
     shortcuts = {
       zoom_in = { "ctrl+equal", "ctrl+kp_add" },
       zoom_out = { "ctrl+minus", "ctrl+kp_subtract" },
       zoom_reset = { "ctrl+zero" },
+      paste = { "ctrl+shift+v", "shift+insert" },
     },
   },
   tab_bar = {

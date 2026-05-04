@@ -60,6 +60,22 @@ pub const Window = struct {
         return win_backend.windowSize(window);
     }
 
+    pub fn windowLogicalSize(window: Ptr) Size {
+        return win_backend.windowLogicalSize(window);
+    }
+
+    pub fn hasInputFocus(window: Ptr) bool {
+        return win_backend.hasInputFocus(window);
+    }
+
+    pub fn getClipboardText(allocator: std.mem.Allocator) !?[]u8 {
+        return win_backend.getClipboardText(allocator);
+    }
+
+    pub fn setClipboardText(text: []const u8) bool {
+        return win_backend.setClipboardText(text);
+    }
+
     /// Report the last backend error string.
     pub fn lastError() [*:0]const u8 {
         return win_backend.lastError();

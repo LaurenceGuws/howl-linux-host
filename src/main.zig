@@ -21,19 +21,26 @@ const App = struct {
     active_tab_idx: usize,
     window_px_w: c_int,
     window_px_h: c_int,
+    window_logical_w: c_int,
+    window_logical_h: c_int,
+    window_focused: bool,
     chrome_dirty: bool,
     presented_tab: ?*TerminalWidget,
 
-    fn init(self: *App, surface: window.Ptr, width: c_int, height: c_int) !void {
+    fn init(self: *App, surface: window.Ptr, width: c_int, height: c_int, logical_width: c_int, logical_height: c_int) !void {
         GpuSvc.init(&self.gpu);
         errdefer GpuSvc.deinit(&self.gpu);
         try GpuSvc.setup(&self.gpu, surface);
         self.window_px_w = @max(width, 1);
         self.window_px_h = @max(height, 1);
+        self.window_logical_w = @max(logical_width, 1);
+        self.window_logical_h = @max(logical_height, 1);
         self.chrome_dirty = true;
         self.presented_tab = null;
         self.active_tab_idx = 0;
+        self.window_focused = true;
         try self.openTab();
+        self.syncTerminalFocus();
     }
 
     fn deinit(self: *App) void {
@@ -60,22 +67,36 @@ const App = struct {
         while (key_in.drainShortcutAction()) |action| try self.handleShortcut(action);
     }
 
-    fn drainActiveInput(self: *App, key_in: *key_input, scratch: []u8) void {
-        self.activeTab().drainInput(key_in, scratch);
+    fn drainActiveInput(self: *App, key_in: *key_input) void {
+        self.activeTab().drainInput(key_in, 0, self.tabBarHeightLogical(), self.contentWidthLogical(), self.contentHeightLogical());
     }
 
     fn handleActiveScrollInput(self: *App, key_in: *key_input) void {
         self.activeTab().handleScrollInput(key_in);
     }
 
-    fn resize(self: *App, width: c_int, height: c_int) void {
+    fn activeTerminalPassiveHoverWake(self: *const App) bool {
+        return self.activeTab().wantsPassiveHoverWake(0, self.tabBarHeightLogical(), self.contentWidthLogical(), self.contentHeightLogical());
+    }
+
+    fn resize(self: *App, width: c_int, height: c_int, logical_width: c_int, logical_height: c_int) void {
         const w = @max(width, 1);
         const h = @max(height, 1);
-        if (w == self.window_px_w and h == self.window_px_h) return;
+        const lw = @max(logical_width, 1);
+        const lh = @max(logical_height, 1);
+        if (w == self.window_px_w and h == self.window_px_h and lw == self.window_logical_w and lh == self.window_logical_h) return;
         self.window_px_w = w;
         self.window_px_h = h;
+        self.window_logical_w = lw;
+        self.window_logical_h = lh;
         for (self.tabs.items) |tab| tab.resize(self.contentWidth(), self.contentHeight());
         self.chrome_dirty = true;
+    }
+
+    fn setWindowFocused(self: *App, focused: bool) void {
+        if (self.window_focused == focused) return;
+        self.window_focused = focused;
+        self.syncTerminalFocus();
     }
 
     fn collectRenderWork(self: *App) RenderWork {
@@ -96,6 +117,7 @@ const App = struct {
         GpuSvc.present(&self.gpu, .{
             .texture_id = surface.texture_id,
             .texture_rect = self.textureRect(),
+            .scrollbar = self.activeTab().scrollbarLayout(self.textureRect()),
             .tab_count = self.tabs.items.len,
             .active_tab = self.active_tab_idx,
             .tab_labels = label_buf[0..self.tabs.items.len],
@@ -113,12 +135,17 @@ const App = struct {
             .zoom_in => _ = self.activeTab().adjustFontSize(1),
             .zoom_out => _ = self.activeTab().adjustFontSize(-1),
             .zoom_reset => _ = self.activeTab().resetFontSize(),
+            .terminal_paste => self.activeTab().pasteFromClipboard(),
             .terminal_new_tab => try self.openTab(),
             .terminal_close_tab => self.closeActiveTab(),
             .terminal_next_tab => self.selectRelative(1),
             .terminal_prev_tab => self.selectRelative(-1),
             else => if (ShortCuts.focusTabIndex(action)) |idx| self.selectTab(idx),
         }
+    }
+
+    fn serviceHostEffects(self: *App) void {
+        for (self.tabs.items) |tab| tab.serviceHostEffects();
     }
 
     fn openTab(self: *App) !void {
@@ -143,12 +170,19 @@ const App = struct {
             .wake_notified = std.atomic.Value(bool).init(false),
             .wake_thread = null,
             .stop_wake = std.atomic.Value(bool).init(false),
+            .window_focused = true,
+            .widget_focused = true,
+            .mouse_logical_x = 0,
+            .mouse_logical_y = 0,
+            .scrollbar_dragging = false,
+            .scrollbar_grab_offset = 0,
         };
         errdefer tab.deinit();
 
         try tab.init(self.contentWidth(), self.contentHeight());
         try self.tabs.append(self.allocator, tab);
         self.active_tab_idx = self.tabs.items.len - 1;
+        self.syncTerminalFocus();
         tab.requestRedraw();
         self.chrome_dirty = true;
     }
@@ -165,6 +199,7 @@ const App = struct {
         tab.deinit();
         self.allocator.destroy(tab);
         if (self.active_tab_idx >= self.tabs.items.len) self.active_tab_idx = self.tabs.items.len - 1;
+        self.syncTerminalFocus();
         self.activeTab().requestRedraw();
         self.chrome_dirty = true;
     }
@@ -180,8 +215,16 @@ const App = struct {
     fn selectTab(self: *App, idx: usize) void {
         if (idx >= self.tabs.items.len or idx == self.active_tab_idx) return;
         self.active_tab_idx = idx;
+        self.syncTerminalFocus();
         self.activeTab().requestRedraw();
         self.chrome_dirty = true;
+    }
+
+    fn syncTerminalFocus(self: *App) void {
+        for (self.tabs.items, 0..) |tab, i| {
+            tab.setWindowFocused(self.window_focused);
+            tab.setWidgetFocused(i == self.active_tab_idx);
+        }
     }
 
     fn activeTab(self: *const App) *TerminalWidget {
@@ -193,12 +236,25 @@ const App = struct {
         return @min(@as(c_int, @intCast(self.conf.tab_bar.height)), self.window_px_h - 1);
     }
 
+    fn tabBarHeightLogical(self: *const App) c_int {
+        if (self.window_logical_h <= 1) return 0;
+        return @min(@as(c_int, @intCast(self.conf.tab_bar.height)), self.window_logical_h - 1);
+    }
+
     fn contentWidth(self: *const App) c_int {
         return @max(self.window_px_w, 1);
     }
 
+    fn contentWidthLogical(self: *const App) c_int {
+        return @max(self.window_logical_w, 1);
+    }
+
     fn contentHeight(self: *const App) c_int {
         return @max(self.window_px_h - self.tabBarHeight(), 1);
+    }
+
+    fn contentHeightLogical(self: *const App) c_int {
+        return @max(self.window_logical_h - self.tabBarHeightLogical(), 1);
     }
 
     fn textureRect(self: *const App) GpuSvc.Rect {
@@ -240,12 +296,17 @@ pub fn main() !void {
         .active_tab_idx = 0,
         .window_px_w = 1,
         .window_px_h = 1,
+        .window_logical_w = 1,
+        .window_logical_h = 1,
+        .window_focused = true,
         .chrome_dirty = true,
         .presented_tab = null,
     };
 
     const initial_size = window.windowSize(win);
-    try app.init(win, initial_size.width, initial_size.height);
+    const initial_logical_size = window.windowLogicalSize(win);
+    try app.init(win, initial_size.width, initial_size.height, initial_logical_size.width, initial_logical_size.height);
+    app.setWindowFocused(window.hasInputFocus(win));
     defer app.deinit();
 
     var key_input_state: key_input = undefined;
@@ -253,23 +314,28 @@ pub fn main() !void {
     key_input_state.bind(win);
 
     var running = true;
-    var term_input_buf: [256]u8 = undefined;
-
     while (running) {
         app.acknowledgePresentation();
 
-        const signal = window.waitEventSignal(win, -1);
+        const signal = window.waitEventSignal(win, if (app.activeTerminalPassiveHoverWake()) 16 else -1);
         if (signal == .quit) {
             running = false;
             continue;
         }
+        app.setWindowFocused(window.hasInputFocus(win));
+        if (signal == .none and app.activeTerminalPassiveHoverWake()) {
+            app.chrome_dirty = true;
+        }
+        app.serviceHostEffects();
 
         try app.drainShortcuts(&key_input_state);
-        app.drainActiveInput(&key_input_state, &term_input_buf);
+        app.drainActiveInput(&key_input_state);
         app.handleActiveScrollInput(&key_input_state);
+        app.serviceHostEffects();
 
         const size = window.windowSize(win);
-        app.resize(size.width, size.height);
+        const logical_size = window.windowLogicalSize(win);
+        app.resize(size.width, size.height, logical_size.width, logical_size.height);
 
         const work = app.collectRenderWork();
         if (!work.needs_frame) continue;

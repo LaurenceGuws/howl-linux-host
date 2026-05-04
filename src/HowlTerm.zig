@@ -14,6 +14,9 @@ pub const LifecycleState = enum {
 };
 
 pub const SurfaceHandle = howl_term.SurfaceHandle;
+pub const ClipboardRequest = howl_term.ClipboardRequest;
+pub const MouseButton = howl_term.MouseButton;
+pub const MouseEventKind = howl_term.MouseEventKind;
 
 /// Host-local terminal runtime owner.
 pub const HowlTerm = struct {
@@ -102,6 +105,88 @@ pub const HowlTerm = struct {
         };
     }
 
+    pub fn publishInputKey(self: *HowlTerm, key: howl_term.Key, mods: howl_term.Modifier) void {
+        const inst = &(self.term orelse return);
+        inst.publishInputKey(key, mods) catch |err| switch (err) {
+            error.QueueFull => std.log.warn("terminal key input dropped due to full queue", .{}),
+            else => {
+                self.lifecycle_state = .failed;
+                std.log.err("terminal key input publish failed", .{});
+            },
+        };
+    }
+
+    pub fn setInputFocus(self: *HowlTerm, focused: bool) void {
+        const inst = &(self.term orelse return);
+        _ = inst.setInputFocus(focused) catch |err| switch (err) {
+            error.QueueFull => std.log.warn("terminal focus event dropped due to full queue", .{}),
+            else => {
+                self.lifecycle_state = .failed;
+                std.log.err("terminal focus update failed", .{});
+            },
+        };
+    }
+
+    pub fn publishPaste(self: *HowlTerm, text: []const u8) void {
+        const inst = &(self.term orelse return);
+        inst.publishPaste(text) catch |err| switch (err) {
+            error.QueueFull => std.log.warn("terminal paste dropped due to full queue", .{}),
+            else => {
+                self.lifecycle_state = .failed;
+                std.log.err("terminal paste publish failed", .{});
+            },
+        };
+    }
+
+    pub fn drainPendingClipboardSet(self: *HowlTerm, allocator: std.mem.Allocator) ?ClipboardRequest {
+        const inst = &(self.term orelse return null);
+        return inst.drainPendingClipboardSet(allocator) catch {
+            self.lifecycle_state = .failed;
+            std.log.err("terminal clipboard request drain failed", .{});
+            return null;
+        };
+    }
+
+    pub fn publishMouseEvent(self: *HowlTerm, kind: MouseEventKind, button: MouseButton, pixel_x: i32, pixel_y: i32, mods: howl_term.Modifier, buttons_down: u8) bool {
+        const inst = &(self.term orelse return false);
+        return inst.publishMouseEvent(kind, button, pixel_x, pixel_y, mods, buttons_down) catch |err| switch (err) {
+            error.QueueFull => blk: {
+                std.log.warn("terminal mouse input dropped due to full queue", .{});
+                break :blk false;
+            },
+            else => blk: {
+                self.lifecycle_state = .failed;
+                std.log.err("terminal mouse input publish failed", .{});
+                break :blk false;
+            },
+        };
+    }
+
+    pub fn beginSelection(self: *HowlTerm, pixel_x: i32, pixel_y: i32) bool {
+        const inst = &(self.term orelse return false);
+        return inst.beginSelection(pixel_x, pixel_y);
+    }
+
+    pub fn updateSelection(self: *HowlTerm, pixel_x: i32, pixel_y: i32) bool {
+        const inst = &(self.term orelse return false);
+        return inst.updateSelection(pixel_x, pixel_y);
+    }
+
+    pub fn finishSelection(self: *HowlTerm) bool {
+        const inst = &(self.term orelse return false);
+        return inst.finishSelection();
+    }
+
+    pub fn clearSelection(self: *HowlTerm) bool {
+        const inst = &(self.term orelse return false);
+        return inst.clearSelection();
+    }
+
+    pub fn selectionInProgress(self: *const HowlTerm) bool {
+        const inst = &(self.term orelse return false);
+        return inst.selectionInProgress();
+    }
+
     /// Wait until render work is armed or the timeout expires.
     pub fn waitRenderWake(self: *HowlTerm, timeout_ms: i32) bool {
         const inst = &(self.term orelse return false);
@@ -121,6 +206,12 @@ pub const HowlTerm = struct {
     pub fn currentScrollbackOffset(self: *const HowlTerm) usize {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackOffset();
+    }
+
+    /// Report whether the terminal is currently using the alternate screen.
+    pub fn isAlternateScreen(self: *const HowlTerm) bool {
+        const inst = &(self.term orelse return false);
+        return inst.isAlternateScreen();
     }
 
     /// Set the active scrollback offset.

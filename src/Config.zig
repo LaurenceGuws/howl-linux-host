@@ -7,6 +7,8 @@ const howl_lua = @import("howl_lua");
 const keys = @import("Keys.zig");
 const Lua = howl_lua.HowlLua;
 
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
 /// Canonical Linux-host config owner.
 pub const Config = struct {
     pub const ShortcutKey = keys.Key;
@@ -15,6 +17,7 @@ pub const Config = struct {
         zoom_in,
         zoom_out,
         zoom_reset,
+        terminal_paste,
         terminal_new_tab,
         terminal_close_tab,
         terminal_next_tab,
@@ -62,6 +65,15 @@ pub const Config = struct {
         }
     };
 
+    pub const ClipboardOsc52Policy = enum {
+        deny,
+        allow,
+    };
+
+    pub const Clipboard = struct {
+        osc_52: ClipboardOsc52Policy = .deny,
+    };
+
     /// Terminal launch and rendering configuration.
     pub const Term = struct {
         shell: []u8,
@@ -69,6 +81,7 @@ pub const Config = struct {
         command: ?[]u8,
         font_size: u16,
         fonts: FontStack,
+        clipboard: Clipboard,
         shortcuts: ShortcutMap,
 
         /// Release owned terminal configuration storage.
@@ -146,7 +159,7 @@ fn expandEnvOrDup(alloc: std.mem.Allocator, raw: []const u8) ![]u8 {
 
 test "expandEnvOrDup expands known env var and preserves missing var literal" {
     const alloc = std.testing.allocator;
-    try std.posix.setenv("HOWL_CFG_TEST_ENV", "howl_test_value", true);
+    try std.testing.expect(setenv("HOWL_CFG_TEST_ENV", "howl_test_value", 1) == 0);
 
     const expanded = try expandEnvOrDup(alloc, "$HOWL_CFG_TEST_ENV");
     defer alloc.free(expanded);
@@ -162,7 +175,7 @@ test "expandEnvOrDup fuzz" {
     var prng = std.Random.DefaultPrng.init(0xC0FFEE42);
     const rnd = prng.random();
 
-    try std.posix.setenv("HOWL_CFG_FUZZ_ENV", "fuzz_value", true);
+    try std.testing.expect(setenv("HOWL_CFG_FUZZ_ENV", "fuzz_value", 1) == 0);
 
     var i: usize = 0;
     while (i < 2000) : (i += 1) {
@@ -227,6 +240,12 @@ fn loadConfigFromLua(alloc: std.mem.Allocator, lua: Lua.Api.State) !Config.Value
     errdefer freeZSlice(alloc, fallback_symbols);
     const fallback_emoji = try loadStringArrayField(alloc, term_reader, "fallback_emoji");
     errdefer freeZSlice(alloc, fallback_emoji);
+    const clipboard_reader = term_reader.child("clipboard");
+    defer if (clipboard_reader) |reader| reader.finish();
+    const clipboard_policy = if (clipboard_reader) |reader|
+        parseClipboardOsc52Policy(reader.fieldString("osc_52") orelse "deny")
+    else
+        Config.ClipboardOsc52Policy.deny;
     const term_shortcuts = try loadShortcutMap(alloc, term_reader.child("shortcuts"), &term_shortcut_specs);
     errdefer {
         var shortcuts_mut = term_shortcuts;
@@ -271,6 +290,7 @@ fn loadConfigFromLua(alloc: std.mem.Allocator, lua: Lua.Api.State) !Config.Value
                 .symbols = fallback_symbols,
                 .emoji = fallback_emoji,
             },
+            .clipboard = .{ .osc_52 = clipboard_policy },
             .shortcuts = term_shortcuts,
         },
         .window = .{
@@ -295,6 +315,7 @@ const term_shortcut_specs = [_]ShortcutSpec{
     .{ .field = "zoom_in", .action = .zoom_in },
     .{ .field = "zoom_out", .action = .zoom_out },
     .{ .field = "zoom_reset", .action = .zoom_reset },
+    .{ .field = "paste", .action = .terminal_paste },
 };
 
 const window_shortcut_specs = [_]ShortcutSpec{};
@@ -395,6 +416,11 @@ fn parseShortcutBinding(raw: []const u8, action: Config.ShortcutAction) !Config.
 
 fn parseShortcutKey(raw: []const u8) ?Config.ShortcutKey {
     return keys.parseLabel(raw);
+}
+
+fn parseClipboardOsc52Policy(raw: []const u8) Config.ClipboardOsc52Policy {
+    if (std.ascii.eqlIgnoreCase(raw, "allow")) return .allow;
+    return .deny;
 }
 
 fn loadStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []const u8) ![]const [:0]u8 {

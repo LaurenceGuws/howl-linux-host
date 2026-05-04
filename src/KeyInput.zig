@@ -8,6 +8,11 @@ const key_in_variant = @import("key-input/sdl.zig");
 
 /// Canonical Linux-host key-input owner.
 pub const KeyInput = struct {
+    pub const ByteInput = key_in_variant.ByteInput;
+    pub const KeyEvent = key_in_variant.KeyEvent;
+    pub const MouseEvent = key_in_variant.MouseEvent;
+    pub const InputEvent = key_in_variant.InputEvent;
+
     state: key_in_variant.KeyInput,
 
     /// Initialize the selected key-input backend state.
@@ -20,14 +25,9 @@ pub const KeyInput = struct {
         key_in_variant.bindKeyInput(win, &self.state);
     }
 
-    /// Drain encoded input bytes into caller storage.
-    pub fn drain(self: *KeyInput, out_buf: []u8) usize {
-        return key_in_variant.drainKeyInput(&self.state, out_buf);
-    }
-
-    /// Drain accumulated line-scroll input.
-    pub fn drainScrollLines(self: *KeyInput) i32 {
-        return key_in_variant.drainScrollLines(&self.state);
+    /// Drain one queued host input event while preserving event order.
+    pub fn drainInputEvent(self: *KeyInput) ?InputEvent {
+        return key_in_variant.drainInputEvent(&self.state);
     }
 
     /// Drain accumulated page-scroll input.

@@ -5,6 +5,7 @@ const HowlTerm = @import("../HowlTerm.zig").HowlTerm;
 const LifecycleState = @import("../HowlTerm.zig").LifecycleState;
 const SurfaceHandle = @import("../HowlTerm.zig").SurfaceHandle;
 const Config = @import("../Config.zig").Config;
+const Gpu = @import("../Gpu.zig");
 
 pub const Terminal = struct {
     term: HowlTerm,
@@ -23,6 +24,12 @@ pub const Terminal = struct {
     wake_notified: std.atomic.Value(bool),
     wake_thread: ?std.Thread,
     stop_wake: std.atomic.Value(bool),
+    window_focused: bool,
+    widget_focused: bool,
+    mouse_logical_x: i32,
+    mouse_logical_y: i32,
+    scrollbar_dragging: bool,
+    scrollbar_grab_offset: f32,
 
     pub fn init(self: *Terminal, width: c_int, height: c_int) !void {
         self.render_px_w = @max(width, 1);
@@ -39,6 +46,12 @@ pub const Terminal = struct {
         self.wake_notified = std.atomic.Value(bool).init(false);
         self.stop_wake = std.atomic.Value(bool).init(false);
         self.wake_thread = null;
+        self.window_focused = true;
+        self.widget_focused = true;
+        self.mouse_logical_x = 0;
+        self.mouse_logical_y = 0;
+        self.scrollbar_dragging = false;
+        self.scrollbar_grab_offset = 0;
         self.term = .{};
 
         var font_fallbacks_buf: [32][:0]const u8 = undefined;
@@ -55,6 +68,7 @@ pub const Terminal = struct {
             self.conf.term.fonts.primary,
             font_fallbacks,
         );
+        self.syncInputFocus();
         self.refreshTabLabel();
         self.wake_thread = try std.Thread.spawn(.{}, wakeWorker, .{self});
     }
@@ -111,16 +125,47 @@ pub const Terminal = struct {
         self.term.publishInputBytes(bytes);
     }
 
-    pub fn drainInput(self: *Terminal, key_in: *KeyInput, scratch: []u8) void {
-        const n = key_in.drain(scratch);
-        if (n > 0) {
-            self.publishInputBytes(scratch[0..n]);
+    pub fn publishInputKey(self: *Terminal, key: KeyInput.KeyEvent) void {
+        self.term.publishInputKey(key.key, key.mods);
+    }
+
+    pub fn publishMouseEvent(self: *Terminal, mouse: KeyInput.MouseEvent) bool {
+        return self.term.publishMouseEvent(mouse.kind, mouse.button, mouse.pixel_x, mouse.pixel_y, mouse.mods, mouse.buttons_down);
+    }
+
+    pub fn pasteFromClipboard(self: *Terminal) void {
+        const text = window.getClipboardText(std.heap.c_allocator) catch return;
+        defer if (text) |buf| std.heap.c_allocator.free(buf);
+        const payload = text orelse return;
+        self.term.publishPaste(payload);
+    }
+
+    pub fn drainInput(self: *Terminal, key_in: *KeyInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
+        while (key_in.drainInputEvent()) |event| {
+            switch (event) {
+                .bytes => |bytes| self.publishInputBytes(bytes.slice()),
+                .key => |key| self.publishInputKey(key),
+                .mouse => |mouse| {
+                    if (self.handleScrollbarMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height)) continue;
+                    if (self.handleSelectionMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height)) continue;
+                    const local_mouse = contentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse continue;
+                    const consumed_by_term = self.publishMouseEvent(local_mouse);
+                    if (!consumed_by_term and local_mouse.kind == .wheel) {
+                        const delta: i32 = switch (local_mouse.button) {
+                            .wheel_up => 3,
+                            .wheel_down => -3,
+                            else => 0,
+                        };
+                        if (delta != 0) self.scrollByRows(delta);
+                    }
+                },
+            }
         }
     }
 
     pub fn handleScrollInput(self: *Terminal, key_in: *KeyInput) void {
-        var delta_rows: i32 = key_in.drainScrollLines();
         const page_steps = key_in.drainScrollPages();
+        var delta_rows: i32 = 0;
         if (page_steps != 0) {
             const visible_rows: i32 = @intCast(@max(self.term.viewportRows(), 1));
             const page_rows: i32 = @max(visible_rows - 1, 1);
@@ -139,6 +184,62 @@ pub const Terminal = struct {
 
     pub fn requestRedraw(self: *Terminal) void {
         self.dirty.store(true, .release);
+    }
+
+    pub fn wantsPassiveHoverWake(self: *const Terminal, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+        const model = self.scrollbarModel();
+        if (!model.visible or !self.window_focused) return false;
+        return self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height) > 0.01;
+    }
+
+    pub fn scrollbarLayout(self: *const Terminal, texture_rect: Gpu.Rect) Gpu.ScrollbarLayout {
+        const model = self.scrollbarModel();
+        if (!model.visible or texture_rect.width <= 0 or texture_rect.height <= 0) {
+            return .{ .visible = false, .x = texture_rect.x + texture_rect.width, .y = texture_rect.y, .width = 0, .height = 0, .thumb_y = texture_rect.y, .thumb_height = 0 };
+        }
+
+        const focus_t = self.scrollbarFocusT(0, 0, self.render_px_w, self.render_px_h);
+        const track = computeScrollbarTrack(0, 0, self.render_px_w, self.render_px_h, focus_t);
+        const thumb = computeScrollbarThumb(track.y, track.height, model.rows, model.total_lines, model.scrollback_offset);
+        return .{
+            .visible = true,
+            .x = texture_rect.x + track.x,
+            .y = texture_rect.y + track.y,
+            .width = track.width,
+            .height = track.height,
+            .thumb_y = texture_rect.y + thumb.y,
+            .thumb_height = thumb.height,
+        };
+    }
+
+    pub fn setWindowFocused(self: *Terminal, focused: bool) void {
+        if (self.window_focused == focused) return;
+        self.window_focused = focused;
+        if (!focused and self.scrollbar_dragging) {
+            self.scrollbar_dragging = false;
+            self.scrollbar_grab_offset = 0;
+        }
+        self.syncInputFocus();
+    }
+
+    pub fn setWidgetFocused(self: *Terminal, focused: bool) void {
+        if (self.widget_focused == focused) return;
+        self.widget_focused = focused;
+        self.syncInputFocus();
+    }
+
+    pub fn serviceHostEffects(self: *Terminal) void {
+        const request = self.term.drainPendingClipboardSet(std.heap.c_allocator) orelse return;
+        defer std.heap.c_allocator.free(request.raw);
+
+        switch (self.conf.term.clipboard.osc_52) {
+            .deny => return,
+            .allow => {},
+        }
+
+        const decoded = decodeOsc52Payload(std.heap.c_allocator, request.raw) catch return;
+        defer std.heap.c_allocator.free(decoded);
+        _ = window.setClipboardText(decoded);
     }
 
     pub fn tabLabel(self: *const Terminal) []const u8 {
@@ -170,6 +271,7 @@ pub const Terminal = struct {
     }
 
     fn scrollByRows(self: *Terminal, delta_rows: i32) void {
+        if (self.term.isAlternateScreen()) return;
         const history_count_usize = self.term.currentScrollbackCount();
         const current_usize = self.term.currentScrollbackOffset();
         const history_count: i32 = if (history_count_usize > @as(usize, std.math.maxInt(i32)))
@@ -189,8 +291,187 @@ pub const Terminal = struct {
         if (changed) self.dirty.store(true, .release);
     }
 
+    fn scrollbarModel(self: *const Terminal) ScrollbarModel {
+        const rows: usize = @intCast(@max(self.term.viewportRows(), 1));
+        const history_count = self.term.currentScrollbackCount();
+        const alt = self.term.isAlternateScreen();
+        const visible = !alt and history_count > 0 and rows > 0;
+        return .{
+            .visible = visible,
+            .rows = rows,
+            .total_lines = history_count + rows,
+            .scrollback_offset = @min(self.term.currentScrollbackOffset(), history_count),
+        };
+    }
+
+    fn handleScrollbarMouseEvent(self: *Terminal, mouse: KeyInput.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+        const prev_focus_t = self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height);
+        self.mouse_logical_x = mouse.pixel_x;
+        self.mouse_logical_y = mouse.pixel_y;
+
+        const model = self.scrollbarModel();
+        if (!model.visible or logical_width <= 0 or logical_height <= 0) {
+            if (self.scrollbar_dragging) {
+                self.scrollbar_dragging = false;
+                self.scrollbar_grab_offset = 0;
+                self.requestRedraw();
+            }
+            return false;
+        }
+
+        const geometry = computeScrollbarGeometry(origin_x, origin_y, logical_width, logical_height, self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height));
+        const over_track = pointInTrack(mouse.pixel_x, mouse.pixel_y, geometry);
+        const over_thumb = pointInThumb(mouse.pixel_x, mouse.pixel_y, geometry, model);
+
+        switch (mouse.kind) {
+            .move => {
+                if (self.scrollbar_dragging) {
+                    if (self.updateScrollbarFromMouse(mouse.pixel_y, geometry, model)) self.requestRedraw();
+                    return true;
+                }
+                const next_focus_t = self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height);
+                if (focusBucket(prev_focus_t) != focusBucket(next_focus_t) or @abs(next_focus_t - prev_focus_t) > 0.001) self.requestRedraw();
+                return false;
+            },
+            .press => {
+                if (mouse.button != .left or !over_track) return false;
+                self.scrollbar_dragging = true;
+                self.scrollbar_grab_offset = if (over_thumb)
+                    @as(f32, @floatFromInt(mouse.pixel_y - geometry.thumbY(model)))
+                else
+                    @as(f32, @floatFromInt(geometry.thumbHeight(model))) * 0.5;
+                if (self.updateScrollbarFromMouse(mouse.pixel_y, geometry, model)) self.requestRedraw();
+                return true;
+            },
+            .release => {
+                if (mouse.button != .left or !self.scrollbar_dragging) return false;
+                self.scrollbar_dragging = false;
+                self.scrollbar_grab_offset = 0;
+                self.requestRedraw();
+                return true;
+            },
+            .wheel => {
+                const next_focus_t = self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height);
+                if (focusBucket(prev_focus_t) != focusBucket(next_focus_t) or @abs(next_focus_t - prev_focus_t) > 0.001) self.requestRedraw();
+                return false;
+            },
+        }
+    }
+
+    fn handleSelectionMouseEvent(self: *Terminal, mouse: KeyInput.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+        const dragging = self.term.selectionInProgress();
+        const relevant = mouse.button == .left or dragging;
+        if (!relevant or logical_width <= 0 or logical_height <= 0) return false;
+
+        switch (mouse.kind) {
+            .press => {
+                if (mouse.button != .left) return false;
+                const local_mouse = contentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return false;
+                if (self.publishMouseEvent(local_mouse)) return true;
+                if (self.term.beginSelection(local_mouse.pixel_x, local_mouse.pixel_y)) self.requestRedraw();
+                return true;
+            },
+            .move => {
+                if (!dragging) return false;
+                const local_mouse = clampedContentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return true;
+                if (self.term.updateSelection(local_mouse.pixel_x, local_mouse.pixel_y)) self.requestRedraw();
+                return true;
+            },
+            .release => {
+                if (!dragging or mouse.button != .left) return false;
+                const local_mouse = clampedContentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h);
+                if (local_mouse) |event| {
+                    if (self.term.updateSelection(event.pixel_x, event.pixel_y)) self.requestRedraw();
+                }
+                if (self.term.finishSelection()) self.requestRedraw();
+                return true;
+            },
+            .wheel => return false,
+        }
+    }
+
+    fn updateScrollbarFromMouse(self: *Terminal, mouse_y: i32, geometry: ScrollbarGeometry, model: ScrollbarModel) bool {
+        const available = geometry.thumbAvailable(model);
+        const clamped_mouse = std.math.clamp(
+            @as(f32, @floatFromInt(mouse_y)) - self.scrollbar_grab_offset,
+            @as(f32, @floatFromInt(geometry.y)),
+            @as(f32, @floatFromInt(geometry.y)) + available,
+        );
+        const ratio_from_top = if (available > 0) (clamped_mouse - @as(f32, @floatFromInt(geometry.y))) / available else 1.0;
+        const max_offset = model.total_lines - model.rows;
+        const target = if (max_offset == 0)
+            0
+        else
+            @as(usize, @intFromFloat(@round((1.0 - ratio_from_top) * @as(f32, @floatFromInt(max_offset)))));
+        return self.setScrollbackOffset(target);
+    }
+
+    fn setScrollbackOffset(self: *Terminal, offset: usize) bool {
+        const changed = if (offset == 0)
+            self.term.followLiveBottom()
+        else
+            self.term.setScrollbackOffset(offset);
+        if (changed) self.dirty.store(true, .release);
+        return changed;
+    }
+
+    fn scrollbarFocusT(self: *const Terminal, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) f32 {
+        if (self.scrollbar_dragging) return 1.0;
+        if (!self.window_focused or logical_width <= 0 or logical_height <= 0) return 0.0;
+        const mouse_x = self.mouse_logical_x;
+        const mouse_y = self.mouse_logical_y;
+        if (mouse_y < origin_y or mouse_y > origin_y + logical_height) return 0.0;
+        const dist_from_right = (origin_x + logical_width) - mouse_x;
+        if (dist_from_right < -scrollbar_hit_margin_logical or dist_from_right > scrollbar_hover_range_logical) return 0.0;
+        const raw = 1.0 - std.math.clamp(@as(f32, @floatFromInt(dist_from_right)) / @as(f32, @floatFromInt(scrollbar_hover_range_logical)), 0.0, 1.0);
+        return smoothstep01(raw);
+    }
+
     fn refreshTabLabel(self: *Terminal) void {
         self.tab_label_len = baseTabLabel(self.term.copyTabTitle(self.tab_label_buf[0..]), self.tab_label_buf[0..]);
+    }
+
+    fn syncInputFocus(self: *Terminal) void {
+        self.term.setInputFocus(self.window_focused and self.widget_focused);
+        self.requestRedraw();
+    }
+};
+
+const scrollbar_min_width_logical: c_int = 3;
+const scrollbar_max_width_logical: c_int = 11;
+const scrollbar_hit_margin_logical: c_int = 6;
+const scrollbar_hover_range_logical: c_int = 28;
+const scrollbar_inset_logical: c_int = 1;
+const scrollbar_min_thumb_h_logical: c_int = 18;
+
+const ScrollbarModel = struct {
+    visible: bool,
+    rows: usize,
+    total_lines: usize,
+    scrollback_offset: usize,
+};
+
+const ScrollbarGeometry = struct {
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+
+    fn thumbHeight(self: ScrollbarGeometry, model: ScrollbarModel) c_int {
+        if (model.total_lines == 0) return scrollbar_min_thumb_h_logical;
+        const proportional = @divTrunc(@as(i64, self.height) * @as(i64, @intCast(model.rows)), @as(i64, @intCast(model.total_lines)));
+        return @intCast(@max(@as(i64, scrollbar_min_thumb_h_logical), @min(proportional, @as(i64, self.height))));
+    }
+
+    fn thumbAvailable(self: ScrollbarGeometry, model: ScrollbarModel) f32 {
+        return @as(f32, @floatFromInt(@max(self.height - self.thumbHeight(model), 0)));
+    }
+
+    fn thumbY(self: ScrollbarGeometry, model: ScrollbarModel) c_int {
+        const max_offset = model.total_lines - model.rows;
+        if (max_offset == 0) return self.y;
+        const ratio_from_top = 1.0 - (@as(f32, @floatFromInt(model.scrollback_offset)) / @as(f32, @floatFromInt(max_offset)));
+        return self.y + @as(c_int, @intFromFloat(@round(self.thumbAvailable(model) * ratio_from_top)));
     }
 };
 
@@ -206,6 +487,51 @@ fn wakeWorker(self: *Terminal) void {
     }
 }
 
+fn computeScrollbarTrack(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, focus_t: f32) ScrollbarGeometry {
+    const width_delta = scrollbar_max_width_logical - scrollbar_min_width_logical;
+    const width = scrollbar_min_width_logical + @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(width_delta)) * focus_t)));
+    return .{
+        .x = origin_x + logical_width - width - scrollbar_inset_logical,
+        .y = origin_y,
+        .width = width,
+        .height = logical_height,
+    };
+}
+
+fn computeScrollbarGeometry(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, focus_t: f32) ScrollbarGeometry {
+    return computeScrollbarTrack(origin_x, origin_y, logical_width, logical_height, focus_t);
+}
+
+fn computeScrollbarThumb(y: c_int, height: c_int, rows: usize, total_lines: usize, scrollback_offset: usize) struct { y: c_int, height: c_int } {
+    const geometry = ScrollbarGeometry{ .x = 0, .y = y, .width = scrollbar_max_width_logical, .height = height };
+    const model = ScrollbarModel{ .visible = true, .rows = rows, .total_lines = total_lines, .scrollback_offset = scrollback_offset };
+    return .{ .y = geometry.thumbY(model), .height = geometry.thumbHeight(model) };
+}
+
+fn pointInTrack(mouse_x: i32, mouse_y: i32, geometry: ScrollbarGeometry) bool {
+    return mouse_x >= geometry.x - scrollbar_hit_margin_logical and
+        mouse_x <= geometry.x + geometry.width + scrollbar_hit_margin_logical and
+        mouse_y >= geometry.y and
+        mouse_y <= geometry.y + geometry.height;
+}
+
+fn pointInThumb(mouse_x: i32, mouse_y: i32, geometry: ScrollbarGeometry, model: ScrollbarModel) bool {
+    const thumb_y = geometry.thumbY(model);
+    return mouse_x >= geometry.x - scrollbar_hit_margin_logical and
+        mouse_x <= geometry.x + geometry.width + scrollbar_hit_margin_logical and
+        mouse_y >= thumb_y and
+        mouse_y <= thumb_y + geometry.thumbHeight(model);
+}
+
+fn focusBucket(value: f32) u8 {
+    return if (value > 0.01) 1 else 0;
+}
+
+fn smoothstep01(t: f32) f32 {
+    const clamped = std.math.clamp(t, 0.0, 1.0);
+    return clamped * clamped * (3.0 - 2.0 * clamped);
+}
+
 fn baseTabLabel(title_len: usize, buf: []u8) usize {
     const title = std.mem.trim(u8, buf[0..title_len], " \t\r\n");
     if (title.len > 0 and !std.mem.eql(u8, title, "Terminal")) {
@@ -215,6 +541,85 @@ fn baseTabLabel(title_len: usize, buf: []u8) usize {
     const fallback = "Terminal";
     @memcpy(buf[0..fallback.len], fallback);
     return fallback.len;
+}
+
+fn contentRelativeMouseEvent(mouse: KeyInput.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, pixel_width: c_int, pixel_height: c_int) ?KeyInput.MouseEvent {
+    const local_x = mouse.pixel_x - origin_x;
+    const local_y = mouse.pixel_y - origin_y;
+    if (local_x < 0 or local_y < 0) return null;
+    if (local_x >= logical_width or local_y >= logical_height) return null;
+
+    var adjusted = mouse;
+    adjusted.pixel_x = scaleLogicalToPixel(local_x, logical_width, pixel_width);
+    adjusted.pixel_y = scaleLogicalToPixel(local_y, logical_height, pixel_height);
+    return adjusted;
+}
+
+fn clampedContentRelativeMouseEvent(mouse: KeyInput.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, pixel_width: c_int, pixel_height: c_int) ?KeyInput.MouseEvent {
+    if (logical_width <= 0 or logical_height <= 0) return null;
+    const local_x = std.math.clamp(mouse.pixel_x - origin_x, 0, logical_width - 1);
+    const local_y = std.math.clamp(mouse.pixel_y - origin_y, 0, logical_height - 1);
+    var adjusted = mouse;
+    adjusted.pixel_x = scaleLogicalToPixel(local_x, logical_width, pixel_width);
+    adjusted.pixel_y = scaleLogicalToPixel(local_y, logical_height, pixel_height);
+    return adjusted;
+}
+
+fn scaleLogicalToPixel(value: i32, logical_extent: c_int, pixel_extent: c_int) i32 {
+    if (value <= 0 or logical_extent <= 0 or pixel_extent <= 0) return 0;
+    const scaled = @divTrunc(@as(i64, value) * @as(i64, pixel_extent), @as(i64, logical_extent));
+    return @min(@as(i32, @intCast(scaled)), pixel_extent - 1);
+}
+
+test "contentRelativeMouseEvent subtracts widget origin" {
+    const mouse: KeyInput.MouseEvent = .{
+        .kind = .press,
+        .button = .left,
+        .pixel_x = 25,
+        .pixel_y = 42,
+        .mods = 0,
+        .buttons_down = 1,
+    };
+
+    const adjusted = contentRelativeMouseEvent(mouse, 5, 30, 200, 100, 400, 200).?;
+    try std.testing.expectEqual(@as(i32, 40), adjusted.pixel_x);
+    try std.testing.expectEqual(@as(i32, 24), adjusted.pixel_y);
+}
+
+test "scrollbar thumb sits at bottom at live bottom" {
+    const thumb = computeScrollbarThumb(10, 120, 20, 80, 0);
+    try std.testing.expectEqual(@as(c_int, 30), thumb.height);
+    try std.testing.expectEqual(@as(c_int, 100), thumb.y);
+}
+
+test "scrollbar thumb sits at top at max offset" {
+    const thumb = computeScrollbarThumb(10, 120, 20, 80, 60);
+    try std.testing.expectEqual(@as(c_int, 30), thumb.height);
+    try std.testing.expectEqual(@as(c_int, 10), thumb.y);
+}
+
+test "contentRelativeMouseEvent rejects events outside widget bounds" {
+    const mouse: KeyInput.MouseEvent = .{
+        .kind = .wheel,
+        .button = .wheel_up,
+        .pixel_x = 10,
+        .pixel_y = 20,
+        .mods = 0,
+        .buttons_down = 0,
+    };
+
+    try std.testing.expectEqual(@as(?KeyInput.MouseEvent, null), contentRelativeMouseEvent(mouse, 0, 30, 200, 100, 400, 200));
+}
+
+fn decodeOsc52Payload(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    const sep = std.mem.indexOfScalar(u8, raw, ';') orelse return error.InvalidOsc52Payload;
+    const data = raw[sep + 1 ..];
+    if (std.mem.eql(u8, data, "?")) return error.UnsupportedOsc52Query;
+    const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(data);
+    const out = try allocator.alloc(u8, decoded_len);
+    errdefer allocator.free(out);
+    try std.base64.standard.Decoder.decode(out, data);
+    return out;
 }
 
 fn flattenFallbacks(fonts: Config.FontStack, buf: [][:0]const u8) []const [:0]const u8 {
