@@ -20,6 +20,7 @@ pub const Terminal = struct {
     tab_label_buf: [128]u8,
     tab_label_len: usize,
     dirty: std.atomic.Value(bool),
+    wake_notified: std.atomic.Value(bool),
     wake_thread: ?std.Thread,
     stop_wake: std.atomic.Value(bool),
 
@@ -35,6 +36,7 @@ pub const Terminal = struct {
         self.tab_label_buf = undefined;
         self.tab_label_len = 0;
         self.dirty = std.atomic.Value(bool).init(true);
+        self.wake_notified = std.atomic.Value(bool).init(false);
         self.stop_wake = std.atomic.Value(bool).init(false);
         self.wake_thread = null;
         self.term = .{};
@@ -98,6 +100,7 @@ pub const Terminal = struct {
 
     pub fn presentAck(self: *Terminal) void {
         self.term.presentAck();
+        self.wake_notified.store(false, .release);
     }
 
     pub fn termState(self: *Terminal) LifecycleState {
@@ -110,7 +113,9 @@ pub const Terminal = struct {
 
     pub fn drainInput(self: *Terminal, key_in: *KeyInput, scratch: []u8) void {
         const n = key_in.drain(scratch);
-        if (n > 0) self.publishInputBytes(scratch[0..n]);
+        if (n > 0) {
+            self.publishInputBytes(scratch[0..n]);
+        }
     }
 
     pub fn handleScrollInput(self: *Terminal, key_in: *KeyInput) void {
@@ -192,9 +197,11 @@ pub const Terminal = struct {
 fn wakeWorker(self: *Terminal) void {
     while (!self.stop_wake.load(.acquire)) {
         if (self.term.waitRenderWake(1000)) {
-            self.refreshTabLabel();
-            self.dirty.store(true, .release);
-            window.wakeEventLoop();
+            if (!self.wake_notified.swap(true, .acq_rel)) {
+                self.refreshTabLabel();
+                self.dirty.store(true, .release);
+                window.wakeEventLoop();
+            }
         }
     }
 }

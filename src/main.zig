@@ -140,6 +140,7 @@ const App = struct {
             .tab_label_buf = undefined,
             .tab_label_len = 0,
             .dirty = std.atomic.Value(bool).init(true),
+            .wake_notified = std.atomic.Value(bool).init(false),
             .wake_thread = null,
             .stop_wake = std.atomic.Value(bool).init(false),
         };
