@@ -93,6 +93,13 @@ pub fn setClipboardText(text: []const u8) bool {
     return c_win.SDL_SetClipboardText(z.ptr) == true;
 }
 
+pub fn openUrl(uri: []const u8) bool {
+    const z = std.heap.c_allocator.allocSentinel(u8, uri.len, 0) catch return false;
+    defer std.heap.c_allocator.free(z);
+    @memcpy(z[0..uri.len], uri);
+    return c_win.SDL_OpenURL(z.ptr) == true;
+}
+
 pub fn lastError() [*:0]const u8 {
     return c_win.SDL_GetError();
 }

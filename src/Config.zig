@@ -74,6 +74,15 @@ pub const Config = struct {
         osc_52: ClipboardOsc52Policy = .deny,
     };
 
+    pub const LinkOpenPolicy = enum {
+        disabled,
+        system,
+    };
+
+    pub const Links = struct {
+        open: LinkOpenPolicy = .disabled,
+    };
+
     /// Terminal launch and rendering configuration.
     pub const Term = struct {
         shell: []u8,
@@ -82,6 +91,7 @@ pub const Config = struct {
         font_size: u16,
         fonts: FontStack,
         clipboard: Clipboard,
+        links: Links,
         shortcuts: ShortcutMap,
 
         /// Release owned terminal configuration storage.
@@ -246,6 +256,12 @@ fn loadConfigFromLua(alloc: std.mem.Allocator, lua: Lua.Api.State) !Config.Value
         parseClipboardOsc52Policy(reader.fieldString("osc_52") orelse "deny")
     else
         Config.ClipboardOsc52Policy.deny;
+    const links_reader = term_reader.child("links");
+    defer if (links_reader) |reader| reader.finish();
+    const links_open_policy = if (links_reader) |reader|
+        parseLinkOpenPolicy(reader.fieldString("open") orelse "disabled")
+    else
+        Config.LinkOpenPolicy.disabled;
     const term_shortcuts = try loadShortcutMap(alloc, term_reader.child("shortcuts"), &term_shortcut_specs);
     errdefer {
         var shortcuts_mut = term_shortcuts;
@@ -291,6 +307,7 @@ fn loadConfigFromLua(alloc: std.mem.Allocator, lua: Lua.Api.State) !Config.Value
                 .emoji = fallback_emoji,
             },
             .clipboard = .{ .osc_52 = clipboard_policy },
+            .links = .{ .open = links_open_policy },
             .shortcuts = term_shortcuts,
         },
         .window = .{
@@ -421,6 +438,11 @@ fn parseShortcutKey(raw: []const u8) ?Config.ShortcutKey {
 fn parseClipboardOsc52Policy(raw: []const u8) Config.ClipboardOsc52Policy {
     if (std.ascii.eqlIgnoreCase(raw, "allow")) return .allow;
     return .deny;
+}
+
+fn parseLinkOpenPolicy(raw: []const u8) Config.LinkOpenPolicy {
+    if (std.ascii.eqlIgnoreCase(raw, "system")) return .system;
+    return .disabled;
 }
 
 fn loadStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []const u8) ![]const [:0]u8 {

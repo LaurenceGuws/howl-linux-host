@@ -165,15 +165,16 @@ Config impact:
 Scope:
 - carry `link_id` through `howl-term` and render-core surfaces
 - expose URI lookup from the runtime to the host
-- add hover/click behavior in Linux-host
+- add click/open behavior in Linux-host
 
 Tester checks:
 - `printf '\033]8;;https://example.com\aLINK\033]8;;\a\n'`
-- confirm link hover/click behavior resolves the expected URI
+- set `term.links.open = "system"`
+- confirm `Ctrl+left click` resolves the expected URI through the system opener
 
 Config impact:
-- only add config when an actual host action exists
-- preferred shape if needed: `term.links.open = "disabled" | "system"`
+- `term.links.open = "disabled" | "system"`
+- default is `"disabled"`
 
 ## Tester Strategy
 After each landed feature set:
@@ -194,11 +195,11 @@ When possible, validate against:
 - stop baking negotiated key behavior into SDL byte tables
 - keep Linux-host responsible for policy, not escape-sequence semantics
 
-### Downstream Surfaces Likely Needed Soon
+### Downstream Surfaces Landed
 - `howl-term` accessor for pending clipboard requests
 - `howl-term` accessor for hyperlink URI lookup
 - render-core cell metadata expansion for `link_id`
-- Linux-host event path that can carry typed mouse and focus events cleanly
+- Linux-host event path for typed mouse and focus events
 
 ### Likely Next VT Core Work After Host Catch-Up
 - broader mouse protocol families beyond SGR

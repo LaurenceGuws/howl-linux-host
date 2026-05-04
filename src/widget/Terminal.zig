@@ -1,6 +1,7 @@
 const std = @import("std");
 const window = @import("../Window.zig").Window;
 const KeyInput = @import("../KeyInput.zig").KeyInput;
+const term_facade = @import("../HowlTerm.zig");
 const HowlTerm = @import("../HowlTerm.zig").HowlTerm;
 const LifecycleState = @import("../HowlTerm.zig").LifecycleState;
 const SurfaceHandle = @import("../HowlTerm.zig").SurfaceHandle;
@@ -147,6 +148,7 @@ pub const Terminal = struct {
                 .key => |key| self.publishInputKey(key),
                 .mouse => |mouse| {
                     if (self.handleScrollbarMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height)) continue;
+                    if (self.handleHyperlinkMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height)) continue;
                     if (self.handleSelectionMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height)) continue;
                     const local_mouse = contentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse continue;
                     const consumed_by_term = self.publishMouseEvent(local_mouse);
@@ -388,6 +390,19 @@ pub const Terminal = struct {
             },
             .wheel => return false,
         }
+    }
+
+    fn handleHyperlinkMouseEvent(self: *Terminal, mouse: KeyInput.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+        if (self.conf.term.links.open != .system) return false;
+        if (mouse.kind != .press or mouse.button != .left) return false;
+        if ((mouse.mods & term_facade.mod_ctrl) == 0) return false;
+        const local_mouse = contentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return false;
+        if (self.publishMouseEvent(local_mouse)) return true;
+
+        const uri = self.term.copyHyperlinkUriAtPixel(std.heap.c_allocator, local_mouse.pixel_x, local_mouse.pixel_y) orelse return false;
+        defer std.heap.c_allocator.free(uri);
+        _ = window.openUrl(uri);
+        return true;
     }
 
     fn updateScrollbarFromMouse(self: *Terminal, mouse_y: i32, geometry: ScrollbarGeometry, model: ScrollbarModel) bool {

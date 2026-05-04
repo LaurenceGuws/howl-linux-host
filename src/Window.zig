@@ -76,6 +76,10 @@ pub const Window = struct {
         return win_backend.setClipboardText(text);
     }
 
+    pub fn openUrl(uri: []const u8) bool {
+        return win_backend.openUrl(uri);
+    }
+
     /// Report the last backend error string.
     pub fn lastError() [*:0]const u8 {
         return win_backend.lastError();

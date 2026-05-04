@@ -17,6 +17,7 @@ pub const SurfaceHandle = howl_term.SurfaceHandle;
 pub const ClipboardRequest = howl_term.ClipboardRequest;
 pub const MouseButton = howl_term.MouseButton;
 pub const MouseEventKind = howl_term.MouseEventKind;
+pub const mod_ctrl = howl_term.mod_ctrl;
 
 /// Host-local terminal runtime owner.
 pub const HowlTerm = struct {
@@ -147,6 +148,15 @@ pub const HowlTerm = struct {
         };
     }
 
+    pub fn copyHyperlinkUriAtPixel(self: *HowlTerm, allocator: std.mem.Allocator, pixel_x: i32, pixel_y: i32) ?[]u8 {
+        const inst = &(self.term orelse return null);
+        return inst.copyHyperlinkUriAtPixel(allocator, pixel_x, pixel_y) catch {
+            self.lifecycle_state = .failed;
+            std.log.err("terminal hyperlink URI lookup failed", .{});
+            return null;
+        };
+    }
+
     pub fn publishMouseEvent(self: *HowlTerm, kind: MouseEventKind, button: MouseButton, pixel_x: i32, pixel_y: i32, mods: howl_term.Modifier, buttons_down: u8) bool {
         const inst = &(self.term orelse return false);
         return inst.publishMouseEvent(kind, button, pixel_x, pixel_y, mods, buttons_down) catch |err| switch (err) {
@@ -245,7 +255,6 @@ pub const HowlTerm = struct {
         const inst = &(self.term orelse return .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 });
         return inst.surfaceHandle();
     }
-
 };
 
 fn buildPtyCommand(alloc: std.mem.Allocator, shell: []const u8, start_path: []const u8, command: ?[]const u8) ![]u8 {

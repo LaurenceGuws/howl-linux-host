@@ -116,12 +116,30 @@ Expected output:
 - wheel should scroll local terminal scrollback again
 - no mouse-report sequences should be sent to the app
 
-## Follow-On Checks
+## Slice 2C: Focus Reporting
 
-When focus reporting lands:
-- `printf '\033[?1004h'`
-- move focus away from the window and back
-- expect `^[[O` and `^[[I`
+Status:
+- landed in Linux-host through the terminal focus path
+- effective terminal focus combines desktop/window focus with active widget/tab focus
+
+Goal:
+- verify that focus reports are sent only when the terminal app enables focus reporting
+
+Test flow:
+1. Start Howl.
+2. Run:
+```sh
+printf '\033[?1004h'; cat -v
+```
+3. Move desktop focus away from the Howl window.
+4. Refocus the Howl window.
+
+Expected output:
+- focus out should emit `^[[O`
+- focus in should emit `^[[I`
+
+If focus reporting is not enabled:
+- focus changes should not write focus-report sequences to the app
 
 Focus UI behavior:
 - active input target should show the terminal's preferred cursor shape
@@ -192,3 +210,35 @@ Expected result with allow:
 Notes:
 - `SGVsbG8=` is base64 for `Hello`
 - current host behavior supports clipboard writes, not OSC 52 queries
+
+## Slice 5: OSC 8 Hyperlinks
+
+Status:
+- OSC 8 link IDs flow from `vt-core` through `howl-term` and render-core surface cells
+- Linux-host can resolve a clicked cell to its URI
+- default link opening policy is `disabled`
+
+Current config:
+- `term.links.open = "disabled" | "system"`
+- default in Linux-host is `"disabled"`
+
+Test flow with disabled:
+1. Start Howl with default config.
+2. Run `printf '\033]8;;https://example.com\aLINK\033]8;;\a\n'`.
+3. `Ctrl+left click` on `LINK`.
+
+Expected result with disabled:
+- no system opener should launch
+
+Test flow with system opener:
+1. Change `term.links.open` to `"system"` in `assets/default_config/init.lua` or your effective config.
+2. Restart Howl.
+3. Run `printf '\033]8;;https://example.com\aLINK\033]8;;\a\n'`.
+4. `Ctrl+left click` on `LINK`.
+
+Expected result with system opener:
+- the system URL opener should receive `https://example.com`
+
+Notes:
+- terminal mouse reporting still takes priority when an app has enabled it
+- hover cursor/underline polish is still future UX work

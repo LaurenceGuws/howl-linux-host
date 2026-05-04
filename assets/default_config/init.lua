@@ -28,6 +28,9 @@ return {
     clipboard = {
       osc_52 = "deny",
     },
+    links = {
+      open = "disabled",
+    },
     shortcuts = {
       zoom_in = { "ctrl+equal", "ctrl+kp_add" },
       zoom_out = { "ctrl+minus", "ctrl+kp_subtract" },
