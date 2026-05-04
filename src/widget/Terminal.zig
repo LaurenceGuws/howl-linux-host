@@ -492,6 +492,10 @@ const ScrollbarGeometry = struct {
 
 fn wakeWorker(self: *Terminal) void {
     while (!self.stop_wake.load(.acquire)) {
+        if (self.wake_notified.load(.acquire)) {
+            window.c_win.SDL_Delay(1);
+            continue;
+        }
         if (self.term.waitRenderWake(1000)) {
             if (!self.wake_notified.swap(true, .acq_rel)) {
                 self.refreshTabLabel();

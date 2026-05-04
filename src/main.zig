@@ -4,7 +4,7 @@ const key_input = @import("KeyInput.zig").KeyInput;
 const config = @import("Config.zig").Config;
 const GpuSvc = @import("Gpu.zig");
 const ShortCuts = @import("ShortCuts.zig");
-const TerminalWidget = @import("Terminal.zig").Terminal;
+const TerminalWidget = @import("widget/Terminal.zig").Terminal;
 
 const max_tabs: usize = 9;
 

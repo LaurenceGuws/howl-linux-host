@@ -21,7 +21,7 @@ pub const mod_ctrl = howl_term.mod_ctrl;
 
 /// Host-local terminal runtime owner.
 pub const HowlTerm = struct {
-    term: ?howl_term.HowlTerm = null,
+    term: ?howl_term = null,
     lifecycle_state: LifecycleState = .stopped,
 
     /// Initialize the host-local runtime and start the embedded session.
@@ -44,7 +44,7 @@ pub const HowlTerm = struct {
         defer if (pty_command_owned) |cmd| std.heap.c_allocator.free(cmd);
         const pty_command = pty_command_owned orelse command;
 
-        self.term = try howl_term.HowlTerm.initPty(std.heap.c_allocator, shell, pty_command, 1, 1, .{ .width = 1, .height = 1 });
+        self.term = try howl_term.initPty(std.heap.c_allocator, shell, pty_command, 1, 1, .{ .width = 1, .height = 1 });
         self.term.?.setFontSizePx(font_size_px);
         self.term.?.setPrimaryFontPath(font_primary);
         self.term.?.setFallbackFontPaths(font_fallbacks);
