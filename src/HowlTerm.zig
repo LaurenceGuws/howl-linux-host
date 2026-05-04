@@ -14,10 +14,11 @@ pub const LifecycleState = enum {
     failed,
 };
 
+pub const SurfaceHandle = howl_term.SurfaceHandle;
+
 /// Host-local terminal runtime owner.
 pub const HowlTerm = struct {
     term: ?howl_term.HowlTerm = null,
-    texture_id: u32 = 0,
     lifecycle_state: LifecycleState = .stopped,
     last_missing_glyphs: u64 = 0,
     last_fallback_hits: u64 = 0,
@@ -31,7 +32,6 @@ pub const HowlTerm = struct {
     /// Initialize the host-local runtime and start the embedded session.
     pub fn init(
         self: *HowlTerm,
-        texture: u32,
         shell: []const u8,
         start_path: ?[]const u8,
         command: ?[]const u8,
@@ -44,14 +44,13 @@ pub const HowlTerm = struct {
         font_fallbacks: []const [:0]const u8,
     ) !void {
         self.lifecycle_state = .starting;
-        self.texture_id = texture;
 
         const pty_command_owned = if (start_path) |path| try buildPtyCommand(std.heap.c_allocator, shell, path, command) else null;
         defer if (pty_command_owned) |cmd| std.heap.c_allocator.free(cmd);
         const pty_command = pty_command_owned orelse command;
 
         const transport = try howl_session.initPty(std.heap.c_allocator, shell, pty_command);
-        self.term = try howl_term.HowlTerm.init(std.heap.c_allocator, transport, 1, 1, .{ .width = 1, .height = 1 }, texture);
+        self.term = try howl_term.HowlTerm.init(std.heap.c_allocator, transport, 1, 1, .{ .width = 1, .height = 1 });
         self.term.?.setFontSizePx(font_size_px);
         self.term.?.setPrimaryFontPath(font_primary);
         self.term.?.setFallbackFontPaths(font_fallbacks);
@@ -82,7 +81,6 @@ pub const HowlTerm = struct {
             inst.deinit();
             self.term = null;
         }
-        self.texture_id = 0;
         self.lifecycle_state = .stopped;
     }
 
@@ -93,7 +91,7 @@ pub const HowlTerm = struct {
         const rh: u16 = @intCast(@max(render_height, 1));
         const gw: u16 = @intCast(@max(grid_width, 1));
         const gh: u16 = @intCast(@max(grid_height, 1));
-        inst.renderFrameSized(rw, rh, gw, gh, self.texture_id) catch |err| {
+        inst.renderFrameSized(rw, rh, gw, gh) catch |err| {
             self.lifecycle_state = .failed;
             std.debug.panic("linux-host HowlTerm.renderFrameSized failed: {s}", .{@errorName(err)});
         };
@@ -170,6 +168,11 @@ pub const HowlTerm = struct {
     pub fn viewportRows(self: *const HowlTerm) u16 {
         const inst = &(self.term orelse return 1);
         return inst.viewportRows();
+    }
+
+    pub fn surfaceHandle(self: *const HowlTerm) SurfaceHandle {
+        const inst = &(self.term orelse return .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 });
+        return inst.surfaceHandle();
     }
 
     fn logRenderTelemetry(self: *HowlTerm, inst: *howl_term.HowlTerm) void {

@@ -16,6 +16,7 @@ pub const Rect = struct {
     height: c_int,
 };
 pub const PresentLayout = struct {
+    texture_id: u32,
     texture_rect: Rect,
     tab_count: usize,
     active_tab: usize,
@@ -45,14 +46,4 @@ pub fn deinit(gpu: *Gpu) void {
 /// Present the current GPU frame.
 pub fn present(gpu: *Gpu, layout: PresentLayout) void {
     gpu_backend.present(gpu, layout);
-}
-
-/// Return the selected backend texture handle.
-pub fn texture(gpu: *Gpu) c_uint {
-    return gpu_backend.texture(gpu);
-}
-
-/// Ensure the selected backend texture matches the requested size.
-pub fn ensureTextureSize(gpu: *Gpu, width: c_int, height: c_int) void {
-        gpu_backend.ensureTextureSize(gpu, width, height);
 }

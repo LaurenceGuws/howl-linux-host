@@ -3,6 +3,7 @@ const window = @import("../Window.zig").Window;
 const KeyInput = @import("../KeyInput.zig").KeyInput;
 const HowlTerm = @import("../HowlTerm.zig").HowlTerm;
 const LifecycleState = @import("../HowlTerm.zig").LifecycleState;
+const SurfaceHandle = @import("../HowlTerm.zig").SurfaceHandle;
 const Config = @import("../Config.zig").Config;
 
 pub const Terminal = struct {
@@ -22,7 +23,7 @@ pub const Terminal = struct {
     wake_thread: ?std.Thread,
     stop_wake: std.atomic.Value(bool),
 
-    pub fn init(self: *Terminal, texture: u32, width: c_int, height: c_int) !void {
+    pub fn init(self: *Terminal, width: c_int, height: c_int) !void {
         self.render_px_w = @max(width, 1);
         self.render_px_h = @max(height, 1);
         self.grid_px_w = self.render_px_w;
@@ -41,7 +42,6 @@ pub const Terminal = struct {
         var font_fallbacks_buf: [32][:0]const u8 = undefined;
         const font_fallbacks = flattenFallbacks(self.conf.term.fonts, font_fallbacks_buf[0..]);
         try self.term.init(
-            texture,
             self.conf.term.shell,
             self.conf.term.start_path,
             self.conf.term.command,
@@ -138,6 +138,10 @@ pub const Terminal = struct {
 
     pub fn tabLabel(self: *const Terminal) []const u8 {
         return self.tab_label_buf[0..self.tab_label_len];
+    }
+
+    pub fn surfaceHandle(self: *const Terminal) SurfaceHandle {
+        return self.term.surfaceHandle();
     }
 
     pub fn adjustFontSize(self: *Terminal, delta: i16) bool {

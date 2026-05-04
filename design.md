@@ -80,7 +80,7 @@ sequenceDiagram
 ## API Contracts
 - `Config.loadLua` returns an app-owned Lua state loaded from host config.
 - `Config.loadFromLua` builds owned typed config sections from an app-owned Lua state.
-- `Terminal.init` starts one embedded terminal runtime against a host-owned texture.
+- `Terminal.init` starts one embedded terminal runtime with a renderer-owned retained surface consumed by the host compositor.
 - `HowlTerm.init` owns transport creation and delegates to core `howl-term`.
 - `Window` and `KeyInput` abstract backend selection behind stable host owners.
 - `ShortCuts` resolves host key chords into stable host actions without re-parsing terminal byte input.

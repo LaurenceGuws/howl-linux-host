@@ -90,10 +90,11 @@ const App = struct {
         var label_buf: [max_tabs][]const u8 = undefined;
         for (self.tabs.items, 0..) |tab, i| label_buf[i] = tab.tabLabel();
         if (work.terminal_dirty) {
-            GpuSvc.ensureTextureSize(&self.gpu, self.contentWidth(), self.contentHeight());
             self.activeTab().render();
         }
+        const surface = self.activeTab().surfaceHandle();
         GpuSvc.present(&self.gpu, .{
+            .texture_id = surface.texture_id,
             .texture_rect = self.textureRect(),
             .tab_count = self.tabs.items.len,
             .active_tab = self.active_tab_idx,
@@ -144,7 +145,7 @@ const App = struct {
         };
         errdefer tab.deinit();
 
-        try tab.init(GpuSvc.texture(&self.gpu), self.contentWidth(), self.contentHeight());
+        try tab.init(self.contentWidth(), self.contentHeight());
         try self.tabs.append(self.allocator, tab);
         self.active_tab_idx = self.tabs.items.len - 1;
         tab.requestRedraw();
