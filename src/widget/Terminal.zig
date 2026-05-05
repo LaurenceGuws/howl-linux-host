@@ -1,4 +1,7 @@
 const std = @import("std");
+const c = @cImport({
+    @cInclude("stdio.h");
+});
 const window = @import("../Window.zig").Window;
 const KeyInput = @import("../KeyInput.zig").KeyInput;
 const term_facade = @import("../HowlTerm.zig");
@@ -9,7 +12,20 @@ const Config = @import("../Config.zig").Config;
 const Gpu = @import("../Gpu.zig");
 const trace = @import("howl_term").Trace;
 
+fn stdoutLog(comptime fmt: []const u8, args: anytype) void {
+    var buf: [256]u8 = undefined;
+    const line = std.fmt.bufPrintZ(&buf, fmt ++ "\n", args) catch return;
+    _ = c.printf("%s", line.ptr);
+    _ = c.fflush(c.stdout);
+}
+
+fn monotonicNs() u64 {
+    return window.c_win.SDL_GetTicksNS();
+}
+
 pub const Terminal = struct {
+    const resize_coalesce_ns = 25 * std.time.ns_per_ms;
+
     term: HowlTerm,
     conf: *const Config.Value,
     render_px_w: c_int,
@@ -25,6 +41,7 @@ pub const Terminal = struct {
     tab_label_buf: [128]u8,
     tab_label_len: usize,
     last_surface: SurfaceHandle,
+    last_resize_ns: u64,
     dirty: std.atomic.Value(bool),
     wake_notified: std.atomic.Value(bool),
     wake_dirty_ns: std.atomic.Value(u64),
@@ -51,6 +68,7 @@ pub const Terminal = struct {
         self.tab_label_buf = undefined;
         self.tab_label_len = 0;
         self.last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 };
+        self.last_resize_ns = 0;
         self.dirty = std.atomic.Value(bool).init(true);
         self.wake_notified = std.atomic.Value(bool).init(false);
         self.wake_dirty_ns = std.atomic.Value(u64).init(0);
@@ -103,18 +121,25 @@ pub const Terminal = struct {
         self.logical_h = lh;
         self.pending_grid_px_w = lw;
         self.pending_grid_px_h = lh;
-        self.grid_px_w = lw;
-        self.grid_px_h = lh;
-        self.dirty.store(true, .release);
+        self.last_resize_ns = window.c_win.SDL_GetTicksNS();
     }
 
     pub fn nextWaitTimeoutMs(self: *Terminal) c_int {
-        _ = self;
-        return -1;
+        if (self.pending_grid_px_w == self.grid_px_w and self.pending_grid_px_h == self.grid_px_h) return -1;
+        if (self.last_resize_ns == 0) return 0;
+        const elapsed_ns = window.c_win.SDL_GetTicksNS() -| self.last_resize_ns;
+        if (elapsed_ns >= resize_coalesce_ns) return 0;
+        return @intCast(@max(1, @divTrunc(resize_coalesce_ns - elapsed_ns, std.time.ns_per_ms)));
     }
 
     pub fn maybeCommitGridResize(self: *Terminal) void {
-        _ = self;
+        if (self.pending_grid_px_w == self.grid_px_w and self.pending_grid_px_h == self.grid_px_h) return;
+        if (self.last_resize_ns != 0 and window.c_win.SDL_GetTicksNS() -| self.last_resize_ns < resize_coalesce_ns) return;
+        self.grid_px_w = self.pending_grid_px_w;
+        self.grid_px_h = self.pending_grid_px_h;
+        self.last_resize_ns = 0;
+        self.dirty.store(true, .release);
+        stdoutLog("ts_ns={} HOST_WAKE resize_commit", .{monotonicNs()});
     }
 
     pub fn hasRenderWork(self: *Terminal) bool {
@@ -146,6 +171,7 @@ pub const Terminal = struct {
         if (self.term.hasRenderWork()) {
             self.dirty.store(true, .release);
             self.wake_dirty_ns.store(window.c_win.SDL_GetTicksNS(), .release);
+            stdoutLog("ts_ns={} HOST_WAKE present_rearm", .{monotonicNs()});
         }
     }
 
@@ -154,10 +180,12 @@ pub const Terminal = struct {
     }
 
     pub fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
+        stdoutLog("ts_ns={} HOST_INPUT bytes len={}", .{ monotonicNs(), bytes.len });
         self.term.publishInputBytes(bytes);
     }
 
     pub fn publishInputKey(self: *Terminal, key: KeyInput.KeyEvent) void {
+        stdoutLog("ts_ns={} HOST_INPUT key", .{monotonicNs()});
         self.term.publishInputKey(key.key, key.mods);
     }
 
@@ -169,6 +197,7 @@ pub const Terminal = struct {
         const text = window.getClipboardText(std.heap.c_allocator) catch return;
         defer if (text) |buf| std.heap.c_allocator.free(buf);
         const payload = text orelse return;
+        stdoutLog("ts_ns={} HOST_INPUT paste len={}", .{ monotonicNs(), payload.len });
         self.term.publishPaste(payload);
     }
 
@@ -286,9 +315,8 @@ pub const Terminal = struct {
     }
 
     pub fn presentSurfaceHandle(self: *const Terminal) SurfaceHandle {
-        const current = self.term.surfaceHandle();
-        if (current.texture_id != 0) return current;
-        return self.last_surface;
+        if (self.last_surface.texture_id != 0) return self.last_surface;
+        return self.term.surfaceHandle();
     }
 
     pub fn adjustFontSize(self: *Terminal, delta: i16) bool {
@@ -552,6 +580,7 @@ fn wakeWorker(self: *Terminal) void {
                 self.refreshTabLabel();
                 self.dirty.store(true, .release);
                 self.wake_dirty_ns.store(window.c_win.SDL_GetTicksNS(), .release);
+                stdoutLog("ts_ns={} HOST_WAKE worker_notify", .{monotonicNs()});
                 window.wakeEventLoop();
             }
         }

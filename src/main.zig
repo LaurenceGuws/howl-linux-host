@@ -108,6 +108,7 @@ const App = struct {
     }
 
     fn collectRenderWork(self: *App) RenderWork {
+        self.activeTab().maybeCommitGridResize();
         const terminal_dirty = self.activeTab().hasRenderWork();
         return .{
             .needs_frame = self.chrome_dirty or terminal_dirty,
@@ -191,6 +192,7 @@ const App = struct {
             .tab_label_buf = undefined,
             .tab_label_len = 0,
             .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
+            .last_resize_ns = 0,
             .dirty = std.atomic.Value(bool).init(true),
             .wake_notified = std.atomic.Value(bool).init(false),
             .wake_dirty_ns = std.atomic.Value(u64).init(0),
@@ -363,7 +365,7 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
-        const wait_ms = waitTimeoutMs(cli.duration_ms, run_start_ms, app.activeTerminalPassiveHoverWake());
+        const wait_ms = waitTimeoutMs(cli.duration_ms, run_start_ms, app.activeTerminalPassiveHoverWake(), app.activeTab().nextWaitTimeoutMs());
         const signal = window.waitEventSignal(win, wait_ms);
         if (signal == .quit) {
             running = false;
@@ -454,12 +456,13 @@ fn replaceOptionalOwned(slot: *?[]u8, value: []const u8) !void {
     slot.* = duped;
 }
 
-fn waitTimeoutMs(duration_ms: ?u64, run_start_ms: u64, passive_hover_wake: bool) c_int {
+fn waitTimeoutMs(duration_ms: ?u64, run_start_ms: u64, passive_hover_wake: bool, tab_timeout_ms: c_int) c_int {
     const passive_timeout: c_int = if (passive_hover_wake) 16 else -1;
-    const duration = duration_ms orelse return passive_timeout;
+    const merged_timeout: c_int = if (passive_timeout < 0) tab_timeout_ms else if (tab_timeout_ms < 0) passive_timeout else @min(passive_timeout, tab_timeout_ms);
+    const duration = duration_ms orelse return merged_timeout;
     const elapsed = window.c_win.SDL_GetTicks() -| run_start_ms;
     if (elapsed >= duration) return 0;
     const remaining: c_int = @intCast(@min(duration - elapsed, @as(u64, @intCast(std.math.maxInt(c_int)))));
-    if (passive_timeout < 0) return remaining;
-    return @min(passive_timeout, remaining);
+    if (merged_timeout < 0) return remaining;
+    return @min(merged_timeout, remaining);
 }

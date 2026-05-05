@@ -20,7 +20,7 @@ return {
     -- Optional primary font path (nil => system default search)
     font_primary = nil,
     -- Ordered fallback stacks (paths)
-    fallback_mono = {"/home/home/personal/zide/assets/fonts/IosevkaTermNerdFontMono-Regular.ttf"},
+    fallback_mono = {"/home/home/personal/zide/assets/fonts/IosevkaTermNerdFont-Regular.ttf"},
     fallback_symbols = {},
     fallback_emoji = {},
     -- Optional command string
