@@ -5,3 +5,5 @@ zig-pkg/
 artifacts/
 __pycache__/
 *.pyc
+/ascii-howl.ndjson
+/src/fuzz/ascii-rain.c
