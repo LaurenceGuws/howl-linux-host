@@ -1,5 +1,36 @@
 # Linux Host Stress
 
+## Tooling Checklist
+
+Current host-side status on this machine:
+
+- `strace`: available
+- `nvidia-smi`: available
+- `nvtop`: available
+- `glxinfo`: available
+- `nsys`: available
+- `ncu`: available
+- `nvcc`: available
+
+Installed NVIDIA-side tooling:
+
+- `nsight-systems` for CPU/thread/GPU timelines
+- `nsight-compute` for deeper kernel/GPU analysis if we ever need it
+- `cuda` for broader NVIDIA userspace tooling availability
+
+Important working rule:
+
+- Do not forget to use the existing GPU/resource hooks in `tools/benchmark_terminals.py` before adding new ad hoc host profiling code.
+- The Python harness already samples `nvidia-smi` when available.
+- Performance-facing benchmark and stress surfaces should run as `ReleaseFast`, not debug.
+- The Python launcher now builds with `zig build -Doptimize=ReleaseFast` when `--build` is used.
+- When we return to host-side performance work, prefer this order:
+  - first: `tools/benchmark_terminals.py` resource and GPU sampling
+  - second: `strace` for syscall and PTY/event-loop suspicion
+  - third: `nsys` for CPU/thread/GPU timeline correlation
+  - fourth: `ncu` only if we are deep enough in GL/GPU behavior that a shader or driver-side question is real
+- Keep these tools as host-validation aids. Do not let them drive changes that should be proven first in `vt-core`, `render-core`, or `howl-term` benchmark surfaces.
+
 ## Large Scrollback Payload
 
 Use `bat` to exercise long highlighted lines, SGR churn, wrapping, scrollback, and sustained PTY throughput:

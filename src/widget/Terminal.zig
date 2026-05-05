@@ -14,6 +14,8 @@ pub const Terminal = struct {
     conf: *const Config.Value,
     render_px_w: c_int,
     render_px_h: c_int,
+    logical_w: c_int,
+    logical_h: c_int,
     grid_px_w: c_int,
     grid_px_h: c_int,
     pending_grid_px_w: c_int,
@@ -22,6 +24,7 @@ pub const Terminal = struct {
     default_font_size_px: u16,
     tab_label_buf: [128]u8,
     tab_label_len: usize,
+    last_surface: SurfaceHandle,
     dirty: std.atomic.Value(bool),
     wake_notified: std.atomic.Value(bool),
     wake_dirty_ns: std.atomic.Value(u64),
@@ -34,17 +37,20 @@ pub const Terminal = struct {
     scrollbar_dragging: bool,
     scrollbar_grab_offset: f32,
 
-    pub fn init(self: *Terminal, width: c_int, height: c_int) !void {
-        self.render_px_w = @max(width, 1);
-        self.render_px_h = @max(height, 1);
-        self.grid_px_w = self.render_px_w;
-        self.grid_px_h = self.render_px_h;
+    pub fn init(self: *Terminal, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) !void {
+        self.render_px_w = @max(render_width, 1);
+        self.render_px_h = @max(render_height, 1);
+        self.logical_w = @max(logical_width, 1);
+        self.logical_h = @max(logical_height, 1);
+        self.grid_px_w = self.logical_w;
+        self.grid_px_h = self.logical_h;
         self.pending_grid_px_w = self.grid_px_w;
         self.pending_grid_px_h = self.grid_px_h;
         self.font_size_px = @max(self.conf.term.font_size, 1);
         self.default_font_size_px = self.font_size_px;
         self.tab_label_buf = undefined;
         self.tab_label_len = 0;
+        self.last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 };
         self.dirty = std.atomic.Value(bool).init(true);
         self.wake_notified = std.atomic.Value(bool).init(false);
         self.wake_dirty_ns = std.atomic.Value(u64).init(0);
@@ -85,16 +91,20 @@ pub const Terminal = struct {
         self.term.deinit();
     }
 
-    pub fn resize(self: *Terminal, width: c_int, height: c_int) void {
-        const w = @max(width, 1);
-        const h = @max(height, 1);
-        if (w == self.render_px_w and h == self.render_px_h and w == self.pending_grid_px_w and h == self.pending_grid_px_h) return;
-        self.render_px_w = w;
-        self.render_px_h = h;
-        self.pending_grid_px_w = w;
-        self.pending_grid_px_h = h;
-        self.grid_px_w = w;
-        self.grid_px_h = h;
+    pub fn resize(self: *Terminal, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
+        const rw = @max(render_width, 1);
+        const rh = @max(render_height, 1);
+        const lw = @max(logical_width, 1);
+        const lh = @max(logical_height, 1);
+        if (rw == self.render_px_w and rh == self.render_px_h and lw == self.pending_grid_px_w and lh == self.pending_grid_px_h) return;
+        self.render_px_w = rw;
+        self.render_px_h = rh;
+        self.logical_w = lw;
+        self.logical_h = lh;
+        self.pending_grid_px_w = lw;
+        self.pending_grid_px_h = lh;
+        self.grid_px_w = lw;
+        self.grid_px_h = lh;
         self.dirty.store(true, .release);
     }
 
@@ -115,6 +125,8 @@ pub const Terminal = struct {
         // Hosts own geometry policy: render pixels may diverge from grid-driving pixels.
         const start_ns = window.c_win.SDL_GetTicksNS();
         self.term.renderFrameSized(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
+        const surface = self.term.surfaceHandle();
+        if (surface.texture_id != 0) self.last_surface = surface;
         const elapsed_us = @divTrunc(window.c_win.SDL_GetTicksNS() - start_ns, std.time.ns_per_us);
         const wake_ns = self.wake_dirty_ns.swap(0, .acq_rel);
         const wake_to_render_us = if (wake_ns == 0) 0 else @divTrunc(start_ns -| wake_ns, std.time.ns_per_us);
@@ -219,17 +231,19 @@ pub const Terminal = struct {
             return .{ .visible = false, .x = texture_rect.x + texture_rect.width, .y = texture_rect.y, .width = 0, .height = 0, .thumb_y = texture_rect.y, .thumb_height = 0 };
         }
 
-        const focus_t = self.scrollbarFocusT(0, 0, self.render_px_w, self.render_px_h);
-        const track = computeScrollbarTrack(0, 0, self.render_px_w, self.render_px_h, focus_t);
+        const logical_w = @max(self.logical_w, 1);
+        const logical_h = @max(self.logical_h, 1);
+        const focus_t = self.scrollbarFocusT(0, 0, logical_w, logical_h);
+        const track = computeScrollbarTrack(0, 0, logical_w, logical_h, focus_t);
         const thumb = computeScrollbarThumb(track.y, track.height, model.rows, model.total_lines, model.scrollback_offset);
         return .{
             .visible = true,
-            .x = texture_rect.x + track.x,
-            .y = texture_rect.y + track.y,
-            .width = track.width,
-            .height = track.height,
-            .thumb_y = texture_rect.y + thumb.y,
-            .thumb_height = thumb.height,
+            .x = texture_rect.x + scaleLogicalToPixel(track.x, logical_w, texture_rect.width),
+            .y = texture_rect.y + scaleLogicalToPixel(track.y, logical_h, texture_rect.height),
+            .width = scaleLogicalSpan(track.width, logical_w, texture_rect.width),
+            .height = scaleLogicalSpan(track.height, logical_h, texture_rect.height),
+            .thumb_y = texture_rect.y + scaleLogicalToPixel(thumb.y, logical_h, texture_rect.height),
+            .thumb_height = scaleLogicalSpan(thumb.height, logical_h, texture_rect.height),
         };
     }
 
@@ -269,6 +283,12 @@ pub const Terminal = struct {
 
     pub fn surfaceHandle(self: *const Terminal) SurfaceHandle {
         return self.term.surfaceHandle();
+    }
+
+    pub fn presentSurfaceHandle(self: *const Terminal) SurfaceHandle {
+        const current = self.term.surfaceHandle();
+        if (current.texture_id != 0) return current;
+        return self.last_surface;
     }
 
     pub fn adjustFontSize(self: *Terminal, delta: i16) bool {
@@ -620,6 +640,12 @@ fn scaleLogicalToPixel(value: i32, logical_extent: c_int, pixel_extent: c_int) i
     if (value <= 0 or logical_extent <= 0 or pixel_extent <= 0) return 0;
     const scaled = @divTrunc(@as(i64, value) * @as(i64, pixel_extent), @as(i64, logical_extent));
     return @min(@as(i32, @intCast(scaled)), pixel_extent - 1);
+}
+
+fn scaleLogicalSpan(value: i32, logical_extent: c_int, pixel_extent: c_int) i32 {
+    if (value <= 0 or logical_extent <= 0 or pixel_extent <= 0) return 0;
+    const scaled = @divTrunc(@as(i64, value) * @as(i64, pixel_extent), @as(i64, logical_extent));
+    return @max(@as(i32, @intCast(scaled)), 1);
 }
 
 test "contentRelativeMouseEvent subtracts widget origin" {

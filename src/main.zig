@@ -97,7 +97,7 @@ const App = struct {
         self.window_px_h = h;
         self.window_logical_w = lw;
         self.window_logical_h = lh;
-        for (self.tabs.items) |tab| tab.resize(self.contentWidth(), self.contentHeight());
+        for (self.tabs.items) |tab| tab.resize(self.contentWidth(), self.contentHeight(), self.contentWidthLogical(), self.contentHeightLogical());
         self.chrome_dirty = true;
     }
 
@@ -125,7 +125,7 @@ const App = struct {
             self.activeTab().render();
             terminal_us = @divTrunc(window.c_win.SDL_GetTicksNS() - terminal_start_ns, std.time.ns_per_us);
         }
-        const surface = self.activeTab().surfaceHandle();
+        const surface = self.activeTab().presentSurfaceHandle();
         const present_start_ns = window.c_win.SDL_GetTicksNS();
         GpuSvc.present(&self.gpu, .{
             .texture_id = surface.texture_id,
@@ -180,6 +180,8 @@ const App = struct {
             .conf = self.conf,
             .render_px_w = 1,
             .render_px_h = 1,
+            .logical_w = 1,
+            .logical_h = 1,
             .grid_px_w = 1,
             .grid_px_h = 1,
             .pending_grid_px_w = 1,
@@ -188,6 +190,7 @@ const App = struct {
             .default_font_size_px = 0,
             .tab_label_buf = undefined,
             .tab_label_len = 0,
+            .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .dirty = std.atomic.Value(bool).init(true),
             .wake_notified = std.atomic.Value(bool).init(false),
             .wake_dirty_ns = std.atomic.Value(u64).init(0),
@@ -202,7 +205,7 @@ const App = struct {
         };
         errdefer tab.deinit();
 
-        try tab.init(self.contentWidth(), self.contentHeight());
+        try tab.init(self.contentWidth(), self.contentHeight(), self.contentWidthLogical(), self.contentHeightLogical());
         try self.tabs.append(self.allocator, tab);
         self.active_tab_idx = self.tabs.items.len - 1;
         self.syncTerminalFocus();

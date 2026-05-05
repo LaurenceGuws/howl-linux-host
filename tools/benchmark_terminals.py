@@ -39,11 +39,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, default=ROOT / "artifacts" / "stress")
     parser.add_argument("--build", action="store_true", help="run zig build before benchmarking")
     parser.add_argument("--trace-howl", action="store_true", help="enable HOWL_TRACE_PATH during Howl runs")
-    parser.add_argument("--terminals", nargs="+", choices=("howl", "kitty", "ghostty"), default=["howl", "kitty", "ghostty"])
+    parser.add_argument("--terminals", nargs="+", choices=("howl", "kitty", "ghostty", "alacritty"), default=["howl", "kitty", "ghostty"])
     parser.add_argument("--howl-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_term")
     parser.add_argument("--stress-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_ascii_rain_stress")
     parser.add_argument("--kitty-bin", default="kitty")
     parser.add_argument("--ghostty-bin", default="ghostty")
+    parser.add_argument("--alacritty-bin", default="alacritty")
     return parser.parse_args()
 
 
@@ -370,7 +371,26 @@ class ResourceSampler:
 
 
 def run_build() -> None:
-    subprocess.run(["zig", "build"], cwd=ROOT, check=True)
+    subprocess.run(["zig", "build", "-Doptimize=ReleaseFast"], cwd=ROOT, check=True)
+
+
+def tooling_snapshot() -> dict[str, object]:
+    tools = {
+        "strace": shutil.which("strace"),
+        "nvidia_smi": shutil.which("nvidia-smi"),
+        "nvtop": shutil.which("nvtop"),
+        "glxinfo": shutil.which("glxinfo"),
+        "nsys": shutil.which("nsys"),
+        "ncu": shutil.which("ncu"),
+        "nvcc": shutil.which("nvcc"),
+        "kitty": shutil.which("kitty"),
+        "ghostty": shutil.which("ghostty"),
+        "alacritty": shutil.which("alacritty"),
+    }
+    return {
+        "available": {name: (path is not None) for name, path in tools.items()},
+        "paths": {name: path for name, path in tools.items() if path is not None},
+    }
 
 
 def stress_command(args: argparse.Namespace, metrics_path: Path) -> str:
@@ -394,6 +414,7 @@ def stress_command(args: argparse.Namespace, metrics_path: Path) -> str:
 def launch_command(name: str, args: argparse.Namespace, command: str, trace_path: Path) -> tuple[list[str], dict[str, str]] | None:
     env = os.environ.copy()
     title = f"howl-stress-{name}-{args.mode}"
+    titled_command = f"printf '\\033]0;{title}\\007'; exec {command}"
     if name == "howl":
         if not args.howl_bin.exists():
             print(f"skip howl: missing {args.howl_bin}", file=sys.stderr)
@@ -414,6 +435,12 @@ def launch_command(name: str, args: argparse.Namespace, command: str, trace_path
             print("skip ghostty: binary not found", file=sys.stderr)
             return None
         return ([ghostty, "--title", title, "-e", "sh", "-lc", command], env)
+    if name == "alacritty":
+        alacritty = shutil.which(args.alacritty_bin)
+        if alacritty is None:
+            print("skip alacritty: binary not found", file=sys.stderr)
+            return None
+        return ([alacritty, "--title", title, "-e", "sh", "-lc", command], env)
     raise ValueError(name)
 
 
@@ -519,6 +546,7 @@ def main() -> int:
     summary = {
         "schema": 1,
         "run_id": run_id,
+        "tooling": tooling_snapshot(),
         "config": {
             "duration_s": args.duration,
             "mode": args.mode,
