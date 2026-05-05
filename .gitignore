@@ -3,3 +3,5 @@ zig-out/
 zig-pkg/
 /zig-pkg
 artifacts/
+__pycache__/
+*.pyc
