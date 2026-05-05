@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--flush-every", type=int, default=1)
     parser.add_argument("--out-dir", type=Path, default=ROOT / "artifacts" / "stress")
     parser.add_argument("--build", action="store_true", help="run zig build before benchmarking")
+    parser.add_argument("--trace-howl", action="store_true", help="enable HOWL_TRACE_PATH during Howl runs")
     parser.add_argument("--terminals", nargs="+", choices=("howl", "kitty", "ghostty"), default=["howl", "kitty", "ghostty"])
     parser.add_argument("--howl-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_term")
     parser.add_argument("--stress-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_ascii_rain_stress")
@@ -67,7 +68,8 @@ def launch_command(name: str, args: argparse.Namespace, command: str, trace_path
         if not args.howl_bin.exists():
             print(f"skip howl: missing {args.howl_bin}", file=sys.stderr)
             return None
-        env["HOWL_TRACE_PATH"] = str(trace_path)
+        if args.trace_howl:
+            env["HOWL_TRACE_PATH"] = str(trace_path)
         duration_ms = str(int((args.duration + 2.0) * 1000))
         return ([str(args.howl_bin), "--duration-ms", duration_ms, "--command", command], env)
     if name == "kitty":
@@ -147,7 +149,7 @@ def run_terminal(name: str, args: argparse.Namespace, run_dir: Path) -> dict[str
         "duration_s": round(elapsed, 3),
         "returncode": proc.returncode,
         "metrics_path": str(metrics_path),
-        "trace_path": str(trace_path) if name == "howl" else None,
+        "trace_path": str(trace_path) if name == "howl" and args.trace_howl else None,
         "process_log_path": str(process_log_path),
         "last_metrics": metrics,
     }

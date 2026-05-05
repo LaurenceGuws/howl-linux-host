@@ -64,4 +64,10 @@ tools/benchmark_terminals.py --build --duration 10 --mode ascii --terminals howl
 tools/benchmark_terminals.py --duration 10 --mode mixed --terminals howl kitty ghostty
 ```
 
-The launcher writes one run directory under `artifacts/stress/` containing per-terminal generator metrics, Howl trace telemetry, and `summary.json`. Peer terminals may need their binaries on `PATH`; unavailable terminals are skipped.
+The launcher writes one run directory under `artifacts/stress/` containing per-terminal generator metrics, process logs, and `summary.json`. Peer terminals may need their binaries on `PATH`; unavailable terminals are skipped.
+
+Enable Howl telemetry only for diagnostic runs because tracing writes structured events to disk and changes the timing profile:
+
+```sh
+tools/benchmark_terminals.py --duration 10 --mode ascii --terminals howl --trace-howl
+```
