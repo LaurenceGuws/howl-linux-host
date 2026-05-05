@@ -131,6 +131,10 @@ pub const Terminal = struct {
     pub fn presentAck(self: *Terminal) void {
         self.term.presentAck();
         self.wake_notified.store(false, .release);
+        if (self.term.hasRenderWork()) {
+            self.dirty.store(true, .release);
+            self.wake_dirty_ns.store(window.c_win.SDL_GetTicksNS(), .release);
+        }
     }
 
     pub fn termState(self: *Terminal) LifecycleState {

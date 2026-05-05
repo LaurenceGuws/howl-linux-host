@@ -88,6 +88,11 @@ pub const HowlTerm = struct {
         if (self.term) |*inst| inst.presentAck();
     }
 
+    pub fn hasRenderWork(self: *const HowlTerm) bool {
+        const inst = &(self.term orelse return false);
+        return inst.hasRenderWork();
+    }
+
     /// Report the current host-local lifecycle state.
     pub fn state(self: *const HowlTerm) LifecycleState {
         return self.lifecycle_state;

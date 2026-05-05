@@ -350,6 +350,16 @@ pub fn main(init: std.process.Init) !void {
         }
         app.acknowledgePresentation();
 
+        var work = app.collectRenderWork();
+        if (work.needs_frame) {
+            app.render(work);
+            if (app.activeTabFailed()) {
+                running = false;
+                continue;
+            }
+            continue;
+        }
+
         const wait_ms = waitTimeoutMs(cli.duration_ms, run_start_ms, app.activeTerminalPassiveHoverWake());
         const signal = window.waitEventSignal(win, wait_ms);
         if (signal == .quit) {
@@ -371,7 +381,7 @@ pub fn main(init: std.process.Init) !void {
         const logical_size = window.windowLogicalSize(win);
         app.resize(size.width, size.height, logical_size.width, logical_size.height);
 
-        const work = app.collectRenderWork();
+        work = app.collectRenderWork();
         if (!work.needs_frame) continue;
 
         app.render(work);
