@@ -1,7 +1,4 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("stdio.h");
-});
 const window = @import("../Window.zig").Window;
 const KeyInput = @import("../KeyInput.zig").KeyInput;
 const term_facade = @import("../HowlTerm.zig");
@@ -11,17 +8,6 @@ const SurfaceHandle = @import("../HowlTerm.zig").SurfaceHandle;
 const Config = @import("../Config.zig").Config;
 const Gpu = @import("../Gpu.zig");
 const trace = @import("howl_term").Trace;
-
-fn stdoutLog(comptime fmt: []const u8, args: anytype) void {
-    var buf: [256]u8 = undefined;
-    const line = std.fmt.bufPrintZ(&buf, fmt ++ "\n", args) catch return;
-    _ = c.printf("%s", line.ptr);
-    _ = c.fflush(c.stdout);
-}
-
-fn monotonicNs() u64 {
-    return window.c_win.SDL_GetTicksNS();
-}
 
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
@@ -139,7 +125,6 @@ pub const Terminal = struct {
         self.grid_px_h = self.pending_grid_px_h;
         self.last_resize_ns = 0;
         self.dirty.store(true, .release);
-        stdoutLog("ts_ns={} HOST_WAKE resize_commit", .{monotonicNs()});
     }
 
     pub fn hasRenderWork(self: *Terminal) bool {
@@ -171,7 +156,6 @@ pub const Terminal = struct {
         if (self.term.hasRenderWork()) {
             self.dirty.store(true, .release);
             self.wake_dirty_ns.store(window.c_win.SDL_GetTicksNS(), .release);
-            stdoutLog("ts_ns={} HOST_WAKE present_rearm", .{monotonicNs()});
         }
     }
 
@@ -180,12 +164,10 @@ pub const Terminal = struct {
     }
 
     pub fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
-        stdoutLog("ts_ns={} HOST_INPUT bytes len={}", .{ monotonicNs(), bytes.len });
         self.term.publishInputBytes(bytes);
     }
 
     pub fn publishInputKey(self: *Terminal, key: KeyInput.KeyEvent) void {
-        stdoutLog("ts_ns={} HOST_INPUT key", .{monotonicNs()});
         self.term.publishInputKey(key.key, key.mods);
     }
 
@@ -197,7 +179,6 @@ pub const Terminal = struct {
         const text = window.getClipboardText(std.heap.c_allocator) catch return;
         defer if (text) |buf| std.heap.c_allocator.free(buf);
         const payload = text orelse return;
-        stdoutLog("ts_ns={} HOST_INPUT paste len={}", .{ monotonicNs(), payload.len });
         self.term.publishPaste(payload);
     }
 
@@ -580,7 +561,6 @@ fn wakeWorker(self: *Terminal) void {
                 self.refreshTabLabel();
                 self.dirty.store(true, .release);
                 self.wake_dirty_ns.store(window.c_win.SDL_GetTicksNS(), .release);
-                stdoutLog("ts_ns={} HOST_WAKE worker_notify", .{monotonicNs()});
                 window.wakeEventLoop();
             }
         }
