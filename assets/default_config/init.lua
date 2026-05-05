@@ -35,6 +35,7 @@ return {
       zoom_in = { "ctrl+equal", "ctrl+kp_add" },
       zoom_out = { "ctrl+minus", "ctrl+kp_subtract" },
       zoom_reset = { "ctrl+zero" },
+      zoom_stress_toggle = { "ctrl+shift+equal", "ctrl+shift+kp_add" },
       paste = { "ctrl+shift+v", "shift+insert" },
     },
   },

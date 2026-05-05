@@ -31,7 +31,7 @@ pub fn resolveSdl(key: c_uint, ctrl: bool, shift: bool, alt: bool) ?Action {
 
 pub fn isRepeatable(action: Action) bool {
     return switch (action) {
-        .zoom_in, .zoom_out, .terminal_next_tab, .terminal_prev_tab => true,
+        .zoom_in, .zoom_out, .zoom_stress_toggle, .terminal_next_tab, .terminal_prev_tab => true,
         else => false,
     };
 }

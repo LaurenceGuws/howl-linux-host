@@ -7,6 +7,7 @@ const LifecycleState = @import("../HowlTerm.zig").LifecycleState;
 const SurfaceHandle = @import("../HowlTerm.zig").SurfaceHandle;
 const Config = @import("../Config.zig").Config;
 const Gpu = @import("../Gpu.zig");
+const trace = @import("howl_term").Trace;
 
 pub const Terminal = struct {
     term: HowlTerm,
@@ -23,6 +24,7 @@ pub const Terminal = struct {
     tab_label_len: usize,
     dirty: std.atomic.Value(bool),
     wake_notified: std.atomic.Value(bool),
+    wake_dirty_ns: std.atomic.Value(u64),
     wake_thread: ?std.Thread,
     stop_wake: std.atomic.Value(bool),
     window_focused: bool,
@@ -45,6 +47,7 @@ pub const Terminal = struct {
         self.tab_label_len = 0;
         self.dirty = std.atomic.Value(bool).init(true);
         self.wake_notified = std.atomic.Value(bool).init(false);
+        self.wake_dirty_ns = std.atomic.Value(u64).init(0);
         self.stop_wake = std.atomic.Value(bool).init(false);
         self.wake_thread = null;
         self.window_focused = true;
@@ -110,7 +113,19 @@ pub const Terminal = struct {
 
     pub fn render(self: *Terminal) void {
         // Hosts own geometry policy: render pixels may diverge from grid-driving pixels.
+        const start_ns = window.c_win.SDL_GetTicksNS();
         self.term.renderFrameSized(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
+        const elapsed_us = @divTrunc(window.c_win.SDL_GetTicksNS() - start_ns, std.time.ns_per_us);
+        const wake_ns = self.wake_dirty_ns.swap(0, .acq_rel);
+        const wake_to_render_us = if (wake_ns == 0) 0 else @divTrunc(start_ns -| wake_ns, std.time.ns_per_us);
+        trace.hostRender(
+            wake_to_render_us,
+            elapsed_us,
+            @intCast(@max(self.render_px_w, 0)),
+            @intCast(@max(self.render_px_h, 0)),
+            @intCast(@max(self.grid_px_w, 0)),
+            @intCast(@max(self.grid_px_h, 0)),
+        );
     }
 
     pub fn presentAck(self: *Terminal) void {
@@ -253,10 +268,22 @@ pub const Terminal = struct {
     }
 
     pub fn adjustFontSize(self: *Terminal, delta: i16) bool {
-        const min_font_px: i32 = 8;
-        const max_font_px: i32 = 72;
+        const min_font_px: i32 = 2;
+        const max_font_px: i32 = 256;
         const current: i32 = self.font_size_px;
         const next: u16 = @intCast(std.math.clamp(current + delta, min_font_px, max_font_px));
+        if (next == self.font_size_px) return false;
+        self.font_size_px = next;
+        self.term.setFontSizePx(next);
+        self.requestRedraw();
+        return true;
+    }
+
+    pub fn toggleStressFontSize(self: *Terminal) bool {
+        const min_font_px: u16 = 2;
+        const max_font_px: u16 = 256;
+        const midpoint = min_font_px + ((max_font_px - min_font_px) / 2);
+        const next = if (self.font_size_px >= midpoint) min_font_px else max_font_px;
         if (next == self.font_size_px) return false;
         self.font_size_px = next;
         self.term.setFontSizePx(next);
@@ -500,6 +527,7 @@ fn wakeWorker(self: *Terminal) void {
             if (!self.wake_notified.swap(true, .acq_rel)) {
                 self.refreshTabLabel();
                 self.dirty.store(true, .release);
+                self.wake_dirty_ns.store(window.c_win.SDL_GetTicksNS(), .release);
                 window.wakeEventLoop();
             }
         }

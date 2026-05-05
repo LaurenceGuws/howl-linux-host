@@ -17,6 +17,7 @@ pub const Config = struct {
         zoom_in,
         zoom_out,
         zoom_reset,
+        zoom_stress_toggle,
         terminal_paste,
         terminal_new_tab,
         terminal_close_tab,
@@ -332,6 +333,7 @@ const term_shortcut_specs = [_]ShortcutSpec{
     .{ .field = "zoom_in", .action = .zoom_in },
     .{ .field = "zoom_out", .action = .zoom_out },
     .{ .field = "zoom_reset", .action = .zoom_reset },
+    .{ .field = "zoom_stress_toggle", .action = .zoom_stress_toggle },
     .{ .field = "paste", .action = .terminal_paste },
 };
 

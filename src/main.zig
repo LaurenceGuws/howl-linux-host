@@ -5,8 +5,16 @@ const config = @import("Config.zig").Config;
 const GpuSvc = @import("Gpu.zig");
 const ShortCuts = @import("ShortCuts.zig");
 const TerminalWidget = @import("widget/Terminal.zig").Terminal;
+const trace = @import("howl_term").Trace;
 
 const max_tabs: usize = 9;
+
+const CliOptions = struct {
+    command: ?[]const u8 = null,
+    shell: ?[]const u8 = null,
+    start_path: ?[]const u8 = null,
+    duration_ms: ?u64 = null,
+};
 
 const RenderWork = struct {
     needs_frame: bool,
@@ -108,12 +116,17 @@ const App = struct {
     }
 
     fn render(self: *App, work: RenderWork) void {
+        const frame_start_ns = window.c_win.SDL_GetTicksNS();
         var label_buf: [max_tabs][]const u8 = undefined;
         for (self.tabs.items, 0..) |tab, i| label_buf[i] = tab.tabLabel();
+        var terminal_us: u64 = 0;
         if (work.terminal_dirty) {
+            const terminal_start_ns = window.c_win.SDL_GetTicksNS();
             self.activeTab().render();
+            terminal_us = @divTrunc(window.c_win.SDL_GetTicksNS() - terminal_start_ns, std.time.ns_per_us);
         }
         const surface = self.activeTab().surfaceHandle();
+        const present_start_ns = window.c_win.SDL_GetTicksNS();
         GpuSvc.present(&self.gpu, .{
             .texture_id = surface.texture_id,
             .texture_rect = self.textureRect(),
@@ -122,6 +135,14 @@ const App = struct {
             .active_tab = self.active_tab_idx,
             .tab_labels = label_buf[0..self.tabs.items.len],
         });
+        const present_us = @divTrunc(window.c_win.SDL_GetTicksNS() - present_start_ns, std.time.ns_per_us);
+        trace.hostFrame(
+            work.terminal_dirty,
+            terminal_us,
+            present_us,
+            @divTrunc(window.c_win.SDL_GetTicksNS() - frame_start_ns, std.time.ns_per_us),
+            surface.texture_id,
+        );
         self.chrome_dirty = false;
         self.presented_tab = self.activeTab();
     }
@@ -135,6 +156,7 @@ const App = struct {
             .zoom_in => _ = self.activeTab().adjustFontSize(1),
             .zoom_out => _ = self.activeTab().adjustFontSize(-1),
             .zoom_reset => _ = self.activeTab().resetFontSize(),
+            .zoom_stress_toggle => _ = self.activeTab().toggleStressFontSize(),
             .terminal_paste => self.activeTab().pasteFromClipboard(),
             .terminal_new_tab => try self.openTab(),
             .terminal_close_tab => self.closeActiveTab(),
@@ -168,6 +190,7 @@ const App = struct {
             .tab_label_len = 0,
             .dirty = std.atomic.Value(bool).init(true),
             .wake_notified = std.atomic.Value(bool).init(false),
+            .wake_dirty_ns = std.atomic.Value(u64).init(0),
             .wake_thread = null,
             .stop_wake = std.atomic.Value(bool).init(false),
             .window_focused = true,
@@ -267,7 +290,12 @@ const App = struct {
     }
 };
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
+    const cli = parseCli(try init.minimal.args.toSlice(init.arena.allocator())) catch |err| switch (err) {
+        error.HelpRequested => return,
+        else => |e| return e,
+    };
+
     if (!window.initVideo()) {
         std.debug.print("window init failed: {s}\n", .{window.lastError()});
         return error.WindowInitFailed;
@@ -279,6 +307,7 @@ pub fn main() !void {
 
     var conf = try config.loadFromLua(std.heap.c_allocator, lua);
     defer conf.deinit(std.heap.c_allocator);
+    try applyCliOverrides(&conf, cli);
 
     ShortCuts.installConfig(&conf);
 
@@ -314,10 +343,15 @@ pub fn main() !void {
     key_input_state.bind(win);
 
     var running = true;
+    const run_start_ms = window.c_win.SDL_GetTicks();
     while (running) {
+        if (cli.duration_ms) |duration_ms| {
+            if (window.c_win.SDL_GetTicks() -| run_start_ms >= duration_ms) break;
+        }
         app.acknowledgePresentation();
 
-        const signal = window.waitEventSignal(win, if (app.activeTerminalPassiveHoverWake()) 16 else -1);
+        const wait_ms = waitTimeoutMs(cli.duration_ms, run_start_ms, app.activeTerminalPassiveHoverWake());
+        const signal = window.waitEventSignal(win, wait_ms);
         if (signal == .quit) {
             running = false;
             continue;
@@ -346,4 +380,73 @@ pub fn main() !void {
             continue;
         }
     }
+}
+
+fn parseCli(args: []const []const u8) !CliOptions {
+    var cli = CliOptions{};
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--help")) {
+            usage();
+            return error.HelpRequested;
+        } else if (std.mem.eql(u8, arg, "--command")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArgs;
+            cli.command = args[i];
+        } else if (std.mem.eql(u8, arg, "--shell")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArgs;
+            cli.shell = args[i];
+        } else if (std.mem.eql(u8, arg, "--start-path")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArgs;
+            cli.start_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--duration-ms")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArgs;
+            cli.duration_ms = try std.fmt.parseInt(u64, args[i], 10);
+        } else {
+            usage();
+            return error.InvalidArgs;
+        }
+    }
+    return cli;
+}
+
+fn usage() void {
+    std.debug.print(
+        \\usage: howl_term [--command CMD] [--shell PATH] [--start-path PATH] [--duration-ms N]
+        \\
+        \\Options override the Lua config for scriptable stress and peer comparisons.
+        \\
+    , .{});
+}
+
+fn applyCliOverrides(conf: *config.Value, cli: CliOptions) !void {
+    if (cli.shell) |shell| try replaceOwned(&conf.term.shell, shell);
+    if (cli.start_path) |start_path| try replaceOptionalOwned(&conf.term.start_path, start_path);
+    if (cli.command) |command| try replaceOptionalOwned(&conf.term.command, command);
+}
+
+fn replaceOwned(slot: *[]u8, value: []const u8) !void {
+    const duped = try std.heap.c_allocator.dupe(u8, value);
+    std.heap.c_allocator.free(slot.*);
+    slot.* = duped;
+}
+
+fn replaceOptionalOwned(slot: *?[]u8, value: []const u8) !void {
+    const duped = try std.heap.c_allocator.dupe(u8, value);
+    if (slot.*) |old| std.heap.c_allocator.free(old);
+    slot.* = duped;
+}
+
+fn waitTimeoutMs(duration_ms: ?u64, run_start_ms: u64, passive_hover_wake: bool) c_int {
+    const passive_timeout: c_int = if (passive_hover_wake) 16 else -1;
+    const duration = duration_ms orelse return passive_timeout;
+    const elapsed = window.c_win.SDL_GetTicks() -| run_start_ms;
+    if (elapsed >= duration) return 0;
+    const remaining: c_int = @intCast(@min(duration - elapsed, @as(u64, @intCast(std.math.maxInt(c_int)))));
+    if (passive_timeout < 0) return remaining;
+    return @min(passive_timeout, remaining);
 }
