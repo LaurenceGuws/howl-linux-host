@@ -67,6 +67,18 @@ pub fn build(b: *std.Build) void {
     rain_stress.root_module.link_libc = true;
     b.installArtifact(rain_stress);
 
+    const visual_rain_stress = b.addExecutable(.{
+        .name = "howl_visual_rain_stress",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fuzz/visual_rain_stress.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    visual_rain_stress.use_llvm = true;
+    visual_rain_stress.root_module.link_libc = true;
+    b.installArtifact(visual_rain_stress);
+
     const run_rain_stress = b.addRunArtifact(rain_stress);
     if (b.args) |args| run_rain_stress.addArgs(args);
     const rain_stress_step = b.step("stress:rain", "Run hostile ASCII rain terminal traffic generator");
@@ -81,6 +93,11 @@ pub fn build(b: *std.Build) void {
     run_rain_mixed.addArgs(&.{ "--mixed", "--metrics", "--flush-every", "1" });
     const rain_mixed_step = b.step("stress:rain:mixed", "Run mixed glyph rain stress generator with metrics");
     rain_mixed_step.dependOn(&run_rain_mixed.step);
+
+    const run_visual_rain = b.addRunArtifact(visual_rain_stress);
+    if (b.args) |args| run_visual_rain.addArgs(args) else run_visual_rain.addArgs(&.{ "--metrics" });
+    const visual_rain_step = b.step("stress:rain:visual", "Run visual ASCII rain correctness stress generator");
+    visual_rain_step.dependOn(&run_visual_rain.step);
 
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/test_entry.zig"),
@@ -106,18 +123,31 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = b.args orelse &.{},
     });
+    const visual_rain_stress_tests = b.addTest(.{
+        .name = "test-visual-rain-stress",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fuzz/visual_rain_stress.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = b.args orelse &.{},
+    });
     mod_tests.use_llvm = true;
     rain_stress_tests.use_llvm = true;
     rain_stress_tests.root_module.link_libc = true;
+    visual_rain_stress_tests.use_llvm = true;
+    visual_rain_stress_tests.root_module.link_libc = true;
     mod_tests.root_module.addIncludePath(sdl_dep.path("include"));
     mod_tests.root_module.linkLibrary(sdl_lib);
     mod_tests.root_module.link_libc = true;
     mod_tests.root_module.linkSystemLibrary("lua5.4", .{ .use_pkg_config = .force });
     const run_mod_tests = b.addRunArtifact(mod_tests);
     const run_rain_stress_tests = b.addRunArtifact(rain_stress_tests);
+    const run_visual_rain_stress_tests = b.addRunArtifact(visual_rain_stress_tests);
     if (b.args != null) {
         run_mod_tests.has_side_effects = true;
         run_rain_stress_tests.has_side_effects = true;
+        run_visual_rain_stress_tests.has_side_effects = true;
     }
 
     const test_step = b.step("test", "Run all tests");
@@ -125,7 +155,9 @@ pub fn build(b: *std.Build) void {
     const test_unit_build_step = b.step("test:unit:build", "Build unit tests");
     test_unit_build_step.dependOn(&b.addInstallArtifact(mod_tests, .{}).step);
     test_unit_build_step.dependOn(&b.addInstallArtifact(rain_stress_tests, .{}).step);
+    test_unit_build_step.dependOn(&b.addInstallArtifact(visual_rain_stress_tests, .{}).step);
     test_unit_step.dependOn(&run_mod_tests.step);
     test_unit_step.dependOn(&run_rain_stress_tests.step);
+    test_unit_step.dependOn(&run_visual_rain_stress_tests.step);
     test_step.dependOn(test_unit_step);
 }

@@ -57,4 +57,8 @@ return {
       focus_tab_9 = { "ctrl+nine" },
     },
   },
+  -- Temporary runtime tracing setup. Uncomment when investigating locally:
+  -- debug = {
+  --   trace_path = "howl-trace.ndjson",
+  -- },
 }

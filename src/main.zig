@@ -356,17 +356,8 @@ pub fn main(init: std.process.Init) !void {
         app.acknowledgePresentation();
 
         var work = app.collectRenderWork();
-        if (work.needs_frame) {
-            app.render(work);
-            if (app.activeTabFailed()) {
-                running = false;
-                continue;
-            }
-            continue;
-        }
-
         const wait_ms = waitTimeoutMs(cli.duration_ms, run_start_ms, app.activeTerminalPassiveHoverWake(), app.activeTab().nextWaitTimeoutMs());
-        const signal = window.waitEventSignal(win, wait_ms);
+        const signal = if (work.needs_frame) window.pollEventSignal(win) else window.waitEventSignal(win, wait_ms);
         if (signal == .quit) {
             running = false;
             continue;
