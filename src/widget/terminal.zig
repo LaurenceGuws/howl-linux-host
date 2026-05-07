@@ -16,6 +16,7 @@ const Input = @import("terminal_input.zig");
 
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
+    const max_snapshot_passes_per_frame: u64 = 4;
 
     pub const Snapshot = struct {
         surface: SurfaceHandle,
@@ -186,6 +187,13 @@ pub const Terminal = struct {
             };
             const surface = self.term.view().surface;
             if (surface.texture_id != 0) self.last_surface = surface;
+            if (again and passes + 1 >= max_snapshot_passes_per_frame) {
+                // Keep UI responsive under sustained output: continue next frame.
+                self.snapshot_ready.store(true, .release);
+                _ = self.snapshot_bursts.fetchAdd(1, .monotonic);
+                _ = self.snapshot_extra_passes.fetchAdd(passes + 1, .monotonic);
+                return;
+            }
             if (!again) {
                 self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
                 self.snapshot_ready.store(false, .release);
