@@ -1,6 +1,6 @@
 const std = @import("std");
 const howl_lua = @import("howl_lua");
-const Config = @import("../config.zig").Config;
+const Config = @import("../config.zig");
 const Events = @import("../events.zig").Events;
 const env = @import("env.zig");
 const parse = @import("parse.zig");
@@ -8,15 +8,15 @@ const ShortCuts = Events.ShortCuts;
 
 const Lua = howl_lua;
 
-pub fn loadLua(alloc: std.mem.Allocator) !Lua.Api.State {
-    var lua = try Lua.Api.State.init();
+pub fn loadLua(alloc: std.mem.Allocator) !Lua.State {
+    var lua = try Lua.State.init();
     errdefer lua.deinit();
     try lua.loadFile(alloc, "assets/default_config/init.lua");
     if (!lua.topIsTable()) return error.InvalidConfig;
     return lua;
 }
 
-pub fn loadFromLua(alloc: std.mem.Allocator, lua: Lua.Api.State) !Config.Value {
+pub fn loadFromLua(alloc: std.mem.Allocator, lua: Lua.State) !Config.Value {
     const default = Lua.Reader.init(lua, alloc, -1);
 
     const term_reader = default.child("term") orelse return error.InvalidConfig;

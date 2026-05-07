@@ -1,7 +1,7 @@
 const std = @import("std");
-const Window = @import("window.zig").Window;
+const Window = @import("window.zig");
 const Events = @import("events.zig").Events;
-const Config = @import("config.zig").Config;
+const Config = @import("config.zig");
 const HowlTerm = @import("widget/howl_term/howl_term.zig").HowlTerm;
 
 const max_tabs: usize = 9;

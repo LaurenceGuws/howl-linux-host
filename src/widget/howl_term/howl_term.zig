@@ -1,5 +1,5 @@
 const std = @import("std");
-const window = @import("../../window.zig").Window;
+const window = @import("../../window.zig");
 const Layout = @import("../../window/layout.zig");
 const event_runtime = @import("../../events.zig");
 const Events = event_runtime.Events;
@@ -9,7 +9,7 @@ const LifecycleState = Runtime.LifecycleState;
 const SurfaceHandle = Runtime.SurfaceHandle;
 const config = @import("../../howl-term/config.zig");
 const Scrollbar = @import("../../howl-term/scrollbar.zig");
-const TabBar = @import("../tab_bar/tab_bar.zig").TabBar;
+const TabBar = @import("../tab_bar/tab_bar.zig");
 
 pub const HowlTerm = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;

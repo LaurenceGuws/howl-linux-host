@@ -1,5 +1,5 @@
 const std = @import("std");
-const Window = @import("../window.zig").Window;
+const Window = @import("../window.zig");
 
 pub const c_win = Window.c_win;
 
