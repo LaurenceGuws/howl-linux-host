@@ -162,7 +162,7 @@ pub fn label(key: Key) []const u8 {
 }
 
 pub fn fromSdl(sdl_key: c_uint) ?Key {
-    const c_key = @import("../Window.zig").Window.c_win;
+    const c_key = @import("../window.zig").Window.c_win;
     return switch (sdl_key) {
         c_key.SDLK_A => .a,
         c_key.SDLK_B => .b,

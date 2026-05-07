@@ -1,5 +1,5 @@
 const std = @import("std");
-const ShortCuts = @import("../Events.zig").Events.ShortCuts;
+const ShortCuts = @import("../events.zig").Events.ShortCuts;
 
 pub const Window = struct {
     title: [:0]u8,

@@ -1,3 +1,3 @@
-pub const Config = @import("Config.zig");
-pub const Events = @import("Events.zig");
-pub const HowlTerm = @import("widget/howl_term/HowlTerm.zig");
+pub const Config = @import("config.zig");
+pub const Events = @import("events.zig");
+pub const HowlTerm = @import("widget/howl_term/howl_term.zig");

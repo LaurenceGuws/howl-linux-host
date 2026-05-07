@@ -1,5 +1,5 @@
 const std = @import("std");
-const Events = @import("../Events.zig").Events;
+const Events = @import("../events.zig").Events;
 const term_config = @import("../howl-term/config.zig");
 const ShortCuts = Events.ShortCuts;
 

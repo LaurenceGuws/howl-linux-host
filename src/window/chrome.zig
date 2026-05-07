@@ -1,4 +1,4 @@
-const Font = @import("../widget/tab_bar/TabBarFont.zig");
+const Font = @import("../widget/tab_bar/tab_bar_font.zig");
 const Layout = @import("layout.zig");
 
 pub fn State(comptime c: type) type {

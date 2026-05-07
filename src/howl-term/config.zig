@@ -1,5 +1,5 @@
 const std = @import("std");
-const Events = @import("../Events.zig").Events;
+const Events = @import("../events.zig").Events;
 
 pub const FontStack = struct {
     primary: ?[:0]u8,

@@ -1,5 +1,5 @@
 const std = @import("std");
-const Window = @import("../Window.zig").Window;
+const Window = @import("../window.zig").Window;
 
 pub const c_win = Window.c_win;
 
@@ -7,7 +7,6 @@ pub const EventSignal = enum {
     none,
     quit,
 };
-
 
 pub fn pollEventSignal(handle: *c_win.SDL_Window) EventSignal {
     _ = handle;
