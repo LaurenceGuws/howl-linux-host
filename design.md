@@ -43,7 +43,7 @@ classDiagram
 - `src/howl-term/howl_term.zig` owns the host-local runtime facade over the imported `howl-term` package.
 - `Window` owns the OS window and host chrome presentation. It receives a texture handle; it does not infer terminal state.
 - `Events` owns event collection and queueing. Event payload types live under `src/events/`.
-- Hosts send events, request wakes, present returned surfaces, and acknowledge presentation. They do not mutate scrollback or render dirty state.
+- Hosts send events, await snapshot events, render the latest snapshot, and present returned surfaces. They do not mutate scrollback or render dirty state.
 
 ## Lifecycle
 
@@ -51,7 +51,7 @@ classDiagram
 stateDiagram-v2
     [*] --> Boot
     Boot --> Running: config + window + first tab
-    Running --> Running: input / render / present / ack
+    Running --> Running: input / snapshot event / render / present
     Running --> Stopped: quit or terminal failure
     Stopped --> [*]
 ```
@@ -75,10 +75,10 @@ sequenceDiagram
     loop event loop
         Main->>E: poll/wait/drain
         Main->>T: drainInput/resize/render
-        T->>R: publish input / renderFrameSized
+        T->>R: publish input / awaitSnapshotEvent
+        T->>R: renderLatestSnapshot
         T-->>Main: snapshot(surface + metadata)
         Main->>W: present(frame)
-        Main->>T: presentAck()
     end
 ```
 

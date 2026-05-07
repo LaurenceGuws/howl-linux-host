@@ -108,7 +108,6 @@ pub const App = struct {
             .active_tab = self.active_tab_idx,
             .tab_labels = label_buf[0..tab_chrome.len],
         });
-        if (work.terminal_frame) self.activeTab().presentAck();
     }
 
     pub fn activeTabFailed(self: *const App) bool {

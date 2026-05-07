@@ -121,18 +121,17 @@ pub const Runtime = struct {
         self.lifecycle_state = .stopped;
     }
 
-    pub fn renderFrameSized(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) bool {
+    pub fn renderLatestSnapshot(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) ?bool {
         const inst = &(self.term orelse return false);
         const rw: u16 = @intCast(@max(render_width, 1));
         const rh: u16 = @intCast(@max(render_height, 1));
         const gw: u16 = @intCast(@max(grid_width, 1));
         const gh: u16 = @intCast(@max(grid_height, 1));
-        inst.renderFrameSized(rw, rh, gw, gh) catch |err| {
+        return inst.renderLatestSnapshot(rw, rh, gw, gh) catch |err| {
             self.lifecycle_state = .failed;
             std.log.err("terminal render failed: {s}", .{@errorName(err)});
-            return false;
+            return null;
         };
-        return true;
     }
 
     pub fn syncFrameGeometry(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) bool {
@@ -147,10 +146,6 @@ pub const Runtime = struct {
             return false;
         };
         return true;
-    }
-
-    pub fn presentAck(self: *Runtime) void {
-        if (self.term) |*inst| _ = inst.presentAck();
     }
 
     pub fn publishInputBytes(self: *Runtime, bytes: []const u8) void {
@@ -256,18 +251,28 @@ pub const Runtime = struct {
         return inst.selectionInProgress();
     }
 
-    pub fn waitRenderWake(self: *Runtime, timeout_ms: i32) bool {
-        const inst = &(self.term orelse return false);
-        return inst.waitRenderWake(timeout_ms) catch |err| {
+    pub fn awaitSnapshotEvent(self: *Runtime, last_seen_seq: u64, timeout_ms: i32) u64 {
+        const inst = &(self.term orelse return last_seen_seq);
+        return inst.awaitSnapshotEvent(last_seen_seq, timeout_ms) catch |err| {
             self.lifecycle_state = .failed;
-            std.log.err("terminal render wake failed: {s}", .{@errorName(err)});
-            return false;
+            std.log.err("terminal snapshot event wait failed: {s}", .{@errorName(err)});
+            return last_seen_seq;
         };
     }
 
-    pub fn wakeRenderWaiters(self: *Runtime) void {
+    pub fn snapshotEventSeq(self: *Runtime) u64 {
+        const inst = &(self.term orelse return 0);
+        return inst.snapshotEventSeq();
+    }
+
+    pub fn renderedSnapshotSeq(self: *Runtime) u64 {
+        const inst = &(self.term orelse return 0);
+        return inst.renderedSnapshotSeq();
+    }
+
+    pub fn wakeSnapshotWaiters(self: *Runtime) void {
         const inst = &(self.term orelse return);
-        inst.wakeRenderWaiters();
+        inst.wakeSnapshotWaiters();
     }
 
     pub fn setScrollbackOffset(self: *Runtime, offset_rows: usize) bool {
@@ -314,7 +319,7 @@ pub const Runtime = struct {
         var waited_ms: i64 = 0;
         while (waited_ms < timeout_ms) : (waited_ms += 10) {
             if (inst.hasOutputProof()) return;
-            _ = inst.waitRenderWake(10) catch return error.TransportUnavailable;
+            _ = inst.awaitSnapshotEvent(inst.snapshotEventSeq(), 10) catch return error.TransportUnavailable;
         }
         return error.TransportUnavailable;
     }

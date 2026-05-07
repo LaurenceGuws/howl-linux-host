@@ -40,7 +40,10 @@ pub const Terminal = struct {
     tab_label_len: usize,
     last_surface: SurfaceHandle,
     last_resize_ns: u64,
-    wake_notified: std.atomic.Value(bool),
+    snapshot_ready: std.atomic.Value(bool),
+    snapshot_quiet_seq: std.atomic.Value(u64),
+    snapshot_bursts: std.atomic.Value(u64),
+    snapshot_extra_passes: std.atomic.Value(u64),
     wake_thread: ?std.Thread,
     stop_wake: std.atomic.Value(bool),
     window_focused: bool,
@@ -94,7 +97,10 @@ pub const Terminal = struct {
             .tab_label_len = 0,
             .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .last_resize_ns = 0,
-            .wake_notified = std.atomic.Value(bool).init(false),
+            .snapshot_ready = std.atomic.Value(bool).init(false),
+            .snapshot_quiet_seq = std.atomic.Value(u64).init(0),
+            .snapshot_bursts = std.atomic.Value(u64).init(0),
+            .snapshot_extra_passes = std.atomic.Value(u64).init(0),
             .wake_thread = null,
             .stop_wake = std.atomic.Value(bool).init(false),
             .window_focused = true,
@@ -128,7 +134,7 @@ pub const Terminal = struct {
 
     pub fn deinit(self: *Terminal) void {
         self.stop_wake.store(true, .release);
-        self.term.wakeRenderWaiters();
+        self.term.wakeSnapshotWaiters();
         Events.wakeWindow();
         if (self.wake_thread) |t| t.join();
         self.wake_thread = null;
@@ -168,19 +174,28 @@ pub const Terminal = struct {
     }
 
     pub fn needsFrame(self: *Terminal) bool {
-        return self.wake_notified.load(.acquire);
+        return self.snapshot_ready.load(.acquire);
     }
 
     pub fn render(self: *Terminal) void {
-        // Hosts own geometry policy: render pixels may diverge from grid-driving pixels.
-        if (!self.term.renderFrameSized(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h)) return;
-        const surface = self.term.view().surface;
-        if (surface.texture_id != 0) self.last_surface = surface;
-    }
-
-    pub fn presentAck(self: *Terminal) void {
-        self.term.presentAck();
-        self.wake_notified.store(false, .release);
+        var passes: u64 = 0;
+        while (true) : (passes += 1) {
+            const again = self.term.renderLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
+                self.snapshot_ready.store(false, .release);
+                return;
+            };
+            const surface = self.term.view().surface;
+            if (surface.texture_id != 0) self.last_surface = surface;
+            if (!again) {
+                self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
+                self.snapshot_ready.store(false, .release);
+                if (passes > 0) {
+                    _ = self.snapshot_bursts.fetchAdd(1, .monotonic);
+                    _ = self.snapshot_extra_passes.fetchAdd(passes, .monotonic);
+                }
+                return;
+            }
+        }
     }
 
     fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
@@ -243,10 +258,6 @@ pub const Terminal = struct {
             delta_rows += page_steps * page_rows;
         }
         if (delta_rows != 0) self.scrollByRows(delta_rows);
-    }
-
-    fn waitRenderWake(self: *Terminal, timeout_ms: i32) bool {
-        return self.term.waitRenderWake(timeout_ms);
     }
 
     pub fn wantsPassiveHoverWake(self: *const Terminal, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
@@ -528,27 +539,30 @@ fn wakeWorker(self: *Terminal) void {
     var event_wakes: u64 = 0;
 
     while (!self.stop_wake.load(.acquire)) {
-        if (self.wake_notified.load(.acquire)) {
+        if (self.snapshot_ready.load(.acquire)) {
             wait_blocks += 1;
             window.c_win.SDL_Delay(16);
-            reportWakeThread(&meter, waits, wake_hits, wait_blocks, event_wakes);
+            reportWakeThread(self, &meter, waits, wake_hits, wait_blocks, event_wakes);
             continue;
         }
 
         waits += 1;
-        if (self.term.waitRenderWake(-1)) {
+        const last_seen_seq = self.snapshot_quiet_seq.load(.acquire);
+        const event_seq = self.term.awaitSnapshotEvent(last_seen_seq, -1);
+        if (event_seq != last_seen_seq) {
             wake_hits += 1;
-            if (!self.wake_notified.swap(true, .acq_rel)) {
+            if (!self.snapshot_ready.swap(true, .acq_rel)) {
                 event_wakes += 1;
                 self.refreshTabLabel();
                 Events.wakeWindow();
             }
         }
-        reportWakeThread(&meter, waits, wake_hits, wait_blocks, event_wakes);
+        reportWakeThread(self, &meter, waits, wake_hits, wait_blocks, event_wakes);
     }
 }
 
 fn reportWakeThread(
+    self: *Terminal,
     meter: *thread_meter.ThreadMeter,
     waits: u64,
     wake_hits: u64,
@@ -556,8 +570,10 @@ fn reportWakeThread(
     event_wakes: u64,
 ) void {
     const sample = meter.sample() orelse return;
+    const bursts = self.snapshot_bursts.load(.monotonic);
+    const extra_passes = self.snapshot_extra_passes.load(.monotonic);
     std.log.info(
-        "perf host_wake_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} wait_blocks={} event_wakes={}",
+        "perf host_wake_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} wait_blocks={} event_wakes={} snapshot_bursts={} extra_passes={}",
         .{
             sample.cpuPct(),
             @divTrunc(sample.wall_ns, std.time.ns_per_ms),
@@ -566,6 +582,8 @@ fn reportWakeThread(
             wake_hits,
             wait_blocks,
             event_wakes,
+            bursts,
+            extra_passes,
         },
     );
 }
