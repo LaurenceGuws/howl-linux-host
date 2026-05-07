@@ -1,11 +1,11 @@
 const std = @import("std");
 const Events = @import("../events.zig").Events;
 const term_config = @import("../howl-term/config.zig");
-const ShortCuts = Events.ShortCuts;
+const Shortcuts = Events.Shortcuts;
 
 pub const ShortcutSpec = struct {
     field: []const u8,
-    action: ShortCuts.Action,
+    action: Shortcuts.Action,
 };
 
 pub const term_shortcut_specs = [_]ShortcutSpec{
@@ -34,8 +34,8 @@ pub const tab_bar_shortcut_specs = [_]ShortcutSpec{
     .{ .field = "focus_tab_9", .action = .terminal_focus_tab_9 },
 };
 
-pub fn shortcutBinding(raw: []const u8, action: ShortCuts.Action) !ShortCuts.Binding {
-    var binding = ShortCuts.Binding{ .action = action, .key = undefined };
+pub fn shortcutBinding(raw: []const u8, action: Shortcuts.Action) !Shortcuts.Binding {
+    var binding = Shortcuts.Binding{ .action = action, .key = undefined };
     var parts = std.mem.splitScalar(u8, raw, '+');
     var saw_key = false;
     while (parts.next()) |part_raw| {

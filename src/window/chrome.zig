@@ -26,7 +26,9 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
 
 pub fn deinit(comptime c: type, state: *State(c)) void {
     if (state.gl_context) |ctx| {
-        _ = c.SDL_GL_DestroyContext(ctx);
+        _ = ctx;
+        // NVIDIA/Wayland can crash inside SDL_GL_DestroyContext during process shutdown.
+        // The Linux host owns one process-lifetime context, so hand reclamation to SDL/OS.
         state.gl_context = null;
     }
     state.window = null;

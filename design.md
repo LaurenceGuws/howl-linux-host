@@ -3,139 +3,97 @@
 Shared rules: [`../../design/design-rules.md`](../../design/design-rules.md)
 
 ## Purpose
-`howl-linux-host` owns desktop host wiring for config, windowing, input, GPU setup, and terminal presentation.
 
-It should stay a host shell around `howl-term`, not absorb terminal semantics.
+`howl-linux-host` is the reference desktop host shell for Howl.
 
-For tabbed Linux-host POCs, one `Terminal` widget represents one terminal tab. Host chrome, tab lifecycle, and multi-widget orchestration live in `main.zig`.
+It owns app/window/input/chrome orchestration. It does not own terminal semantics, scrollback state, dirty state, PTY behavior, VT parsing, or rendering internals.
 
 ## Public Surface
-- `Config`: host config owner.
-- `Window`: window/event owner.
-- `KeyInput`: input owner.
-- `ShortCuts`: host shortcut-to-action owner.
-- `Gpu`: GPU owner.
-- `Terminal`: host-local terminal runtime owner.
-- `Terminal`: one terminal widget/tab owner.
+
+- `Config`: loads typed host config.
+- `Events`: owns the SDL event queue and exposes typed input/window/shortcut events.
+- `Window`: owns SDL window lifecycle, clipboard/URL helpers, and frame presentation.
+- `Terminal`: owns one host terminal widget/tab.
+- `howl-term/Runtime`: owns the host handoff to the imported `howl-term` package.
 
 ```mermaid
 classDiagram
+    class Main
     class Config
+    class Events
     class Window
-    class KeyInput
-    class ShortCuts
-    class Gpu
-    class RuntimeTerminal
     class TerminalWidget
+    class Runtime
+    class HowlTermCore
 
-    TerminalWidget --> Config
-    TerminalWidget --> RuntimeTerminal
-    TerminalWidget --> KeyInput
+    Main --> Config
+    Main --> Events
+    Main --> Window
+    Main --> TerminalWidget
+    TerminalWidget --> Events
     TerminalWidget --> Window
-    TerminalWidget --> ShortCuts
+    TerminalWidget --> Runtime
+    Runtime --> HowlTermCore
 ```
 
 ## Ownership Rules
-- `main.zig` owns app entry, the app-owned Lua config instance, host chrome, tab/widget lifecycle, and event-loop orchestration.
-- `Terminal` owns the embedded terminal runtime contract toward the host.
-- `widget/Terminal` owns one terminal widget/tab boundary only.
-- `Window`, `KeyInput`, and `Gpu` own platform-variant selection and forwarding.
-- `ShortCuts` owns stable host shortcut actions and key-resolution policy.
+
+- `main.zig` owns app entry, app-owned config, tab lifecycle, and event-loop orchestration.
+- `src/widget/terminal.zig` owns one terminal widget boundary: input translation, widget focus, scrollbar interaction, tab label snapshot, and terminal runtime lifetime.
+- `src/howl-term/howl_term.zig` owns the host-local runtime facade over the imported `howl-term` package.
+- `Window` owns the OS window and host chrome presentation. It receives a texture handle; it does not infer terminal state.
+- `Events` owns event collection and queueing. Event payload types live under `src/events/`.
+- Hosts send events, request wakes, present returned surfaces, and acknowledge presentation. They do not mutate scrollback or render dirty state.
 
 ## Lifecycle
+
 ```mermaid
 stateDiagram-v2
     [*] --> Boot
-    Boot --> Running: config + window + terminal init
-    Running --> Running: input/render/present
+    Boot --> Running: config + window + first tab
+    Running --> Running: input / render / present / ack
     Running --> Stopped: quit or terminal failure
     Stopped --> [*]
 ```
 
-## Main Flows
+## Main Flow
+
 ```mermaid
 sequenceDiagram
     participant Main
     participant W as Window
-    participant K as KeyInput
-    participant T as TerminalWidget[]
-    participant H as Terminal
-    participant G as Gpu
+    participant E as Events
+    participant T as Terminal
+    participant R as Runtime
+    participant C as howl-term
 
-    Main->>W: initVideo/createWindow
-    Main->>G: setup(surface)
-    Main->>K: init/bind
-    Main->>T: init(texture, width, height)
-    T->>H: init(...)
+    Main->>W: initVideo/createWindow/initPresent
+    Main->>E: init/bind
+    Main->>T: create(...)
+    T->>R: init(...)
+    R->>C: initPty/start
     loop event loop
-        Main->>K: drain() / drainShortcutAction()
-        Main->>T: active drainInput/handleScrollInput
-        Main->>T: resize all tabs
-        Main->>T: render active tab
-        T->>H: renderFrameSized()
-        Main->>G: present(tab_bar + active texture)
+        Main->>E: poll/wait/drain
+        Main->>T: drainInput/resize/render
+        T->>R: publish input / renderFrameSized
+        T-->>Main: snapshot(surface + metadata)
+        Main->>W: present(frame)
+        Main->>T: presentAck()
     end
 ```
 
 ## API Contracts
-- `Config.loadLua` returns an app-owned Lua state loaded from host config.
-- `Config.loadFromLua` builds owned typed config sections from an app-owned Lua state.
-- `Terminal.init` starts one embedded terminal runtime with a renderer-owned retained surface consumed by the host compositor.
-- `Terminal.init` owns transport creation and delegates to core `howl-term`.
-- `Window` and `KeyInput` abstract backend selection behind stable host owners.
-- `ShortCuts` resolves host key chords into stable host actions without re-parsing terminal byte input.
 
-## Host Register Scope
-The host contract should stay split into three independent concerns:
-
-- render/publication wake:
-  - redraw ready
-  - present ack
-  - publication/generation state
-- host -> core command register:
-  - stable typed runtime controls
-  - examples in the current POC:
-    - font zoom in/out/reset
-    - terminal new/close/next/prev/focus-tab shortcuts
-- core -> host event register:
-  - stable host-facing terminal/runtime events
-  - owned below the host shell, likely in `howl-session`
-  - not mixed into redraw wake
-
-The Linux host POC implemented here only exercises the host -> core side directly. It intentionally leaves the core -> host event register as documented future work.
-
-## Register Growth Rules
-When adding stable host-facing events later:
-
-- add only durable host UX concepts, not raw protocol names
-- prefer one stable event kind per host meaning
-- normalize multiple protocol sources into one event where possible
-- keep redraw/publication wake separate from host UX events
-- document producer, payload, and host opt-in policy alongside the new event
-
-Examples of likely future stable core -> host events:
-
-- `title_changed`
-- `cwd_changed`
-- `clipboard_write_requested`
-- `child_exit`
-- `command_state_changed`
-- `notification_requested`
-
-Examples of likely future host -> core commands:
-
-- `set_font_size`
-- `adjust_font_size`
-- `reset_font_size`
-- `set_theme`
-- `cycle_theme`
+- `Terminal.create` starts one terminal widget and hides runtime field construction from `main.zig`.
+- `Terminal.destroy` is the matching lifetime close; app code must not manually deinit widget internals.
+- `Terminal.snapshot` returns host chrome metadata and the current backend surface handle.
+- `Runtime` is failure-aware. Recoverable backend failures return `false` and move lifecycle state to `failed`; host code should not panic from normal render/wake failure paths.
+- `Window.present` draws static host chrome and places the active terminal surface. It does not own terminal logic.
 
 ## Non-Goals
-- VT parsing semantics.
-- PTY implementation details.
-- Shared render contract design.
 
-## Change Rules
-- New platform variants should extend `Window`, `KeyInput`, or `Gpu`, not leak through `main.zig`.
-- Hosts should keep terminal semantics delegated to `howl-term` and `vt-core`.
-- New host chrome features should be orchestrated from `main.zig` unless they are purely local to one `Terminal` widget/tab.
+- Android lifecycle/userland behavior.
+- VT parsing semantics.
+- PTY internals.
+- Renderer dirty tracking.
+- Scrollback mutation outside `howl-term`.

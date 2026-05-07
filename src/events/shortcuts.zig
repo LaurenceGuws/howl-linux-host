@@ -1,7 +1,7 @@
 const std = @import("std");
 const keys = @import("keys.zig");
 
-pub const ShortCuts = struct {
+pub const Shortcuts = struct {
     pub const Key = keys.Key;
 
     pub const Action = enum {
@@ -51,19 +51,10 @@ pub const ShortCuts = struct {
         installed_tab_bar = conf.tab_bar.shortcuts.bindings;
     }
 
-    pub fn resolveGlfw(key: c_int, ctrl: bool, shift: bool, alt: bool) ?Action {
-        _ = key;
-        _ = ctrl;
-        _ = shift;
-        _ = alt;
-        return null;
-    }
-
-    pub fn resolve(key: c_uint, ctrl: bool, shift: bool, alt: bool) ?Action {
-        const shortcut_key = keyFromSdl(key) orelse return null;
-        if (matchBinding(installed_window, shortcut_key, ctrl, shift, alt)) |action| return action;
-        if (matchBinding(installed_term, shortcut_key, ctrl, shift, alt)) |action| return action;
-        if (matchBinding(installed_tab_bar, shortcut_key, ctrl, shift, alt)) |action| return action;
+    pub fn resolve(key: Key, ctrl: bool, shift: bool, alt: bool) ?Action {
+        if (matchBinding(installed_window, key, ctrl, shift, alt)) |action| return action;
+        if (matchBinding(installed_term, key, ctrl, shift, alt)) |action| return action;
+        if (matchBinding(installed_tab_bar, key, ctrl, shift, alt)) |action| return action;
         return null;
     }
 
@@ -96,9 +87,5 @@ pub const ShortCuts = struct {
             return binding.action;
         }
         return null;
-    }
-
-    fn keyFromSdl(key: c_uint) ?Key {
-        return keys.fromSdl(key);
     }
 };

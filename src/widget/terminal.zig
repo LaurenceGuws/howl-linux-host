@@ -1,17 +1,20 @@
 const std = @import("std");
-const window = @import("../../window.zig");
-const Layout = @import("../../window/layout.zig");
-const event_runtime = @import("../../events.zig");
+const window = @import("../window.zig");
+const Layout = @import("../window/layout.zig");
+const event_runtime = @import("../events.zig");
 const Events = event_runtime.Events;
-const term_core = @import("howl_term").HowlTerm;
-const Runtime = @import("../../howl-term/howl_term.zig").Runtime;
+const Runtime = @import("../howl-term/howl_term.zig").Runtime;
 const LifecycleState = Runtime.LifecycleState;
 const SurfaceHandle = Runtime.SurfaceHandle;
-const config = @import("../../howl-term/config.zig");
-const Scrollbar = @import("../../howl-term/scrollbar.zig");
-const TabBar = @import("../tab_bar/tab_bar.zig");
+const thread_meter = @import("../thread_meter.zig");
+const config = @import("../howl-term/config.zig");
+const Scrollbar = @import("../howl-term/scrollbar.zig");
+const TabBar = @import("tab_bar/tab_bar.zig");
+const Clipboard = @import("terminal_clipboard.zig");
+const Fonts = @import("terminal_fonts.zig");
+const Input = @import("terminal_input.zig");
 
-pub const HowlTerm = struct {
+pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
 
     pub const Snapshot = struct {
@@ -47,34 +50,65 @@ pub const HowlTerm = struct {
     scrollbar_dragging: bool,
     scrollbar_grab_offset: f32,
 
-    pub fn init(self: *HowlTerm, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) !void {
-        self.render_px_w = @max(render_width, 1);
-        self.render_px_h = @max(render_height, 1);
-        self.logical_w = @max(logical_width, 1);
-        self.logical_h = @max(logical_height, 1);
-        self.grid_px_w = self.logical_w;
-        self.grid_px_h = self.logical_h;
-        self.pending_grid_px_w = self.grid_px_w;
-        self.pending_grid_px_h = self.grid_px_h;
-        self.font_size_px = @max(self.conf.font_size, 1);
-        self.default_font_size_px = self.font_size_px;
-        self.tab_label_buf = undefined;
-        self.tab_label_len = 0;
-        self.last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 };
-        self.last_resize_ns = 0;
-        self.wake_notified = std.atomic.Value(bool).init(false);
-        self.stop_wake = std.atomic.Value(bool).init(false);
-        self.wake_thread = null;
-        self.window_focused = true;
-        self.widget_focused = true;
-        self.mouse_logical_x = 0;
-        self.mouse_logical_y = 0;
-        self.scrollbar_dragging = false;
-        self.scrollbar_grab_offset = 0;
-        self.term = .{};
+    pub fn create(
+        allocator: std.mem.Allocator,
+        conf: *const config.Config,
+        render_width: c_int,
+        render_height: c_int,
+        logical_width: c_int,
+        logical_height: c_int,
+    ) !*Terminal {
+        const self = try allocator.create(Terminal);
+        errdefer allocator.destroy(self);
+        self.* = initial(conf, render_width, render_height, logical_width, logical_height);
+        errdefer self.deinit();
+        try self.startRuntime();
+        return self;
+    }
 
+    pub fn destroy(self: *Terminal, allocator: std.mem.Allocator) void {
+        self.deinit();
+        allocator.destroy(self);
+    }
+
+    fn initial(conf: *const config.Config, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) Terminal {
+        const render_w = @max(render_width, 1);
+        const render_h = @max(render_height, 1);
+        const logical_w = @max(logical_width, 1);
+        const logical_h = @max(logical_height, 1);
+        const font_size = @max(conf.font_size, 1);
+        return .{
+            .term = .{},
+            .conf = conf,
+            .render_px_w = render_w,
+            .render_px_h = render_h,
+            .logical_w = logical_w,
+            .logical_h = logical_h,
+            .grid_px_w = logical_w,
+            .grid_px_h = logical_h,
+            .pending_grid_px_w = logical_w,
+            .pending_grid_px_h = logical_h,
+            .font_size_px = font_size,
+            .default_font_size_px = font_size,
+            .tab_label_buf = undefined,
+            .tab_label_len = 0,
+            .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
+            .last_resize_ns = 0,
+            .wake_notified = std.atomic.Value(bool).init(false),
+            .wake_thread = null,
+            .stop_wake = std.atomic.Value(bool).init(false),
+            .window_focused = true,
+            .widget_focused = true,
+            .mouse_logical_x = 0,
+            .mouse_logical_y = 0,
+            .scrollbar_dragging = false,
+            .scrollbar_grab_offset = 0,
+        };
+    }
+
+    fn startRuntime(self: *Terminal) !void {
         var font_fallbacks_buf: [32][:0]const u8 = undefined;
-        const font_fallbacks = flattenFallbacks(self.conf.fonts, font_fallbacks_buf[0..]);
+        const font_fallbacks = Fonts.flattenFallbacks(self.conf.fonts, font_fallbacks_buf[0..]);
         try self.term.init(
             self.conf.shell,
             self.conf.start_path,
@@ -92,15 +126,16 @@ pub const HowlTerm = struct {
         self.wake_thread = try std.Thread.spawn(.{}, wakeWorker, .{self});
     }
 
-    pub fn deinit(self: *HowlTerm) void {
+    pub fn deinit(self: *Terminal) void {
         self.stop_wake.store(true, .release);
+        self.term.wakeRenderWaiters();
         Events.wakeWindow();
         if (self.wake_thread) |t| t.join();
         self.wake_thread = null;
         self.term.deinit();
     }
 
-    pub fn resize(self: *HowlTerm, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
+    pub fn resize(self: *Terminal, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
         const rw = @max(render_width, 1);
         const rh = @max(render_height, 1);
         const lw = @max(logical_width, 1);
@@ -115,7 +150,7 @@ pub const HowlTerm = struct {
         self.last_resize_ns = window.c_win.SDL_GetTicksNS();
     }
 
-    pub fn nextWaitTimeoutMs(self: *HowlTerm) c_int {
+    pub fn nextWaitTimeoutMs(self: *Terminal) c_int {
         if (self.pending_grid_px_w == self.grid_px_w and self.pending_grid_px_h == self.grid_px_h) return -1;
         if (self.last_resize_ns == 0) return 0;
         const elapsed_ns = window.c_win.SDL_GetTicksNS() -| self.last_resize_ns;
@@ -123,59 +158,59 @@ pub const HowlTerm = struct {
         return @intCast(@max(1, @divTrunc(resize_coalesce_ns - elapsed_ns, std.time.ns_per_ms)));
     }
 
-    pub fn maybeCommitGridResize(self: *HowlTerm) void {
+    pub fn maybeCommitGridResize(self: *Terminal) void {
         if (self.pending_grid_px_w == self.grid_px_w and self.pending_grid_px_h == self.grid_px_h) return;
         if (self.last_resize_ns != 0 and window.c_win.SDL_GetTicksNS() -| self.last_resize_ns < resize_coalesce_ns) return;
         self.grid_px_w = self.pending_grid_px_w;
         self.grid_px_h = self.pending_grid_px_h;
         self.last_resize_ns = 0;
-        self.term.syncFrameGeometry(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
+        _ = self.term.syncFrameGeometry(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
     }
 
-    pub fn needsFrame(self: *HowlTerm) bool {
+    pub fn needsFrame(self: *Terminal) bool {
         return self.wake_notified.load(.acquire);
     }
 
-    pub fn render(self: *HowlTerm) void {
+    pub fn render(self: *Terminal) void {
         // Hosts own geometry policy: render pixels may diverge from grid-driving pixels.
-        self.term.renderFrameSized(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
-        const surface = self.term.surfaceHandle();
+        if (!self.term.renderFrameSized(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h)) return;
+        const surface = self.term.view().surface;
         if (surface.texture_id != 0) self.last_surface = surface;
     }
 
-    pub fn presentAck(self: *HowlTerm) void {
+    pub fn presentAck(self: *Terminal) void {
         self.term.presentAck();
         self.wake_notified.store(false, .release);
     }
 
-    fn publishInputBytes(self: *HowlTerm, bytes: []const u8) void {
+    fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
         self.term.publishInputBytes(bytes);
     }
 
-    fn publishInputKey(self: *HowlTerm, key: Events.KeyEvent) void {
-        const terminal_key = terminalKey(key.key) orelse return;
-        self.term.publishInputKey(terminal_key, terminalMods(key.mods));
+    fn publishInputKey(self: *Terminal, key: Events.Keys.Event) void {
+        const terminal_key = Input.key(key.key) orelse return;
+        self.term.publishInputKey(terminal_key, Input.mods(key.mods));
     }
 
-    fn publishMouseEvent(self: *HowlTerm, mouse_event: Events.MouseEvent) bool {
+    fn publishMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event) bool {
         return self.term.publishMouseEvent(
-            terminalMouseKind(mouse_event.kind),
-            terminalMouseButton(mouse_event.button),
+            Input.mouseKind(mouse_event.kind),
+            Input.mouseButton(mouse_event.button),
             mouse_event.pixel_x,
             mouse_event.pixel_y,
-            terminalMods(mouse_event.mods),
-            terminalButtons(mouse_event.buttons_down),
+            Input.mods(mouse_event.mods),
+            Input.buttons(mouse_event.buttons_down),
         );
     }
 
-    pub fn pasteFromClipboard(self: *HowlTerm) void {
+    pub fn pasteFromClipboard(self: *Terminal) void {
         const text = window.getClipboardText(std.heap.c_allocator) catch return;
         defer if (text) |buf| std.heap.c_allocator.free(buf);
         const payload = text orelse return;
         self.term.publishPaste(payload);
     }
 
-    pub fn drainInput(self: *HowlTerm, input_events: *Events, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
+    pub fn drainInput(self: *Terminal, input_events: *Events, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
         while (input_events.drainInputEvent()) |event| {
             switch (event) {
                 .bytes => |bytes| self.publishInputBytes(bytes.slice()),
@@ -199,37 +234,42 @@ pub const HowlTerm = struct {
         }
     }
 
-    pub fn handleScrollInput(self: *HowlTerm, input_events: *Events) void {
+    pub fn handleScrollInput(self: *Terminal, input_events: *Events) void {
         const page_steps = input_events.drainScrollPages();
         var delta_rows: i32 = 0;
         if (page_steps != 0) {
-            const visible_rows: i32 = @intCast(@max(self.term.viewportRows(), 1));
+            const visible_rows: i32 = @intCast(@max(self.term.view().viewport_rows, 1));
             const page_rows: i32 = @max(visible_rows - 1, 1);
             delta_rows += page_steps * page_rows;
         }
         if (delta_rows != 0) self.scrollByRows(delta_rows);
     }
 
-    fn waitRenderWake(self: *HowlTerm, timeout_ms: i32) bool {
+    fn waitRenderWake(self: *Terminal, timeout_ms: i32) bool {
         return self.term.waitRenderWake(timeout_ms);
     }
 
-    pub fn wantsPassiveHoverWake(self: *const HowlTerm, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    pub fn wantsPassiveHoverWake(self: *const Terminal, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         const model = self.scrollbarModel();
         if (!model.visible or !self.window_focused) return false;
-        return self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height) > 0.01;
+        _ = origin_x;
+        _ = origin_y;
+        _ = logical_width;
+        _ = logical_height;
+        return self.scrollbar_dragging;
     }
 
-    pub fn snapshot(self: *const HowlTerm, texture_rect: window.Rect) Snapshot {
+    pub fn snapshot(self: *const Terminal, texture_rect: window.Rect) Snapshot {
+        const view = self.term.view();
         return .{
             .surface = self.presentSurfaceHandle(),
             .tab_label = self.tabLabel(),
             .scrollbar = self.scrollbarLayout(texture_rect),
-            .state = self.term.state(),
+            .state = view.state,
         };
     }
 
-    fn scrollbarLayout(self: *const HowlTerm, texture_rect: window.Rect) window.ScrollbarLayout {
+    fn scrollbarLayout(self: *const Terminal, texture_rect: window.Rect) window.ScrollbarLayout {
         const model = self.scrollbarModel();
         if (!model.visible or texture_rect.width <= 0 or texture_rect.height <= 0) {
             return .{ .visible = false, .x = texture_rect.x + texture_rect.width, .y = texture_rect.y, .width = 0, .height = 0, .thumb_y = texture_rect.y, .thumb_height = 0 };
@@ -251,7 +291,7 @@ pub const HowlTerm = struct {
         };
     }
 
-    pub fn setWindowFocused(self: *HowlTerm, focused: bool) void {
+    pub fn setWindowFocused(self: *Terminal, focused: bool) void {
         if (self.window_focused == focused) return;
         self.window_focused = focused;
         if (!focused and self.scrollbar_dragging) {
@@ -261,13 +301,13 @@ pub const HowlTerm = struct {
         self.syncInputFocus();
     }
 
-    pub fn setWidgetFocused(self: *HowlTerm, focused: bool) void {
+    pub fn setWidgetFocused(self: *Terminal, focused: bool) void {
         if (self.widget_focused == focused) return;
         self.widget_focused = focused;
         self.syncInputFocus();
     }
 
-    pub fn serviceHostEffects(self: *HowlTerm) void {
+    pub fn serviceHostEffects(self: *Terminal) void {
         const request = self.term.drainPendingClipboardSet(std.heap.c_allocator) orelse return;
         defer std.heap.c_allocator.free(request.raw);
 
@@ -276,25 +316,21 @@ pub const HowlTerm = struct {
             .allow => {},
         }
 
-        const decoded = decodeOsc52Payload(std.heap.c_allocator, request.raw) catch return;
+        const decoded = Clipboard.decodeOsc52(std.heap.c_allocator, request.raw) catch return;
         defer std.heap.c_allocator.free(decoded);
         _ = window.setClipboardText(decoded);
     }
 
-    fn tabLabel(self: *const HowlTerm) []const u8 {
+    fn tabLabel(self: *const Terminal) []const u8 {
         return self.tab_label_buf[0..self.tab_label_len];
     }
 
-    fn surfaceHandle(self: *const HowlTerm) SurfaceHandle {
-        return self.term.surfaceHandle();
-    }
-
-    fn presentSurfaceHandle(self: *const HowlTerm) SurfaceHandle {
+    fn presentSurfaceHandle(self: *const Terminal) SurfaceHandle {
         if (self.last_surface.texture_id != 0) return self.last_surface;
-        return self.term.surfaceHandle();
+        return self.term.view().surface;
     }
 
-    pub fn adjustFontSize(self: *HowlTerm, delta: i16) bool {
+    pub fn adjustFontSize(self: *Terminal, delta: i16) bool {
         const min_font_px: i32 = 2;
         const max_font_px: i32 = 256;
         const current: i32 = self.font_size_px;
@@ -305,7 +341,7 @@ pub const HowlTerm = struct {
         return true;
     }
 
-    pub fn toggleStressFontSize(self: *HowlTerm) bool {
+    pub fn toggleStressFontSize(self: *Terminal) bool {
         const min_font_px: u16 = 2;
         const max_font_px: u16 = 256;
         const midpoint = min_font_px + ((max_font_px - min_font_px) / 2);
@@ -316,17 +352,18 @@ pub const HowlTerm = struct {
         return true;
     }
 
-    pub fn resetFontSize(self: *HowlTerm) bool {
+    pub fn resetFontSize(self: *Terminal) bool {
         if (self.font_size_px == self.default_font_size_px) return false;
         self.font_size_px = self.default_font_size_px;
         self.term.setFontSizePx(self.default_font_size_px);
         return true;
     }
 
-    fn scrollByRows(self: *HowlTerm, delta_rows: i32) void {
-        if (self.term.isAlternateScreen()) return;
-        const history_count_usize = self.term.currentScrollbackCount();
-        const current_usize = self.term.currentScrollbackOffset();
+    fn scrollByRows(self: *Terminal, delta_rows: i32) void {
+        const view = self.term.view();
+        if (view.alternate_screen) return;
+        const history_count_usize = view.scrollback_count;
+        const current_usize = view.scrollback_offset;
         const history_count: i32 = if (history_count_usize > @as(usize, std.math.maxInt(i32)))
             std.math.maxInt(i32)
         else
@@ -343,23 +380,23 @@ pub const HowlTerm = struct {
             _ = self.term.setScrollbackOffset(@intCast(target));
     }
 
-    fn scrollbarModel(self: *const HowlTerm) Scrollbar.Model {
-        const rows: usize = @intCast(@max(self.term.viewportRows(), 1));
-        const history_count = self.term.currentScrollbackCount();
-        const alt = self.term.isAlternateScreen();
+    fn scrollbarModel(self: *const Terminal) Scrollbar.Model {
+        const view = self.term.view();
+        const rows: usize = @intCast(@max(view.viewport_rows, 1));
+        const history_count = view.scrollback_count;
+        const alt = view.alternate_screen;
         const visible = !alt and history_count > 0 and rows > 0;
         return .{
             .visible = visible,
             .rows = rows,
             .total_lines = history_count + rows,
-            .scrollback_offset = @min(self.term.currentScrollbackOffset(), history_count),
+            .scrollback_offset = @min(view.scrollback_offset, history_count),
         };
     }
 
-    fn handleScrollbarMouseEvent(self: *HowlTerm, mouse_event: Events.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    fn handleScrollbarMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         self.mouse_logical_x = mouse_event.pixel_x;
         self.mouse_logical_y = mouse_event.pixel_y;
-
         const model = self.scrollbarModel();
         if (!model.visible or logical_width <= 0 or logical_height <= 0) {
             if (self.scrollbar_dragging) {
@@ -401,7 +438,7 @@ pub const HowlTerm = struct {
         }
     }
 
-    fn handleSelectionMouseEvent(self: *HowlTerm, mouse_event: Events.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    fn handleSelectionMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         const dragging = self.term.selectionInProgress();
         const relevant = mouse_event.button == .left or dragging;
         if (!relevant or logical_width <= 0 or logical_height <= 0) return false;
@@ -433,7 +470,7 @@ pub const HowlTerm = struct {
         }
     }
 
-    fn handleHyperlinkMouseEvent(self: *HowlTerm, mouse_event: Events.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    fn handleHyperlinkMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         if (self.conf.links.open != .system) return false;
         if (mouse_event.kind != .press or mouse_event.button != .left) return false;
         if (!mouse_event.mods.ctrl) return false;
@@ -446,7 +483,7 @@ pub const HowlTerm = struct {
         return true;
     }
 
-    fn updateScrollbarFromMouse(self: *HowlTerm, mouse_y: i32, geometry: Scrollbar.Geometry, model: Scrollbar.Model) bool {
+    fn updateScrollbarFromMouse(self: *Terminal, mouse_y: i32, geometry: Scrollbar.Geometry, model: Scrollbar.Model) bool {
         const available = geometry.thumbAvailable(model);
         const clamped_mouse = std.math.clamp(
             @as(f32, @floatFromInt(mouse_y)) - self.scrollbar_grab_offset,
@@ -462,7 +499,7 @@ pub const HowlTerm = struct {
         return self.setScrollbackOffset(target);
     }
 
-    fn setScrollbackOffset(self: *HowlTerm, offset: usize) bool {
+    fn setScrollbackOffset(self: *Terminal, offset: usize) bool {
         const changed = if (offset == 0)
             self.term.followLiveBottom()
         else
@@ -470,129 +507,65 @@ pub const HowlTerm = struct {
         return changed;
     }
 
-    fn scrollbarFocusT(self: *const HowlTerm, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) f32 {
+    fn scrollbarFocusT(self: *const Terminal, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) f32 {
         return Scrollbar.focus(origin_x, origin_y, logical_width, logical_height, self.mouse_logical_x, self.mouse_logical_y, self.scrollbar_dragging, self.window_focused);
     }
 
-    fn refreshTabLabel(self: *HowlTerm) void {
+    fn refreshTabLabel(self: *Terminal) void {
         self.tab_label_len = TabBar.label(self.term.copyTabTitle(self.tab_label_buf[0..]), self.tab_label_buf[0..]);
     }
 
-    fn syncInputFocus(self: *HowlTerm) void {
+    fn syncInputFocus(self: *Terminal) void {
         self.term.setInputFocus(self.window_focused and self.widget_focused);
     }
 };
 
-fn wakeWorker(self: *HowlTerm) void {
+fn wakeWorker(self: *Terminal) void {
+    var meter = thread_meter.ThreadMeter.init(3 * std.time.ns_per_s);
+    var waits: u64 = 0;
+    var wake_hits: u64 = 0;
+    var wait_blocks: u64 = 0;
+    var event_wakes: u64 = 0;
+
     while (!self.stop_wake.load(.acquire)) {
         if (self.wake_notified.load(.acquire)) {
-            window.c_win.SDL_Delay(1);
+            wait_blocks += 1;
+            window.c_win.SDL_Delay(16);
+            reportWakeThread(&meter, waits, wake_hits, wait_blocks, event_wakes);
             continue;
         }
-        if (self.term.waitRenderWake(1000)) {
+
+        waits += 1;
+        if (self.term.waitRenderWake(-1)) {
+            wake_hits += 1;
             if (!self.wake_notified.swap(true, .acq_rel)) {
+                event_wakes += 1;
                 self.refreshTabLabel();
                 Events.wakeWindow();
             }
         }
+        reportWakeThread(&meter, waits, wake_hits, wait_blocks, event_wakes);
     }
 }
 
-fn decodeOsc52Payload(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
-    const sep = std.mem.indexOfScalar(u8, raw, ';') orelse return error.InvalidOsc52Payload;
-    const data = raw[sep + 1 ..];
-    if (std.mem.eql(u8, data, "?")) return error.UnsupportedOsc52Query;
-    const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(data);
-    const out = try allocator.alloc(u8, decoded_len);
-    errdefer allocator.free(out);
-    try std.base64.standard.Decoder.decode(out, data);
-    return out;
-}
-
-fn flattenFallbacks(fonts: config.FontStack, buf: [][:0]const u8) []const [:0]const u8 {
-    var n: usize = 0;
-    for (fonts.mono) |p| {
-        if (n >= buf.len) return buf[0..n];
-        buf[n] = p;
-        n += 1;
-    }
-    for (fonts.symbols) |p| {
-        if (n >= buf.len) return buf[0..n];
-        buf[n] = p;
-        n += 1;
-    }
-    for (fonts.emoji) |p| {
-        if (n >= buf.len) return buf[0..n];
-        buf[n] = p;
-        n += 1;
-    }
-    return buf[0..n];
-}
-
-fn terminalKey(key: Events.Key) ?term_core.Key {
-    return switch (key) {
-        .escape => term_core.key_escape,
-        .tab => term_core.key_tab,
-        .enter => term_core.key_enter,
-        .backspace => term_core.key_backspace,
-        .insert => term_core.key_insert,
-        .delete => term_core.key_delete,
-        .home => term_core.key_home,
-        .end => term_core.key_end,
-        .page_up => term_core.key_pageup,
-        .page_down => term_core.key_pagedown,
-        .up => term_core.key_up,
-        .down => term_core.key_down,
-        .left => term_core.key_left,
-        .right => term_core.key_right,
-        .f1 => term_core.key_f1,
-        .f2 => term_core.key_f2,
-        .f3 => term_core.key_f3,
-        .f4 => term_core.key_f4,
-        .f5 => term_core.key_f5,
-        .f6 => term_core.key_f6,
-        .f7 => term_core.key_f7,
-        .f8 => term_core.key_f8,
-        .f9 => term_core.key_f9,
-        .f10 => term_core.key_f10,
-        .f11 => term_core.key_f11,
-        .f12 => term_core.key_f12,
-        else => null,
-    };
-}
-
-fn terminalMods(mods: Events.Mod) term_core.Modifier {
-    var out: term_core.Modifier = 0;
-    if (mods.shift) out |= term_core.mod_shift;
-    if (mods.alt) out |= term_core.mod_alt;
-    if (mods.ctrl) out |= term_core.mod_ctrl;
-    return out;
-}
-
-fn terminalMouseKind(kind: Events.MouseKind) term_core.MouseEventKind {
-    return switch (kind) {
-        .move => term_core.mouse_move,
-        .press => term_core.mouse_press,
-        .release => term_core.mouse_release,
-        .wheel => term_core.mouse_wheel,
-    };
-}
-
-fn terminalMouseButton(button: Events.MouseButton) term_core.MouseButton {
-    return switch (button) {
-        .none => term_core.mouse_button_none,
-        .left => term_core.mouse_button_left,
-        .middle => term_core.mouse_button_middle,
-        .right => term_core.mouse_button_right,
-        .wheel_up => term_core.mouse_button_wheel_up,
-        .wheel_down => term_core.mouse_button_wheel_down,
-    };
-}
-
-fn terminalButtons(buttons: Events.Buttons) u8 {
-    var out: u8 = 0;
-    if (buttons.left) out |= 0x01;
-    if (buttons.middle) out |= 0x02;
-    if (buttons.right) out |= 0x04;
-    return out;
+fn reportWakeThread(
+    meter: *thread_meter.ThreadMeter,
+    waits: u64,
+    wake_hits: u64,
+    wait_blocks: u64,
+    event_wakes: u64,
+) void {
+    const sample = meter.sample() orelse return;
+    std.log.info(
+        "perf host_wake_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} wait_blocks={} event_wakes={}",
+        .{
+            sample.cpuPct(),
+            @divTrunc(sample.wall_ns, std.time.ns_per_ms),
+            @divTrunc(sample.cpu_ns, std.time.ns_per_ms),
+            waits,
+            wake_hits,
+            wait_blocks,
+            event_wakes,
+        },
+    );
 }

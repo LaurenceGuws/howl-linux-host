@@ -1,9 +1,9 @@
 const std = @import("std");
-const ShortCuts = @import("../../events.zig").Events.ShortCuts;
+const Shortcuts = @import("../../events.zig").Events.Shortcuts;
 
 pub const Config = struct {
     height: u16,
-    shortcuts: ShortCuts.Map,
+    shortcuts: Shortcuts.Map,
 
     pub fn deinit(self: *Config, alloc: std.mem.Allocator) void {
         self.shortcuts.deinit(alloc);

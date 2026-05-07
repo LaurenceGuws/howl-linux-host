@@ -5,6 +5,8 @@
 const term_core = @import("howl_term").HowlTerm;
 const std = @import("std");
 
+const startup_output_timeout_ms: i64 = 1500;
+
 pub const Runtime = struct {
     pub const LifecycleState = enum {
         stopped,
@@ -14,11 +16,59 @@ pub const Runtime = struct {
     };
 
     pub const SurfaceHandle = term_core.SurfaceHandle;
+    pub const Key = term_core.Key;
+    pub const Modifier = term_core.Modifier;
+    pub const View = struct {
+        surface: SurfaceHandle,
+        state: LifecycleState,
+        viewport_rows: u16,
+        scrollback_count: usize,
+        scrollback_offset: usize,
+        alternate_screen: bool,
+    };
+    pub const mod_shift = term_core.mod_shift;
+    pub const mod_alt = term_core.mod_alt;
     pub const mod_ctrl = term_core.mod_ctrl;
+    pub const key_enter = term_core.key_enter;
+    pub const key_tab = term_core.key_tab;
+    pub const key_backspace = term_core.key_backspace;
+    pub const key_escape = term_core.key_escape;
+    pub const key_up = term_core.key_up;
+    pub const key_down = term_core.key_down;
+    pub const key_left = term_core.key_left;
+    pub const key_right = term_core.key_right;
+    pub const key_insert = term_core.key_insert;
+    pub const key_delete = term_core.key_delete;
+    pub const key_home = term_core.key_home;
+    pub const key_end = term_core.key_end;
+    pub const key_pageup = term_core.key_pageup;
+    pub const key_pagedown = term_core.key_pagedown;
+    pub const key_f1 = term_core.key_f1;
+    pub const key_f2 = term_core.key_f2;
+    pub const key_f3 = term_core.key_f3;
+    pub const key_f4 = term_core.key_f4;
+    pub const key_f5 = term_core.key_f5;
+    pub const key_f6 = term_core.key_f6;
+    pub const key_f7 = term_core.key_f7;
+    pub const key_f8 = term_core.key_f8;
+    pub const key_f9 = term_core.key_f9;
+    pub const key_f10 = term_core.key_f10;
+    pub const key_f11 = term_core.key_f11;
+    pub const key_f12 = term_core.key_f12;
+    pub const mouse_button_none = term_core.mouse_button_none;
+    pub const mouse_button_left = term_core.mouse_button_left;
+    pub const mouse_button_middle = term_core.mouse_button_middle;
+    pub const mouse_button_right = term_core.mouse_button_right;
+    pub const mouse_button_wheel_up = term_core.mouse_button_wheel_up;
+    pub const mouse_button_wheel_down = term_core.mouse_button_wheel_down;
+    pub const mouse_press = term_core.mouse_press;
+    pub const mouse_release = term_core.mouse_release;
+    pub const mouse_move = term_core.mouse_move;
+    pub const mouse_wheel = term_core.mouse_wheel;
 
     const ClipboardRequest = term_core.ClipboardRequest;
-    const MouseButton = term_core.MouseButton;
-    const MouseEventKind = term_core.MouseEventKind;
+    pub const MouseButton = term_core.MouseButton;
+    pub const MouseEventKind = term_core.MouseEventKind;
 
     term: ?term_core = null,
     lifecycle_state: LifecycleState = .stopped,
@@ -41,20 +91,24 @@ pub const Runtime = struct {
         const pty_command_owned = if (start_path) |path| try buildPtyCommand(std.heap.c_allocator, shell, path, command) else null;
         defer if (pty_command_owned) |cmd| std.heap.c_allocator.free(cmd);
         const pty_command = pty_command_owned orelse command;
+        logLaunch(shell, start_path, command);
 
+        errdefer {
+            if (self.term) |*inst| inst.deinit();
+            self.term = null;
+            self.lifecycle_state = .failed;
+        }
         self.term = try term_core.initPty(std.heap.c_allocator, shell, pty_command, 1, 1, .{ .width = 1, .height = 1 });
         self.term.?.setFontSizePx(font_size_px);
         self.term.?.setPrimaryFontPath(font_primary);
         self.term.?.setFallbackFontPaths(font_fallbacks);
-        errdefer {
-            self.term = null;
-            self.lifecycle_state = .failed;
-        }
         self.term.?.start() catch |err| {
             self.lifecycle_state = .failed;
             return err;
         };
         try self.term.?.syncFrameGeometry(render_width, render_height, grid_width, grid_height);
+        try self.waitStartupOutput(startup_output_timeout_ms);
+        std.log.info("terminal ready shell={s}", .{shell});
         self.lifecycle_state = .ready;
     }
 
@@ -67,36 +121,36 @@ pub const Runtime = struct {
         self.lifecycle_state = .stopped;
     }
 
-    pub fn renderFrameSized(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
-        const inst = &(self.term orelse return);
+    pub fn renderFrameSized(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) bool {
+        const inst = &(self.term orelse return false);
         const rw: u16 = @intCast(@max(render_width, 1));
         const rh: u16 = @intCast(@max(render_height, 1));
         const gw: u16 = @intCast(@max(grid_width, 1));
         const gh: u16 = @intCast(@max(grid_height, 1));
         inst.renderFrameSized(rw, rh, gw, gh) catch |err| {
             self.lifecycle_state = .failed;
-            std.debug.panic("linux-host Terminal.renderFrameSized failed: {s}", .{@errorName(err)});
+            std.log.err("terminal render failed: {s}", .{@errorName(err)});
+            return false;
         };
+        return true;
     }
 
-    pub fn syncFrameGeometry(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
-        const inst = &(self.term orelse return);
+    pub fn syncFrameGeometry(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) bool {
+        const inst = &(self.term orelse return false);
         const rw: u16 = @intCast(@max(render_width, 1));
         const rh: u16 = @intCast(@max(render_height, 1));
         const gw: u16 = @intCast(@max(grid_width, 1));
         const gh: u16 = @intCast(@max(grid_height, 1));
         inst.syncFrameGeometry(rw, rh, gw, gh) catch |err| {
             self.lifecycle_state = .failed;
-            std.debug.panic("linux-host Terminal.syncFrameGeometry failed: {s}", .{@errorName(err)});
+            std.log.err("terminal geometry sync failed: {s}", .{@errorName(err)});
+            return false;
         };
+        return true;
     }
 
     pub fn presentAck(self: *Runtime) void {
         if (self.term) |*inst| _ = inst.presentAck();
-    }
-
-    pub fn state(self: *const Runtime) LifecycleState {
-        return self.lifecycle_state;
     }
 
     pub fn publishInputBytes(self: *Runtime, bytes: []const u8) void {
@@ -206,23 +260,14 @@ pub const Runtime = struct {
         const inst = &(self.term orelse return false);
         return inst.waitRenderWake(timeout_ms) catch |err| {
             self.lifecycle_state = .failed;
-            std.debug.panic("linux-host Terminal.waitRenderWake failed: {s}", .{@errorName(err)});
+            std.log.err("terminal render wake failed: {s}", .{@errorName(err)});
+            return false;
         };
     }
 
-    pub fn currentScrollbackCount(self: *const Runtime) usize {
-        const inst = &(self.term orelse return 0);
-        return inst.currentScrollbackCount();
-    }
-
-    pub fn currentScrollbackOffset(self: *const Runtime) usize {
-        const inst = &(self.term orelse return 0);
-        return inst.currentScrollbackOffset();
-    }
-
-    pub fn isAlternateScreen(self: *const Runtime) bool {
-        const inst = &(self.term orelse return false);
-        return inst.isAlternateScreen();
+    pub fn wakeRenderWaiters(self: *Runtime) void {
+        const inst = &(self.term orelse return);
+        inst.wakeRenderWaiters();
     }
 
     pub fn setScrollbackOffset(self: *Runtime, offset_rows: usize) bool {
@@ -245,16 +290,49 @@ pub const Runtime = struct {
         return inst.copyCurrentTitle(out_buf);
     }
 
-    pub fn viewportRows(self: *const Runtime) u16 {
-        const inst = &(self.term orelse return 1);
-        return inst.viewportRows();
+    pub fn view(self: *const Runtime) View {
+        const inst = &(self.term orelse return .{
+            .surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
+            .state = self.lifecycle_state,
+            .viewport_rows = 1,
+            .scrollback_count = 0,
+            .scrollback_offset = 0,
+            .alternate_screen = false,
+        });
+        return .{
+            .surface = inst.surfaceHandle(),
+            .state = self.lifecycle_state,
+            .viewport_rows = inst.viewportRows(),
+            .scrollback_count = inst.currentScrollbackCount(),
+            .scrollback_offset = inst.currentScrollbackOffset(),
+            .alternate_screen = inst.isAlternateScreen(),
+        };
     }
 
-    pub fn surfaceHandle(self: *const Runtime) SurfaceHandle {
-        const inst = &(self.term orelse return .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 });
-        return inst.surfaceHandle();
+    fn waitStartupOutput(self: *Runtime, timeout_ms: i64) !void {
+        const inst = &(self.term orelse return error.TransportUnavailable);
+        var waited_ms: i64 = 0;
+        while (waited_ms < timeout_ms) : (waited_ms += 10) {
+            if (inst.hasOutputProof()) return;
+            _ = inst.waitRenderWake(10) catch return error.TransportUnavailable;
+        }
+        return error.TransportUnavailable;
     }
 };
+
+fn logLaunch(shell: []const u8, start_path: ?[]const u8, command: ?[]const u8) void {
+    if (start_path) |path| {
+        if (command) |cmd| {
+            std.log.info("terminal launch shell={s} start_path={s} command={s}", .{ shell, path, cmd });
+        } else {
+            std.log.info("terminal launch shell={s} start_path={s}", .{ shell, path });
+        }
+    } else if (command) |cmd| {
+        std.log.info("terminal launch shell={s} command={s}", .{ shell, cmd });
+    } else {
+        std.log.info("terminal launch shell={s}", .{shell});
+    }
+}
 
 fn buildPtyCommand(alloc: std.mem.Allocator, shell: []const u8, start_path: []const u8, command: ?[]const u8) ![]u8 {
     const path_q = try shellQuote(alloc, start_path);
@@ -266,7 +344,7 @@ fn buildPtyCommand(alloc: std.mem.Allocator, shell: []const u8, start_path: []co
 
     const shell_q = try shellQuote(alloc, shell);
     defer alloc.free(shell_q);
-    return std.fmt.allocPrint(alloc, "cd -- {s} && exec {s} -i", .{ path_q, shell_q });
+    return std.fmt.allocPrint(alloc, "cd -- {s} && printf '\\033]777;ready\\007' && exec {s} -i", .{ path_q, shell_q });
 }
 
 fn shellQuote(alloc: std.mem.Allocator, s: []const u8) ![]u8 {

@@ -34,8 +34,8 @@ pub fn quit() void {
 }
 
 pub fn createWindow(title: [*:0]const u8, width: c_int, height: c_int, flags: Flags) ?Ptr {
-    const handle = c.SDL_CreateWindow(title, width, height, @intCast(flags));
-    if (handle != null) _ = c.SDL_StartTextInput(handle);
+    const handle = c.SDL_CreateWindow(title, width, height, @intCast(flags)) orelse return null;
+    _ = c.SDL_StartTextInput(handle);
     return handle;
 }
 

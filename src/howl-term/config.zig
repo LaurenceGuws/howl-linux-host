@@ -41,7 +41,7 @@ pub const Config = struct {
     fonts: FontStack,
     clipboard: Clipboard,
     links: Links,
-    shortcuts: Events.ShortCuts.Map,
+    shortcuts: Events.Shortcuts.Map,
 
     pub fn deinit(self: *Config, alloc: std.mem.Allocator) void {
         alloc.free(self.shell);

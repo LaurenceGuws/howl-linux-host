@@ -4,7 +4,7 @@ const Config = @import("../config.zig");
 const Events = @import("../events.zig").Events;
 const env = @import("env.zig");
 const parse = @import("parse.zig");
-const ShortCuts = Events.ShortCuts;
+const Shortcuts = Events.Shortcuts;
 
 const Lua = howl_lua;
 
@@ -116,11 +116,11 @@ pub fn loadFromLua(alloc: std.mem.Allocator, lua: Lua.State) !Config.Value {
     };
 }
 
-fn loadShortcutMap(alloc: std.mem.Allocator, shortcuts_reader_opt: ?Lua.Reader, specs: []const parse.ShortcutSpec) !ShortCuts.Map {
-    const shortcuts_reader = shortcuts_reader_opt orelse return .{ .bindings = try alloc.alloc(ShortCuts.Binding, 0) };
+fn loadShortcutMap(alloc: std.mem.Allocator, shortcuts_reader_opt: ?Lua.Reader, specs: []const parse.ShortcutSpec) !Shortcuts.Map {
+    const shortcuts_reader = shortcuts_reader_opt orelse return .{ .bindings = try alloc.alloc(Shortcuts.Binding, 0) };
     defer shortcuts_reader.finish();
 
-    var out = std.ArrayList(ShortCuts.Binding).empty;
+    var out = std.ArrayList(Shortcuts.Binding).empty;
     errdefer out.deinit(alloc);
 
     for (specs) |spec| {
