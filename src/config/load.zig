@@ -6,7 +6,7 @@ const env = @import("env.zig");
 const parse = @import("parse.zig");
 const ShortCuts = Events.ShortCuts;
 
-const Lua = howl_lua.HowlLua;
+const Lua = howl_lua;
 
 pub fn loadLua(alloc: std.mem.Allocator) !Lua.Api.State {
     var lua = try Lua.Api.State.init();

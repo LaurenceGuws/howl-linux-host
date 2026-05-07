@@ -4,7 +4,7 @@ const term_config = @import("howl-term/config.zig");
 const window_config = @import("config/window.zig");
 const TabBar = @import("widget/tab_bar/tab_bar.zig").TabBar;
 
-const Lua = howl_lua.HowlLua;
+const Lua = howl_lua;
 
 pub const Config = struct {
     pub const Value = struct {
