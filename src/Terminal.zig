@@ -5,7 +5,6 @@
 const term_core = @import("howl_term").HowlTerm;
 const std = @import("std");
 
-/// Host-local terminal runtime owner.
 pub const Terminal = struct {
     pub const LifecycleState = enum {
         stopped,
@@ -24,7 +23,6 @@ pub const Terminal = struct {
     term: ?term_core = null,
     lifecycle_state: LifecycleState = .stopped,
 
-    /// Initialize the host-local runtime and start the embedded session.
     pub fn init(
         self: *Terminal,
         shell: []const u8,
@@ -60,7 +58,6 @@ pub const Terminal = struct {
         self.lifecycle_state = .ready;
     }
 
-    /// Release the embedded runtime and reset host-local state.
     pub fn deinit(self: *Terminal) void {
         if (self.term) |*inst| {
             inst.stop();
@@ -70,7 +67,6 @@ pub const Terminal = struct {
         self.lifecycle_state = .stopped;
     }
 
-    /// Render one frame with independent render and grid geometry.
     pub fn renderFrameSized(self: *Terminal, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
         const inst = &(self.term orelse return);
         const rw: u16 = @intCast(@max(render_width, 1));
@@ -95,17 +91,14 @@ pub const Terminal = struct {
         };
     }
 
-    /// Acknowledge presentation on the embedded runtime.
     pub fn presentAck(self: *Terminal) void {
         if (self.term) |*inst| _ = inst.presentAck();
     }
 
-    /// Report the current host-local lifecycle state.
     pub fn state(self: *const Terminal) LifecycleState {
         return self.lifecycle_state;
     }
 
-    /// Publish raw host input bytes into the embedded runtime.
     pub fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
         if (bytes.len == 0) return;
         const inst = &(self.term orelse return);
@@ -209,7 +202,6 @@ pub const Terminal = struct {
         return inst.selectionInProgress();
     }
 
-    /// Wait until render work is armed or the timeout expires.
     pub fn waitRenderWake(self: *Terminal, timeout_ms: i32) bool {
         const inst = &(self.term orelse return false);
         return inst.waitRenderWake(timeout_ms) catch |err| {
@@ -218,31 +210,26 @@ pub const Terminal = struct {
         };
     }
 
-    /// Report the total current scrollback history row count.
     pub fn currentScrollbackCount(self: *const Terminal) usize {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackCount();
     }
 
-    /// Report the current scrollback offset from the live bottom.
     pub fn currentScrollbackOffset(self: *const Terminal) usize {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackOffset();
     }
 
-    /// Report whether the terminal is currently using the alternate screen.
     pub fn isAlternateScreen(self: *const Terminal) bool {
         const inst = &(self.term orelse return false);
         return inst.isAlternateScreen();
     }
 
-    /// Set the active scrollback offset.
     pub fn setScrollbackOffset(self: *Terminal, offset_rows: usize) bool {
         const inst = &(self.term orelse return false);
         return inst.setScrollbackOffset(offset_rows);
     }
 
-    /// Return the viewport to the live bottom.
     pub fn followLiveBottom(self: *Terminal) bool {
         const inst = &(self.term orelse return false);
         return inst.followLiveBottom();
@@ -270,8 +257,7 @@ pub const Terminal = struct {
 };
 
 fn buildPtyCommand(alloc: std.mem.Allocator, shell: []const u8, start_path: []const u8, command: ?[]const u8) ![]u8 {
-    const path = start_path;
-    const path_q = try shellQuote(alloc, path);
+    const path_q = try shellQuote(alloc, start_path);
     defer alloc.free(path_q);
 
     if (command) |cmd| {

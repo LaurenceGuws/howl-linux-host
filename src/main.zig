@@ -1,8 +1,9 @@
 const std = @import("std");
 const window = @import("Window.zig").Window;
-const Events = @import("Events.zig").Events;
+const event_runtime = @import("Events.zig");
+const Events = event_runtime.Events;
 const config = @import("Config.zig").Config;
-const ShortCuts = @import("ShortCuts.zig").ShortCuts;
+const ShortCuts = @import("events/shourcuts.zig").ShortCuts;
 const TerminalWidget = @import("widget/Terminal.zig").Terminal;
 const trace = @import("howl_term").Trace;
 
@@ -343,7 +344,7 @@ pub fn main(init: std.process.Init) !void {
         }
         var work = app.collectRenderWork();
         const wait_ms = waitTimeoutMs(cli.duration_ms, run_start_ms, app.activeTerminalPassiveHoverWake(), app.activeTab().nextWaitTimeoutMs());
-        const signal = if (work.needs_frame) window.pollEventSignal(win) else window.waitEventSignal(win, wait_ms);
+        const signal = if (work.needs_frame) Events.pollWindow(win) else Events.waitWindow(win, wait_ms);
         if (signal == .quit) {
             running = false;
             continue;
