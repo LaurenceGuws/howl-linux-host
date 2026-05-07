@@ -5,23 +5,69 @@
 const std = @import("std");
 const Keys = @import("events/keys.zig");
 const Mouse = @import("events/mouse.zig");
-const Shortcut = @import("events/shourcuts.zig").ShortCuts;
+const ShortCutModule = @import("events/shortcuts.zig");
 const Window = @import("events/window.zig");
 const c = Window.c_win;
 const max_input_events: usize = 256;
 
 pub const Events = struct {
     pub const Signal = Window.EventSignal;
-    pub const ShortCuts = Shortcut;
-    pub const ByteInput = Mouse.ByteInput;
-    pub const KeyEvent = Mouse.KeyEvent;
-    pub const MouseEvent = Mouse.MouseEvent;
-    pub const InputEvent = Mouse.InputEvent;
+    pub const ShortCuts = ShortCutModule.ShortCuts;
+    pub const Key = Keys.Key;
+    pub const Mod = Mouse.Mod;
+    pub const Buttons = Mouse.Buttons;
 
-    input_events: [max_input_events]Mouse.InputEvent,
+    const max_event_bytes: usize = 32;
+
+    pub const ByteInput = struct {
+        len: u8,
+        buf: [max_event_bytes]u8,
+
+        pub fn slice(self: *const ByteInput) []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+
+    pub const KeyEvent = struct {
+        key: Key,
+        mods: Mod,
+    };
+
+    pub const MouseKind = enum {
+        move,
+        press,
+        release,
+        wheel,
+    };
+
+    pub const MouseButton = enum {
+        none,
+        left,
+        middle,
+        right,
+        wheel_up,
+        wheel_down,
+    };
+
+    pub const MouseEvent = struct {
+        kind: MouseKind,
+        button: MouseButton,
+        pixel_x: i32,
+        pixel_y: i32,
+        mods: Mod,
+        buttons_down: Buttons,
+    };
+
+    pub const InputEvent = union(enum) {
+        bytes: ByteInput,
+        key: KeyEvent,
+        mouse: MouseEvent,
+    };
+
+    input_events: [max_input_events]InputEvent,
     input_len: usize,
     scroll_pages: i32,
-    shortcut_buf: [64]Shortcut.Action,
+    shortcut_buf: [64]ShortCuts.Action,
     shortcut_len: usize,
     last_mouse_x: i32,
     last_mouse_y: i32,
@@ -52,12 +98,12 @@ pub const Events = struct {
         }
     }
 
-    pub fn drainInputEvent(self: *Events) ?Mouse.InputEvent {
+    pub fn drainInputEvent(self: *Events) ?InputEvent {
         if (self.input_len == 0) return null;
         const out = self.input_events[0];
         self.input_len -= 1;
         if (self.input_len > 0) {
-            std.mem.copyForwards(Mouse.InputEvent, self.input_events[0..self.input_len], self.input_events[1 .. self.input_len + 1]);
+            std.mem.copyForwards(InputEvent, self.input_events[0..self.input_len], self.input_events[1 .. self.input_len + 1]);
         }
         return out;
     }
@@ -68,12 +114,12 @@ pub const Events = struct {
         return out;
     }
 
-    pub fn drainShortcutAction(self: *Events) ?Shortcut.Action {
+    pub fn drainShortcutAction(self: *Events) ?ShortCuts.Action {
         if (self.shortcut_len == 0) return null;
         const out = self.shortcut_buf[0];
         self.shortcut_len -= 1;
         if (self.shortcut_len > 0) {
-            std.mem.copyForwards(Shortcut.Action, self.shortcut_buf[0..self.shortcut_len], self.shortcut_buf[1 .. self.shortcut_len + 1]);
+            std.mem.copyForwards(ShortCuts.Action, self.shortcut_buf[0..self.shortcut_len], self.shortcut_buf[1 .. self.shortcut_len + 1]);
         }
         return out;
     }
@@ -107,7 +153,7 @@ fn processEvent(event: *const c.SDL_Event) void {
             const ctrl = (event.key.mod & c.SDL_KMOD_CTRL) != 0;
             const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
             const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
-            if (Shortcut.resolve(@intCast(event.key.key), ctrl, shift, alt)) |shortcut| {
+            if (Events.ShortCuts.resolve(@intCast(event.key.key), ctrl, shift, alt)) |shortcut| {
                 appendShortcut(events, shortcut);
                 return;
             }
@@ -123,8 +169,8 @@ fn processEvent(event: *const c.SDL_Event) void {
                     return;
                 }
             }
-            if (Keys.eventFromSdl(event.key.key)) |key| {
-                appendKeyEvent(events, key, Mouse.sdlModsToHowlMods(event.key.mod));
+            if (Keys.fromSdl(event.key.key)) |key| {
+                appendKeyEvent(events, key, Mouse.modsFromSdl(event.key.mod));
                 return;
             }
             if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
@@ -143,12 +189,12 @@ fn processEvent(event: *const c.SDL_Event) void {
             events.last_mouse_x = pixel_x;
             events.last_mouse_y = pixel_y;
             appendMouseEvent(events, .{
-                .kind = @import("howl_term").HowlTerm.mouse_move,
-                .button = @import("howl_term").HowlTerm.mouse_button_none,
+                .kind = .move,
+                .button = .none,
                 .pixel_x = pixel_x,
                 .pixel_y = pixel_y,
-                .mods = Mouse.sdlModsToHowlMods(c.SDL_GetModState()),
-                .buttons_down = Mouse.sdlButtonsToHowlButtons(event.motion.state),
+                .mods = Mouse.modsFromSdl(c.SDL_GetModState()),
+                .buttons_down = Mouse.buttonsFromSdl(event.motion.state),
             });
         },
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
@@ -156,14 +202,14 @@ fn processEvent(event: *const c.SDL_Event) void {
             const pixel_y = @as(i32, @intFromFloat(@round(event.button.y)));
             events.last_mouse_x = pixel_x;
             events.last_mouse_y = pixel_y;
-            const button = Mouse.sdlMouseButton(event.button.button) orelse return;
+            const button = mouseButton(Mouse.buttonFromSdl(event.button.button)) orelse return;
             appendMouseEvent(events, .{
-                .kind = @import("howl_term").HowlTerm.mouse_press,
+                .kind = .press,
                 .button = button,
                 .pixel_x = pixel_x,
                 .pixel_y = pixel_y,
-                .mods = Mouse.sdlModsToHowlMods(c.SDL_GetModState()),
-                .buttons_down = 0,
+                .mods = Mouse.modsFromSdl(c.SDL_GetModState()),
+                .buttons_down = .{},
             });
         },
         c.SDL_EVENT_MOUSE_BUTTON_UP => {
@@ -171,32 +217,31 @@ fn processEvent(event: *const c.SDL_Event) void {
             const pixel_y = @as(i32, @intFromFloat(@round(event.button.y)));
             events.last_mouse_x = pixel_x;
             events.last_mouse_y = pixel_y;
-            const button = Mouse.sdlMouseButton(event.button.button) orelse return;
+            const button = mouseButton(Mouse.buttonFromSdl(event.button.button)) orelse return;
             appendMouseEvent(events, .{
-                .kind = @import("howl_term").HowlTerm.mouse_release,
+                .kind = .release,
                 .button = button,
                 .pixel_x = pixel_x,
                 .pixel_y = pixel_y,
-                .mods = Mouse.sdlModsToHowlMods(c.SDL_GetModState()),
-                .buttons_down = 0,
+                .mods = Mouse.modsFromSdl(c.SDL_GetModState()),
+                .buttons_down = .{},
             });
         },
         c.SDL_EVENT_MOUSE_WHEEL => {
             var ticks: i32 = event.wheel.integer_y;
             if (ticks == 0) ticks = @intFromFloat(@round(event.wheel.y));
             if (ticks == 0) return;
-            const howl_term = @import("howl_term").HowlTerm;
-            const button = if (ticks > 0) howl_term.mouse_button_wheel_up else howl_term.mouse_button_wheel_down;
+            const button: Events.MouseButton = if (ticks > 0) .wheel_up else .wheel_down;
             const step_count: u32 = @intCast(@abs(ticks));
             var i: u32 = 0;
             while (i < step_count) : (i += 1) {
                 appendMouseEvent(events, .{
-                    .kind = howl_term.mouse_wheel,
+                    .kind = .wheel,
                     .button = button,
                     .pixel_x = events.last_mouse_x,
                     .pixel_y = events.last_mouse_y,
-                    .mods = Mouse.sdlModsToHowlMods(c.SDL_GetModState()),
-                    .buttons_down = 0,
+                    .mods = Mouse.modsFromSdl(c.SDL_GetModState()),
+                    .buttons_down = .{},
                 });
             }
         },
@@ -214,8 +259,8 @@ fn appendBytesEvent(events: *Events, bytes: []const u8) void {
     var offset: usize = 0;
     while (offset < bytes.len) {
         const remaining = bytes.len - offset;
-        const chunk_len: u8 = @intCast(@min(remaining, Mouse.max_event_bytes));
-        var chunk = Mouse.ByteInput{ .len = chunk_len, .buf = undefined };
+        const chunk_len: u8 = @intCast(@min(remaining, Events.max_event_bytes));
+        var chunk = Events.ByteInput{ .len = chunk_len, .buf = undefined };
         @memcpy(chunk.buf[0..chunk_len], bytes[offset .. offset + chunk_len]);
         if (!appendInputEvent(events, .{ .bytes = chunk })) return;
         offset += chunk_len;
@@ -223,43 +268,43 @@ fn appendBytesEvent(events: *Events, bytes: []const u8) void {
 }
 
 fn appendByteEvent(events: *Events, b: u8) void {
-    var chunk = Mouse.ByteInput{ .len = 1, .buf = undefined };
+    var chunk = Events.ByteInput{ .len = 1, .buf = undefined };
     chunk.buf[0] = b;
     _ = appendInputEvent(events, .{ .bytes = chunk });
 }
 
-fn appendKeyEvent(events: *Events, key: @import("howl_term").HowlTerm.Key, mods: @import("howl_term").HowlTerm.Modifier) void {
+fn appendKeyEvent(events: *Events, key: Keys.Key, mods: Mouse.Mod) void {
     _ = appendInputEvent(events, .{ .key = .{ .key = key, .mods = mods } });
 }
 
-fn appendMouseEvent(events: *Events, event: Mouse.MouseEvent) void {
+fn appendMouseEvent(events: *Events, event: Events.MouseEvent) void {
     _ = appendInputEvent(events, .{ .mouse = event });
 }
 
-fn appendInputEvent(events: *Events, event: Mouse.InputEvent) bool {
+fn appendInputEvent(events: *Events, event: Events.InputEvent) bool {
     if (events.input_len >= events.input_events.len) return false;
     events.input_events[events.input_len] = event;
     events.input_len += 1;
     return true;
 }
 
-fn appendShortcut(events: *Events, action: Shortcut.Action) void {
+fn appendShortcut(events: *Events, action: Events.ShortCuts.Action) void {
     if (events.shortcut_len >= events.shortcut_buf.len) return;
     events.shortcut_buf[events.shortcut_len] = action;
     events.shortcut_len += 1;
 }
 
 test "sdl mod mapping" {
-    const howl_term = @import("howl_term").HowlTerm;
-    const mods = Mouse.sdlModsToHowlMods(c.SDL_KMOD_SHIFT | c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL);
-    try std.testing.expectEqual(howl_term.mod_shift | howl_term.mod_alt | howl_term.mod_ctrl, mods);
+    const mods = Mouse.modsFromSdl(c.SDL_KMOD_SHIFT | c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL);
+    try std.testing.expect(mods.shift);
+    try std.testing.expect(mods.alt);
+    try std.testing.expect(mods.ctrl);
 }
 
 test "special key mapping" {
-    const howl_term = @import("howl_term").HowlTerm;
-    try std.testing.expectEqual(howl_term.key_up, Keys.eventFromSdl(c.SDLK_UP).?);
-    try std.testing.expectEqual(howl_term.key_pageup, Keys.eventFromSdl(c.SDLK_PAGEUP).?);
-    try std.testing.expectEqual(@as(?howl_term.Key, null), Keys.eventFromSdl('a'));
+    try std.testing.expectEqual(Keys.Key.up, Keys.fromSdl(c.SDLK_UP).?);
+    try std.testing.expectEqual(Keys.Key.page_up, Keys.fromSdl(c.SDLK_PAGEUP).?);
+    try std.testing.expectEqual(@as(?Keys.Key, null), Keys.fromSdl('a'));
 }
 
 test "byte chunking preserves order" {
@@ -274,4 +319,12 @@ test "byte chunking preserves order" {
         else => return error.UnexpectedEvent,
     };
     try std.testing.expectEqualStrings(input, out.items);
+}
+
+fn mouseButton(button: ?Mouse.Button) ?Events.MouseButton {
+    return switch (button orelse return null) {
+        .left => .left,
+        .middle => .middle,
+        .right => .right,
+    };
 }

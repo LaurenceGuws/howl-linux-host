@@ -1,5 +1,5 @@
 const std = @import("std");
-const ShortCuts = @import("../../events/shourcuts.zig").ShortCuts;
+const ShortCuts = @import("../../events/shortcuts.zig").ShortCuts;
 
 pub const TabBar = struct {
     pub const Config = struct {

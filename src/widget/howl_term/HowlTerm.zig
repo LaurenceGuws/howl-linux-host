@@ -3,6 +3,7 @@ const window = @import("../../Window.zig").Window;
 const Layout = @import("../../window/layout.zig");
 const event_runtime = @import("../../Events.zig");
 const Events = event_runtime.Events;
+const term_core = @import("howl_term").HowlTerm;
 const Runtime = @import("../../howl-term/howl_term.zig").Runtime;
 const LifecycleState = Runtime.LifecycleState;
 const SurfaceHandle = Runtime.SurfaceHandle;
@@ -152,11 +153,19 @@ pub const HowlTerm = struct {
     }
 
     fn publishInputKey(self: *HowlTerm, key: Events.KeyEvent) void {
-        self.term.publishInputKey(key.key, key.mods);
+        const terminal_key = terminalKey(key.key) orelse return;
+        self.term.publishInputKey(terminal_key, terminalMods(key.mods));
     }
 
     fn publishMouseEvent(self: *HowlTerm, mouse_event: Events.MouseEvent) bool {
-        return self.term.publishMouseEvent(mouse_event.kind, mouse_event.button, mouse_event.pixel_x, mouse_event.pixel_y, mouse_event.mods, mouse_event.buttons_down);
+        return self.term.publishMouseEvent(
+            terminalMouseKind(mouse_event.kind),
+            terminalMouseButton(mouse_event.button),
+            mouse_event.pixel_x,
+            mouse_event.pixel_y,
+            terminalMods(mouse_event.mods),
+            terminalButtons(mouse_event.buttons_down),
+        );
     }
 
     pub fn pasteFromClipboard(self: *HowlTerm) void {
@@ -427,7 +436,7 @@ pub const HowlTerm = struct {
     fn handleHyperlinkMouseEvent(self: *HowlTerm, mouse_event: Events.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         if (self.conf.links.open != .system) return false;
         if (mouse_event.kind != .press or mouse_event.button != .left) return false;
-        if ((mouse_event.mods & Runtime.mod_ctrl) == 0) return false;
+        if (!mouse_event.mods.ctrl) return false;
         const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return false;
         if (self.publishMouseEvent(local_mouse)) return true;
 
@@ -518,4 +527,72 @@ fn flattenFallbacks(fonts: config.FontStack, buf: [][:0]const u8) []const [:0]co
         n += 1;
     }
     return buf[0..n];
+}
+
+fn terminalKey(key: Events.Key) ?term_core.Key {
+    return switch (key) {
+        .escape => term_core.key_escape,
+        .tab => term_core.key_tab,
+        .enter => term_core.key_enter,
+        .backspace => term_core.key_backspace,
+        .insert => term_core.key_insert,
+        .delete => term_core.key_delete,
+        .home => term_core.key_home,
+        .end => term_core.key_end,
+        .page_up => term_core.key_pageup,
+        .page_down => term_core.key_pagedown,
+        .up => term_core.key_up,
+        .down => term_core.key_down,
+        .left => term_core.key_left,
+        .right => term_core.key_right,
+        .f1 => term_core.key_f1,
+        .f2 => term_core.key_f2,
+        .f3 => term_core.key_f3,
+        .f4 => term_core.key_f4,
+        .f5 => term_core.key_f5,
+        .f6 => term_core.key_f6,
+        .f7 => term_core.key_f7,
+        .f8 => term_core.key_f8,
+        .f9 => term_core.key_f9,
+        .f10 => term_core.key_f10,
+        .f11 => term_core.key_f11,
+        .f12 => term_core.key_f12,
+        else => null,
+    };
+}
+
+fn terminalMods(mods: Events.Mod) term_core.Modifier {
+    var out: term_core.Modifier = 0;
+    if (mods.shift) out |= term_core.mod_shift;
+    if (mods.alt) out |= term_core.mod_alt;
+    if (mods.ctrl) out |= term_core.mod_ctrl;
+    return out;
+}
+
+fn terminalMouseKind(kind: Events.MouseKind) term_core.MouseEventKind {
+    return switch (kind) {
+        .move => term_core.mouse_move,
+        .press => term_core.mouse_press,
+        .release => term_core.mouse_release,
+        .wheel => term_core.mouse_wheel,
+    };
+}
+
+fn terminalMouseButton(button: Events.MouseButton) term_core.MouseButton {
+    return switch (button) {
+        .none => term_core.mouse_button_none,
+        .left => term_core.mouse_button_left,
+        .middle => term_core.mouse_button_middle,
+        .right => term_core.mouse_button_right,
+        .wheel_up => term_core.mouse_button_wheel_up,
+        .wheel_down => term_core.mouse_button_wheel_down,
+    };
+}
+
+fn terminalButtons(buttons: Events.Buttons) u8 {
+    var out: u8 = 0;
+    if (buttons.left) out |= 0x01;
+    if (buttons.middle) out |= 0x02;
+    if (buttons.right) out |= 0x04;
+    return out;
 }

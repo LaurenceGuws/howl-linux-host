@@ -1,5 +1,4 @@
 const std = @import("std");
-const howl_term = @import("howl_term").HowlTerm;
 
 pub const Key = enum {
     a,
@@ -271,39 +270,6 @@ pub fn fromSdl(sdl_key: c_uint) ?Key {
         c_key.SDLK_KP_7 => .kp_seven,
         c_key.SDLK_KP_8 => .kp_eight,
         c_key.SDLK_KP_9 => .kp_nine,
-        else => null,
-    };
-}
-
-pub fn eventFromSdl(sdl_key: c_uint) ?howl_term.Key {
-    const c_key = @import("../Window.zig").Window.c_win;
-    return switch (sdl_key) {
-        c_key.SDLK_ESCAPE => howl_term.key_escape,
-        c_key.SDLK_RETURN, c_key.SDLK_KP_ENTER => howl_term.key_enter,
-        c_key.SDLK_BACKSPACE => howl_term.key_backspace,
-        c_key.SDLK_TAB => howl_term.key_tab,
-        c_key.SDLK_UP => howl_term.key_up,
-        c_key.SDLK_DOWN => howl_term.key_down,
-        c_key.SDLK_RIGHT => howl_term.key_right,
-        c_key.SDLK_LEFT => howl_term.key_left,
-        c_key.SDLK_HOME => howl_term.key_home,
-        c_key.SDLK_END => howl_term.key_end,
-        c_key.SDLK_PAGEUP => howl_term.key_pageup,
-        c_key.SDLK_PAGEDOWN => howl_term.key_pagedown,
-        c_key.SDLK_DELETE => howl_term.key_delete,
-        c_key.SDLK_INSERT => howl_term.key_insert,
-        c_key.SDLK_F1 => howl_term.key_f1,
-        c_key.SDLK_F2 => howl_term.key_f2,
-        c_key.SDLK_F3 => howl_term.key_f3,
-        c_key.SDLK_F4 => howl_term.key_f4,
-        c_key.SDLK_F5 => howl_term.key_f5,
-        c_key.SDLK_F6 => howl_term.key_f6,
-        c_key.SDLK_F7 => howl_term.key_f7,
-        c_key.SDLK_F8 => howl_term.key_f8,
-        c_key.SDLK_F9 => howl_term.key_f9,
-        c_key.SDLK_F10 => howl_term.key_f10,
-        c_key.SDLK_F11 => howl_term.key_f11,
-        c_key.SDLK_F12 => howl_term.key_f12,
         else => null,
     };
 }

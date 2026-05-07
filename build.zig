@@ -20,6 +20,15 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const howl_lua_mod = howl_lua_dep.module("howl_lua");
+    const host_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/test_host.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "howl_term", .module = howl_term_mod },
+            .{ .name = "howl_lua", .module = howl_lua_mod },
+        },
+    });
 
     const build_options = b.addOptions();
 
@@ -105,12 +114,13 @@ pub fn build(b: *std.Build) void {
     visual_rain_step.dependOn(&run_visual_rain.step);
 
     const test_mod = b.createModule(.{
-        .root_source_file = b.path("src/test_entry.zig"),
+        .root_source_file = b.path("src/test/test_entry.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "howl_lua", .module = howl_lua_mod },
             .{ .name = "howl_term", .module = howl_term_mod },
+            .{ .name = "host", .module = host_test_mod },
         },
     });
 
