@@ -2,31 +2,31 @@
 //! Ownership: per-instance runtime lifecycle and host-facing calls.
 //! Reason: keep the Linux host on one boring runtime owner.
 
-const howl_term = @import("howl_term").HowlTerm;
+const term_core = @import("howl_term").HowlTerm;
 const std = @import("std");
 
-/// Host-local lifecycle state for the embedded terminal runtime.
-pub const LifecycleState = enum {
-    stopped,
-    starting,
-    ready,
-    failed,
-};
-
-pub const SurfaceHandle = howl_term.SurfaceHandle;
-pub const ClipboardRequest = howl_term.ClipboardRequest;
-pub const MouseButton = howl_term.MouseButton;
-pub const MouseEventKind = howl_term.MouseEventKind;
-pub const mod_ctrl = howl_term.mod_ctrl;
-
 /// Host-local terminal runtime owner.
-pub const HowlTerm = struct {
-    term: ?howl_term = null,
+pub const Terminal = struct {
+    pub const LifecycleState = enum {
+        stopped,
+        starting,
+        ready,
+        failed,
+    };
+
+    pub const SurfaceHandle = term_core.SurfaceHandle;
+    pub const mod_ctrl = term_core.mod_ctrl;
+
+    const ClipboardRequest = term_core.ClipboardRequest;
+    const MouseButton = term_core.MouseButton;
+    const MouseEventKind = term_core.MouseEventKind;
+
+    term: ?term_core = null,
     lifecycle_state: LifecycleState = .stopped,
 
     /// Initialize the host-local runtime and start the embedded session.
     pub fn init(
-        self: *HowlTerm,
+        self: *Terminal,
         shell: []const u8,
         start_path: ?[]const u8,
         command: ?[]const u8,
@@ -44,7 +44,7 @@ pub const HowlTerm = struct {
         defer if (pty_command_owned) |cmd| std.heap.c_allocator.free(cmd);
         const pty_command = pty_command_owned orelse command;
 
-        self.term = try howl_term.initPty(std.heap.c_allocator, shell, pty_command, 1, 1, .{ .width = 1, .height = 1 });
+        self.term = try term_core.initPty(std.heap.c_allocator, shell, pty_command, 1, 1, .{ .width = 1, .height = 1 });
         self.term.?.setFontSizePx(font_size_px);
         self.term.?.setPrimaryFontPath(font_primary);
         self.term.?.setFallbackFontPaths(font_fallbacks);
@@ -61,7 +61,7 @@ pub const HowlTerm = struct {
     }
 
     /// Release the embedded runtime and reset host-local state.
-    pub fn deinit(self: *HowlTerm) void {
+    pub fn deinit(self: *Terminal) void {
         if (self.term) |*inst| {
             inst.stop();
             inst.deinit();
@@ -71,7 +71,7 @@ pub const HowlTerm = struct {
     }
 
     /// Render one frame with independent render and grid geometry.
-    pub fn renderFrameSized(self: *HowlTerm, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
+    pub fn renderFrameSized(self: *Terminal, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
         const inst = &(self.term orelse return);
         const rw: u16 = @intCast(@max(render_width, 1));
         const rh: u16 = @intCast(@max(render_height, 1));
@@ -79,27 +79,34 @@ pub const HowlTerm = struct {
         const gh: u16 = @intCast(@max(grid_height, 1));
         inst.renderFrameSized(rw, rh, gw, gh) catch |err| {
             self.lifecycle_state = .failed;
-            std.debug.panic("linux-host HowlTerm.renderFrameSized failed: {s}", .{@errorName(err)});
+            std.debug.panic("linux-host Terminal.renderFrameSized failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    pub fn syncFrameGeometry(self: *Terminal, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
+        const inst = &(self.term orelse return);
+        const rw: u16 = @intCast(@max(render_width, 1));
+        const rh: u16 = @intCast(@max(render_height, 1));
+        const gw: u16 = @intCast(@max(grid_width, 1));
+        const gh: u16 = @intCast(@max(grid_height, 1));
+        inst.syncFrameGeometry(rw, rh, gw, gh) catch |err| {
+            self.lifecycle_state = .failed;
+            std.debug.panic("linux-host Terminal.syncFrameGeometry failed: {s}", .{@errorName(err)});
         };
     }
 
     /// Acknowledge presentation on the embedded runtime.
-    pub fn presentAck(self: *HowlTerm) void {
-        if (self.term) |*inst| inst.presentAck();
-    }
-
-    pub fn hasRenderWork(self: *const HowlTerm) bool {
-        const inst = &(self.term orelse return false);
-        return inst.hasRenderWork();
+    pub fn presentAck(self: *Terminal) void {
+        if (self.term) |*inst| _ = inst.presentAck();
     }
 
     /// Report the current host-local lifecycle state.
-    pub fn state(self: *const HowlTerm) LifecycleState {
+    pub fn state(self: *const Terminal) LifecycleState {
         return self.lifecycle_state;
     }
 
     /// Publish raw host input bytes into the embedded runtime.
-    pub fn publishInputBytes(self: *HowlTerm, bytes: []const u8) void {
+    pub fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
         if (bytes.len == 0) return;
         const inst = &(self.term orelse return);
         inst.publishInputBytes(bytes) catch |err| switch (err) {
@@ -111,7 +118,7 @@ pub const HowlTerm = struct {
         };
     }
 
-    pub fn publishInputKey(self: *HowlTerm, key: howl_term.Key, mods: howl_term.Modifier) void {
+    pub fn publishInputKey(self: *Terminal, key: term_core.Key, mods: term_core.Modifier) void {
         const inst = &(self.term orelse return);
         inst.publishInputKey(key, mods) catch |err| switch (err) {
             error.QueueFull => std.log.warn("terminal key input dropped due to full queue", .{}),
@@ -122,7 +129,7 @@ pub const HowlTerm = struct {
         };
     }
 
-    pub fn setInputFocus(self: *HowlTerm, focused: bool) void {
+    pub fn setInputFocus(self: *Terminal, focused: bool) void {
         const inst = &(self.term orelse return);
         _ = inst.setInputFocus(focused) catch |err| switch (err) {
             error.QueueFull => std.log.warn("terminal focus event dropped due to full queue", .{}),
@@ -133,7 +140,7 @@ pub const HowlTerm = struct {
         };
     }
 
-    pub fn publishPaste(self: *HowlTerm, text: []const u8) void {
+    pub fn publishPaste(self: *Terminal, text: []const u8) void {
         const inst = &(self.term orelse return);
         inst.publishPaste(text) catch |err| switch (err) {
             error.QueueFull => std.log.warn("terminal paste dropped due to full queue", .{}),
@@ -144,7 +151,7 @@ pub const HowlTerm = struct {
         };
     }
 
-    pub fn drainPendingClipboardSet(self: *HowlTerm, allocator: std.mem.Allocator) ?ClipboardRequest {
+    pub fn drainPendingClipboardSet(self: *Terminal, allocator: std.mem.Allocator) ?ClipboardRequest {
         const inst = &(self.term orelse return null);
         return inst.drainPendingClipboardSet(allocator) catch {
             self.lifecycle_state = .failed;
@@ -153,7 +160,7 @@ pub const HowlTerm = struct {
         };
     }
 
-    pub fn copyHyperlinkUriAtPixel(self: *HowlTerm, allocator: std.mem.Allocator, pixel_x: i32, pixel_y: i32) ?[]u8 {
+    pub fn copyHyperlinkUriAtPixel(self: *Terminal, allocator: std.mem.Allocator, pixel_x: i32, pixel_y: i32) ?[]u8 {
         const inst = &(self.term orelse return null);
         return inst.copyHyperlinkUriAtPixel(allocator, pixel_x, pixel_y) catch {
             self.lifecycle_state = .failed;
@@ -162,7 +169,7 @@ pub const HowlTerm = struct {
         };
     }
 
-    pub fn publishMouseEvent(self: *HowlTerm, kind: MouseEventKind, button: MouseButton, pixel_x: i32, pixel_y: i32, mods: howl_term.Modifier, buttons_down: u8) bool {
+    pub fn publishMouseEvent(self: *Terminal, kind: MouseEventKind, button: MouseButton, pixel_x: i32, pixel_y: i32, mods: term_core.Modifier, buttons_down: u8) bool {
         const inst = &(self.term orelse return false);
         return inst.publishMouseEvent(kind, button, pixel_x, pixel_y, mods, buttons_down) catch |err| switch (err) {
             error.QueueFull => blk: {
@@ -177,86 +184,86 @@ pub const HowlTerm = struct {
         };
     }
 
-    pub fn beginSelection(self: *HowlTerm, pixel_x: i32, pixel_y: i32) bool {
+    pub fn beginSelection(self: *Terminal, pixel_x: i32, pixel_y: i32) bool {
         const inst = &(self.term orelse return false);
         return inst.beginSelection(pixel_x, pixel_y);
     }
 
-    pub fn updateSelection(self: *HowlTerm, pixel_x: i32, pixel_y: i32) bool {
+    pub fn updateSelection(self: *Terminal, pixel_x: i32, pixel_y: i32) bool {
         const inst = &(self.term orelse return false);
         return inst.updateSelection(pixel_x, pixel_y);
     }
 
-    pub fn finishSelection(self: *HowlTerm) bool {
+    pub fn finishSelection(self: *Terminal) bool {
         const inst = &(self.term orelse return false);
         return inst.finishSelection();
     }
 
-    pub fn clearSelection(self: *HowlTerm) bool {
+    pub fn clearSelection(self: *Terminal) bool {
         const inst = &(self.term orelse return false);
         return inst.clearSelection();
     }
 
-    pub fn selectionInProgress(self: *const HowlTerm) bool {
+    pub fn selectionInProgress(self: *const Terminal) bool {
         const inst = &(self.term orelse return false);
         return inst.selectionInProgress();
     }
 
     /// Wait until render work is armed or the timeout expires.
-    pub fn waitRenderWake(self: *HowlTerm, timeout_ms: i32) bool {
+    pub fn waitRenderWake(self: *Terminal, timeout_ms: i32) bool {
         const inst = &(self.term orelse return false);
         return inst.waitRenderWake(timeout_ms) catch |err| {
             self.lifecycle_state = .failed;
-            std.debug.panic("linux-host HowlTerm.waitRenderWake failed: {s}", .{@errorName(err)});
+            std.debug.panic("linux-host Terminal.waitRenderWake failed: {s}", .{@errorName(err)});
         };
     }
 
     /// Report the total current scrollback history row count.
-    pub fn currentScrollbackCount(self: *const HowlTerm) usize {
+    pub fn currentScrollbackCount(self: *const Terminal) usize {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackCount();
     }
 
     /// Report the current scrollback offset from the live bottom.
-    pub fn currentScrollbackOffset(self: *const HowlTerm) usize {
+    pub fn currentScrollbackOffset(self: *const Terminal) usize {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackOffset();
     }
 
     /// Report whether the terminal is currently using the alternate screen.
-    pub fn isAlternateScreen(self: *const HowlTerm) bool {
+    pub fn isAlternateScreen(self: *const Terminal) bool {
         const inst = &(self.term orelse return false);
         return inst.isAlternateScreen();
     }
 
     /// Set the active scrollback offset.
-    pub fn setScrollbackOffset(self: *HowlTerm, offset_rows: usize) bool {
+    pub fn setScrollbackOffset(self: *Terminal, offset_rows: usize) bool {
         const inst = &(self.term orelse return false);
         return inst.setScrollbackOffset(offset_rows);
     }
 
     /// Return the viewport to the live bottom.
-    pub fn followLiveBottom(self: *HowlTerm) bool {
+    pub fn followLiveBottom(self: *Terminal) bool {
         const inst = &(self.term orelse return false);
         return inst.followLiveBottom();
     }
 
-    pub fn setFontSizePx(self: *HowlTerm, font_size_px: u16) void {
+    pub fn setFontSizePx(self: *Terminal, font_size_px: u16) void {
         const inst = &(self.term orelse return);
         inst.setFontSizePx(font_size_px);
     }
 
-    pub fn copyTabTitle(self: *const HowlTerm, out_buf: []u8) usize {
+    pub fn copyTabTitle(self: *const Terminal, out_buf: []u8) usize {
         const inst = &(self.term orelse return 0);
         return inst.copyCurrentTitle(out_buf);
     }
 
-    pub fn viewportRows(self: *const HowlTerm) u16 {
+    pub fn viewportRows(self: *const Terminal) u16 {
         const inst = &(self.term orelse return 1);
         return inst.viewportRows();
     }
 
-    pub fn surfaceHandle(self: *const HowlTerm) SurfaceHandle {
+    pub fn surfaceHandle(self: *const Terminal) SurfaceHandle {
         const inst = &(self.term orelse return .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 });
         return inst.surfaceHandle();
     }

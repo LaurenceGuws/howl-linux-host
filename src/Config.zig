@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const howl_lua = @import("howl_lua");
-const keys = @import("Keys.zig");
+const keys = @import("events/keys.zig");
 const Lua = howl_lua.HowlLua;
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;

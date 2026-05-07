@@ -15,7 +15,7 @@ For tabbed Linux-host POCs, one `Terminal` widget represents one terminal tab. H
 - `KeyInput`: input owner.
 - `ShortCuts`: host shortcut-to-action owner.
 - `Gpu`: GPU owner.
-- `HowlTerm`: host-local terminal runtime owner.
+- `Terminal`: host-local terminal runtime owner.
 - `Terminal`: one terminal widget/tab owner.
 
 ```mermaid
@@ -25,20 +25,20 @@ classDiagram
     class KeyInput
     class ShortCuts
     class Gpu
-    class HowlTerm
-    class Terminal
+    class RuntimeTerminal
+    class TerminalWidget
 
-    Terminal --> Config
-    Terminal --> HowlTerm
-    Terminal --> KeyInput
-    Terminal --> Window
-    Terminal --> ShortCuts
+    TerminalWidget --> Config
+    TerminalWidget --> RuntimeTerminal
+    TerminalWidget --> KeyInput
+    TerminalWidget --> Window
+    TerminalWidget --> ShortCuts
 ```
 
 ## Ownership Rules
 - `main.zig` owns app entry, the app-owned Lua config instance, host chrome, tab/widget lifecycle, and event-loop orchestration.
-- `Terminal` owns one terminal widget/tab boundary only.
-- `HowlTerm` owns the embedded terminal runtime contract toward the host.
+- `Terminal` owns the embedded terminal runtime contract toward the host.
+- `widget/Terminal` owns one terminal widget/tab boundary only.
 - `Window`, `KeyInput`, and `Gpu` own platform-variant selection and forwarding.
 - `ShortCuts` owns stable host shortcut actions and key-resolution policy.
 
@@ -58,8 +58,8 @@ sequenceDiagram
     participant Main
     participant W as Window
     participant K as KeyInput
-    participant T as Terminal[]
-    participant H as HowlTerm
+    participant T as TerminalWidget[]
+    participant H as Terminal
     participant G as Gpu
 
     Main->>W: initVideo/createWindow
@@ -81,7 +81,7 @@ sequenceDiagram
 - `Config.loadLua` returns an app-owned Lua state loaded from host config.
 - `Config.loadFromLua` builds owned typed config sections from an app-owned Lua state.
 - `Terminal.init` starts one embedded terminal runtime with a renderer-owned retained surface consumed by the host compositor.
-- `HowlTerm.init` owns transport creation and delegates to core `howl-term`.
+- `Terminal.init` owns transport creation and delegates to core `howl-term`.
 - `Window` and `KeyInput` abstract backend selection behind stable host owners.
 - `ShortCuts` resolves host key chords into stable host actions without re-parsing terminal byte input.
 

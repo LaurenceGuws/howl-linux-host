@@ -1,6 +1,5 @@
 -- env expansion supported eg $HOME
 return {
-  -- Linux sdl/glfw
   window = {
     -- Max 15 chars
     title = "Howl Term",

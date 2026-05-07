@@ -1,9 +1,10 @@
-//! Responsibility: own the public SDL window surface for the Linux host.
-//! Ownership: SDL window/event facade entrypoints.
+//! Responsibility: own the public window surface for the Linux host.
+//! Ownership: system window/event entrypoints.
 //! Reason: keep Linux host on one boring platform path.
 
 const std = @import("std");
-const win_backend = @import("window/sdl.zig");
+const win_backend = @import("window/system.zig");
+const present_backend = @import("window/present.zig");
 
 /// Canonical Linux-host window owner.
 pub const Window = struct {
@@ -19,6 +20,14 @@ pub const Window = struct {
     pub const Size = win_backend.Size;
     /// Event-loop signal enum.
     pub const Signal = win_backend.EventSignal;
+    /// Host texture placement rect.
+    pub const Rect = present_backend.Rect;
+    /// Host scrollbar chrome geometry.
+    pub const ScrollbarLayout = present_backend.ScrollbarLayout;
+    /// Present payload for one frame.
+    pub const Frame = present_backend.Frame;
+    /// Backend present state.
+    pub const PresentState = present_backend.State;
 
     /// Initialize the selected window backend.
     pub fn initVideo() bool {
@@ -33,6 +42,26 @@ pub const Window = struct {
     /// Create one host window.
     pub fn createWindow(title: [*:0]const u8, width: c_int, height: c_int, flags: Flags) ?Ptr {
         return win_backend.createWindow(title, width, height, flags);
+    }
+
+    /// Report the window flags required for present support.
+    pub fn windowFlags() Flags {
+        return present_backend.windowFlags();
+    }
+
+    /// Initialize backend present state for one window.
+    pub fn initPresent(state: *PresentState, win: Ptr) !void {
+        try present_backend.init(state, win);
+    }
+
+    /// Release backend present state.
+    pub fn deinitPresent(state: *PresentState) void {
+        present_backend.deinit(state);
+    }
+
+    /// Present one host frame.
+    pub fn present(state: *PresentState, frame: Frame) void {
+        present_backend.present(state, frame);
     }
 
     /// Destroy one host window.

@@ -3,6 +3,10 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const check_host_runtime_surface = b.addSystemCommand(&.{
+        "bash",
+        "../../tools/check_host_runtime_surface.sh",
+    });
 
     const howl_term_dep = b.dependency("howl_term", .{
         .target = target,
@@ -33,6 +37,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.use_llvm = true;
+    exe.step.dependOn(&check_host_runtime_surface.step);
 
     const sdl_dep = b.dependency("sdl", .{
         .target = target,
@@ -95,7 +100,7 @@ pub fn build(b: *std.Build) void {
     rain_mixed_step.dependOn(&run_rain_mixed.step);
 
     const run_visual_rain = b.addRunArtifact(visual_rain_stress);
-    if (b.args) |args| run_visual_rain.addArgs(args) else run_visual_rain.addArgs(&.{ "--metrics" });
+    if (b.args) |args| run_visual_rain.addArgs(args) else run_visual_rain.addArgs(&.{"--metrics"});
     const visual_rain_step = b.step("stress:rain:visual", "Run visual ASCII rain correctness stress generator");
     visual_rain_step.dependOn(&run_visual_rain.step);
 
@@ -114,6 +119,7 @@ pub fn build(b: *std.Build) void {
         .root_module = test_mod,
         .filters = b.args orelse &.{},
     });
+    mod_tests.step.dependOn(&check_host_runtime_surface.step);
     const rain_stress_tests = b.addTest(.{
         .name = "test-rain-stress",
         .root_module = b.createModule(.{
@@ -123,6 +129,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = b.args orelse &.{},
     });
+    rain_stress_tests.step.dependOn(&check_host_runtime_surface.step);
     const visual_rain_stress_tests = b.addTest(.{
         .name = "test-visual-rain-stress",
         .root_module = b.createModule(.{
@@ -132,6 +139,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = b.args orelse &.{},
     });
+    visual_rain_stress_tests.step.dependOn(&check_host_runtime_surface.step);
     mod_tests.use_llvm = true;
     rain_stress_tests.use_llvm = true;
     rain_stress_tests.root_module.link_libc = true;

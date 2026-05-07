@@ -1,18 +1,25 @@
 const std = @import("std");
 const window = @import("../Window.zig").Window;
-const KeyInput = @import("../KeyInput.zig").KeyInput;
-const term_facade = @import("../HowlTerm.zig");
-const HowlTerm = @import("../HowlTerm.zig").HowlTerm;
-const LifecycleState = @import("../HowlTerm.zig").LifecycleState;
-const SurfaceHandle = @import("../HowlTerm.zig").SurfaceHandle;
+const Events = @import("../Events.zig").Events;
+const mouse_events = @import("../events/mouse.zig");
+const term_facade = @import("../Terminal.zig");
+const RuntimeTerminal = term_facade.Terminal;
+const LifecycleState = RuntimeTerminal.LifecycleState;
+const SurfaceHandle = RuntimeTerminal.SurfaceHandle;
 const Config = @import("../Config.zig").Config;
-const Gpu = @import("../Gpu.zig");
 const trace = @import("howl_term").Trace;
 
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
 
-    term: HowlTerm,
+    pub const Snapshot = struct {
+        surface: SurfaceHandle,
+        tab_label: []const u8,
+        scrollbar: window.ScrollbarLayout,
+        state: LifecycleState,
+    };
+
+    term: RuntimeTerminal,
     conf: *const Config.Value,
     render_px_w: c_int,
     render_px_h: c_int,
@@ -28,9 +35,7 @@ pub const Terminal = struct {
     tab_label_len: usize,
     last_surface: SurfaceHandle,
     last_resize_ns: u64,
-    dirty: std.atomic.Value(bool),
     wake_notified: std.atomic.Value(bool),
-    wake_dirty_ns: std.atomic.Value(u64),
     wake_thread: ?std.Thread,
     stop_wake: std.atomic.Value(bool),
     window_focused: bool,
@@ -55,9 +60,7 @@ pub const Terminal = struct {
         self.tab_label_len = 0;
         self.last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 };
         self.last_resize_ns = 0;
-        self.dirty = std.atomic.Value(bool).init(true);
         self.wake_notified = std.atomic.Value(bool).init(false);
-        self.wake_dirty_ns = std.atomic.Value(u64).init(0);
         self.stop_wake = std.atomic.Value(bool).init(false);
         self.wake_thread = null;
         self.window_focused = true;
@@ -124,11 +127,11 @@ pub const Terminal = struct {
         self.grid_px_w = self.pending_grid_px_w;
         self.grid_px_h = self.pending_grid_px_h;
         self.last_resize_ns = 0;
-        self.dirty.store(true, .release);
+        self.term.syncFrameGeometry(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
     }
 
-    pub fn hasRenderWork(self: *Terminal) bool {
-        return self.dirty.swap(false, .acq_rel);
+    pub fn needsFrame(self: *Terminal) bool {
+        return self.wake_notified.load(.acquire);
     }
 
     pub fn render(self: *Terminal) void {
@@ -138,10 +141,8 @@ pub const Terminal = struct {
         const surface = self.term.surfaceHandle();
         if (surface.texture_id != 0) self.last_surface = surface;
         const elapsed_us = @divTrunc(window.c_win.SDL_GetTicksNS() - start_ns, std.time.ns_per_us);
-        const wake_ns = self.wake_dirty_ns.swap(0, .acq_rel);
-        const wake_to_render_us = if (wake_ns == 0) 0 else @divTrunc(start_ns -| wake_ns, std.time.ns_per_us);
         trace.hostRender(
-            wake_to_render_us,
+            0,
             elapsed_us,
             @intCast(@max(self.render_px_w, 0)),
             @intCast(@max(self.render_px_h, 0)),
@@ -153,26 +154,18 @@ pub const Terminal = struct {
     pub fn presentAck(self: *Terminal) void {
         self.term.presentAck();
         self.wake_notified.store(false, .release);
-        if (self.term.hasRenderWork()) {
-            self.dirty.store(true, .release);
-            self.wake_dirty_ns.store(window.c_win.SDL_GetTicksNS(), .release);
-        }
     }
 
-    pub fn termState(self: *Terminal) LifecycleState {
-        return self.term.state();
-    }
-
-    pub fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
+    fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
         self.term.publishInputBytes(bytes);
     }
 
-    pub fn publishInputKey(self: *Terminal, key: KeyInput.KeyEvent) void {
+    fn publishInputKey(self: *Terminal, key: mouse_events.KeyEvent) void {
         self.term.publishInputKey(key.key, key.mods);
     }
 
-    pub fn publishMouseEvent(self: *Terminal, mouse: KeyInput.MouseEvent) bool {
-        return self.term.publishMouseEvent(mouse.kind, mouse.button, mouse.pixel_x, mouse.pixel_y, mouse.mods, mouse.buttons_down);
+    fn publishMouseEvent(self: *Terminal, mouse_event: mouse_events.MouseEvent) bool {
+        return self.term.publishMouseEvent(mouse_event.kind, mouse_event.button, mouse_event.pixel_x, mouse_event.pixel_y, mouse_event.mods, mouse_event.buttons_down);
     }
 
     pub fn pasteFromClipboard(self: *Terminal) void {
@@ -182,16 +175,16 @@ pub const Terminal = struct {
         self.term.publishPaste(payload);
     }
 
-    pub fn drainInput(self: *Terminal, key_in: *KeyInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
-        while (key_in.drainInputEvent()) |event| {
+    pub fn drainInput(self: *Terminal, input_events: *Events, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
+        while (input_events.drainInputEvent()) |event| {
             switch (event) {
                 .bytes => |bytes| self.publishInputBytes(bytes.slice()),
                 .key => |key| self.publishInputKey(key),
-                .mouse => |mouse| {
-                    if (self.handleScrollbarMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height)) continue;
-                    if (self.handleHyperlinkMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height)) continue;
-                    if (self.handleSelectionMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height)) continue;
-                    const local_mouse = contentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse continue;
+                .mouse => |mouse_event| {
+                    if (self.handleScrollbarMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
+                    if (self.handleHyperlinkMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
+                    if (self.handleSelectionMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
+                    const local_mouse = contentRelativeMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse continue;
                     const consumed_by_term = self.publishMouseEvent(local_mouse);
                     if (!consumed_by_term and local_mouse.kind == .wheel) {
                         const delta: i32 = switch (local_mouse.button) {
@@ -206,8 +199,8 @@ pub const Terminal = struct {
         }
     }
 
-    pub fn handleScrollInput(self: *Terminal, key_in: *KeyInput) void {
-        const page_steps = key_in.drainScrollPages();
+    pub fn handleScrollInput(self: *Terminal, input_events: *Events) void {
+        const page_steps = input_events.drainScrollPages();
         var delta_rows: i32 = 0;
         if (page_steps != 0) {
             const visible_rows: i32 = @intCast(@max(self.term.viewportRows(), 1));
@@ -217,16 +210,8 @@ pub const Terminal = struct {
         if (delta_rows != 0) self.scrollByRows(delta_rows);
     }
 
-    pub fn waitRenderWake(self: *Terminal, timeout_ms: i32) bool {
-        if (self.term.waitRenderWake(timeout_ms)) {
-            self.dirty.store(true, .release);
-            return true;
-        }
-        return false;
-    }
-
-    pub fn requestRedraw(self: *Terminal) void {
-        self.dirty.store(true, .release);
+    fn waitRenderWake(self: *Terminal, timeout_ms: i32) bool {
+        return self.term.waitRenderWake(timeout_ms);
     }
 
     pub fn wantsPassiveHoverWake(self: *const Terminal, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
@@ -235,7 +220,16 @@ pub const Terminal = struct {
         return self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height) > 0.01;
     }
 
-    pub fn scrollbarLayout(self: *const Terminal, texture_rect: Gpu.Rect) Gpu.ScrollbarLayout {
+    pub fn snapshot(self: *const Terminal, texture_rect: window.Rect) Snapshot {
+        return .{
+            .surface = self.presentSurfaceHandle(),
+            .tab_label = self.tabLabel(),
+            .scrollbar = self.scrollbarLayout(texture_rect),
+            .state = self.term.state(),
+        };
+    }
+
+    fn scrollbarLayout(self: *const Terminal, texture_rect: window.Rect) window.ScrollbarLayout {
         const model = self.scrollbarModel();
         if (!model.visible or texture_rect.width <= 0 or texture_rect.height <= 0) {
             return .{ .visible = false, .x = texture_rect.x + texture_rect.width, .y = texture_rect.y, .width = 0, .height = 0, .thumb_y = texture_rect.y, .thumb_height = 0 };
@@ -287,15 +281,15 @@ pub const Terminal = struct {
         _ = window.setClipboardText(decoded);
     }
 
-    pub fn tabLabel(self: *const Terminal) []const u8 {
+    fn tabLabel(self: *const Terminal) []const u8 {
         return self.tab_label_buf[0..self.tab_label_len];
     }
 
-    pub fn surfaceHandle(self: *const Terminal) SurfaceHandle {
+    fn surfaceHandle(self: *const Terminal) SurfaceHandle {
         return self.term.surfaceHandle();
     }
 
-    pub fn presentSurfaceHandle(self: *const Terminal) SurfaceHandle {
+    fn presentSurfaceHandle(self: *const Terminal) SurfaceHandle {
         if (self.last_surface.texture_id != 0) return self.last_surface;
         return self.term.surfaceHandle();
     }
@@ -308,7 +302,6 @@ pub const Terminal = struct {
         if (next == self.font_size_px) return false;
         self.font_size_px = next;
         self.term.setFontSizePx(next);
-        self.requestRedraw();
         return true;
     }
 
@@ -320,7 +313,6 @@ pub const Terminal = struct {
         if (next == self.font_size_px) return false;
         self.font_size_px = next;
         self.term.setFontSizePx(next);
-        self.requestRedraw();
         return true;
     }
 
@@ -328,7 +320,6 @@ pub const Terminal = struct {
         if (self.font_size_px == self.default_font_size_px) return false;
         self.font_size_px = self.default_font_size_px;
         self.term.setFontSizePx(self.default_font_size_px);
-        self.requestRedraw();
         return true;
     }
 
@@ -346,11 +337,10 @@ pub const Terminal = struct {
             @intCast(current_usize);
         const target = std.math.clamp(current + delta_rows, 0, history_count);
         if (target == current) return;
-        const changed = if (target == 0)
-            self.term.followLiveBottom()
+        if (target == 0)
+            _ = self.term.followLiveBottom()
         else
-            self.term.setScrollbackOffset(@intCast(target));
-        if (changed) self.dirty.store(true, .release);
+            _ = self.term.setScrollbackOffset(@intCast(target));
     }
 
     fn scrollbarModel(self: *const Terminal) ScrollbarModel {
@@ -366,97 +356,88 @@ pub const Terminal = struct {
         };
     }
 
-    fn handleScrollbarMouseEvent(self: *Terminal, mouse: KeyInput.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-        const prev_focus_t = self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height);
-        self.mouse_logical_x = mouse.pixel_x;
-        self.mouse_logical_y = mouse.pixel_y;
+    fn handleScrollbarMouseEvent(self: *Terminal, mouse_event: mouse_events.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+        self.mouse_logical_x = mouse_event.pixel_x;
+        self.mouse_logical_y = mouse_event.pixel_y;
 
         const model = self.scrollbarModel();
         if (!model.visible or logical_width <= 0 or logical_height <= 0) {
             if (self.scrollbar_dragging) {
                 self.scrollbar_dragging = false;
                 self.scrollbar_grab_offset = 0;
-                self.requestRedraw();
             }
             return false;
         }
 
         const geometry = computeScrollbarGeometry(origin_x, origin_y, logical_width, logical_height, self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height));
-        const over_track = pointInTrack(mouse.pixel_x, mouse.pixel_y, geometry);
-        const over_thumb = pointInThumb(mouse.pixel_x, mouse.pixel_y, geometry, model);
+        const over_track = pointInTrack(mouse_event.pixel_x, mouse_event.pixel_y, geometry);
+        const over_thumb = pointInThumb(mouse_event.pixel_x, mouse_event.pixel_y, geometry, model);
 
-        switch (mouse.kind) {
+        switch (mouse_event.kind) {
             .move => {
                 if (self.scrollbar_dragging) {
-                    if (self.updateScrollbarFromMouse(mouse.pixel_y, geometry, model)) self.requestRedraw();
+                    _ = self.updateScrollbarFromMouse(mouse_event.pixel_y, geometry, model);
                     return true;
                 }
-                const next_focus_t = self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height);
-                if (focusBucket(prev_focus_t) != focusBucket(next_focus_t) or @abs(next_focus_t - prev_focus_t) > 0.001) self.requestRedraw();
                 return false;
             },
             .press => {
-                if (mouse.button != .left or !over_track) return false;
+                if (mouse_event.button != .left or !over_track) return false;
                 self.scrollbar_dragging = true;
                 self.scrollbar_grab_offset = if (over_thumb)
-                    @as(f32, @floatFromInt(mouse.pixel_y - geometry.thumbY(model)))
+                    @as(f32, @floatFromInt(mouse_event.pixel_y - geometry.thumbY(model)))
                 else
                     @as(f32, @floatFromInt(geometry.thumbHeight(model))) * 0.5;
-                if (self.updateScrollbarFromMouse(mouse.pixel_y, geometry, model)) self.requestRedraw();
+                _ = self.updateScrollbarFromMouse(mouse_event.pixel_y, geometry, model);
                 return true;
             },
             .release => {
-                if (mouse.button != .left or !self.scrollbar_dragging) return false;
+                if (mouse_event.button != .left or !self.scrollbar_dragging) return false;
                 self.scrollbar_dragging = false;
                 self.scrollbar_grab_offset = 0;
-                self.requestRedraw();
-                return true;
-            },
-            .wheel => {
-                const next_focus_t = self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height);
-                if (focusBucket(prev_focus_t) != focusBucket(next_focus_t) or @abs(next_focus_t - prev_focus_t) > 0.001) self.requestRedraw();
-                return false;
-            },
-        }
-    }
-
-    fn handleSelectionMouseEvent(self: *Terminal, mouse: KeyInput.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-        const dragging = self.term.selectionInProgress();
-        const relevant = mouse.button == .left or dragging;
-        if (!relevant or logical_width <= 0 or logical_height <= 0) return false;
-
-        switch (mouse.kind) {
-            .press => {
-                if (mouse.button != .left) return false;
-                const local_mouse = contentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return false;
-                if (self.publishMouseEvent(local_mouse)) return true;
-                if (self.term.beginSelection(local_mouse.pixel_x, local_mouse.pixel_y)) self.requestRedraw();
-                return true;
-            },
-            .move => {
-                if (!dragging) return false;
-                const local_mouse = clampedContentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return true;
-                if (self.term.updateSelection(local_mouse.pixel_x, local_mouse.pixel_y)) self.requestRedraw();
-                return true;
-            },
-            .release => {
-                if (!dragging or mouse.button != .left) return false;
-                const local_mouse = clampedContentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h);
-                if (local_mouse) |event| {
-                    if (self.term.updateSelection(event.pixel_x, event.pixel_y)) self.requestRedraw();
-                }
-                if (self.term.finishSelection()) self.requestRedraw();
                 return true;
             },
             .wheel => return false,
         }
     }
 
-    fn handleHyperlinkMouseEvent(self: *Terminal, mouse: KeyInput.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    fn handleSelectionMouseEvent(self: *Terminal, mouse_event: mouse_events.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+        const dragging = self.term.selectionInProgress();
+        const relevant = mouse_event.button == .left or dragging;
+        if (!relevant or logical_width <= 0 or logical_height <= 0) return false;
+
+        switch (mouse_event.kind) {
+            .press => {
+                if (mouse_event.button != .left) return false;
+                const local_mouse = contentRelativeMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return false;
+                if (self.publishMouseEvent(local_mouse)) return true;
+                _ = self.term.beginSelection(local_mouse.pixel_x, local_mouse.pixel_y);
+                return true;
+            },
+            .move => {
+                if (!dragging) return false;
+                const local_mouse = clampedContentRelativeMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return true;
+                _ = self.term.updateSelection(local_mouse.pixel_x, local_mouse.pixel_y);
+                return true;
+            },
+            .release => {
+                if (!dragging or mouse_event.button != .left) return false;
+                const local_mouse = clampedContentRelativeMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h);
+                if (local_mouse) |event| {
+                    _ = self.term.updateSelection(event.pixel_x, event.pixel_y);
+                }
+                _ = self.term.finishSelection();
+                return true;
+            },
+            .wheel => return false,
+        }
+    }
+
+    fn handleHyperlinkMouseEvent(self: *Terminal, mouse_event: mouse_events.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         if (self.conf.term.links.open != .system) return false;
-        if (mouse.kind != .press or mouse.button != .left) return false;
-        if ((mouse.mods & term_facade.mod_ctrl) == 0) return false;
-        const local_mouse = contentRelativeMouseEvent(mouse, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return false;
+        if (mouse_event.kind != .press or mouse_event.button != .left) return false;
+        if ((mouse_event.mods & RuntimeTerminal.mod_ctrl) == 0) return false;
+        const local_mouse = contentRelativeMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return false;
         if (self.publishMouseEvent(local_mouse)) return true;
 
         const uri = self.term.copyHyperlinkUriAtPixel(std.heap.c_allocator, local_mouse.pixel_x, local_mouse.pixel_y) orelse return false;
@@ -486,7 +467,6 @@ pub const Terminal = struct {
             self.term.followLiveBottom()
         else
             self.term.setScrollbackOffset(offset);
-        if (changed) self.dirty.store(true, .release);
         return changed;
     }
 
@@ -508,7 +488,6 @@ pub const Terminal = struct {
 
     fn syncInputFocus(self: *Terminal) void {
         self.term.setInputFocus(self.window_focused and self.widget_focused);
-        self.requestRedraw();
     }
 };
 
@@ -559,8 +538,6 @@ fn wakeWorker(self: *Terminal) void {
         if (self.term.waitRenderWake(1000)) {
             if (!self.wake_notified.swap(true, .acq_rel)) {
                 self.refreshTabLabel();
-                self.dirty.store(true, .release);
-                self.wake_dirty_ns.store(window.c_win.SDL_GetTicksNS(), .release);
                 window.wakeEventLoop();
             }
         }
@@ -623,23 +600,23 @@ fn baseTabLabel(title_len: usize, buf: []u8) usize {
     return fallback.len;
 }
 
-fn contentRelativeMouseEvent(mouse: KeyInput.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, pixel_width: c_int, pixel_height: c_int) ?KeyInput.MouseEvent {
-    const local_x = mouse.pixel_x - origin_x;
-    const local_y = mouse.pixel_y - origin_y;
+fn contentRelativeMouseEvent(mouse_event: mouse_events.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, pixel_width: c_int, pixel_height: c_int) ?mouse_events.MouseEvent {
+    const local_x = mouse_event.pixel_x - origin_x;
+    const local_y = mouse_event.pixel_y - origin_y;
     if (local_x < 0 or local_y < 0) return null;
     if (local_x >= logical_width or local_y >= logical_height) return null;
 
-    var adjusted = mouse;
+    var adjusted = mouse_event;
     adjusted.pixel_x = scaleLogicalToPixel(local_x, logical_width, pixel_width);
     adjusted.pixel_y = scaleLogicalToPixel(local_y, logical_height, pixel_height);
     return adjusted;
 }
 
-fn clampedContentRelativeMouseEvent(mouse: KeyInput.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, pixel_width: c_int, pixel_height: c_int) ?KeyInput.MouseEvent {
+fn clampedContentRelativeMouseEvent(mouse_event: mouse_events.MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, pixel_width: c_int, pixel_height: c_int) ?mouse_events.MouseEvent {
     if (logical_width <= 0 or logical_height <= 0) return null;
-    const local_x = std.math.clamp(mouse.pixel_x - origin_x, 0, logical_width - 1);
-    const local_y = std.math.clamp(mouse.pixel_y - origin_y, 0, logical_height - 1);
-    var adjusted = mouse;
+    const local_x = std.math.clamp(mouse_event.pixel_x - origin_x, 0, logical_width - 1);
+    const local_y = std.math.clamp(mouse_event.pixel_y - origin_y, 0, logical_height - 1);
+    var adjusted = mouse_event;
     adjusted.pixel_x = scaleLogicalToPixel(local_x, logical_width, pixel_width);
     adjusted.pixel_y = scaleLogicalToPixel(local_y, logical_height, pixel_height);
     return adjusted;
@@ -658,7 +635,7 @@ fn scaleLogicalSpan(value: i32, logical_extent: c_int, pixel_extent: c_int) i32 
 }
 
 test "contentRelativeMouseEvent subtracts widget origin" {
-    const mouse: KeyInput.MouseEvent = .{
+    const mouse_event: mouse_events.MouseEvent = .{
         .kind = .press,
         .button = .left,
         .pixel_x = 25,
@@ -667,7 +644,7 @@ test "contentRelativeMouseEvent subtracts widget origin" {
         .buttons_down = 1,
     };
 
-    const adjusted = contentRelativeMouseEvent(mouse, 5, 30, 200, 100, 400, 200).?;
+    const adjusted = contentRelativeMouseEvent(mouse_event, 5, 30, 200, 100, 400, 200).?;
     try std.testing.expectEqual(@as(i32, 40), adjusted.pixel_x);
     try std.testing.expectEqual(@as(i32, 24), adjusted.pixel_y);
 }
@@ -685,7 +662,7 @@ test "scrollbar thumb sits at top at max offset" {
 }
 
 test "contentRelativeMouseEvent rejects events outside widget bounds" {
-    const mouse: KeyInput.MouseEvent = .{
+    const mouse_event: mouse_events.MouseEvent = .{
         .kind = .wheel,
         .button = .wheel_up,
         .pixel_x = 10,
@@ -694,7 +671,7 @@ test "contentRelativeMouseEvent rejects events outside widget bounds" {
         .buttons_down = 0,
     };
 
-    try std.testing.expectEqual(@as(?KeyInput.MouseEvent, null), contentRelativeMouseEvent(mouse, 0, 30, 200, 100, 400, 200));
+    try std.testing.expectEqual(@as(?mouse_events.MouseEvent, null), contentRelativeMouseEvent(mouse_event, 0, 30, 200, 100, 400, 200));
 }
 
 fn decodeOsc52Payload(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {

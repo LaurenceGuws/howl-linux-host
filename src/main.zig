@@ -1,9 +1,8 @@
 const std = @import("std");
 const window = @import("Window.zig").Window;
-const key_input = @import("KeyInput.zig").KeyInput;
+const Events = @import("Events.zig").Events;
 const config = @import("Config.zig").Config;
-const GpuSvc = @import("Gpu.zig");
-const ShortCuts = @import("ShortCuts.zig");
+const ShortCuts = @import("ShortCuts.zig").ShortCuts;
 const TerminalWidget = @import("widget/Terminal.zig").Terminal;
 const trace = @import("howl_term").Trace;
 
@@ -18,13 +17,18 @@ const CliOptions = struct {
 
 const RenderWork = struct {
     needs_frame: bool,
-    terminal_dirty: bool,
+    terminal_frame: bool,
+};
+
+const TabChrome = struct {
+    label: []const u8,
+    is_active: bool,
 };
 
 const App = struct {
     allocator: std.mem.Allocator,
     conf: *const config.Value,
-    gpu: GpuSvc.Gpu,
+    present: window.PresentState,
     tabs: std.ArrayList(*TerminalWidget),
     active_tab_idx: usize,
     window_px_w: c_int,
@@ -32,19 +36,14 @@ const App = struct {
     window_logical_w: c_int,
     window_logical_h: c_int,
     window_focused: bool,
-    chrome_dirty: bool,
-    presented_tab: ?*TerminalWidget,
 
     fn init(self: *App, surface: window.Ptr, width: c_int, height: c_int, logical_width: c_int, logical_height: c_int) !void {
-        GpuSvc.init(&self.gpu);
-        errdefer GpuSvc.deinit(&self.gpu);
-        try GpuSvc.setup(&self.gpu, surface);
+        try window.initPresent(&self.present, surface);
+        errdefer window.deinitPresent(&self.present);
         self.window_px_w = @max(width, 1);
         self.window_px_h = @max(height, 1);
         self.window_logical_w = @max(logical_width, 1);
         self.window_logical_h = @max(logical_height, 1);
-        self.chrome_dirty = true;
-        self.presented_tab = null;
         self.active_tab_idx = 0;
         self.window_focused = true;
         try self.openTab();
@@ -52,35 +51,24 @@ const App = struct {
     }
 
     fn deinit(self: *App) void {
-        if (self.presented_tab) |tab| {
-            tab.presentAck();
-            self.presented_tab = null;
-        }
         for (self.tabs.items) |tab| {
             tab.deinit();
             self.allocator.destroy(tab);
         }
         self.tabs.deinit(self.allocator);
-        GpuSvc.deinit(&self.gpu);
+        window.deinitPresent(&self.present);
     }
 
-    fn acknowledgePresentation(self: *App) void {
-        if (self.presented_tab) |tab| {
-            tab.presentAck();
-            self.presented_tab = null;
-        }
+    fn drainShortcuts(self: *App, events: *Events) !void {
+        while (events.drainShortcutAction()) |action| try self.handleShortcut(action);
     }
 
-    fn drainShortcuts(self: *App, key_in: *key_input) !void {
-        while (key_in.drainShortcutAction()) |action| try self.handleShortcut(action);
+    fn drainActiveInput(self: *App, events: *Events) void {
+        self.activeTab().drainInput(events, 0, self.tabBarHeightLogical(), self.contentWidthLogical(), self.contentHeightLogical());
     }
 
-    fn drainActiveInput(self: *App, key_in: *key_input) void {
-        self.activeTab().drainInput(key_in, 0, self.tabBarHeightLogical(), self.contentWidthLogical(), self.contentHeightLogical());
-    }
-
-    fn handleActiveScrollInput(self: *App, key_in: *key_input) void {
-        self.activeTab().handleScrollInput(key_in);
+    fn handleActiveScrollInput(self: *App, events: *Events) void {
+        self.activeTab().handleScrollInput(events);
     }
 
     fn activeTerminalPassiveHoverWake(self: *const App) bool {
@@ -98,7 +86,6 @@ const App = struct {
         self.window_logical_w = lw;
         self.window_logical_h = lh;
         for (self.tabs.items) |tab| tab.resize(self.contentWidth(), self.contentHeight(), self.contentWidthLogical(), self.contentHeightLogical());
-        self.chrome_dirty = true;
     }
 
     fn setWindowFocused(self: *App, focused: bool) void {
@@ -109,47 +96,49 @@ const App = struct {
 
     fn collectRenderWork(self: *App) RenderWork {
         self.activeTab().maybeCommitGridResize();
-        const terminal_dirty = self.activeTab().hasRenderWork();
+        const terminal_frame = self.activeTab().needsFrame();
         return .{
-            .needs_frame = self.chrome_dirty or terminal_dirty,
-            .terminal_dirty = terminal_dirty,
+            .needs_frame = terminal_frame,
+            .terminal_frame = terminal_frame,
         };
     }
 
     fn render(self: *App, work: RenderWork) void {
         const frame_start_ns = window.c_win.SDL_GetTicksNS();
+        const texture_rect = self.textureRect();
+        const snapshot = self.activeTab().snapshot(texture_rect);
+        var tab_chrome_buf: [max_tabs]TabChrome = undefined;
+        const tab_chrome = self.tabChrome(tab_chrome_buf[0..]);
         var label_buf: [max_tabs][]const u8 = undefined;
-        for (self.tabs.items, 0..) |tab, i| label_buf[i] = tab.tabLabel();
+        for (tab_chrome, 0..) |tab, i| label_buf[i] = tab.label;
         var terminal_us: u64 = 0;
-        if (work.terminal_dirty) {
+        if (work.terminal_frame) {
             const terminal_start_ns = window.c_win.SDL_GetTicksNS();
             self.activeTab().render();
             terminal_us = @divTrunc(window.c_win.SDL_GetTicksNS() - terminal_start_ns, std.time.ns_per_us);
         }
-        const surface = self.activeTab().presentSurfaceHandle();
         const present_start_ns = window.c_win.SDL_GetTicksNS();
-        GpuSvc.present(&self.gpu, .{
-            .texture_id = surface.texture_id,
-            .texture_rect = self.textureRect(),
-            .scrollbar = self.activeTab().scrollbarLayout(self.textureRect()),
-            .tab_count = self.tabs.items.len,
+        window.present(&self.present, .{
+            .texture_id = snapshot.surface.texture_id,
+            .texture_rect = texture_rect,
+            .scrollbar = snapshot.scrollbar,
+            .tab_count = tab_chrome.len,
             .active_tab = self.active_tab_idx,
-            .tab_labels = label_buf[0..self.tabs.items.len],
+            .tab_labels = label_buf[0..tab_chrome.len],
         });
         const present_us = @divTrunc(window.c_win.SDL_GetTicksNS() - present_start_ns, std.time.ns_per_us);
         trace.hostFrame(
-            work.terminal_dirty,
+            work.terminal_frame,
             terminal_us,
             present_us,
             @divTrunc(window.c_win.SDL_GetTicksNS() - frame_start_ns, std.time.ns_per_us),
-            surface.texture_id,
+            snapshot.surface.texture_id,
         );
-        self.chrome_dirty = false;
-        self.presented_tab = self.activeTab();
+        if (work.terminal_frame) self.activeTab().presentAck();
     }
 
     fn activeTabFailed(self: *const App) bool {
-        return self.tabs.items.len == 0 or self.activeTab().termState() == .failed;
+        return self.tabs.items.len == 0 or self.activeTab().snapshot(self.textureRect()).state == .failed;
     }
 
     fn handleShortcut(self: *App, action: ShortCuts.Action) !void {
@@ -193,9 +182,7 @@ const App = struct {
             .tab_label_len = 0,
             .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .last_resize_ns = 0,
-            .dirty = std.atomic.Value(bool).init(true),
             .wake_notified = std.atomic.Value(bool).init(false),
-            .wake_dirty_ns = std.atomic.Value(u64).init(0),
             .wake_thread = null,
             .stop_wake = std.atomic.Value(bool).init(false),
             .window_focused = true,
@@ -211,25 +198,17 @@ const App = struct {
         try self.tabs.append(self.allocator, tab);
         self.active_tab_idx = self.tabs.items.len - 1;
         self.syncTerminalFocus();
-        tab.requestRedraw();
-        self.chrome_dirty = true;
     }
 
     fn closeActiveTab(self: *App) void {
         if (self.tabs.items.len <= 1) return;
         const idx = self.active_tab_idx;
         const tab = self.tabs.items[idx];
-        if (self.presented_tab == tab) {
-            tab.presentAck();
-            self.presented_tab = null;
-        }
         _ = self.tabs.orderedRemove(idx);
         tab.deinit();
         self.allocator.destroy(tab);
         if (self.active_tab_idx >= self.tabs.items.len) self.active_tab_idx = self.tabs.items.len - 1;
         self.syncTerminalFocus();
-        self.activeTab().requestRedraw();
-        self.chrome_dirty = true;
     }
 
     fn selectRelative(self: *App, delta: i32) void {
@@ -244,8 +223,6 @@ const App = struct {
         if (idx >= self.tabs.items.len or idx == self.active_tab_idx) return;
         self.active_tab_idx = idx;
         self.syncTerminalFocus();
-        self.activeTab().requestRedraw();
-        self.chrome_dirty = true;
     }
 
     fn syncTerminalFocus(self: *App) void {
@@ -257,6 +234,19 @@ const App = struct {
 
     fn activeTab(self: *const App) *TerminalWidget {
         return self.tabs.items[self.active_tab_idx];
+    }
+
+    fn tabChrome(self: *const App, buf: []TabChrome) []TabChrome {
+        std.debug.assert(buf.len >= self.tabs.items.len);
+        const texture_rect = self.textureRect();
+        for (self.tabs.items, 0..) |tab, i| {
+            const snapshot = tab.snapshot(texture_rect);
+            buf[i] = .{
+                .label = snapshot.tab_label,
+                .is_active = i == self.active_tab_idx,
+            };
+        }
+        return buf[0..self.tabs.items.len];
     }
 
     fn tabBarHeight(self: *const App) c_int {
@@ -285,7 +275,7 @@ const App = struct {
         return @max(self.window_logical_h - self.tabBarHeightLogical(), 1);
     }
 
-    fn textureRect(self: *const App) GpuSvc.Rect {
+    fn textureRect(self: *const App) window.Rect {
         return .{
             .x = 0,
             .y = self.tabBarHeight(),
@@ -316,7 +306,7 @@ pub fn main(init: std.process.Init) !void {
 
     ShortCuts.installConfig(&conf);
 
-    const win = window.createWindow(conf.window.title, conf.window.width, conf.window.height, GpuSvc.windowFlags()) orelse {
+    const win = window.createWindow(conf.window.title, conf.window.width, conf.window.height, window.windowFlags()) orelse {
         std.debug.print("window create failed: {s}\n", .{window.lastError()});
         return error.WindowCreateFailed;
     };
@@ -325,7 +315,7 @@ pub fn main(init: std.process.Init) !void {
     var app = App{
         .allocator = std.heap.c_allocator,
         .conf = @as(*const config.Value, &conf),
-        .gpu = undefined,
+        .present = undefined,
         .tabs = .empty,
         .active_tab_idx = 0,
         .window_px_w = 1,
@@ -333,8 +323,6 @@ pub fn main(init: std.process.Init) !void {
         .window_logical_w = 1,
         .window_logical_h = 1,
         .window_focused = true,
-        .chrome_dirty = true,
-        .presented_tab = null,
     };
 
     const initial_size = window.windowSize(win);
@@ -343,9 +331,9 @@ pub fn main(init: std.process.Init) !void {
     app.setWindowFocused(window.hasInputFocus(win));
     defer app.deinit();
 
-    var key_input_state: key_input = undefined;
-    key_input_state.init();
-    key_input_state.bind(win);
+    var events: Events = undefined;
+    events.init();
+    events.bind(win);
 
     var running = true;
     const run_start_ms = window.c_win.SDL_GetTicks();
@@ -353,8 +341,6 @@ pub fn main(init: std.process.Init) !void {
         if (cli.duration_ms) |duration_ms| {
             if (window.c_win.SDL_GetTicks() -| run_start_ms >= duration_ms) break;
         }
-        app.acknowledgePresentation();
-
         var work = app.collectRenderWork();
         const wait_ms = waitTimeoutMs(cli.duration_ms, run_start_ms, app.activeTerminalPassiveHoverWake(), app.activeTab().nextWaitTimeoutMs());
         const signal = if (work.needs_frame) window.pollEventSignal(win) else window.waitEventSignal(win, wait_ms);
@@ -363,14 +349,11 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
         app.setWindowFocused(window.hasInputFocus(win));
-        if (signal == .none and app.activeTerminalPassiveHoverWake()) {
-            app.chrome_dirty = true;
-        }
         app.serviceHostEffects();
 
-        try app.drainShortcuts(&key_input_state);
-        app.drainActiveInput(&key_input_state);
-        app.handleActiveScrollInput(&key_input_state);
+        try app.drainShortcuts(&events);
+        app.drainActiveInput(&events);
+        app.handleActiveScrollInput(&events);
         app.serviceHostEffects();
 
         const size = window.windowSize(win);
@@ -378,7 +361,7 @@ pub fn main(init: std.process.Init) !void {
         app.resize(size.width, size.height, logical_size.width, logical_size.height);
 
         work = app.collectRenderWork();
-        if (!work.needs_frame) continue;
+        if (!work.needs_frame and signal == .none) continue;
 
         app.render(work);
         if (app.activeTabFailed()) {
