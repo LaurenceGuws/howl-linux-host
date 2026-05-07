@@ -135,6 +135,10 @@ pub const Events = struct {
     pub fn wakeWindow() void {
         Window.wakeEventLoop();
     }
+
+    pub fn keyFromLabel(raw: []const u8) ?Key {
+        return Keys.parseLabel(raw);
+    }
 };
 
 var active_events: ?*Events = null;

@@ -1,9 +1,10 @@
 const std = @import("std");
 const howl_lua = @import("howl_lua");
 const Config = @import("../Config.zig").Config;
-const ShortCuts = @import("../events/shortcuts.zig").ShortCuts;
+const Events = @import("../Events.zig").Events;
 const env = @import("env.zig");
 const parse = @import("parse.zig");
+const ShortCuts = Events.ShortCuts;
 
 const Lua = howl_lua.HowlLua;
 

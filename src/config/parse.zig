@@ -1,7 +1,7 @@
 const std = @import("std");
-const keys = @import("../events/keys.zig");
-const ShortCuts = @import("../events/shortcuts.zig").ShortCuts;
+const Events = @import("../Events.zig").Events;
 const term_config = @import("../howl-term/config.zig");
+const ShortCuts = Events.ShortCuts;
 
 pub const ShortcutSpec = struct {
     field: []const u8,
@@ -54,7 +54,7 @@ pub fn shortcutBinding(raw: []const u8, action: ShortCuts.Action) !ShortCuts.Bin
             continue;
         }
         if (saw_key) return error.InvalidConfig;
-        binding.key = keys.parseLabel(part) orelse return error.InvalidConfig;
+        binding.key = Events.keyFromLabel(part) orelse return error.InvalidConfig;
         saw_key = true;
     }
     if (!saw_key) return error.InvalidConfig;
