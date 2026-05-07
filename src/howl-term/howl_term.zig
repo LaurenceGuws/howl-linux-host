@@ -1,11 +1,11 @@
-//! Responsibility: host-local terminal runtime facade.
+//! Responsibility: own the Linux host terminal runtime handoff.
 //! Ownership: per-instance runtime lifecycle and host-facing calls.
 //! Reason: keep the Linux host on one boring runtime owner.
 
 const term_core = @import("howl_term").HowlTerm;
 const std = @import("std");
 
-pub const Terminal = struct {
+pub const Runtime = struct {
     pub const LifecycleState = enum {
         stopped,
         starting,
@@ -24,7 +24,7 @@ pub const Terminal = struct {
     lifecycle_state: LifecycleState = .stopped,
 
     pub fn init(
-        self: *Terminal,
+        self: *Runtime,
         shell: []const u8,
         start_path: ?[]const u8,
         command: ?[]const u8,
@@ -58,7 +58,7 @@ pub const Terminal = struct {
         self.lifecycle_state = .ready;
     }
 
-    pub fn deinit(self: *Terminal) void {
+    pub fn deinit(self: *Runtime) void {
         if (self.term) |*inst| {
             inst.stop();
             inst.deinit();
@@ -67,7 +67,7 @@ pub const Terminal = struct {
         self.lifecycle_state = .stopped;
     }
 
-    pub fn renderFrameSized(self: *Terminal, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
+    pub fn renderFrameSized(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
         const inst = &(self.term orelse return);
         const rw: u16 = @intCast(@max(render_width, 1));
         const rh: u16 = @intCast(@max(render_height, 1));
@@ -79,7 +79,7 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn syncFrameGeometry(self: *Terminal, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
+    pub fn syncFrameGeometry(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) void {
         const inst = &(self.term orelse return);
         const rw: u16 = @intCast(@max(render_width, 1));
         const rh: u16 = @intCast(@max(render_height, 1));
@@ -91,15 +91,15 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn presentAck(self: *Terminal) void {
+    pub fn presentAck(self: *Runtime) void {
         if (self.term) |*inst| _ = inst.presentAck();
     }
 
-    pub fn state(self: *const Terminal) LifecycleState {
+    pub fn state(self: *const Runtime) LifecycleState {
         return self.lifecycle_state;
     }
 
-    pub fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
+    pub fn publishInputBytes(self: *Runtime, bytes: []const u8) void {
         if (bytes.len == 0) return;
         const inst = &(self.term orelse return);
         inst.publishInputBytes(bytes) catch |err| switch (err) {
@@ -111,7 +111,7 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn publishInputKey(self: *Terminal, key: term_core.Key, mods: term_core.Modifier) void {
+    pub fn publishInputKey(self: *Runtime, key: term_core.Key, mods: term_core.Modifier) void {
         const inst = &(self.term orelse return);
         inst.publishInputKey(key, mods) catch |err| switch (err) {
             error.QueueFull => std.log.warn("terminal key input dropped due to full queue", .{}),
@@ -122,7 +122,7 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn setInputFocus(self: *Terminal, focused: bool) void {
+    pub fn setInputFocus(self: *Runtime, focused: bool) void {
         const inst = &(self.term orelse return);
         _ = inst.setInputFocus(focused) catch |err| switch (err) {
             error.QueueFull => std.log.warn("terminal focus event dropped due to full queue", .{}),
@@ -133,7 +133,7 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn publishPaste(self: *Terminal, text: []const u8) void {
+    pub fn publishPaste(self: *Runtime, text: []const u8) void {
         const inst = &(self.term orelse return);
         inst.publishPaste(text) catch |err| switch (err) {
             error.QueueFull => std.log.warn("terminal paste dropped due to full queue", .{}),
@@ -144,7 +144,7 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn drainPendingClipboardSet(self: *Terminal, allocator: std.mem.Allocator) ?ClipboardRequest {
+    pub fn drainPendingClipboardSet(self: *Runtime, allocator: std.mem.Allocator) ?ClipboardRequest {
         const inst = &(self.term orelse return null);
         return inst.drainPendingClipboardSet(allocator) catch {
             self.lifecycle_state = .failed;
@@ -153,7 +153,7 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn copyHyperlinkUriAtPixel(self: *Terminal, allocator: std.mem.Allocator, pixel_x: i32, pixel_y: i32) ?[]u8 {
+    pub fn copyHyperlinkUriAtPixel(self: *Runtime, allocator: std.mem.Allocator, pixel_x: i32, pixel_y: i32) ?[]u8 {
         const inst = &(self.term orelse return null);
         return inst.copyHyperlinkUriAtPixel(allocator, pixel_x, pixel_y) catch {
             self.lifecycle_state = .failed;
@@ -162,7 +162,7 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn publishMouseEvent(self: *Terminal, kind: MouseEventKind, button: MouseButton, pixel_x: i32, pixel_y: i32, mods: term_core.Modifier, buttons_down: u8) bool {
+    pub fn publishMouseEvent(self: *Runtime, kind: MouseEventKind, button: MouseButton, pixel_x: i32, pixel_y: i32, mods: term_core.Modifier, buttons_down: u8) bool {
         const inst = &(self.term orelse return false);
         return inst.publishMouseEvent(kind, button, pixel_x, pixel_y, mods, buttons_down) catch |err| switch (err) {
             error.QueueFull => blk: {
@@ -177,32 +177,32 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn beginSelection(self: *Terminal, pixel_x: i32, pixel_y: i32) bool {
+    pub fn beginSelection(self: *Runtime, pixel_x: i32, pixel_y: i32) bool {
         const inst = &(self.term orelse return false);
         return inst.beginSelection(pixel_x, pixel_y);
     }
 
-    pub fn updateSelection(self: *Terminal, pixel_x: i32, pixel_y: i32) bool {
+    pub fn updateSelection(self: *Runtime, pixel_x: i32, pixel_y: i32) bool {
         const inst = &(self.term orelse return false);
         return inst.updateSelection(pixel_x, pixel_y);
     }
 
-    pub fn finishSelection(self: *Terminal) bool {
+    pub fn finishSelection(self: *Runtime) bool {
         const inst = &(self.term orelse return false);
         return inst.finishSelection();
     }
 
-    pub fn clearSelection(self: *Terminal) bool {
+    pub fn clearSelection(self: *Runtime) bool {
         const inst = &(self.term orelse return false);
         return inst.clearSelection();
     }
 
-    pub fn selectionInProgress(self: *const Terminal) bool {
+    pub fn selectionInProgress(self: *const Runtime) bool {
         const inst = &(self.term orelse return false);
         return inst.selectionInProgress();
     }
 
-    pub fn waitRenderWake(self: *Terminal, timeout_ms: i32) bool {
+    pub fn waitRenderWake(self: *Runtime, timeout_ms: i32) bool {
         const inst = &(self.term orelse return false);
         return inst.waitRenderWake(timeout_ms) catch |err| {
             self.lifecycle_state = .failed;
@@ -210,47 +210,47 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn currentScrollbackCount(self: *const Terminal) usize {
+    pub fn currentScrollbackCount(self: *const Runtime) usize {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackCount();
     }
 
-    pub fn currentScrollbackOffset(self: *const Terminal) usize {
+    pub fn currentScrollbackOffset(self: *const Runtime) usize {
         const inst = &(self.term orelse return 0);
         return inst.currentScrollbackOffset();
     }
 
-    pub fn isAlternateScreen(self: *const Terminal) bool {
+    pub fn isAlternateScreen(self: *const Runtime) bool {
         const inst = &(self.term orelse return false);
         return inst.isAlternateScreen();
     }
 
-    pub fn setScrollbackOffset(self: *Terminal, offset_rows: usize) bool {
+    pub fn setScrollbackOffset(self: *Runtime, offset_rows: usize) bool {
         const inst = &(self.term orelse return false);
         return inst.setScrollbackOffset(offset_rows);
     }
 
-    pub fn followLiveBottom(self: *Terminal) bool {
+    pub fn followLiveBottom(self: *Runtime) bool {
         const inst = &(self.term orelse return false);
         return inst.followLiveBottom();
     }
 
-    pub fn setFontSizePx(self: *Terminal, font_size_px: u16) void {
+    pub fn setFontSizePx(self: *Runtime, font_size_px: u16) void {
         const inst = &(self.term orelse return);
         inst.setFontSizePx(font_size_px);
     }
 
-    pub fn copyTabTitle(self: *const Terminal, out_buf: []u8) usize {
+    pub fn copyTabTitle(self: *const Runtime, out_buf: []u8) usize {
         const inst = &(self.term orelse return 0);
         return inst.copyCurrentTitle(out_buf);
     }
 
-    pub fn viewportRows(self: *const Terminal) u16 {
+    pub fn viewportRows(self: *const Runtime) u16 {
         const inst = &(self.term orelse return 1);
         return inst.viewportRows();
     }
 
-    pub fn surfaceHandle(self: *const Terminal) SurfaceHandle {
+    pub fn surfaceHandle(self: *const Runtime) SurfaceHandle {
         const inst = &(self.term orelse return .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 });
         return inst.surfaceHandle();
     }

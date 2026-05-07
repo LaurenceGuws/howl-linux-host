@@ -1,7 +1,7 @@
 const std = @import("std");
-const window = @import("../window/window.zig");
+const Window = @import("../Window.zig").Window;
 
-pub const c_win = window.c_win;
+pub const c_win = Window.c_win;
 
 pub const EventSignal = enum {
     none,

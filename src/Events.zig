@@ -5,18 +5,23 @@
 const std = @import("std");
 const Keys = @import("events/keys.zig");
 const Mouse = @import("events/mouse.zig");
-const ShortCuts = @import("events/shourcuts.zig").ShortCuts;
+const Shortcut = @import("events/shourcuts.zig").ShortCuts;
 const Window = @import("events/window.zig");
 const c = Window.c_win;
 const max_input_events: usize = 256;
 
 pub const Events = struct {
     pub const Signal = Window.EventSignal;
+    pub const ShortCuts = Shortcut;
+    pub const ByteInput = Mouse.ByteInput;
+    pub const KeyEvent = Mouse.KeyEvent;
+    pub const MouseEvent = Mouse.MouseEvent;
+    pub const InputEvent = Mouse.InputEvent;
 
     input_events: [max_input_events]Mouse.InputEvent,
     input_len: usize,
     scroll_pages: i32,
-    shortcut_buf: [64]ShortCuts.Action,
+    shortcut_buf: [64]Shortcut.Action,
     shortcut_len: usize,
     last_mouse_x: i32,
     last_mouse_y: i32,
@@ -63,12 +68,12 @@ pub const Events = struct {
         return out;
     }
 
-    pub fn drainShortcutAction(self: *Events) ?ShortCuts.Action {
+    pub fn drainShortcutAction(self: *Events) ?Shortcut.Action {
         if (self.shortcut_len == 0) return null;
         const out = self.shortcut_buf[0];
         self.shortcut_len -= 1;
         if (self.shortcut_len > 0) {
-            std.mem.copyForwards(ShortCuts.Action, self.shortcut_buf[0..self.shortcut_len], self.shortcut_buf[1 .. self.shortcut_len + 1]);
+            std.mem.copyForwards(Shortcut.Action, self.shortcut_buf[0..self.shortcut_len], self.shortcut_buf[1 .. self.shortcut_len + 1]);
         }
         return out;
     }
@@ -102,7 +107,7 @@ fn processEvent(event: *const c.SDL_Event) void {
             const ctrl = (event.key.mod & c.SDL_KMOD_CTRL) != 0;
             const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
             const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
-            if (ShortCuts.resolve(@intCast(event.key.key), ctrl, shift, alt)) |shortcut| {
+            if (Shortcut.resolve(@intCast(event.key.key), ctrl, shift, alt)) |shortcut| {
                 appendShortcut(events, shortcut);
                 return;
             }
@@ -238,7 +243,7 @@ fn appendInputEvent(events: *Events, event: Mouse.InputEvent) bool {
     return true;
 }
 
-fn appendShortcut(events: *Events, action: ShortCuts.Action) void {
+fn appendShortcut(events: *Events, action: Shortcut.Action) void {
     if (events.shortcut_len >= events.shortcut_buf.len) return;
     events.shortcut_buf[events.shortcut_len] = action;
     events.shortcut_len += 1;

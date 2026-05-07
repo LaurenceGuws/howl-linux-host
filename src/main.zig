@@ -1,11 +1,8 @@
 const std = @import("std");
-const window = @import("Window.zig").Window;
-const event_runtime = @import("Events.zig");
-const Events = event_runtime.Events;
-const config = @import("Config.zig").Config;
-const ShortCuts = @import("events/shourcuts.zig").ShortCuts;
-const TerminalWidget = @import("widget/Terminal.zig").Terminal;
-const trace = @import("howl_term").Trace;
+const Window = @import("Window.zig").Window;
+const Events = @import("Events.zig").Events;
+const Config = @import("Config.zig").Config;
+const HowlTerm = @import("widget/howl_term/HowlTerm.zig").HowlTerm;
 
 const max_tabs: usize = 9;
 
@@ -28,9 +25,9 @@ const TabChrome = struct {
 
 const App = struct {
     allocator: std.mem.Allocator,
-    conf: *const config.Value,
-    present: window.PresentState,
-    tabs: std.ArrayList(*TerminalWidget),
+    conf: *const Config.Value,
+    present: Window.PresentState,
+    tabs: std.ArrayList(*HowlTerm),
     active_tab_idx: usize,
     window_px_w: c_int,
     window_px_h: c_int,
@@ -38,9 +35,9 @@ const App = struct {
     window_logical_h: c_int,
     window_focused: bool,
 
-    fn init(self: *App, surface: window.Ptr, width: c_int, height: c_int, logical_width: c_int, logical_height: c_int) !void {
-        try window.initPresent(&self.present, surface);
-        errdefer window.deinitPresent(&self.present);
+    fn init(self: *App, surface: Window.Ptr, width: c_int, height: c_int, logical_width: c_int, logical_height: c_int) !void {
+        try Window.initPresent(&self.present, surface);
+        errdefer Window.deinitPresent(&self.present);
         self.window_px_w = @max(width, 1);
         self.window_px_h = @max(height, 1);
         self.window_logical_w = @max(logical_width, 1);
@@ -57,7 +54,7 @@ const App = struct {
             self.allocator.destroy(tab);
         }
         self.tabs.deinit(self.allocator);
-        window.deinitPresent(&self.present);
+        Window.deinitPresent(&self.present);
     }
 
     fn drainShortcuts(self: *App, events: *Events) !void {
@@ -105,7 +102,6 @@ const App = struct {
     }
 
     fn render(self: *App, work: RenderWork) void {
-        const frame_start_ns = window.c_win.SDL_GetTicksNS();
         const texture_rect = self.textureRect();
         const snapshot = self.activeTab().snapshot(texture_rect);
         var tab_chrome_buf: [max_tabs]TabChrome = undefined;
@@ -114,12 +110,11 @@ const App = struct {
         for (tab_chrome, 0..) |tab, i| label_buf[i] = tab.label;
         var terminal_us: u64 = 0;
         if (work.terminal_frame) {
-            const terminal_start_ns = window.c_win.SDL_GetTicksNS();
+            const terminal_start_ns = Window.c_win.SDL_GetTicksNS();
             self.activeTab().render();
-            terminal_us = @divTrunc(window.c_win.SDL_GetTicksNS() - terminal_start_ns, std.time.ns_per_us);
+            terminal_us = @divTrunc(Window.c_win.SDL_GetTicksNS() - terminal_start_ns, std.time.ns_per_us);
         }
-        const present_start_ns = window.c_win.SDL_GetTicksNS();
-        window.present(&self.present, .{
+        Window.present(&self.present, .{
             .texture_id = snapshot.surface.texture_id,
             .texture_rect = texture_rect,
             .scrollbar = snapshot.scrollbar,
@@ -127,14 +122,6 @@ const App = struct {
             .active_tab = self.active_tab_idx,
             .tab_labels = label_buf[0..tab_chrome.len],
         });
-        const present_us = @divTrunc(window.c_win.SDL_GetTicksNS() - present_start_ns, std.time.ns_per_us);
-        trace.hostFrame(
-            work.terminal_frame,
-            terminal_us,
-            present_us,
-            @divTrunc(window.c_win.SDL_GetTicksNS() - frame_start_ns, std.time.ns_per_us),
-            snapshot.surface.texture_id,
-        );
         if (work.terminal_frame) self.activeTab().presentAck();
     }
 
@@ -142,7 +129,7 @@ const App = struct {
         return self.tabs.items.len == 0 or self.activeTab().snapshot(self.textureRect()).state == .failed;
     }
 
-    fn handleShortcut(self: *App, action: ShortCuts.Action) !void {
+    fn handleShortcut(self: *App, action: Events.ShortCuts.Action) !void {
         switch (action) {
             .zoom_in => _ = self.activeTab().adjustFontSize(1),
             .zoom_out => _ = self.activeTab().adjustFontSize(-1),
@@ -153,7 +140,7 @@ const App = struct {
             .terminal_close_tab => self.closeActiveTab(),
             .terminal_next_tab => self.selectRelative(1),
             .terminal_prev_tab => self.selectRelative(-1),
-            else => if (ShortCuts.focusTabIndex(action)) |idx| self.selectTab(idx),
+            else => if (Events.ShortCuts.focusTabIndex(action)) |idx| self.selectTab(idx),
         }
     }
 
@@ -164,11 +151,11 @@ const App = struct {
     fn openTab(self: *App) !void {
         if (self.tabs.items.len >= max_tabs) return;
 
-        const tab = try self.allocator.create(TerminalWidget);
+        const tab = try self.allocator.create(HowlTerm);
         errdefer self.allocator.destroy(tab);
         tab.* = .{
             .term = .{},
-            .conf = self.conf,
+            .conf = &self.conf.term,
             .render_px_w = 1,
             .render_px_h = 1,
             .logical_w = 1,
@@ -233,7 +220,7 @@ const App = struct {
         }
     }
 
-    fn activeTab(self: *const App) *TerminalWidget {
+    fn activeTab(self: *const App) *HowlTerm {
         return self.tabs.items[self.active_tab_idx];
     }
 
@@ -276,7 +263,7 @@ const App = struct {
         return @max(self.window_logical_h - self.tabBarHeightLogical(), 1);
     }
 
-    fn textureRect(self: *const App) window.Rect {
+    fn textureRect(self: *const App) Window.Rect {
         return .{
             .x = 0,
             .y = self.tabBarHeight(),
@@ -292,30 +279,30 @@ pub fn main(init: std.process.Init) !void {
         else => |e| return e,
     };
 
-    if (!window.initVideo()) {
-        std.debug.print("window init failed: {s}\n", .{window.lastError()});
+    if (!Window.initVideo()) {
+        std.debug.print("window init failed: {s}\n", .{Window.lastError()});
         return error.WindowInitFailed;
     }
-    defer window.quit();
+    defer Window.quit();
 
-    var lua = try config.loadLua(std.heap.c_allocator);
+    var lua = try Config.loadLua(std.heap.c_allocator);
     defer lua.deinit();
 
-    var conf = try config.loadFromLua(std.heap.c_allocator, lua);
+    var conf = try Config.loadFromLua(std.heap.c_allocator, lua);
     defer conf.deinit(std.heap.c_allocator);
     try applyCliOverrides(&conf, cli);
 
-    ShortCuts.installConfig(&conf);
+    Events.ShortCuts.installConfig(&conf);
 
-    const win = window.createWindow(conf.window.title, conf.window.width, conf.window.height, window.windowFlags()) orelse {
-        std.debug.print("window create failed: {s}\n", .{window.lastError()});
+    const win = Window.createWindow(conf.window.title, conf.window.width, conf.window.height, Window.windowFlags()) orelse {
+        std.debug.print("window create failed: {s}\n", .{Window.lastError()});
         return error.WindowCreateFailed;
     };
-    defer window.destroyWindow(win);
+    defer Window.destroyWindow(win);
 
     var app = App{
         .allocator = std.heap.c_allocator,
-        .conf = @as(*const config.Value, &conf),
+        .conf = @as(*const Config.Value, &conf),
         .present = undefined,
         .tabs = .empty,
         .active_tab_idx = 0,
@@ -326,10 +313,10 @@ pub fn main(init: std.process.Init) !void {
         .window_focused = true,
     };
 
-    const initial_size = window.windowSize(win);
-    const initial_logical_size = window.windowLogicalSize(win);
+    const initial_size = Window.windowSize(win);
+    const initial_logical_size = Window.windowLogicalSize(win);
     try app.init(win, initial_size.width, initial_size.height, initial_logical_size.width, initial_logical_size.height);
-    app.setWindowFocused(window.hasInputFocus(win));
+    app.setWindowFocused(Window.hasInputFocus(win));
     defer app.deinit();
 
     var events: Events = undefined;
@@ -337,10 +324,10 @@ pub fn main(init: std.process.Init) !void {
     events.bind(win);
 
     var running = true;
-    const run_start_ms = window.c_win.SDL_GetTicks();
+    const run_start_ms = Window.c_win.SDL_GetTicks();
     while (running) {
         if (cli.duration_ms) |duration_ms| {
-            if (window.c_win.SDL_GetTicks() -| run_start_ms >= duration_ms) break;
+            if (Window.c_win.SDL_GetTicks() -| run_start_ms >= duration_ms) break;
         }
         var work = app.collectRenderWork();
         const wait_ms = waitTimeoutMs(cli.duration_ms, run_start_ms, app.activeTerminalPassiveHoverWake(), app.activeTab().nextWaitTimeoutMs());
@@ -349,7 +336,7 @@ pub fn main(init: std.process.Init) !void {
             running = false;
             continue;
         }
-        app.setWindowFocused(window.hasInputFocus(win));
+        app.setWindowFocused(Window.hasInputFocus(win));
         app.serviceHostEffects();
 
         try app.drainShortcuts(&events);
@@ -357,8 +344,8 @@ pub fn main(init: std.process.Init) !void {
         app.handleActiveScrollInput(&events);
         app.serviceHostEffects();
 
-        const size = window.windowSize(win);
-        const logical_size = window.windowLogicalSize(win);
+        const size = Window.windowSize(win);
+        const logical_size = Window.windowLogicalSize(win);
         app.resize(size.width, size.height, logical_size.width, logical_size.height);
 
         work = app.collectRenderWork();
@@ -413,7 +400,7 @@ fn usage() void {
     , .{});
 }
 
-fn applyCliOverrides(conf: *config.Value, cli: CliOptions) !void {
+fn applyCliOverrides(conf: *Config.Value, cli: CliOptions) !void {
     if (cli.shell) |shell| try replaceOwned(&conf.term.shell, shell);
     if (cli.start_path) |start_path| try replaceOptionalOwned(&conf.term.start_path, start_path);
     if (cli.command) |command| try replaceOptionalOwned(&conf.term.command, command);
@@ -435,7 +422,7 @@ fn waitTimeoutMs(duration_ms: ?u64, run_start_ms: u64, passive_hover_wake: bool,
     const passive_timeout: c_int = if (passive_hover_wake) 16 else -1;
     const merged_timeout: c_int = if (passive_timeout < 0) tab_timeout_ms else if (tab_timeout_ms < 0) passive_timeout else @min(passive_timeout, tab_timeout_ms);
     const duration = duration_ms orelse return merged_timeout;
-    const elapsed = window.c_win.SDL_GetTicks() -| run_start_ms;
+    const elapsed = Window.c_win.SDL_GetTicks() -| run_start_ms;
     if (elapsed >= duration) return 0;
     const remaining: c_int = @intCast(@min(duration - elapsed, @as(u64, @intCast(std.math.maxInt(c_int)))));
     if (merged_timeout < 0) return remaining;

@@ -1,7 +1,7 @@
 const std = @import("std");
 const keys = @import("../events/keys.zig");
 const ShortCuts = @import("../events/shourcuts.zig").ShortCuts;
-const term_config = @import("../widget/howl_term/HowlTerm.zig");
+const term_config = @import("../howl-term/config.zig");
 
 pub const ShortcutSpec = struct {
     field: []const u8,

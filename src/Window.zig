@@ -1,99 +1,105 @@
-//! Responsibility: own the public window surface for the Linux host.
-//! Ownership: system window/event entrypoints.
-//! Reason: keep Linux host on one boring platform path.
+//! Responsibility: own the Linux host window surface.
+//! Ownership: SDL window, clipboard, URL opening, and public frame presentation.
 
 const std = @import("std");
-const window = @import("window/window.zig");
+const Chrome = @import("window/chrome.zig");
+const Layout = @import("window/layout.zig");
 
-/// Canonical Linux-host window owner.
+const c = @cImport({
+    @cInclude("SDL3/SDL.h");
+    @cInclude("SDL3/SDL_opengl.h");
+});
+
 pub const Window = struct {
-    /// Backend-native window namespace.
-    pub const c_win = window.c_win;
-    /// Window handle pointer type.
-    pub const Ptr = std.meta.Child(@typeInfo(@TypeOf(window.createWindow)).@"fn".return_type.?);
-    /// Window flag bitfield type.
+    pub const c_win = c;
+    pub const Ptr = *c.SDL_Window;
     pub const Flags = c_uint;
-    /// Resizable window flag.
-    pub const RESIZABLE: Flags = @intCast(window.c_win.SDL_WINDOW_RESIZABLE);
-    /// Window size payload.
-    pub const Size = window.Size;
+    pub const RESIZABLE: Flags = @intCast(c.SDL_WINDOW_RESIZABLE);
 
-    /// Host texture placement rect.
-    pub const Rect = window.Rect;
-    /// Host scrollbar chrome geometry.
-    pub const ScrollbarLayout = window.ScrollbarLayout;
-    /// Present payload for one frame.
-    pub const Frame = window.Frame;
-    /// Backend present state.
-    pub const PresentState = window.State;
+    pub const Size = struct {
+        width: c_int,
+        height: c_int,
+    };
 
-    /// Initialize the selected window backend.
+    pub const Rect = Layout.Rect;
+    pub const ScrollbarLayout = Layout.ScrollbarLayout;
+    pub const Frame = Layout.Frame;
+    pub const PresentState = Chrome.State(c);
+
     pub fn initVideo() bool {
-        return window.initVideo();
+        return c.SDL_Init(c.SDL_INIT_VIDEO);
     }
 
-    /// Shut down the selected window backend.
     pub fn quit() void {
-        window.quit();
+        c.SDL_Quit();
     }
 
-    /// Create one host window.
     pub fn createWindow(title: [*:0]const u8, width: c_int, height: c_int, flags: Flags) ?Ptr {
-        return window.createWindow(title, width, height, flags);
+        const handle = c.SDL_CreateWindow(title, width, height, @intCast(flags));
+        if (handle != null) _ = c.SDL_StartTextInput(handle);
+        return handle;
     }
 
-    /// Report the window flags required for present support.
-    pub fn windowFlags() Flags {
-        return window.windowFlags();
-    }
-
-    /// Initialize backend present state for one window.
-    pub fn initPresent(state: *PresentState, win: Ptr) !void {
-        try window.init(state, win);
-    }
-
-    /// Release backend present state.
-    pub fn deinitPresent(state: *PresentState) void {
-        window.deinit(state);
-    }
-
-    /// Present one host frame.
-    pub fn present(state: *PresentState, frame: Frame) void {
-        window.present(state, frame);
-    }
-
-    /// Destroy one host window.
     pub fn destroyWindow(handle: Ptr) void {
-        window.destroyWindow(handle);
+        _ = c.SDL_StopTextInput(handle);
+        c.SDL_DestroyWindow(handle);
     }
 
-    /// Report the current window size.
+    pub fn windowFlags() Flags {
+        return Chrome.flags(c);
+    }
+
+    pub fn initPresent(state: *PresentState, handle: Ptr) !void {
+        try Chrome.init(c, state, handle);
+    }
+
+    pub fn deinitPresent(state: *PresentState) void {
+        Chrome.deinit(c, state);
+    }
+
+    pub fn present(state: *PresentState, frame: Frame) void {
+        Chrome.present(c, state, frame);
+    }
+
     pub fn windowSize(handle: Ptr) Size {
-        return window.windowSize(handle);
+        var width: c_int = 0;
+        var height: c_int = 0;
+        _ = c.SDL_GetWindowSizeInPixels(handle, &width, &height);
+        return .{ .width = width, .height = height };
     }
 
     pub fn windowLogicalSize(handle: Ptr) Size {
-        return window.windowLogicalSize(handle);
+        var width: c_int = 0;
+        var height: c_int = 0;
+        _ = c.SDL_GetWindowSize(handle, &width, &height);
+        return .{ .width = width, .height = height };
     }
 
     pub fn hasInputFocus(handle: Ptr) bool {
-        return window.hasInputFocus(handle);
+        return (c.SDL_GetWindowFlags(handle) & c.SDL_WINDOW_INPUT_FOCUS) != 0;
     }
 
     pub fn getClipboardText(allocator: std.mem.Allocator) !?[]u8 {
-        return window.getClipboardText(allocator);
+        const text_z = c.SDL_GetClipboardText() orelse return null;
+        defer c.SDL_free(text_z);
+        return try allocator.dupe(u8, std.mem.span(text_z));
     }
 
     pub fn setClipboardText(text: []const u8) bool {
-        return window.setClipboardText(text);
+        const z = std.heap.c_allocator.allocSentinel(u8, text.len, 0) catch return false;
+        defer std.heap.c_allocator.free(z);
+        @memcpy(z[0..text.len], text);
+        return c.SDL_SetClipboardText(z.ptr) == true;
     }
 
     pub fn openUrl(uri: []const u8) bool {
-        return window.openUrl(uri);
+        const z = std.heap.c_allocator.allocSentinel(u8, uri.len, 0) catch return false;
+        defer std.heap.c_allocator.free(z);
+        @memcpy(z[0..uri.len], uri);
+        return c.SDL_OpenURL(z.ptr) == true;
     }
 
-    /// Report the last backend error string.
     pub fn lastError() [*:0]const u8 {
-        return window.lastError();
+        return c.SDL_GetError();
     }
 };

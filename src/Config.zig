@@ -1,6 +1,6 @@
 const std = @import("std");
 const howl_lua = @import("howl_lua");
-const term_config = @import("widget/howl_term/HowlTerm.zig");
+const term_config = @import("howl-term/config.zig");
 const window_config = @import("config/window.zig");
 const TabBar = @import("widget/tab_bar/TabBar.zig").TabBar;
 
