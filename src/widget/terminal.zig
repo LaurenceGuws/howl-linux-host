@@ -378,14 +378,14 @@ pub const Terminal = struct {
 
     pub fn serviceHostEffects(self: *Terminal) void {
         const request = self.term.drainPendingClipboardSet(std.heap.c_allocator) orelse return;
-        defer std.heap.c_allocator.free(request.raw);
+        defer std.heap.c_allocator.free(request.osc52_payload);
 
         switch (self.conf.clipboard.osc_52) {
             .deny => return,
             .allow => {},
         }
 
-        const decoded = Clipboard.decodeOsc52(std.heap.c_allocator, request.raw) catch return;
+        const decoded = Clipboard.decodeOsc52(std.heap.c_allocator, request.osc52_payload) catch return;
         defer std.heap.c_allocator.free(decoded);
         _ = window.setClipboardText(decoded);
     }
