@@ -73,7 +73,7 @@ Likely acceptable future Lua keys:
 - `term.clipboard.osc_52 = "allow" | "deny"`
 - `term.links.open = "disabled" | "system"`
 - `term.links.hover = "off" | "underline" | "cursor" | "underline+cursor"`
-- `term.links.underline = "straight" | "dotted" | "dashed"`
+- `term.links.underline = "straight" | "curly" | "dotted" | "dashed"` if the renderer can support those distinctly
 - `term.links.launcher = "..."` only if host-specific launcher override is truly needed
 
 Not currently justified:
@@ -87,7 +87,6 @@ Config distinction:
 - Link opening is host policy.
 - Link hover and underline style are host presentation policy.
 - Presentation config should describe visible behavior, not OSC internals.
-- Do not expose `curly` link underline until render-core has a real undercurl renderer.
 
 ## Landing Order
 

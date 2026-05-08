@@ -224,7 +224,7 @@ Current config:
 
 Planned presentation config:
 - `term.links.hover = "off" | "underline" | "cursor" | "underline+cursor"`
-- `term.links.underline = "straight" | "dotted" | "dashed"`
+- `term.links.underline = "straight" | "curly" | "dotted" | "dashed"`
 - hover behavior is configurable separately from opening behavior
 
 Test flow with disabled:
@@ -252,7 +252,7 @@ Notes:
 Presentation test flow:
 1. Set `term.links.open = "system"`.
 2. Set `term.links.hover = "underline+cursor"`.
-3. Set `term.links.underline = "dotted"`.
+3. Set `term.links.underline = "curly"`.
 4. Restart Howl.
 5. Run `printf '\033]8;;https://example.com\aLINK\033]8;;\a\n'`.
 6. Move the mouse over `LINK`.
@@ -286,7 +286,7 @@ Links:
 - OSC 8 links can be opened only when link opening is enabled by config
 - disabled link opening never launches the system opener
 - configured hover style is visible and consistent across a whole link span
-- configured underline style, such as straight, dotted, or dashed, matches the selected host presentation option
+- configured underline style, such as straight or curly, matches the selected host presentation option once implemented
 
 Clipboard and paste:
 - normal paste works through the configured paste shortcuts

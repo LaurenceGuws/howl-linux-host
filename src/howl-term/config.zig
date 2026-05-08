@@ -40,6 +40,7 @@ pub const LinkHoverPolicy = enum {
 /// Host-owned underline style for hovered hyperlinks.
 pub const LinkUnderlineStyle = enum {
     straight,
+    curly,
     dotted,
     dashed,
 };

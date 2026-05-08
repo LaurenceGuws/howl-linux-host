@@ -592,6 +592,7 @@ pub const Terminal = struct {
     fn linkUnderlineStyle(style: config.LinkUnderlineStyle) Runtime.LinkUnderlineStyle {
         return switch (style) {
             .straight => .straight,
+            .curly => .curly,
             .dotted => .dotted,
             .dashed => .dashed,
         };

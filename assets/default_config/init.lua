@@ -40,7 +40,7 @@ return {
       open = "system",
       -- One of: "off", "underline", "cursor", "underline+cursor".
       hover = "underline+cursor",
-      -- One of: "straight", "dotted", "dashed".
+      -- One of: "straight", "curly", "dotted", "dashed".
       underline = "straight",
     },
     shortcuts = {
