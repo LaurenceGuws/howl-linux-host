@@ -40,6 +40,8 @@ Product integration scope:
 Exit criteria:
 - Each landed slice has an automated build/test check or a short manual tester recipe.
 - Package boundaries use named payloads where positional arguments would hide ownership or meaning.
+- Public symbols and units have doc comments before they are considered complete.
+- Private helpers get normal comments when intent or ownership is not obvious from the code.
 - Production logs stay quiet on successful normal paths.
 - Documentation states whether a capability is core-supported, term-exposed, or host-polished.
 

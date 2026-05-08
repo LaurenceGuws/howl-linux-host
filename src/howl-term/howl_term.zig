@@ -71,8 +71,11 @@ pub const Runtime = struct {
     pub const mouse_wheel = term_core.mouse_wheel;
 
     const ClipboardRequest = term_core.ClipboardRequest;
+    /// Terminal mouse button type re-exported for host input mapping.
     pub const MouseButton = term_core.MouseButton;
+    /// Terminal mouse event kind type re-exported for host input mapping.
     pub const MouseEventKind = term_core.MouseEventKind;
+    /// Named terminal-local mouse input payload passed into howl-term.
     pub const MouseInput = term_core.MouseInput;
 
     term: ?term_core = null,
