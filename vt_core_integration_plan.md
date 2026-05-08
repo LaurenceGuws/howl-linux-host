@@ -16,6 +16,33 @@ This file tracks how Linux-host should expose, test, and optionally configure th
 - Add Lua keys only for host product policy or durable host UX choices.
 - Prefer working defaults out of the box over option growth.
 
+## Current Sprint: Host Contract And UX Integration
+
+Theme:
+- Make the Linux host feel complete by tightening ownership seams first, then polishing host-visible behavior that already has core support.
+
+Non-goals:
+- Do not widen protocol scope just because a parser exists.
+- Do not add host config for terminal correctness.
+- Do not leave normal-path `info` logs in production code as a substitute for tests or intentional diagnostics.
+
+Contract hygiene scope:
+- Keep launch configuration named at the callsite: shell executable, optional command, optional working directory.
+- Keep host event payloads named when multiple coordinates, modifiers, or policy-sensitive flags cross package boundaries.
+- Keep `howl-term` responsible for terminal facts and operations.
+- Keep Linux-host responsible for desktop policy and presentation.
+
+Product integration scope:
+- Link interaction polish: hover, grouping, cursor behavior, and configured open policy.
+- Mouse and pointer fidelity: terminal mouse forwarding, local scrollback behavior, pointer shape mapping when the host supports it.
+- Clipboard and paste policy: bracketed paste entrypoint and explicit OSC 52 handling.
+
+Exit criteria:
+- Each landed slice has an automated build/test check or a short manual tester recipe.
+- Package boundaries use named payloads where positional arguments would hide ownership or meaning.
+- Production logs stay quiet on successful normal paths.
+- Documentation states whether a capability is core-supported, term-exposed, or host-polished.
+
 ## Config Policy
 Follow a minimal host-product config model.
 
