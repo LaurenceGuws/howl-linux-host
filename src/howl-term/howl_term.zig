@@ -5,8 +5,7 @@
 const term_core = @import("howl_term").HowlTerm;
 const std = @import("std");
 
-const startup_wait_timeout_ms: i64 = 1500;
-const startup_alive_confirm_ms: i64 = 50;
+const launch_liveness_grace_ms: i64 = 50;
 
 pub const Runtime = struct {
     pub const LifecycleState = enum {
@@ -93,14 +92,16 @@ pub const Runtime = struct {
     ) !void {
         self.lifecycle_state = .starting;
 
-        logLaunch(shell, start_path, command);
-
         errdefer {
             if (self.term) |*inst| inst.deinit();
             self.term = null;
             self.lifecycle_state = .failed;
         }
-        self.term = try term_core.initPty(std.heap.c_allocator, shell, command, start_path, 1, 1, .{ .width = 1, .height = 1 });
+        self.term = try term_core.initPty(std.heap.c_allocator, .{
+            .shell = shell,
+            .command = command,
+            .start_path = start_path,
+        }, 1, 1, .{ .width = 1, .height = 1 });
         self.term.?.setFontSizePx(font_size_px);
         self.term.?.setPrimaryFontPath(font_primary);
         self.term.?.setFallbackFontPaths(font_fallbacks);
@@ -109,8 +110,7 @@ pub const Runtime = struct {
             return err;
         };
         try self.term.?.syncFrameGeometry(render_width, render_height, grid_width, grid_height);
-        try self.confirmTerminalAlive(startup_wait_timeout_ms);
-        std.log.info("terminal ready shell={s}", .{shell});
+        try self.confirmLaunchLiveness();
         self.lifecycle_state = .ready;
     }
 
@@ -328,28 +328,13 @@ pub const Runtime = struct {
         };
     }
 
-    fn confirmTerminalAlive(self: *Runtime, timeout_ms: i64) !void {
+    fn confirmLaunchLiveness(self: *Runtime) !void {
         const inst = &(self.term orelse return error.TransportUnavailable);
         var waited_ms: i64 = 0;
-        while (waited_ms < timeout_ms) : (waited_ms += 10) {
+        while (waited_ms < launch_liveness_grace_ms) : (waited_ms += 10) {
             if (!inst.isAlive()) return error.TransportUnavailable;
-            if (waited_ms >= startup_alive_confirm_ms) return;
             _ = inst.awaitSnapshotEvent(inst.snapshotEventSeq(), 10) catch {};
         }
-        return error.TransportUnavailable;
+        if (!inst.isAlive()) return error.TransportUnavailable;
     }
 };
-
-fn logLaunch(shell: []const u8, start_path: ?[]const u8, command: ?[]const u8) void {
-    if (start_path) |path| {
-        if (command) |cmd| {
-            std.log.info("terminal launch shell={s} start_path={s} command={s}", .{ shell, path, cmd });
-        } else {
-            std.log.info("terminal launch shell={s} start_path={s}", .{ shell, path });
-        }
-    } else if (command) |cmd| {
-        std.log.info("terminal launch shell={s} command={s}", .{ shell, cmd });
-    } else {
-        std.log.info("terminal launch shell={s}", .{shell});
-    }
-}

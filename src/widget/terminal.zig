@@ -642,7 +642,7 @@ fn reportWakeThread(
     const sample = meter.sample() orelse return;
     const bursts = self.snapshot_bursts.load(.monotonic);
     const extra_passes = self.snapshot_extra_passes.load(.monotonic);
-    std.log.info(
+    std.log.debug(
         "perf host_wake_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} wait_blocks={} event_wakes={} snapshot_bursts={} extra_passes={}",
         .{
             sample.cpuPct(),

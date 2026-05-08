@@ -244,7 +244,7 @@ fn reportMainThread(
     idle_signals: u64,
 ) void {
     const sample = meter.sample() orelse return;
-    std.log.info(
+    std.log.debug(
         "perf host_main_thread cpu={d:.2}% wall_ms={} cpu_ms={} polls={} waits={} frames={} idle_signals={}",
         .{
             sample.cpuPct(),
@@ -270,7 +270,7 @@ fn reportFpsEveryWindow(
     if (elapsed_ns == 0) return;
     const produced_frames: u64 = frames -| window_start_frame.*;
     const fps: f64 = @as(f64, @floatFromInt(produced_frames)) * @as(f64, @floatFromInt(std.time.ns_per_s)) / @as(f64, @floatFromInt(elapsed_ns));
-    std.log.info(
+    std.log.debug(
         "perf host_frame_rate fps={d:.2} frames={} window_ms={}",
         .{
             fps,
@@ -286,7 +286,7 @@ fn reportFpsEveryWindow(
 fn reportRenderStages(frames: u64, window: *RenderStats, window_frames: *u64) void {
     if (frames % fps_log_every_frames != 0 or window_frames.* == 0) return;
     const count = window_frames.*;
-    std.log.info(
+    std.log.debug(
         "perf render_stages sync_us={d:.2} copy_us={d:.2} render_us={d:.2} present_us={d:.2} glyphs={d:.2} fills={d:.2} bg_fills={d:.2} deco_fills={d:.2} cursor_fills={d:.2} uploads={d:.2} face_checks={d:.2} face_cache_hits={d:.2} shape_reqs={d:.2} shape_cache_hits={d:.2} fallback_hits={d:.2} fallback_misses={d:.2} missing_glyphs={d:.2} frames={}",
         .{
             avg(window.sync_us, count),
