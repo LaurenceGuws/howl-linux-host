@@ -81,7 +81,6 @@ pub fn linkHoverPolicy(raw: []const u8) term_config.LinkHoverPolicy {
 
 /// Parse host hyperlink hover underline style from Lua config text.
 pub fn linkUnderlineStyle(raw: []const u8) term_config.LinkUnderlineStyle {
-    if (std.ascii.eqlIgnoreCase(raw, "curly")) return .curly;
     if (std.ascii.eqlIgnoreCase(raw, "dotted")) return .dotted;
     if (std.ascii.eqlIgnoreCase(raw, "dashed")) return .dashed;
     return .straight;
@@ -108,8 +107,8 @@ test "link presentation parsing" {
     try std.testing.expectEqual(term_config.LinkHoverPolicy.cursor, linkHoverPolicy("cursor"));
     try std.testing.expectEqual(term_config.LinkHoverPolicy.off, linkHoverPolicy("unknown"));
 
-    try std.testing.expectEqual(term_config.LinkUnderlineStyle.curly, linkUnderlineStyle("curly"));
     try std.testing.expectEqual(term_config.LinkUnderlineStyle.dotted, linkUnderlineStyle("dotted"));
     try std.testing.expectEqual(term_config.LinkUnderlineStyle.dashed, linkUnderlineStyle("dashed"));
     try std.testing.expectEqual(term_config.LinkUnderlineStyle.straight, linkUnderlineStyle("unknown"));
+    try std.testing.expectEqual(term_config.LinkUnderlineStyle.straight, linkUnderlineStyle("curly"));
 }
