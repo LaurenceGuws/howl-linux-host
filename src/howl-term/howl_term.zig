@@ -73,6 +73,7 @@ pub const Runtime = struct {
     const ClipboardRequest = term_core.ClipboardRequest;
     pub const MouseButton = term_core.MouseButton;
     pub const MouseEventKind = term_core.MouseEventKind;
+    pub const MouseInput = term_core.MouseInput;
 
     term: ?term_core = null,
     lifecycle_state: LifecycleState = .stopped,
@@ -213,9 +214,9 @@ pub const Runtime = struct {
         };
     }
 
-    pub fn publishMouseEvent(self: *Runtime, kind: MouseEventKind, button: MouseButton, pixel_x: i32, pixel_y: i32, mods: term_core.Modifier, buttons_down: u8) bool {
+    pub fn publishMouseEvent(self: *Runtime, input: MouseInput) bool {
         const inst = &(self.term orelse return false);
-        return inst.publishMouseEvent(kind, button, pixel_x, pixel_y, mods, buttons_down) catch |err| switch (err) {
+        return inst.publishMouseEvent(input) catch |err| switch (err) {
             error.QueueFull => blk: {
                 std.log.warn("terminal mouse input dropped due to full queue", .{});
                 break :blk false;

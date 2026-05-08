@@ -228,14 +228,14 @@ pub const Terminal = struct {
     }
 
     fn publishMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event) bool {
-        return self.term.publishMouseEvent(
-            Input.mouseKind(mouse_event.kind),
-            Input.mouseButton(mouse_event.button),
-            mouse_event.pixel_x,
-            mouse_event.pixel_y,
-            Input.mods(mouse_event.mods),
-            Input.buttons(mouse_event.buttons_down),
-        );
+        return self.term.publishMouseEvent(.{
+            .kind = Input.mouseKind(mouse_event.kind),
+            .button = Input.mouseButton(mouse_event.button),
+            .pixel_x = mouse_event.pixel_x,
+            .pixel_y = mouse_event.pixel_y,
+            .mods = Input.mods(mouse_event.mods),
+            .buttons_down = Input.buttons(mouse_event.buttons_down),
+        });
     }
 
     pub fn pasteFromClipboard(self: *Terminal) void {
