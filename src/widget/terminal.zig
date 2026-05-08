@@ -298,6 +298,11 @@ pub const Terminal = struct {
         return self.scrollbar_dragging;
     }
 
+    /// Report whether this terminal needs unpressed mouse motion for link hover.
+    pub fn wantsLinkHover(self: *const Terminal) bool {
+        return self.conf.links.hover != .off;
+    }
+
     pub fn surfaceSnapshot(self: *const Terminal) SurfaceSnapshot {
         const surface = self.term.surfaceState();
         return .{

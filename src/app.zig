@@ -84,6 +84,11 @@ pub const App = struct {
         return self.activeTab().wantsPassiveHoverWake(0, self.tabBarHeightLogical(), self.contentWidthLogical(), self.contentHeightLogical());
     }
 
+    /// Report whether the active terminal needs mouse motion for link hover.
+    pub fn activeTerminalWantsLinkHover(self: *const App) bool {
+        return self.activeTab().wantsLinkHover();
+    }
+
     pub fn resize(self: *App, width: c_int, height: c_int, logical_width: c_int, logical_height: c_int) void {
         const w = @max(width, 1);
         const h = @max(height, 1);

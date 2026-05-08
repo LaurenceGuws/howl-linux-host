@@ -24,8 +24,8 @@ pub const Events = struct {
     pub const MousePolicy = struct {
         /// Capture unpressed mouse motion for host/window UI such as tabs and scrollbars.
         listen_always: bool = false,
-        /// Capture unpressed mouse motion for host UI effects without publishing it to the PTY.
-        host_hover: bool = false,
+        /// Capture unpressed mouse motion for link hover without publishing it to the PTY.
+        link_hover: bool = false,
         /// Modifier that temporarily forwards unpressed motion to the terminal input path.
         terminal_bypass_mod: Mod = .{},
     };
@@ -38,7 +38,7 @@ pub const Events = struct {
     last_mouse_x: i32,
     last_mouse_y: i32,
     mouse_listen_always: bool,
-    mouse_host_hover: bool,
+    mouse_link_hover: bool,
     mouse_terminal_bypass_mod: Mod,
 
     pub fn init(self: *Events) void {
@@ -51,14 +51,14 @@ pub const Events = struct {
             .last_mouse_x = 0,
             .last_mouse_y = 0,
             .mouse_listen_always = false,
-            .mouse_host_hover = false,
+            .mouse_link_hover = false,
             .mouse_terminal_bypass_mod = .{},
         };
     }
 
     pub fn setMousePolicy(self: *Events, policy: MousePolicy) void {
         self.mouse_listen_always = policy.listen_always;
-        self.mouse_host_hover = policy.host_hover;
+        self.mouse_link_hover = policy.link_hover;
         self.mouse_terminal_bypass_mod = policy.terminal_bypass_mod;
     }
 
@@ -183,7 +183,7 @@ fn processEvent(event: *const c.SDL_Event) void {
             // Passive motion is host UI by default. Only button drags and the
             // explicit terminal-bypass modifier make motion app-visible.
             const host_only = !button_down and !mouse_bypass_active;
-            if (!button_down and !events.mouse_listen_always and !mouse_bypass_active and !events.mouse_host_hover) return;
+            if (!button_down and !events.mouse_listen_always and !mouse_bypass_active and !events.mouse_link_hover) return;
             const pixel_x = @as(i32, @intFromFloat(@round(event.motion.x)));
             const pixel_y = @as(i32, @intFromFloat(@round(event.motion.y)));
             events.last_mouse_x = pixel_x;

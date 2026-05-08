@@ -88,11 +88,6 @@ pub fn main(init: std.process.Init) !void {
 
     var events: Events = undefined;
     events.init();
-    events.setMousePolicy(.{
-        .listen_always = conf.window.mouse.listen_always,
-        .host_hover = conf.term.links.hover != .off,
-        .terminal_bypass_mod = conf.window.mouse.terminal_bypass_mod,
-    });
     try events.bind(win);
 
     var running = true;
@@ -109,6 +104,11 @@ pub fn main(init: std.process.Init) !void {
     var render_window_frames: u64 = 0;
     while (running) {
         if (run_clock) |clock| if (clock.expired()) break;
+        events.setMousePolicy(.{
+            .listen_always = conf.window.mouse.listen_always,
+            .link_hover = app.activeTerminalWantsLinkHover(),
+            .terminal_bypass_mod = conf.window.mouse.terminal_bypass_mod,
+        });
         var work = app.collectRenderWork();
         const wait_ms = waitTimeoutMs(run_clock, app.activeTerminalPassiveHoverWake(), app.activeTab().nextWaitTimeoutMs());
         const signal = if (work.needs_frame) blk: {
