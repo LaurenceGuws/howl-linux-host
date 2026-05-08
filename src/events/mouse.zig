@@ -33,4 +33,6 @@ pub const Event = struct {
     pixel_y: i32,
     mods: Mod,
     buttons_down: Buttons,
+    /// True when this event exists only for host hover UI and must not reach the PTY.
+    host_only: bool = false,
 };

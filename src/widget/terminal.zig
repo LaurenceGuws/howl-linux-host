@@ -256,6 +256,9 @@ pub const Terminal = struct {
                 .key => |key| self.publishInputKey(key),
                 .mouse => |mouse_event| {
                     self.updateHyperlinkHover(mouse_event, origin_x, origin_y, logical_width, logical_height);
+                    // Host-only passive motion powers hover presentation without
+                    // becoming app-visible terminal mouse input.
+                    if (mouse_event.host_only) continue;
                     if (self.handleScrollbarMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
                     if (self.handleHyperlinkMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
                     if (self.handleSelectionMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;

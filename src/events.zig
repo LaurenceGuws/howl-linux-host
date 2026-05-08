@@ -22,7 +22,11 @@ pub const Events = struct {
     pub const Mod = mouse.Mod;
     pub const Buttons = mouse.Buttons;
     pub const MousePolicy = struct {
+        /// Forward unpressed mouse motion through the normal terminal input path.
         listen_always: bool = false,
+        /// Capture unpressed mouse motion for host UI effects without publishing it to the PTY.
+        host_hover: bool = false,
+        /// Modifier that temporarily forwards unpressed motion to the terminal input path.
         terminal_bypass_mod: Mod = .{},
     };
 
@@ -34,6 +38,7 @@ pub const Events = struct {
     last_mouse_x: i32,
     last_mouse_y: i32,
     mouse_listen_always: bool,
+    mouse_host_hover: bool,
     mouse_terminal_bypass_mod: Mod,
 
     pub fn init(self: *Events) void {
@@ -46,12 +51,14 @@ pub const Events = struct {
             .last_mouse_x = 0,
             .last_mouse_y = 0,
             .mouse_listen_always = false,
+            .mouse_host_hover = false,
             .mouse_terminal_bypass_mod = .{},
         };
     }
 
     pub fn setMousePolicy(self: *Events, policy: MousePolicy) void {
         self.mouse_listen_always = policy.listen_always;
+        self.mouse_host_hover = policy.host_hover;
         self.mouse_terminal_bypass_mod = policy.terminal_bypass_mod;
     }
 
@@ -172,7 +179,11 @@ fn processEvent(event: *const c.SDL_Event) void {
             const buttons_down = sdlButtons(event.motion.state);
             const mods = sdlMods(c.SDL_GetModState());
             const mouse_bypass_active = modSubset(events.mouse_terminal_bypass_mod, mods);
-            if (!buttons_down.left and !buttons_down.middle and !buttons_down.right and !events.mouse_listen_always and !mouse_bypass_active) return;
+            const button_down = buttons_down.left or buttons_down.middle or buttons_down.right;
+            // Passive hover exists for host UI, not terminal input. Keep it in
+            // the queue so widgets can update hover state, then stop it before PTY publish.
+            const host_hover_only = !button_down and !events.mouse_listen_always and !mouse_bypass_active and events.mouse_host_hover;
+            if (!button_down and !events.mouse_listen_always and !mouse_bypass_active and !events.mouse_host_hover) return;
             const pixel_x = @as(i32, @intFromFloat(@round(event.motion.x)));
             const pixel_y = @as(i32, @intFromFloat(@round(event.motion.y)));
             events.last_mouse_x = pixel_x;
@@ -184,6 +195,7 @@ fn processEvent(event: *const c.SDL_Event) void {
                 .pixel_y = pixel_y,
                 .mods = mods,
                 .buttons_down = buttons_down,
+                .host_only = host_hover_only,
             });
         },
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
