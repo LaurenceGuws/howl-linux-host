@@ -16,13 +16,15 @@ const Input = @import("terminal_input.zig");
 
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
-    const max_snapshot_passes_per_frame: u64 = 4;
+    const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
 
-    pub const Snapshot = struct {
+    pub const SurfaceSnapshot = struct {
         surface: SurfaceHandle,
+    };
+
+    pub const ChromeSnapshot = struct {
         tab_label: []const u8,
         scrollbar: window.ScrollbarLayout,
-        state: LifecycleState,
     };
 
     term: Runtime,
@@ -53,6 +55,11 @@ pub const Terminal = struct {
     mouse_logical_y: i32,
     scrollbar_dragging: bool,
     scrollbar_grab_offset: f32,
+    scrollbar_cache_valid: bool,
+    scrollbar_cache_rect: window.Rect,
+    scrollbar_cache_view: Runtime.ScrollState,
+    scrollbar_cache_layout: window.ScrollbarLayout,
+    scrollbar_cache_ns: u64,
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -110,6 +117,16 @@ pub const Terminal = struct {
             .mouse_logical_y = 0,
             .scrollbar_dragging = false,
             .scrollbar_grab_offset = 0,
+            .scrollbar_cache_valid = false,
+            .scrollbar_cache_rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
+            .scrollbar_cache_view = .{
+                .viewport_rows = 1,
+                .scrollback_count = 0,
+                .scrollback_offset = 0,
+                .alternate_screen = false,
+            },
+            .scrollbar_cache_layout = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+            .scrollbar_cache_ns = 0,
         };
     }
 
@@ -155,6 +172,7 @@ pub const Terminal = struct {
         self.pending_grid_px_w = lw;
         self.pending_grid_px_h = lh;
         self.last_resize_ns = window.c_win.SDL_GetTicksNS();
+        self.scrollbar_cache_valid = false;
     }
 
     pub fn nextWaitTimeoutMs(self: *Terminal) c_int {
@@ -179,31 +197,21 @@ pub const Terminal = struct {
     }
 
     pub fn render(self: *Terminal) void {
-        var passes: u64 = 0;
-        while (true) : (passes += 1) {
-            const again = self.term.renderLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
-                self.snapshot_ready.store(false, .release);
-                return;
-            };
-            const surface = self.term.view().surface;
-            if (surface.texture_id != 0) self.last_surface = surface;
-            if (again and passes + 1 >= max_snapshot_passes_per_frame) {
-                // Keep UI responsive under sustained output: continue next frame.
-                self.snapshot_ready.store(true, .release);
-                _ = self.snapshot_bursts.fetchAdd(1, .monotonic);
-                _ = self.snapshot_extra_passes.fetchAdd(passes + 1, .monotonic);
-                return;
-            }
-            if (!again) {
-                self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
-                self.snapshot_ready.store(false, .release);
-                if (passes > 0) {
-                    _ = self.snapshot_bursts.fetchAdd(1, .monotonic);
-                    _ = self.snapshot_extra_passes.fetchAdd(passes, .monotonic);
-                }
-                return;
-            }
+        const again = self.term.renderLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
+            self.snapshot_ready.store(false, .release);
+            return;
+        };
+        const surface = self.term.surfaceState().surface;
+        if (surface.texture_id != 0) self.last_surface = surface;
+        if (again) {
+            // One host frame renders one latest snapshot. If newer work arrives
+            // while rendering, schedule another host frame instead of spinning here.
+            self.snapshot_ready.store(true, .release);
+            _ = self.snapshot_bursts.fetchAdd(1, .monotonic);
+            return;
         }
+        self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
+        self.snapshot_ready.store(false, .release);
     }
 
     fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
@@ -261,7 +269,7 @@ pub const Terminal = struct {
         const page_steps = input_events.drainScrollPages();
         var delta_rows: i32 = 0;
         if (page_steps != 0) {
-            const visible_rows: i32 = @intCast(@max(self.term.view().viewport_rows, 1));
+            const visible_rows: i32 = @intCast(@max(self.term.scrollState().viewport_rows, 1));
             const page_rows: i32 = @max(visible_rows - 1, 1);
             delta_rows += page_steps * page_rows;
         }
@@ -269,7 +277,7 @@ pub const Terminal = struct {
     }
 
     pub fn wantsPassiveHoverWake(self: *const Terminal, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-        const model = self.scrollbarModel();
+        const model = self.scrollbarModel(self.term.scrollState());
         if (!model.visible or !self.window_focused) return false;
         _ = origin_x;
         _ = origin_y;
@@ -278,36 +286,72 @@ pub const Terminal = struct {
         return self.scrollbar_dragging;
     }
 
-    pub fn snapshot(self: *const Terminal, texture_rect: window.Rect) Snapshot {
-        const view = self.term.view();
+    pub fn surfaceSnapshot(self: *const Terminal) SurfaceSnapshot {
+        const surface = self.term.surfaceState();
         return .{
-            .surface = self.presentSurfaceHandle(),
-            .tab_label = self.tabLabel(),
-            .scrollbar = self.scrollbarLayout(texture_rect),
-            .state = view.state,
+            .surface = self.presentSurfaceHandle(surface),
         };
     }
 
-    fn scrollbarLayout(self: *const Terminal, texture_rect: window.Rect) window.ScrollbarLayout {
-        const model = self.scrollbarModel();
-        if (!model.visible or texture_rect.width <= 0 or texture_rect.height <= 0) {
-            return .{ .visible = false, .x = texture_rect.x + texture_rect.width, .y = texture_rect.y, .width = 0, .height = 0, .thumb_y = texture_rect.y, .thumb_height = 0 };
-        }
-
-        const logical_w = @max(self.logical_w, 1);
-        const logical_h = @max(self.logical_h, 1);
-        const focus_t = self.scrollbarFocusT(0, 0, logical_w, logical_h);
-        const track = Scrollbar.track(0, 0, logical_w, logical_h, focus_t);
-        const thumb = Scrollbar.thumb(track.y, track.height, model.rows, model.total_lines, model.scrollback_offset);
+    pub fn chromeSnapshot(self: *const Terminal, texture_rect: window.Rect) ChromeSnapshot {
+        const scroll = self.term.scrollState();
         return .{
-            .visible = true,
-            .x = texture_rect.x + Layout.scaleLogicalToPixel(track.x, logical_w, texture_rect.width),
-            .y = texture_rect.y + Layout.scaleLogicalToPixel(track.y, logical_h, texture_rect.height),
-            .width = Layout.scaleLogicalSpan(track.width, logical_w, texture_rect.width),
-            .height = Layout.scaleLogicalSpan(track.height, logical_h, texture_rect.height),
-            .thumb_y = texture_rect.y + Layout.scaleLogicalToPixel(thumb.y, logical_h, texture_rect.height),
-            .thumb_height = Layout.scaleLogicalSpan(thumb.height, logical_h, texture_rect.height),
+            .tab_label = self.tabLabel(),
+            .scrollbar = self.scrollbarLayout(texture_rect, scroll),
         };
+    }
+
+    pub fn lifecycleState(self: *const Terminal) LifecycleState {
+        return self.term.surfaceState().state;
+    }
+
+    pub fn tabLabelSlice(self: *const Terminal) []const u8 {
+        return self.tabLabel();
+    }
+
+    pub fn lastRenderMetrics(self: *const Terminal) Runtime.RenderMetrics {
+        return self.term.lastRenderMetrics();
+    }
+
+    fn scrollbarLayout(self: *const Terminal, texture_rect: window.Rect, scroll: Runtime.ScrollState) window.ScrollbarLayout {
+        const mut: *Terminal = @constCast(self);
+        if (!mut.shouldRefreshScrollbar(texture_rect, scroll)) return mut.scrollbar_cache_layout;
+        const model = self.scrollbarModel(scroll);
+        const layout = if (!model.visible or texture_rect.width <= 0 or texture_rect.height <= 0)
+            window.ScrollbarLayout{ .visible = false, .x = texture_rect.x + texture_rect.width, .y = texture_rect.y, .width = 0, .height = 0, .thumb_y = texture_rect.y, .thumb_height = 0 }
+        else blk: {
+            const logical_w = @max(self.logical_w, 1);
+            const logical_h = @max(self.logical_h, 1);
+            const focus_t = self.scrollbarFocusT(0, 0, logical_w, logical_h);
+            const track = Scrollbar.track(0, 0, logical_w, logical_h, focus_t);
+            const thumb = Scrollbar.thumb(track.y, track.height, model.rows, model.total_lines, model.scrollback_offset);
+            break :blk window.ScrollbarLayout{
+                .visible = true,
+                .x = texture_rect.x + Layout.scaleLogicalToPixel(track.x, logical_w, texture_rect.width),
+                .y = texture_rect.y + Layout.scaleLogicalToPixel(track.y, logical_h, texture_rect.height),
+                .width = Layout.scaleLogicalSpan(track.width, logical_w, texture_rect.width),
+                .height = Layout.scaleLogicalSpan(track.height, logical_h, texture_rect.height),
+                .thumb_y = texture_rect.y + Layout.scaleLogicalToPixel(thumb.y, logical_h, texture_rect.height),
+                .thumb_height = Layout.scaleLogicalSpan(thumb.height, logical_h, texture_rect.height),
+            };
+        };
+        mut.scrollbar_cache_valid = true;
+        mut.scrollbar_cache_rect = texture_rect;
+        mut.scrollbar_cache_view = scroll;
+        mut.scrollbar_cache_layout = layout;
+        mut.scrollbar_cache_ns = window.c_win.SDL_GetTicksNS();
+        return layout;
+    }
+
+    fn shouldRefreshScrollbar(self: *Terminal, texture_rect: window.Rect, scroll: Runtime.ScrollState) bool {
+        if (!self.scrollbar_cache_valid) return true;
+        if (!sameRect(self.scrollbar_cache_rect, texture_rect)) return true;
+        if (!sameScrollState(self.scrollbar_cache_view, scroll)) {
+            if (self.scrollbar_dragging) return true;
+            const elapsed_ns = window.c_win.SDL_GetTicksNS() -| self.scrollbar_cache_ns;
+            return elapsed_ns >= scrollbar_output_cap_ns;
+        }
+        return false;
     }
 
     pub fn setWindowFocused(self: *Terminal, focused: bool) void {
@@ -317,12 +361,14 @@ pub const Terminal = struct {
             self.scrollbar_dragging = false;
             self.scrollbar_grab_offset = 0;
         }
+        self.scrollbar_cache_valid = false;
         self.syncInputFocus();
     }
 
     pub fn setWidgetFocused(self: *Terminal, focused: bool) void {
         if (self.widget_focused == focused) return;
         self.widget_focused = focused;
+        self.scrollbar_cache_valid = false;
         self.syncInputFocus();
     }
 
@@ -344,9 +390,9 @@ pub const Terminal = struct {
         return self.tab_label_buf[0..self.tab_label_len];
     }
 
-    fn presentSurfaceHandle(self: *const Terminal) SurfaceHandle {
+    fn presentSurfaceHandle(self: *const Terminal, view: Runtime.SurfaceState) SurfaceHandle {
         if (self.last_surface.texture_id != 0) return self.last_surface;
-        return self.term.view().surface;
+        return view.surface;
     }
 
     pub fn adjustFontSize(self: *Terminal, delta: i16) bool {
@@ -379,7 +425,7 @@ pub const Terminal = struct {
     }
 
     fn scrollByRows(self: *Terminal, delta_rows: i32) void {
-        const view = self.term.view();
+        const view = self.term.scrollState();
         if (view.alternate_screen) return;
         const history_count_usize = view.scrollback_count;
         const current_usize = view.scrollback_offset;
@@ -399,8 +445,8 @@ pub const Terminal = struct {
             _ = self.term.setScrollbackOffset(@intCast(target));
     }
 
-    fn scrollbarModel(self: *const Terminal) Scrollbar.Model {
-        const view = self.term.view();
+    fn scrollbarModel(self: *const Terminal, view: Runtime.ScrollState) Scrollbar.Model {
+        _ = self;
         const rows: usize = @intCast(@max(view.viewport_rows, 1));
         const history_count = view.scrollback_count;
         const alt = view.alternate_screen;
@@ -416,7 +462,7 @@ pub const Terminal = struct {
     fn handleScrollbarMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         self.mouse_logical_x = mouse_event.pixel_x;
         self.mouse_logical_y = mouse_event.pixel_y;
-        const model = self.scrollbarModel();
+        const model = self.scrollbarModel(self.term.scrollState());
         if (!model.visible or logical_width <= 0 or logical_height <= 0) {
             if (self.scrollbar_dragging) {
                 self.scrollbar_dragging = false;
@@ -523,6 +569,7 @@ pub const Terminal = struct {
             self.term.followLiveBottom()
         else
             self.term.setScrollbackOffset(offset);
+        if (changed) self.scrollbar_cache_valid = false;
         return changed;
     }
 
@@ -538,6 +585,17 @@ pub const Terminal = struct {
         self.term.setInputFocus(self.window_focused and self.widget_focused);
     }
 };
+
+fn sameRect(a: window.Rect, b: window.Rect) bool {
+    return a.x == b.x and a.y == b.y and a.width == b.width and a.height == b.height;
+}
+
+fn sameScrollState(a: Runtime.ScrollState, b: Runtime.ScrollState) bool {
+    return a.viewport_rows == b.viewport_rows and
+        a.scrollback_count == b.scrollback_count and
+        a.scrollback_offset == b.scrollback_offset and
+        a.alternate_screen == b.alternate_screen;
+}
 
 fn wakeWorker(self: *Terminal) void {
     var meter = thread_meter.ThreadMeter.init(3 * std.time.ns_per_s);

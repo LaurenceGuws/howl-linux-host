@@ -60,6 +60,10 @@ pub fn present(state: *PresentState, frame: Frame) void {
     Chrome.present(c, state, frame);
 }
 
+pub fn presentTimedUs(state: *PresentState, frame: Frame) u64 {
+    return Chrome.presentTimedUs(c, state, frame);
+}
+
 pub fn windowSize(handle: Ptr) Size {
     var width: c_int = 0;
     var height: c_int = 0;

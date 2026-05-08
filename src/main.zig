@@ -2,8 +2,11 @@ const std = @import("std");
 const Window = @import("window.zig");
 const Events = @import("events.zig").Events;
 const Config = @import("config.zig");
-const App = @import("app.zig").App;
+const app_runtime = @import("app.zig");
+const App = app_runtime.App;
 const thread_meter = @import("thread_meter.zig");
+const fps_log_every_frames: u64 = 200;
+const RenderStats = app_runtime.RenderStats;
 
 const CliOptions = struct {
     command: ?[]const u8 = null,
@@ -94,6 +97,11 @@ pub fn main(init: std.process.Init) !void {
     var waits: u64 = 0;
     var frames: u64 = 0;
     var idle_signals: u64 = 0;
+    var fps_window_start_ns: u64 = Window.c_win.SDL_GetTicksNS();
+    var fps_window_start_frame: u64 = 0;
+    var next_fps_log_frame: u64 = fps_log_every_frames;
+    var render_window = RenderStats{};
+    var render_window_frames: u64 = 0;
     while (running) {
         if (run_clock) |clock| if (clock.expired()) break;
         var work = app.collectRenderWork();
@@ -129,7 +137,27 @@ pub fn main(init: std.process.Init) !void {
         }
 
         frames += 1;
-        app.render(work);
+        const render_stats = app.render(work);
+        render_window.sync_us += render_stats.sync_us;
+        render_window.copy_us += render_stats.copy_us;
+        render_window.render_us += render_stats.render_us;
+        render_window.present_us += render_stats.present_us;
+        render_window.glyphs += render_stats.glyphs;
+        render_window.fills += render_stats.fills;
+        render_window.background_fills += render_stats.background_fills;
+        render_window.decoration_fills += render_stats.decoration_fills;
+        render_window.cursor_fills += render_stats.cursor_fills;
+        render_window.uploads += render_stats.uploads;
+        render_window.face_checks += render_stats.face_checks;
+        render_window.face_cache_hits += render_stats.face_cache_hits;
+        render_window.shape_requests += render_stats.shape_requests;
+        render_window.shape_cache_hits += render_stats.shape_cache_hits;
+        render_window.fallback_hits += render_stats.fallback_hits;
+        render_window.fallback_misses += render_stats.fallback_misses;
+        render_window.missing_glyphs += render_stats.missing_glyphs;
+        render_window_frames += 1;
+        reportFpsEveryWindow(frames, &fps_window_start_ns, &fps_window_start_frame, &next_fps_log_frame);
+        reportRenderStages(frames, &render_window, &render_window_frames);
         reportMainThread(&meter, polls, waits, frames, idle_signals);
         if (app.activeTabFailed()) {
             running = false;
@@ -224,4 +252,64 @@ fn reportMainThread(
             idle_signals,
         },
     );
+}
+
+fn reportFpsEveryWindow(
+    frames: u64,
+    window_start_ns: *u64,
+    window_start_frame: *u64,
+    next_log_frame: *u64,
+) void {
+    if (frames < next_log_frame.*) return;
+    const now_ns: u64 = Window.c_win.SDL_GetTicksNS();
+    const elapsed_ns: u64 = now_ns -| window_start_ns.*;
+    if (elapsed_ns == 0) return;
+    const produced_frames: u64 = frames -| window_start_frame.*;
+    const fps: f64 = @as(f64, @floatFromInt(produced_frames)) * @as(f64, @floatFromInt(std.time.ns_per_s)) / @as(f64, @floatFromInt(elapsed_ns));
+    std.log.info(
+        "perf host_frame_rate fps={d:.2} frames={} window_ms={}",
+        .{
+            fps,
+            produced_frames,
+            @divTrunc(elapsed_ns, std.time.ns_per_ms),
+        },
+    );
+    window_start_ns.* = now_ns;
+    window_start_frame.* = frames;
+    next_log_frame.* = frames + fps_log_every_frames;
+}
+
+fn reportRenderStages(frames: u64, window: *RenderStats, window_frames: *u64) void {
+    if (frames % fps_log_every_frames != 0 or window_frames.* == 0) return;
+    const count = window_frames.*;
+    std.log.info(
+        "perf render_stages sync_us={d:.2} copy_us={d:.2} render_us={d:.2} present_us={d:.2} glyphs={d:.2} fills={d:.2} bg_fills={d:.2} deco_fills={d:.2} cursor_fills={d:.2} uploads={d:.2} face_checks={d:.2} face_cache_hits={d:.2} shape_reqs={d:.2} shape_cache_hits={d:.2} fallback_hits={d:.2} fallback_misses={d:.2} missing_glyphs={d:.2} frames={}",
+        .{
+            avg(window.sync_us, count),
+            avg(window.copy_us, count),
+            avg(window.render_us, count),
+            avg(window.present_us, count),
+            avg(window.glyphs, count),
+            avg(window.fills, count),
+            avg(window.background_fills, count),
+            avg(window.decoration_fills, count),
+            avg(window.cursor_fills, count),
+            avg(window.uploads, count),
+            avg(window.face_checks, count),
+            avg(window.face_cache_hits, count),
+            avg(window.shape_requests, count),
+            avg(window.shape_cache_hits, count),
+            avg(window.fallback_hits, count),
+            avg(window.fallback_misses, count),
+            avg(window.missing_glyphs, count),
+            count,
+        },
+    );
+    window.* = .{};
+    window_frames.* = 0;
+}
+
+fn avg(total: anytype, count: u64) f64 {
+    if (count == 0) return 0;
+    return @as(f64, @floatFromInt(total)) / @as(f64, @floatFromInt(count));
 }

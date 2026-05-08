@@ -11,6 +11,26 @@ pub const RenderWork = struct {
     terminal_frame: bool,
 };
 
+pub const RenderStats = struct {
+    sync_us: u64 = 0,
+    copy_us: u64 = 0,
+    render_us: u64 = 0,
+    present_us: u64 = 0,
+    glyphs: usize = 0,
+    fills: usize = 0,
+    background_fills: usize = 0,
+    decoration_fills: usize = 0,
+    cursor_fills: usize = 0,
+    uploads: usize = 0,
+    face_checks: u64 = 0,
+    face_cache_hits: u64 = 0,
+    shape_requests: u64 = 0,
+    shape_cache_hits: u64 = 0,
+    fallback_hits: u64 = 0,
+    fallback_misses: u64 = 0,
+    missing_glyphs: u64 = 0,
+};
+
 const TabChrome = struct {
     label: []const u8,
 };
@@ -92,26 +112,47 @@ pub const App = struct {
         };
     }
 
-    pub fn render(self: *App, work: RenderWork) void {
+    pub fn render(self: *App, work: RenderWork) RenderStats {
+        if (work.terminal_frame) self.activeTab().render();
+        const term_metrics = self.activeTab().lastRenderMetrics();
         const texture_rect = self.textureRect();
-        const snapshot = self.activeTab().snapshot(texture_rect);
+        const surface = self.activeTab().surfaceSnapshot();
+        const chrome = self.activeTab().chromeSnapshot(texture_rect);
         var tab_chrome_buf: [max_tabs]TabChrome = undefined;
         const tab_chrome = self.tabChrome(tab_chrome_buf[0..]);
         var label_buf: [max_tabs][]const u8 = undefined;
         for (tab_chrome, 0..) |tab, i| label_buf[i] = tab.label;
-        if (work.terminal_frame) self.activeTab().render();
-        Window.present(&self.present, .{
-            .texture_id = snapshot.surface.texture_id,
+        const present_us = Window.presentTimedUs(&self.present, .{
+            .texture_id = surface.surface.texture_id,
             .texture_rect = texture_rect,
-            .scrollbar = snapshot.scrollbar,
+            .scrollbar = chrome.scrollbar,
             .tab_count = tab_chrome.len,
             .active_tab = self.active_tab_idx,
             .tab_labels = label_buf[0..tab_chrome.len],
         });
+        return .{
+            .sync_us = term_metrics.sync_us,
+            .copy_us = term_metrics.copy_us,
+            .render_us = term_metrics.render_us,
+            .present_us = present_us,
+            .glyphs = term_metrics.glyphs,
+            .fills = term_metrics.fills,
+            .background_fills = term_metrics.background_fills,
+            .decoration_fills = term_metrics.decoration_fills,
+            .cursor_fills = term_metrics.cursor_fills,
+            .uploads = term_metrics.uploads,
+            .face_checks = term_metrics.face_checks,
+            .face_cache_hits = term_metrics.face_cache_hits,
+            .shape_requests = term_metrics.shape_requests,
+            .shape_cache_hits = term_metrics.shape_cache_hits,
+            .fallback_hits = term_metrics.fallback_hits,
+            .fallback_misses = term_metrics.fallback_misses,
+            .missing_glyphs = term_metrics.missing_glyphs,
+        };
     }
 
     pub fn activeTabFailed(self: *const App) bool {
-        return self.tabs.items.len == 0 or self.activeTab().snapshot(self.textureRect()).state == .failed;
+        return self.tabs.items.len == 0 or self.activeTab().lifecycleState() == .failed;
     }
 
     pub fn serviceHostEffects(self: *App) void {
@@ -180,11 +221,9 @@ pub const App = struct {
 
     fn tabChrome(self: *const App, buf: []TabChrome) []TabChrome {
         std.debug.assert(buf.len >= self.tabs.items.len);
-        const texture_rect = self.textureRect();
         for (self.tabs.items, 0..) |tab, i| {
-            const snapshot = tab.snapshot(texture_rect);
             buf[i] = .{
-                .label = snapshot.tab_label,
+                .label = tab.tabLabelSlice(),
             };
         }
         return buf[0..self.tabs.items.len];

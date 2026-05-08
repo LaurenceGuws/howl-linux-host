@@ -18,9 +18,13 @@ pub const Runtime = struct {
     pub const SurfaceHandle = term_core.SurfaceHandle;
     pub const Key = term_core.Key;
     pub const Modifier = term_core.Modifier;
-    pub const View = struct {
+    pub const SurfaceState = struct {
         surface: SurfaceHandle,
         state: LifecycleState,
+    };
+
+    pub const RenderMetrics = term_core.RenderMetrics;
+    pub const ScrollState = struct {
         viewport_rows: u16,
         scrollback_count: usize,
         scrollback_offset: usize,
@@ -295,18 +299,30 @@ pub const Runtime = struct {
         return inst.copyCurrentTitle(out_buf);
     }
 
-    pub fn view(self: *const Runtime) View {
+    pub fn lastRenderMetrics(self: *const Runtime) RenderMetrics {
+        const inst = &(self.term orelse return .{});
+        return inst.lastRenderMetrics();
+    }
+
+    pub fn surfaceState(self: *const Runtime) SurfaceState {
         const inst = &(self.term orelse return .{
             .surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .state = self.lifecycle_state,
+        });
+        return .{
+            .surface = inst.surfaceHandle(),
+            .state = self.lifecycle_state,
+        };
+    }
+
+    pub fn scrollState(self: *const Runtime) ScrollState {
+        const inst = &(self.term orelse return .{
             .viewport_rows = 1,
             .scrollback_count = 0,
             .scrollback_offset = 0,
             .alternate_screen = false,
         });
         return .{
-            .surface = inst.surfaceHandle(),
-            .state = self.lifecycle_state,
             .viewport_rows = inst.viewportRows(),
             .scrollback_count = inst.currentScrollbackCount(),
             .scrollback_offset = inst.currentScrollbackOffset(),

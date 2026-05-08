@@ -39,12 +39,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, default=ROOT / "artifacts" / "stress")
     parser.add_argument("--build", action="store_true", help="run zig build before benchmarking")
     parser.add_argument("--trace-howl", action="store_true", help="enable HOWL_TRACE_PATH during Howl runs")
-    parser.add_argument("--terminals", nargs="+", choices=("howl", "kitty", "ghostty", "alacritty"), default=["howl", "kitty", "ghostty"])
+    parser.add_argument(
+        "--terminals",
+        nargs="+",
+        choices=("howl", "kitty", "ghostty", "alacritty", "wezterm"),
+        default=["howl", "kitty", "ghostty"],
+    )
     parser.add_argument("--howl-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_term")
     parser.add_argument("--stress-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_ascii_rain_stress")
     parser.add_argument("--kitty-bin", default="kitty")
     parser.add_argument("--ghostty-bin", default="ghostty")
     parser.add_argument("--alacritty-bin", default="alacritty")
+    parser.add_argument("--wezterm-bin", default="wezterm")
     return parser.parse_args()
 
 
@@ -386,6 +392,7 @@ def tooling_snapshot() -> dict[str, object]:
         "kitty": shutil.which("kitty"),
         "ghostty": shutil.which("ghostty"),
         "alacritty": shutil.which("alacritty"),
+        "wezterm": shutil.which("wezterm"),
     }
     return {
         "available": {name: (path is not None) for name, path in tools.items()},
@@ -434,13 +441,19 @@ def launch_command(name: str, args: argparse.Namespace, command: str, trace_path
         if ghostty is None:
             print("skip ghostty: binary not found", file=sys.stderr)
             return None
-        return ([ghostty, "--title", title, "-e", "sh", "-lc", command], env)
+        return ([ghostty, f"--title={title}", "-e", "sh", "-lc", command], env)
     if name == "alacritty":
         alacritty = shutil.which(args.alacritty_bin)
         if alacritty is None:
             print("skip alacritty: binary not found", file=sys.stderr)
             return None
         return ([alacritty, "--title", title, "-e", "sh", "-lc", command], env)
+    if name == "wezterm":
+        wezterm = shutil.which(args.wezterm_bin)
+        if wezterm is None:
+            print("skip wezterm: binary not found", file=sys.stderr)
+            return None
+        return ([wezterm, "start", "--always-new-process", "--", "sh", "-lc", command], env)
     raise ValueError(name)
 
 
