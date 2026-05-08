@@ -125,6 +125,27 @@ fn processEvent(event: *const c.SDL_Event) void {
                     return;
                 }
             }
+            if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
+                if (sdlKey(event.key.key)) |key| {
+                    if (Events.Shortcuts.resolve(key, ctrl, shift, alt)) |shortcut| {
+                        appendShortcut(events, shortcut);
+                        return;
+                    }
+                }
+                const code: u8 = @intCast((event.key.key - c.SDLK_A) + 1);
+                return appendByteEvent(events, code);
+            }
+            if (alt and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
+                if (sdlKey(event.key.key)) |key| {
+                    if (Events.Shortcuts.resolve(key, ctrl, shift, alt)) |shortcut| {
+                        appendShortcut(events, shortcut);
+                        return;
+                    }
+                }
+                appendByteEvent(events, 0x1b);
+                const ch: u8 = @intCast((event.key.key - c.SDLK_A) + 'a');
+                return appendByteEvent(events, ch);
+            }
             if (sdlKey(event.key.key)) |key| {
                 if (Events.Shortcuts.resolve(key, ctrl, shift, alt)) |shortcut| {
                     appendShortcut(events, shortcut);
@@ -132,15 +153,6 @@ fn processEvent(event: *const c.SDL_Event) void {
                 }
                 appendKeyEvent(events, key, sdlMods(event.key.mod));
                 return;
-            }
-            if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
-                const code: u8 = @intCast((event.key.key - c.SDLK_A) + 1);
-                return appendByteEvent(events, code);
-            }
-            if (alt and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
-                appendByteEvent(events, 0x1b);
-                const ch: u8 = @intCast((event.key.key - c.SDLK_A) + 'a');
-                return appendByteEvent(events, ch);
             }
         },
         c.SDL_EVENT_MOUSE_MOTION => {

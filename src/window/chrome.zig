@@ -64,8 +64,8 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     c.glClearColor(0.06, 0.09, 0.14, 1.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame_state.texture_rect.y);
-    ChromeDraw.drawScrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame_state.scrollbar);
     TexturePresent.drawTextureRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
+    ChromeDraw.drawScrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame_state.scrollbar);
     TexturePresent.swapWindow(c, handle);
 }
 
