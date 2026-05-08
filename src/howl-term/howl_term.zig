@@ -5,7 +5,8 @@
 const term_core = @import("howl_term").HowlTerm;
 const std = @import("std");
 
-const startup_output_timeout_ms: i64 = 1500;
+const startup_wait_timeout_ms: i64 = 1500;
+const startup_alive_confirm_ms: i64 = 50;
 
 pub const Runtime = struct {
     pub const LifecycleState = enum {
@@ -92,9 +93,6 @@ pub const Runtime = struct {
     ) !void {
         self.lifecycle_state = .starting;
 
-        const pty_command_owned = if (start_path) |path| try buildPtyCommand(std.heap.c_allocator, shell, path, command) else null;
-        defer if (pty_command_owned) |cmd| std.heap.c_allocator.free(cmd);
-        const pty_command = pty_command_owned orelse command;
         logLaunch(shell, start_path, command);
 
         errdefer {
@@ -102,7 +100,7 @@ pub const Runtime = struct {
             self.term = null;
             self.lifecycle_state = .failed;
         }
-        self.term = try term_core.initPty(std.heap.c_allocator, shell, pty_command, 1, 1, .{ .width = 1, .height = 1 });
+        self.term = try term_core.initPty(std.heap.c_allocator, shell, command, start_path, 1, 1, .{ .width = 1, .height = 1 });
         self.term.?.setFontSizePx(font_size_px);
         self.term.?.setPrimaryFontPath(font_primary);
         self.term.?.setFallbackFontPaths(font_fallbacks);
@@ -111,7 +109,7 @@ pub const Runtime = struct {
             return err;
         };
         try self.term.?.syncFrameGeometry(render_width, render_height, grid_width, grid_height);
-        try self.waitStartupOutput(startup_output_timeout_ms);
+        try self.confirmTerminalAlive(startup_wait_timeout_ms);
         std.log.info("terminal ready shell={s}", .{shell});
         self.lifecycle_state = .ready;
     }
@@ -330,12 +328,13 @@ pub const Runtime = struct {
         };
     }
 
-    fn waitStartupOutput(self: *Runtime, timeout_ms: i64) !void {
+    fn confirmTerminalAlive(self: *Runtime, timeout_ms: i64) !void {
         const inst = &(self.term orelse return error.TransportUnavailable);
         var waited_ms: i64 = 0;
         while (waited_ms < timeout_ms) : (waited_ms += 10) {
-            if (inst.hasOutputProof()) return;
-            _ = inst.awaitSnapshotEvent(inst.snapshotEventSeq(), 10) catch return error.TransportUnavailable;
+            if (!inst.isAlive()) return error.TransportUnavailable;
+            if (waited_ms >= startup_alive_confirm_ms) return;
+            _ = inst.awaitSnapshotEvent(inst.snapshotEventSeq(), 10) catch {};
         }
         return error.TransportUnavailable;
     }
@@ -353,32 +352,4 @@ fn logLaunch(shell: []const u8, start_path: ?[]const u8, command: ?[]const u8) v
     } else {
         std.log.info("terminal launch shell={s}", .{shell});
     }
-}
-
-fn buildPtyCommand(alloc: std.mem.Allocator, shell: []const u8, start_path: []const u8, command: ?[]const u8) ![]u8 {
-    const path_q = try shellQuote(alloc, start_path);
-    defer alloc.free(path_q);
-
-    if (command) |cmd| {
-        return std.fmt.allocPrint(alloc, "cd -- {s} && {s}", .{ path_q, cmd });
-    }
-
-    const shell_q = try shellQuote(alloc, shell);
-    defer alloc.free(shell_q);
-    return std.fmt.allocPrint(alloc, "cd -- {s} && printf '\\033]777;ready\\007' && exec {s} -i", .{ path_q, shell_q });
-}
-
-fn shellQuote(alloc: std.mem.Allocator, s: []const u8) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8).empty;
-    errdefer out.deinit(alloc);
-    try out.append(alloc, '\'');
-    for (s) |ch| {
-        if (ch == '\'') {
-            try out.appendSlice(alloc, "'\"'\"'");
-        } else {
-            try out.append(alloc, ch);
-        }
-    }
-    try out.append(alloc, '\'');
-    return out.toOwnedSlice(alloc);
 }
