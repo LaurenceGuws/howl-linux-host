@@ -17,6 +17,7 @@ const Input = @import("terminal_input.zig");
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
     const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
+    const max_snapshot_render_passes = 4;
 
     pub const SurfaceSnapshot = struct {
         surface: SurfaceHandle,
@@ -197,21 +198,24 @@ pub const Terminal = struct {
     }
 
     pub fn render(self: *Terminal) void {
-        const again = self.term.renderLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
-            self.snapshot_ready.store(false, .release);
-            return;
-        };
-        const surface = self.term.surfaceState().surface;
-        if (surface.texture_id != 0) self.last_surface = surface;
-        if (again) {
-            // One host frame renders one latest snapshot. If newer work arrives
-            // while rendering, schedule another host frame instead of spinning here.
-            self.snapshot_ready.store(true, .release);
-            _ = self.snapshot_bursts.fetchAdd(1, .monotonic);
-            return;
+        var pass: usize = 0;
+        while (pass < max_snapshot_render_passes) : (pass += 1) {
+            const again = self.term.renderLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
+                self.snapshot_ready.store(false, .release);
+                return;
+            };
+            const surface = self.term.surfaceState().surface;
+            if (surface.texture_id != 0) self.last_surface = surface;
+            if (!again) {
+                if (pass > 0) _ = self.snapshot_extra_passes.fetchAdd(pass, .monotonic);
+                self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
+                self.snapshot_ready.store(false, .release);
+                return;
+            }
         }
-        self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
-        self.snapshot_ready.store(false, .release);
+        _ = self.snapshot_bursts.fetchAdd(1, .monotonic);
+        _ = self.snapshot_extra_passes.fetchAdd(max_snapshot_render_passes - 1, .monotonic);
+        self.snapshot_ready.store(true, .release);
     }
 
     fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
