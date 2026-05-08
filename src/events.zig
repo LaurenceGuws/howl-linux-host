@@ -22,7 +22,7 @@ pub const Events = struct {
     pub const Mod = mouse.Mod;
     pub const Buttons = mouse.Buttons;
     pub const MousePolicy = struct {
-        /// Forward unpressed mouse motion through the normal terminal input path.
+        /// Capture unpressed mouse motion for host/window UI such as tabs and scrollbars.
         listen_always: bool = false,
         /// Capture unpressed mouse motion for host UI effects without publishing it to the PTY.
         host_hover: bool = false,
@@ -180,9 +180,9 @@ fn processEvent(event: *const c.SDL_Event) void {
             const mods = sdlMods(c.SDL_GetModState());
             const mouse_bypass_active = modSubset(events.mouse_terminal_bypass_mod, mods);
             const button_down = buttons_down.left or buttons_down.middle or buttons_down.right;
-            // Passive hover exists for host UI, not terminal input. Keep it in
-            // the queue so widgets can update hover state, then stop it before PTY publish.
-            const host_hover_only = !button_down and !events.mouse_listen_always and !mouse_bypass_active and events.mouse_host_hover;
+            // Passive motion is host UI by default. Only button drags and the
+            // explicit terminal-bypass modifier make motion app-visible.
+            const host_only = !button_down and !mouse_bypass_active;
             if (!button_down and !events.mouse_listen_always and !mouse_bypass_active and !events.mouse_host_hover) return;
             const pixel_x = @as(i32, @intFromFloat(@round(event.motion.x)));
             const pixel_y = @as(i32, @intFromFloat(@round(event.motion.y)));
@@ -195,7 +195,7 @@ fn processEvent(event: *const c.SDL_Event) void {
                 .pixel_y = pixel_y,
                 .mods = mods,
                 .buttons_down = buttons_down,
-                .host_only = host_hover_only,
+                .host_only = host_only,
             });
         },
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
