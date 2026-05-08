@@ -73,6 +73,16 @@ pub fn loadFromLua(alloc: std.mem.Allocator, lua: Lua.State) !Config.Value {
     errdefer alloc.free(title);
     const width: c_int = @intCast(window_reader.intField("width") orelse return error.MissingKey);
     const height: c_int = @intCast(window_reader.intField("height") orelse return error.MissingKey);
+    const window_mouse_reader = window_reader.child("mouse");
+    defer if (window_mouse_reader) |reader| reader.finish();
+    const window_mouse_listen_always = if (window_mouse_reader) |reader|
+        reader.boolField("listen_always") orelse false
+    else
+        false;
+    const window_mouse_bypass_mod = if (window_mouse_reader) |reader| blk: {
+        if (reader.fieldString("terminal_bypass_mod")) |raw| break :blk try parse.mouseBypassMod(raw);
+        break :blk Events.Mod{};
+    } else Events.Mod{};
     const window_shortcuts = try loadShortcutMap(alloc, window_reader.child("shortcuts"), &parse.window_shortcut_specs);
     errdefer {
         var shortcuts_mut = window_shortcuts;
@@ -107,6 +117,10 @@ pub fn loadFromLua(alloc: std.mem.Allocator, lua: Lua.State) !Config.Value {
             .title = title,
             .width = width,
             .height = height,
+            .mouse = .{
+                .listen_always = window_mouse_listen_always,
+                .terminal_bypass_mod = window_mouse_bypass_mod,
+            },
             .shortcuts = window_shortcuts,
         },
         .tab_bar = .{

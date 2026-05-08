@@ -1,10 +1,17 @@
 const std = @import("std");
 const Shortcuts = @import("../events.zig").Events.Shortcuts;
+const Mod = @import("../events.zig").Events.Mod;
 
 pub const Window = struct {
+    pub const MousePolicy = struct {
+        listen_always: bool = false,
+        terminal_bypass_mod: Mod = .{},
+    };
+
     title: [:0]u8,
     width: c_int,
     height: c_int,
+    mouse: MousePolicy,
     shortcuts: Shortcuts.Map,
 
     pub fn deinit(self: *Window, alloc: std.mem.Allocator) void {

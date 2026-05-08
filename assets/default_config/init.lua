@@ -6,11 +6,19 @@ return {
     -- starting size in pixels
     width = 960,
     height = 600,
+    mouse = {
+      -- Listen to unpressed pointer motion for host hover effects.
+      listen_always = false,
+      -- When this modifier is held, send move events continuously to terminal.
+      -- One of: "none", "shift", "alt", "ctrl".
+      terminal_bypass_mod = "ctrl",
+    },
     shortcuts = {},
   },
   -- inherited from how-term
   term = {
     -- Path must point to valid shell
+    -- shell = "/usr/bin/nu",
     shell = "$SHELL",
     -- Path must exist
     start_path = "$HOME",
@@ -28,7 +36,7 @@ return {
       osc_52 = "deny",
     },
     links = {
-      open = "disabled",
+      open = "system",
     },
     shortcuts = {
       zoom_in = { "ctrl+equal", "ctrl+kp_add" },

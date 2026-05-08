@@ -70,3 +70,18 @@ pub fn linkOpenPolicy(raw: []const u8) term_config.LinkOpenPolicy {
     if (std.ascii.eqlIgnoreCase(raw, "system")) return .system;
     return .disabled;
 }
+
+pub fn mouseBypassMod(raw: []const u8) !Events.Mod {
+    if (std.ascii.eqlIgnoreCase(raw, "none")) return .{};
+    if (std.ascii.eqlIgnoreCase(raw, "shift")) return .{ .shift = true };
+    if (std.ascii.eqlIgnoreCase(raw, "alt")) return .{ .alt = true };
+    if (std.ascii.eqlIgnoreCase(raw, "ctrl")) return .{ .ctrl = true };
+    return error.InvalidConfig;
+}
+
+test "mouse bypass mod parsing" {
+    const none = try mouseBypassMod("none");
+    try std.testing.expect(!none.shift and !none.alt and !none.ctrl);
+    try std.testing.expect((try mouseBypassMod("ctrl")).ctrl);
+    try std.testing.expectError(error.InvalidConfig, mouseBypassMod("meta"));
+}

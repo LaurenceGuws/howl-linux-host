@@ -88,6 +88,10 @@ pub fn main(init: std.process.Init) !void {
 
     var events: Events = undefined;
     events.init();
+    events.setMousePolicy(.{
+        .listen_always = conf.window.mouse.listen_always,
+        .terminal_bypass_mod = conf.window.mouse.terminal_bypass_mod,
+    });
     try events.bind(win);
 
     var running = true;

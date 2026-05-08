@@ -21,6 +21,10 @@ pub const Events = struct {
     pub const Key = keys.Key;
     pub const Mod = mouse.Mod;
     pub const Buttons = mouse.Buttons;
+    pub const MousePolicy = struct {
+        listen_always: bool = false,
+        terminal_bypass_mod: Mod = .{},
+    };
 
     input_events: [max_input_events]input.Event,
     input_len: usize,
@@ -29,6 +33,8 @@ pub const Events = struct {
     shortcut_len: usize,
     last_mouse_x: i32,
     last_mouse_y: i32,
+    mouse_listen_always: bool,
+    mouse_terminal_bypass_mod: Mod,
 
     pub fn init(self: *Events) void {
         self.* = .{
@@ -39,7 +45,14 @@ pub const Events = struct {
             .shortcut_len = 0,
             .last_mouse_x = 0,
             .last_mouse_y = 0,
+            .mouse_listen_always = false,
+            .mouse_terminal_bypass_mod = .{},
         };
+    }
+
+    pub fn setMousePolicy(self: *Events, policy: MousePolicy) void {
+        self.mouse_listen_always = policy.listen_always;
+        self.mouse_terminal_bypass_mod = policy.terminal_bypass_mod;
     }
 
     pub fn bind(self: *Events, win: anytype) !void {
@@ -157,7 +170,9 @@ fn processEvent(event: *const c.SDL_Event) void {
         },
         c.SDL_EVENT_MOUSE_MOTION => {
             const buttons_down = sdlButtons(event.motion.state);
-            if (!buttons_down.left and !buttons_down.middle and !buttons_down.right) return;
+            const mods = sdlMods(c.SDL_GetModState());
+            const mouse_bypass_active = modSubset(events.mouse_terminal_bypass_mod, mods);
+            if (!buttons_down.left and !buttons_down.middle and !buttons_down.right and !events.mouse_listen_always and !mouse_bypass_active) return;
             const pixel_x = @as(i32, @intFromFloat(@round(event.motion.x)));
             const pixel_y = @as(i32, @intFromFloat(@round(event.motion.y)));
             events.last_mouse_x = pixel_x;
@@ -167,7 +182,7 @@ fn processEvent(event: *const c.SDL_Event) void {
                 .button = .none,
                 .pixel_x = pixel_x,
                 .pixel_y = pixel_y,
-                .mods = sdlMods(c.SDL_GetModState()),
+                .mods = mods,
                 .buttons_down = buttons_down,
             });
         },
@@ -397,6 +412,14 @@ fn sdlMouseButton(button: u8) ?mouse.Button {
     };
 }
 
+fn modSubset(required: mouse.Mod, active: mouse.Mod) bool {
+    if (!required.shift and !required.alt and !required.ctrl) return false;
+    if (required.shift and !active.shift) return false;
+    if (required.alt and !active.alt) return false;
+    if (required.ctrl and !active.ctrl) return false;
+    return true;
+}
+
 fn sdlButtons(state: u32) mouse.Buttons {
     return .{
         .left = (state & c.SDL_BUTTON_LMASK) != 0,
@@ -416,6 +439,12 @@ test "special key mapping" {
     try std.testing.expectEqual(keys.Key.up, sdlKey(c.SDLK_UP).?);
     try std.testing.expectEqual(keys.Key.page_up, sdlKey(c.SDLK_PAGEUP).?);
     try std.testing.expectEqual(@as(?keys.Key, null), sdlKey('a'));
+}
+
+test "mod subset requires at least one configured mod" {
+    try std.testing.expect(!modSubset(.{}, .{}));
+    try std.testing.expect(modSubset(.{ .ctrl = true }, .{ .ctrl = true }));
+    try std.testing.expect(!modSubset(.{ .ctrl = true }, .{ .shift = true }));
 }
 
 test "byte chunking preserves order" {
