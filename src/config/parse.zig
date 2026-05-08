@@ -71,6 +71,22 @@ pub fn linkOpenPolicy(raw: []const u8) term_config.LinkOpenPolicy {
     return .disabled;
 }
 
+/// Parse host hyperlink hover presentation policy from Lua config text.
+pub fn linkHoverPolicy(raw: []const u8) term_config.LinkHoverPolicy {
+    if (std.ascii.eqlIgnoreCase(raw, "underline")) return .underline;
+    if (std.ascii.eqlIgnoreCase(raw, "cursor")) return .cursor;
+    if (std.ascii.eqlIgnoreCase(raw, "underline+cursor") or std.ascii.eqlIgnoreCase(raw, "underline_cursor")) return .underline_and_cursor;
+    return .off;
+}
+
+/// Parse host hyperlink hover underline style from Lua config text.
+pub fn linkUnderlineStyle(raw: []const u8) term_config.LinkUnderlineStyle {
+    if (std.ascii.eqlIgnoreCase(raw, "curly")) return .curly;
+    if (std.ascii.eqlIgnoreCase(raw, "dotted")) return .dotted;
+    if (std.ascii.eqlIgnoreCase(raw, "dashed")) return .dashed;
+    return .straight;
+}
+
 pub fn mouseBypassMod(raw: []const u8) !Events.Mod {
     if (std.ascii.eqlIgnoreCase(raw, "none")) return .{};
     if (std.ascii.eqlIgnoreCase(raw, "shift")) return .{ .shift = true };
@@ -84,4 +100,16 @@ test "mouse bypass mod parsing" {
     try std.testing.expect(!none.shift and !none.alt and !none.ctrl);
     try std.testing.expect((try mouseBypassMod("ctrl")).ctrl);
     try std.testing.expectError(error.InvalidConfig, mouseBypassMod("meta"));
+}
+
+test "link presentation parsing" {
+    try std.testing.expectEqual(term_config.LinkHoverPolicy.underline_and_cursor, linkHoverPolicy("underline+cursor"));
+    try std.testing.expectEqual(term_config.LinkHoverPolicy.underline_and_cursor, linkHoverPolicy("underline_cursor"));
+    try std.testing.expectEqual(term_config.LinkHoverPolicy.cursor, linkHoverPolicy("cursor"));
+    try std.testing.expectEqual(term_config.LinkHoverPolicy.off, linkHoverPolicy("unknown"));
+
+    try std.testing.expectEqual(term_config.LinkUnderlineStyle.curly, linkUnderlineStyle("curly"));
+    try std.testing.expectEqual(term_config.LinkUnderlineStyle.dotted, linkUnderlineStyle("dotted"));
+    try std.testing.expectEqual(term_config.LinkUnderlineStyle.dashed, linkUnderlineStyle("dashed"));
+    try std.testing.expectEqual(term_config.LinkUnderlineStyle.straight, linkUnderlineStyle("unknown"));
 }

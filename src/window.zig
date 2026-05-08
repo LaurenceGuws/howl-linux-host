@@ -25,11 +25,17 @@ pub const ScrollbarLayout = Layout.ScrollbarLayout;
 pub const Frame = Layout.Frame;
 pub const PresentState = Chrome.State(c);
 
+var pointer_cursor: ?*c.SDL_Cursor = null;
+
 pub fn initVideo() bool {
     return c.SDL_Init(c.SDL_INIT_VIDEO);
 }
 
 pub fn quit() void {
+    if (pointer_cursor) |cursor| {
+        c.SDL_DestroyCursor(cursor);
+        pointer_cursor = null;
+    }
     c.SDL_Quit();
 }
 
@@ -100,6 +106,19 @@ pub fn openUrl(uri: []const u8) bool {
     defer std.heap.c_allocator.free(z);
     @memcpy(z[0..uri.len], uri);
     return c.SDL_OpenURL(z.ptr) == true;
+}
+
+/// Select the default desktop cursor.
+pub fn useDefaultCursor() void {
+    _ = c.SDL_SetCursor(c.SDL_GetDefaultCursor());
+}
+
+/// Select the desktop pointer cursor normally used for clickable links.
+pub fn usePointerCursor() bool {
+    if (pointer_cursor == null) {
+        pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER) orelse return false;
+    }
+    return c.SDL_SetCursor(pointer_cursor.?) == true;
 }
 
 pub fn lastError() [*:0]const u8 {

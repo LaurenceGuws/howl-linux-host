@@ -36,7 +36,12 @@ return {
       osc_52 = "deny",
     },
     links = {
+      -- One of: "disabled", "system".
       open = "system",
+      -- One of: "off", "underline", "cursor", "underline+cursor".
+      hover = "underline+cursor",
+      -- One of: "straight", "curly", "dotted", "dashed".
+      underline = "straight",
     },
     shortcuts = {
       zoom_in = { "ctrl+equal", "ctrl+kp_add" },

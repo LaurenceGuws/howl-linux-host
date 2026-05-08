@@ -29,8 +29,26 @@ pub const LinkOpenPolicy = enum {
     system,
 };
 
+/// Host-owned behavior for presenting hovered hyperlinks.
+pub const LinkHoverPolicy = enum {
+    off,
+    underline,
+    cursor,
+    underline_and_cursor,
+};
+
+/// Host-owned underline style for hovered hyperlinks.
+pub const LinkUnderlineStyle = enum {
+    straight,
+    curly,
+    dotted,
+    dashed,
+};
+
 pub const Links = struct {
     open: LinkOpenPolicy = .disabled,
+    hover: LinkHoverPolicy = .underline_and_cursor,
+    underline: LinkUnderlineStyle = .straight,
 };
 
 pub const Config = struct {

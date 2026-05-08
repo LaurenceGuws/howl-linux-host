@@ -223,9 +223,9 @@ Current config:
 - default in Linux-host is `"disabled"`
 
 Planned presentation config:
-- hover behavior should be configurable separately from opening behavior
-- expected option shape is likely `term.links.hover` plus `term.links.underline`
-- exact values should follow renderer support, with straight/curly/dotted/dashed underline styles considered host presentation choices
+- `term.links.hover = "off" | "underline" | "cursor" | "underline+cursor"`
+- `term.links.underline = "straight" | "curly" | "dotted" | "dashed"`
+- hover behavior is configurable separately from opening behavior
 
 Test flow with disabled:
 1. Start Howl with default config.
@@ -246,7 +246,21 @@ Expected result with system opener:
 
 Notes:
 - terminal mouse reporting still takes priority when an app has enabled it
-- hover cursor/underline polish is still future UX work
+- hover underline is a render-only overlay and should not mutate terminal scrollback or app-visible text
+- hover cursor uses the desktop pointer cursor when configured
+
+Presentation test flow:
+1. Set `term.links.open = "system"`.
+2. Set `term.links.hover = "underline+cursor"`.
+3. Set `term.links.underline = "curly"`.
+4. Restart Howl.
+5. Run `printf '\033]8;;https://example.com\aLINK\033]8;;\a\n'`.
+6. Move the mouse over `LINK`.
+
+Expected presentation result:
+- the whole link span should show the configured underline style while hovered
+- the desktop cursor should become the pointer cursor while over the link
+- moving away should clear the hover underline and restore the default cursor
 
 ## High-Level User Features To Test
 

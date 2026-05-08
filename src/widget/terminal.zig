@@ -61,6 +61,7 @@ pub const Terminal = struct {
     scrollbar_cache_view: Runtime.ScrollState,
     scrollbar_cache_layout: window.ScrollbarLayout,
     scrollbar_cache_ns: u64,
+    link_cursor_active: bool,
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -128,6 +129,7 @@ pub const Terminal = struct {
             },
             .scrollbar_cache_layout = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
             .scrollbar_cache_ns = 0,
+            .link_cursor_active = false,
         };
     }
 
@@ -157,6 +159,8 @@ pub const Terminal = struct {
         Events.wakeWindow();
         if (self.wake_thread) |t| t.join();
         self.wake_thread = null;
+        if (self.link_cursor_active) window.useDefaultCursor();
+        self.link_cursor_active = false;
         self.term.deinit();
     }
 
@@ -251,6 +255,7 @@ pub const Terminal = struct {
                 .bytes => |bytes| self.publishInputBytes(bytes.slice()),
                 .key => |key| self.publishInputKey(key),
                 .mouse => |mouse_event| {
+                    self.updateHyperlinkHover(mouse_event, origin_x, origin_y, logical_width, logical_height);
                     if (self.handleScrollbarMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
                     if (self.handleHyperlinkMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
                     if (self.handleSelectionMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
@@ -539,6 +544,30 @@ pub const Terminal = struct {
         }
     }
 
+    fn updateHyperlinkHover(self: *Terminal, mouse_event: Events.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
+        if (mouse_event.kind != .move) return;
+
+        // Link hover has two independent host presentation effects: a render
+        // overlay in howl-term and the desktop pointer cursor in SDL.
+        const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h);
+        const wants_underline = self.conf.links.hover == .underline or self.conf.links.hover == .underline_and_cursor;
+        const underline_style = if (wants_underline) linkUnderlineStyle(self.conf.links.underline) else null;
+        const result = if (local_mouse) |event|
+            self.term.setHoveredLinkAtPixel(event.pixel_x, event.pixel_y, underline_style)
+        else
+            self.term.setHoveredLinkAtPixel(-1, -1, null);
+
+        const wants_cursor = self.conf.links.hover == .cursor or self.conf.links.hover == .underline_and_cursor;
+        const should_use_pointer = wants_cursor and result.over_link;
+        if (should_use_pointer == self.link_cursor_active) return;
+        if (should_use_pointer) {
+            self.link_cursor_active = window.usePointerCursor();
+        } else {
+            window.useDefaultCursor();
+            self.link_cursor_active = false;
+        }
+    }
+
     fn handleHyperlinkMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         if (self.conf.links.open != .system) return false;
         if (mouse_event.kind != .press or mouse_event.button != .left) return false;
@@ -550,6 +579,15 @@ pub const Terminal = struct {
         defer std.heap.c_allocator.free(uri);
         _ = window.openUrl(uri);
         return true;
+    }
+
+    fn linkUnderlineStyle(style: config.LinkUnderlineStyle) Runtime.LinkUnderlineStyle {
+        return switch (style) {
+            .straight => .straight,
+            .curly => .curly,
+            .dotted => .dotted,
+            .dashed => .dashed,
+        };
     }
 
     fn updateScrollbarFromMouse(self: *Terminal, mouse_y: i32, geometry: Scrollbar.Geometry, model: Scrollbar.Model) bool {

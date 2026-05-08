@@ -77,6 +77,10 @@ pub const Runtime = struct {
     pub const MouseEventKind = term_core.MouseEventKind;
     /// Named terminal-local mouse input payload passed into howl-term.
     pub const MouseInput = term_core.MouseInput;
+    /// Link hover underline style passed into howl-term render overlays.
+    pub const LinkUnderlineStyle = term_core.LinkUnderlineStyle;
+    /// Result of updating terminal-local link hover state.
+    pub const LinkHoverResult = term_core.LinkHoverResult;
 
     term: ?term_core = null,
     lifecycle_state: LifecycleState = .stopped,
@@ -215,6 +219,12 @@ pub const Runtime = struct {
             std.log.err("terminal hyperlink URI lookup failed", .{});
             return null;
         };
+    }
+
+    /// Update terminal-local link hover presentation and report pointer hit state.
+    pub fn setHoveredLinkAtPixel(self: *Runtime, pixel_x: i32, pixel_y: i32, underline_style: ?LinkUnderlineStyle) LinkHoverResult {
+        const inst = &(self.term orelse return .{ .over_link = false, .changed = false });
+        return inst.setHoveredLinkAtPixel(pixel_x, pixel_y, underline_style);
     }
 
     pub fn publishMouseEvent(self: *Runtime, input: MouseInput) bool {

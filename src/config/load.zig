@@ -60,6 +60,14 @@ pub fn loadFromLua(alloc: std.mem.Allocator, lua: Lua.State) !Config.Value {
         parse.linkOpenPolicy(reader.fieldString("open") orelse "disabled")
     else
         .disabled;
+    const links_hover_policy = if (links_reader) |reader|
+        parse.linkHoverPolicy(reader.fieldString("hover") orelse "underline+cursor")
+    else
+        .underline_and_cursor;
+    const links_underline_style = if (links_reader) |reader|
+        parse.linkUnderlineStyle(reader.fieldString("underline") orelse "straight")
+    else
+        .straight;
     const term_shortcuts = try loadShortcutMap(alloc, term_reader.child("shortcuts"), &parse.term_shortcut_specs);
     errdefer {
         var shortcuts_mut = term_shortcuts;
@@ -110,7 +118,7 @@ pub fn loadFromLua(alloc: std.mem.Allocator, lua: Lua.State) !Config.Value {
                 .emoji = fallback_emoji,
             },
             .clipboard = .{ .osc_52 = clipboard_policy },
-            .links = .{ .open = links_open_policy },
+            .links = .{ .open = links_open_policy, .hover = links_hover_policy, .underline = links_underline_style },
             .shortcuts = term_shortcuts,
         },
         .window = .{
