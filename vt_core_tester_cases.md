@@ -222,6 +222,11 @@ Current config:
 - `term.links.open = "disabled" | "system"`
 - default in Linux-host is `"disabled"`
 
+Planned presentation config:
+- hover behavior should be configurable separately from opening behavior
+- expected option shape is likely `term.links.hover` plus `term.links.underline`
+- exact values should follow renderer support, with straight/curly/dotted/dashed underline styles considered host presentation choices
+
 Test flow with disabled:
 1. Start Howl with default config.
 2. Run `printf '\033]8;;https://example.com\aLINK\033]8;;\a\n'`.
@@ -242,3 +247,40 @@ Expected result with system opener:
 Notes:
 - terminal mouse reporting still takes priority when an app has enabled it
 - hover cursor/underline polish is still future UX work
+
+## High-Level User Features To Test
+
+These are the end-user behaviors to test as they land. They are intentionally phrased as product features, not protocol implementation details.
+
+Terminal launch:
+- configured shell starts successfully
+- configured start directory becomes the shell working directory
+- non-POSIX shells such as `nu` start without shell-wrapper syntax errors
+- failed shells fail cleanly without normal-path info log noise
+
+Keyboard behavior:
+- arrow keys work in normal shell prompts
+- full-screen apps such as `vim`, `less`, and `htop` receive the expected navigation keys
+- focus changes do not type stray bytes unless the app explicitly enables focus reporting
+
+Mouse behavior:
+- wheel scrolls local scrollback in normal shell output
+- mouse-heavy apps can receive clicks, drags, movement, and wheel events when they enable terminal mouse reporting
+- local selection and scrollbar behavior still feel native when terminal mouse reporting is not active
+
+Links:
+- OSC 8 links can be opened only when link opening is enabled by config
+- disabled link opening never launches the system opener
+- configured hover style is visible and consistent across a whole link span
+- configured underline style, such as straight or curly, matches the selected host presentation option once implemented
+
+Clipboard and paste:
+- normal paste works through the configured paste shortcuts
+- bracketed paste wraps pasted text only when the app enables bracketed paste
+- OSC 52 clipboard writes obey the configured allow/deny policy
+- denied OSC 52 requests do not alter the desktop clipboard
+
+Rendering and polish:
+- resize keeps content legible and responsive
+- scrollback, selection, links, and cursor rendering do not fight each other
+- production runs stay quiet on successful normal paths unless debug logging is intentionally enabled

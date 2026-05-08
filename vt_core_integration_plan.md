@@ -33,7 +33,7 @@ Contract hygiene scope:
 - Keep Linux-host responsible for desktop policy and presentation.
 
 Product integration scope:
-- Link interaction polish: hover, grouping, cursor behavior, and configured open policy.
+- Link interaction polish: hover, grouping, cursor behavior, configured open policy, and configured link presentation.
 - Mouse and pointer fidelity: terminal mouse forwarding, local scrollback behavior, pointer shape mapping when the host supports it.
 - Clipboard and paste policy: bracketed paste entrypoint and explicit OSC 52 handling.
 
@@ -59,6 +59,7 @@ Those are protocol behaviors. If `vt-core` supports them, the host should wire t
 Allowed config growth:
 - host-owned clipboard policy
 - host-owned hyperlink open policy
+- host-owned hyperlink presentation policy
 - host-specific UX behavior not owned by renderer backends
 
 Current bias:
@@ -69,6 +70,8 @@ Current bias:
 Likely acceptable future Lua keys:
 - `term.clipboard.osc_52 = "allow" | "deny"`
 - `term.links.open = "disabled" | "system"`
+- `term.links.hover = "off" | "underline" | "cursor" | "underline+cursor"`
+- `term.links.underline = "straight" | "curly" | "dotted" | "dashed"` if the renderer can support those distinctly
 - `term.links.launcher = "..."` only if host-specific launcher override is truly needed
 
 Not currently justified:
@@ -76,6 +79,12 @@ Not currently justified:
 - toggles for bracketed paste wrappers
 - toggles for app-cursor keys
 - toggles for terminal mouse protocols
+
+Config distinction:
+- OSC 8 parsing is protocol behavior and should remain enabled by default.
+- Link opening is host policy.
+- Link hover and underline style are host presentation policy.
+- Presentation config should describe visible behavior, not OSC internals.
 
 ## Landing Order
 
