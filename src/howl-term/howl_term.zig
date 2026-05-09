@@ -17,6 +17,9 @@ pub const Runtime = struct {
 
     pub const SurfaceHandle = term_core.SurfaceHandle;
     pub const RenderSnapshotResult = term_core.RenderSnapshotResult;
+    pub const PreparedRenderFrame = term_core.PreparedRenderFrame;
+    pub const RenderPipeline = term_core.RenderPipeline;
+    pub const TerminalSurface = term_core.TerminalSurface;
     pub const Key = term_core.Key;
     pub const Modifier = term_core.Modifier;
     pub const SurfaceState = struct {
@@ -143,6 +146,43 @@ pub const Runtime = struct {
             std.log.err("terminal render failed: {s}", .{@errorName(err)});
             return null;
         };
+    }
+
+    pub fn prepareLatestSnapshot(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) ?PreparedRenderFrame {
+        const inst = &(self.term orelse return null);
+        const rw: u16 = @intCast(@max(render_width, 1));
+        const rh: u16 = @intCast(@max(render_height, 1));
+        const gw: u16 = @intCast(@max(grid_width, 1));
+        const gh: u16 = @intCast(@max(grid_height, 1));
+        return inst.prepareLatestSnapshot(rw, rh, gw, gh) catch |err| {
+            self.lifecycle_state = .failed;
+            std.log.err("terminal prepare failed: {s}", .{@errorName(err)});
+            return null;
+        };
+    }
+
+    pub fn submitPreparedSnapshot(self: *Runtime, prepared: *PreparedRenderFrame) ?RenderSnapshotResult {
+        const inst = &(self.term orelse return .rendered);
+        return inst.submitPreparedSnapshot(prepared) catch |err| {
+            self.lifecycle_state = .failed;
+            std.log.err("terminal submit failed: {s}", .{@errorName(err)});
+            return null;
+        };
+    }
+
+    pub fn publishSnapshotToSurface(self: *Runtime, surface: *TerminalSurface, priority: RenderPipeline.PreparePriority) ?u64 {
+        const inst = &(self.term orelse return null);
+        return inst.publishSnapshotToSurface(surface, priority);
+    }
+
+    pub fn snapshotToken(self: *Runtime) ?RenderPipeline.SnapshotToken {
+        const inst = &(self.term orelse return null);
+        return inst.snapshotToken();
+    }
+
+    pub fn lastSubmittedFrame(self: *Runtime) ?RenderPipeline.SubmittedFrame {
+        const inst = &(self.term orelse return null);
+        return inst.lastSubmittedFrame();
     }
 
     pub fn syncFrameGeometry(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) bool {
