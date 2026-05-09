@@ -41,7 +41,7 @@ return {
       -- One of: "off", "underline", "cursor", "underline+cursor".
       hover = "underline+cursor",
       -- One of: "straight", "curly", "dotted", "dashed".
-      underline = "straight",
+      underline = "curly",
     },
     shortcuts = {
       zoom_in = { "ctrl+equal", "ctrl+kp_add" },
