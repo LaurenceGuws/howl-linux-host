@@ -32,7 +32,7 @@ fn lockMutex(mutex: *std.atomic.Mutex) void {
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
     const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
-    const content_update_interval_ns = std.time.ns_per_s / 120;
+    const content_update_interval_ns = std.time.ns_per_s / 180;
     const active_present_lease_ns = 100 * std.time.ns_per_ms;
     const wake_wait_ms = 250;
 
