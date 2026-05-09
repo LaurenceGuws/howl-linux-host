@@ -241,6 +241,7 @@ pub const Terminal = struct {
     }
 
     pub fn render(self: *Terminal) void {
+        defer self.syncRenderBackpressure();
         switch (self.term.renderReadyFrame()) {
             .idle, .stale, .failed => return,
             .needs_prepare => {
@@ -268,6 +269,10 @@ pub const Terminal = struct {
 
     fn signalPrepareWorker(self: *Terminal) void {
         if (self.prepare_sem) |sem| window.c_win.SDL_SignalSemaphore(sem);
+    }
+
+    fn syncRenderBackpressure(self: *Terminal) void {
+        self.term.setRenderBackpressure(self.term.hasQueuedRenderWork());
     }
 
     fn geometrySnapshot(self: *Terminal) Runtime.FramePixels {
@@ -734,7 +739,9 @@ fn wakeWorker(self: *Terminal) void {
     var event_wakes: u64 = 0;
 
     while (!self.stop_wake.load(.acquire)) {
-        if (self.term.hasQueuedRenderWork()) {
+        const queued_render_work = self.term.hasQueuedRenderWork();
+        self.term.setRenderBackpressure(queued_render_work);
+        if (queued_render_work) {
             wait_blocks += 1;
             window.c_win.SDL_Delay(16);
             reportWakeThread(self, &meter, waits, wake_hits, wait_blocks, event_wakes);

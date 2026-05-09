@@ -214,6 +214,11 @@ pub const Runtime = struct {
         return self.render_queue.takeMetrics();
     }
 
+    pub fn setRenderBackpressure(self: *Runtime, enabled: bool) void {
+        const inst = &(self.term orelse return);
+        inst.setRuntimeBackpressure(enabled);
+    }
+
     pub fn needsFrame(self: *Runtime) bool {
         return switch (self.render_queue.nextAction()) {
             .submit, .present => true,
