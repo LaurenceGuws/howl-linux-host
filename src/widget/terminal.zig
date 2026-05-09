@@ -1,18 +1,29 @@
+//! Responsibility: own the Linux host terminal widget runtime.
+//! Ownership: host widget layer coordinates surfaces, chrome, input, and tab state.
+//! Reason: keeps platform UX orchestration outside howl-term core behavior.
+
 const std = @import("std");
 const window = @import("../window.zig");
 const Layout = @import("../window/layout.zig");
 const event_runtime = @import("../events.zig");
 const Events = event_runtime.Events;
-const Runtime = @import("../howl-term/howl_term.zig").Runtime;
+const Runtime = @import("../howl_term/howl_term.zig").Runtime;
 const LifecycleState = Runtime.LifecycleState;
 const SurfaceHandle = Runtime.SurfaceHandle;
 const thread_meter = @import("../thread_meter.zig");
-const config = @import("../howl-term/config.zig");
-const Scrollbar = @import("../howl-term/scrollbar.zig");
+const config = @import("../howl_term/config.zig");
+const Scrollbar = @import("../howl_term/scrollbar.zig");
 const TabBar = @import("tab_bar/tab_bar.zig");
 const Clipboard = @import("terminal_clipboard.zig");
 const Fonts = @import("terminal_fonts.zig");
 const Input = @import("terminal_input.zig");
+
+fn lockMutex(mutex: *std.atomic.Mutex) void {
+    while (!mutex.tryLock()) {
+        std.atomic.spinLoopHint();
+        std.Thread.yield() catch {};
+    }
+}
 
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
@@ -29,7 +40,6 @@ pub const Terminal = struct {
     };
 
     term: Runtime,
-    surface_executor: Runtime.SurfaceExecutor,
     conf: *const config.Config,
     render_px_w: c_int,
     render_px_h: c_int,
@@ -39,6 +49,7 @@ pub const Terminal = struct {
     grid_px_h: c_int,
     pending_grid_px_w: c_int,
     pending_grid_px_h: c_int,
+    geometry_mutex: std.atomic.Mutex,
     font_size_px: u16,
     default_font_size_px: u16,
     tab_label_buf: [128]u8,
@@ -94,7 +105,6 @@ pub const Terminal = struct {
         const font_size = @max(conf.font_size, 1);
         return .{
             .term = .{},
-            .surface_executor = .{},
             .conf = conf,
             .render_px_w = render_w,
             .render_px_h = render_h,
@@ -104,6 +114,7 @@ pub const Terminal = struct {
             .grid_px_h = logical_h,
             .pending_grid_px_w = logical_w,
             .pending_grid_px_h = logical_h,
+            .geometry_mutex = .unlocked,
             .font_size_px = font_size,
             .default_font_size_px = font_size,
             .tab_label_buf = undefined,
@@ -140,18 +151,15 @@ pub const Terminal = struct {
     fn startRuntime(self: *Terminal) !void {
         var font_fallbacks_buf: [32][:0]const u8 = undefined;
         const font_fallbacks = Fonts.flattenFallbacks(self.conf.fonts, font_fallbacks_buf[0..]);
-        try self.term.init(
-            self.conf.shell,
-            self.conf.start_path,
-            self.conf.command,
-            @intCast(self.render_px_w),
-            @intCast(self.render_px_h),
-            @intCast(self.grid_px_w),
-            @intCast(self.grid_px_h),
-            self.font_size_px,
-            self.conf.fonts.primary,
-            font_fallbacks,
-        );
+        try self.term.init(.{
+            .shell = self.conf.shell,
+            .start_path = self.conf.start_path,
+            .command = self.conf.command,
+            .frame = self.geometrySnapshot(),
+            .font_size_px = self.font_size_px,
+            .font_primary = self.conf.fonts.primary,
+            .font_fallbacks = font_fallbacks,
+        });
         self.syncInputFocus();
         self.refreshTabLabel();
         self.prepare_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.PrepareSemaphoreUnavailable;
@@ -169,7 +177,6 @@ pub const Terminal = struct {
         self.wake_thread = null;
         if (self.prepare_thread) |t| t.join();
         self.prepare_thread = null;
-        self.surface_executor.deinit();
         if (self.prepare_sem) |sem| window.c_win.SDL_DestroySemaphore(sem);
         self.prepare_sem = null;
         if (self.link_cursor_active) window.useDefaultCursor();
@@ -182,6 +189,8 @@ pub const Terminal = struct {
         const rh = @max(render_height, 1);
         const lw = @max(logical_width, 1);
         const lh = @max(logical_height, 1);
+        lockMutex(&self.geometry_mutex);
+        defer self.geometry_mutex.unlock();
         if (rw == self.render_px_w and rh == self.render_px_h and lw == self.pending_grid_px_w and lh == self.pending_grid_px_h) return;
         self.render_px_w = rw;
         self.render_px_h = rh;
@@ -194,6 +203,8 @@ pub const Terminal = struct {
     }
 
     pub fn nextWaitTimeoutMs(self: *Terminal) c_int {
+        lockMutex(&self.geometry_mutex);
+        defer self.geometry_mutex.unlock();
         if (self.pending_grid_px_w == self.grid_px_w and self.pending_grid_px_h == self.grid_px_h) return -1;
         if (self.last_resize_ns == 0) return 0;
         const elapsed_ns = window.c_win.SDL_GetTicksNS() -| self.last_resize_ns;
@@ -202,56 +213,43 @@ pub const Terminal = struct {
     }
 
     pub fn maybeCommitGridResize(self: *Terminal) void {
-        if (self.pending_grid_px_w == self.grid_px_w and self.pending_grid_px_h == self.grid_px_h) return;
-        if (self.last_resize_ns != 0 and window.c_win.SDL_GetTicksNS() -| self.last_resize_ns < resize_coalesce_ns) return;
-        self.grid_px_w = self.pending_grid_px_w;
-        self.grid_px_h = self.pending_grid_px_h;
-        self.last_resize_ns = 0;
-        _ = self.term.syncFrameGeometry(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
+        const geom = blk: {
+            lockMutex(&self.geometry_mutex);
+            defer self.geometry_mutex.unlock();
+            if (self.pending_grid_px_w == self.grid_px_w and self.pending_grid_px_h == self.grid_px_h) return;
+            if (self.last_resize_ns != 0 and window.c_win.SDL_GetTicksNS() -| self.last_resize_ns < resize_coalesce_ns) return;
+            self.grid_px_w = self.pending_grid_px_w;
+            self.grid_px_h = self.pending_grid_px_h;
+            self.last_resize_ns = 0;
+            break :blk self.geometrySnapshotLocked();
+        };
+        _ = self.term.syncFrameGeometry(geom);
     }
 
     pub fn needsFrame(self: *Terminal) bool {
-        const action = self.surface_executor.nextAction();
-        return switch (action) {
-            .submit, .present => true,
-            .idle, .prepare => false,
-        };
+        return self.term.needsFrame();
     }
 
     pub fn render(self: *Terminal) void {
-        const decision = self.surface_executor.takeValidatedSubmit();
-        const result = switch (decision) {
-            .submit => blk: {
-                var prepared = self.surface_executor.takePreparedForSubmit() orelse return;
-                defer prepared.deinit();
-                break :blk self.term.submitPreparedSnapshot(&prepared) orelse return;
-            },
-            .needs_full_prepare => {
-                self.surface_executor.discardPrepared();
+        switch (self.term.renderReadyFrame()) {
+            .idle, .stale, .failed => return,
+            .needs_prepare => {
                 self.signalPrepareWorker();
                 Events.wakeWindow();
                 return;
             },
-            .stale => {
-                self.surface_executor.discardPrepared();
-                return;
-            },
-            .idle => return,
-        };
-        const surface = self.term.surfaceState().surface;
-        if (surface.texture_id != 0) self.last_surface = surface;
-        switch (result) {
             .rendered => {
+                const surface = self.term.surfaceState().surface;
+                if (surface.texture_id != 0) self.last_surface = surface;
                 self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
-                self.markSurfaceSubmittedAndPresented();
-                if (self.surface_executor.nextAction() == .prepare) {
+                if (self.term.needsPrepare()) {
                     self.signalPrepareWorker();
                 }
             },
             .rendered_more_pending => {
+                const surface = self.term.surfaceState().surface;
+                if (surface.texture_id != 0) self.last_surface = surface;
                 _ = self.snapshot_requeues.fetchAdd(1, .monotonic);
-                self.markSurfaceSubmittedAndPresented();
-                if (self.term.snapshotToken()) |token| _ = self.surface_executor.publishSnapshot(token, .opportunistic);
                 self.signalPrepareWorker();
                 Events.wakeWindow();
             },
@@ -262,10 +260,19 @@ pub const Terminal = struct {
         if (self.prepare_sem) |sem| window.c_win.SDL_SignalSemaphore(sem);
     }
 
-    fn markSurfaceSubmittedAndPresented(self: *Terminal) void {
-        const submitted = self.term.lastSubmittedFrame() orelse return;
-        self.surface_executor.acceptSubmitted(submitted);
-        self.surface_executor.markPresented();
+    fn geometrySnapshot(self: *Terminal) Runtime.FramePixels {
+        lockMutex(&self.geometry_mutex);
+        defer self.geometry_mutex.unlock();
+        return self.geometrySnapshotLocked();
+    }
+
+    fn geometrySnapshotLocked(self: *const Terminal) Runtime.FramePixels {
+        return .{
+            .render_width = @max(self.render_px_w, 1),
+            .render_height = @max(self.render_px_h, 1),
+            .grid_width = @max(self.grid_px_w, 1),
+            .grid_height = @max(self.grid_px_h, 1),
+        };
     }
 
     fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
@@ -713,8 +720,7 @@ fn wakeWorker(self: *Terminal) void {
     var event_wakes: u64 = 0;
 
     while (!self.stop_wake.load(.acquire)) {
-        const action = self.surface_executor.nextAction();
-        if (action != .idle) {
+        if (self.term.hasQueuedRenderWork()) {
             wait_blocks += 1;
             window.c_win.SDL_Delay(16);
             reportWakeThread(self, &meter, waits, wake_hits, wait_blocks, event_wakes);
@@ -723,18 +729,11 @@ fn wakeWorker(self: *Terminal) void {
 
         waits += 1;
         const last_seen_seq = self.snapshot_quiet_seq.load(.acquire);
-        const event_seq = self.term.awaitSnapshotEvent(last_seen_seq, Terminal.wake_wait_ms);
-        if (event_seq != last_seen_seq) {
+        const wake = self.term.awaitRenderWake(last_seen_seq, Terminal.wake_wait_ms);
+        if (wake.event_seq != last_seen_seq) {
             wake_hits += 1;
-            const published = if (self.term.snapshotToken()) |token| blk: {
-                const pub_seq = self.surface_executor.publishSnapshot(token, .opportunistic);
-                if (pub_seq == null) self.snapshot_quiet_seq.store(event_seq, .release);
-                break :blk pub_seq != null;
-            } else blk: {
-                self.snapshot_quiet_seq.store(event_seq, .release);
-                break :blk false;
-            };
-            if (published) {
+            if (!wake.published) self.snapshot_quiet_seq.store(wake.event_seq, .release);
+            if (wake.published) {
                 event_wakes += 1;
                 self.refreshTabLabel();
                 self.signalPrepareWorker();
@@ -765,7 +764,7 @@ fn prepareWorker(self: *Terminal) void {
         }
         wake_hits += 1;
 
-        switch (self.surface_executor.prepareStep(self, prepareFrameForExecutor)) {
+        switch (self.term.prepareNextFrame(self.geometrySnapshot())) {
             .idle => empty_wakes += 1,
             .prepared => {
                 prepared_count += 1;
@@ -775,11 +774,6 @@ fn prepareWorker(self: *Terminal) void {
         }
         reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
     }
-}
-
-fn prepareFrameForExecutor(ctx: *anyopaque, request: Runtime.RenderPipeline.RenderRequest) anyerror!?Runtime.PreparedRenderFrame {
-    const self: *Terminal = @ptrCast(@alignCast(ctx));
-    return self.term.prepareSnapshotForRequest(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h, request) orelse return null;
 }
 
 fn reportPrepareThread(

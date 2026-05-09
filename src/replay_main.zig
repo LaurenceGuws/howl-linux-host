@@ -1,3 +1,7 @@
+//! Responsibility: own bounded Linux host replay scenarios.
+//! Ownership: replay CLI parsing, scenario defaults, and replay assertions.
+//! Reason: keep visual/runtime reproduction outside the interactive host entrypoint.
+
 const std = @import("std");
 const host_run = @import("host_run.zig");
 

@@ -1,8 +1,14 @@
+//! Responsibility: define Linux host key event vocabulary.
+//! Ownership: host event layer owns physical key naming and modifier payloads.
+//! Reason: gives SDL input translation and shortcut resolution one shared type set.
+
 const std = @import("std");
 const mouse = @import("mouse.zig");
 
+/// Maximum encoded byte length accepted for one host key/text event.
 pub const max_event_bytes: usize = 32;
 
+/// Physical key names used by SDL translation and shortcut matching.
 pub const Key = enum {
     a,
     b,
@@ -121,20 +127,24 @@ pub const Key = enum {
     kp_nine,
 };
 
+/// Bounded UTF-8 input payload queued from SDL text input.
 pub const ByteInput = struct {
     len: u8,
     buf: [max_event_bytes]u8,
 
+    /// Returns the initialized bytes in this queued input payload.
     pub fn slice(self: *const ByteInput) []const u8 {
         return self.buf[0..self.len];
     }
 };
 
+/// Physical key event with host modifier state.
 pub const Event = struct {
     key: Key,
     mods: mouse.Mod,
 };
 
+/// Parses config-facing key labels into host key names.
 pub fn parseLabel(raw: []const u8) ?Key {
     const text = std.mem.trim(u8, raw, " \t\r\n");
     inline for (std.meta.fields(Key)) |field| {
@@ -174,6 +184,7 @@ pub fn parseLabel(raw: []const u8) ?Key {
     return null;
 }
 
+/// Returns the canonical config label for a key.
 pub fn label(key: Key) []const u8 {
     return @tagName(key);
 }

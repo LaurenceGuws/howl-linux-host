@@ -1,3 +1,7 @@
+//! Responsibility: translate SDL window events for the Linux host.
+//! Ownership: window signals, geometry changes, focus, and event wakeups.
+//! Reason: keep SDL event details behind host event vocabulary.
+
 const std = @import("std");
 const Window = @import("../window.zig");
 

@@ -1,3 +1,7 @@
+//! Responsibility: define Linux host window config vocabulary.
+//! Ownership: window dimensions, mouse policy, and shortcut config types.
+//! Reason: keep window configuration separate from SDL calls.
+
 const std = @import("std");
 const Shortcuts = @import("../events.zig").Events.Shortcuts;
 const Mod = @import("../events.zig").Events.Mod;

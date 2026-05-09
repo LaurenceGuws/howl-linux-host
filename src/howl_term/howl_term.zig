@@ -6,6 +6,8 @@ const term_core = @import("howl_term").HowlTerm;
 const std = @import("std");
 
 const launch_liveness_grace_ms: i64 = 50;
+const RenderPipeline = term_core.RenderPipeline;
+const PreparedRenderFrame = term_core.PreparedRenderFrame;
 
 pub const Runtime = struct {
     pub const LifecycleState = enum {
@@ -16,14 +18,62 @@ pub const Runtime = struct {
     };
 
     pub const SurfaceHandle = term_core.SurfaceHandle;
-    pub const RenderSnapshotResult = term_core.RenderSnapshotResult;
-    pub const PreparedRenderFrame = term_core.PreparedRenderFrame;
-    pub const PreparedSlot = term_core.PreparedSlot;
-    pub const RenderPipeline = term_core.RenderPipeline;
-    pub const TerminalSurface = term_core.TerminalSurface;
-    pub const SurfaceExecutor = term_core.SurfaceExecutor;
     pub const Key = term_core.Key;
     pub const Modifier = term_core.Modifier;
+
+    pub const FramePixels = struct {
+        render_width: c_int,
+        render_height: c_int,
+        grid_width: c_int,
+        grid_height: c_int,
+
+        fn renderWidth(self: FramePixels) u16 {
+            return @intCast(@max(self.render_width, 1));
+        }
+
+        fn renderHeight(self: FramePixels) u16 {
+            return @intCast(@max(self.render_height, 1));
+        }
+
+        fn gridWidth(self: FramePixels) u16 {
+            return @intCast(@max(self.grid_width, 1));
+        }
+
+        fn gridHeight(self: FramePixels) u16 {
+            return @intCast(@max(self.grid_height, 1));
+        }
+    };
+
+    pub const StartConfig = struct {
+        shell: []const u8,
+        start_path: ?[]const u8 = null,
+        command: ?[]const u8 = null,
+        frame: FramePixels,
+        font_size_px: u16,
+        font_primary: ?[:0]const u8 = null,
+        font_fallbacks: []const [:0]const u8 = &.{},
+    };
+
+    pub const PrepareResult = enum {
+        idle,
+        prepared,
+        failed,
+    };
+
+    pub const RenderResult = enum {
+        idle,
+        rendered,
+        rendered_more_pending,
+        needs_prepare,
+        stale,
+        failed,
+    };
+
+    pub const SnapshotWake = struct {
+        event_seq: u64,
+        published: bool,
+    };
+
     pub const SurfaceState = struct {
         surface: SurfaceHandle,
         state: LifecycleState,
@@ -89,21 +139,10 @@ pub const Runtime = struct {
     pub const LinkHoverResult = term_core.LinkHoverResult;
 
     term: ?term_core = null,
+    render_queue: term_core.SurfaceExecutor = .{},
     lifecycle_state: LifecycleState = .stopped,
 
-    pub fn init(
-        self: *Runtime,
-        shell: []const u8,
-        start_path: ?[]const u8,
-        command: ?[]const u8,
-        render_width: u16,
-        render_height: u16,
-        grid_width: u16,
-        grid_height: u16,
-        font_size_px: u16,
-        font_primary: ?[:0]const u8,
-        font_fallbacks: []const [:0]const u8,
-    ) !void {
+    pub fn init(self: *Runtime, config: StartConfig) !void {
         self.lifecycle_state = .starting;
 
         errdefer {
@@ -112,23 +151,24 @@ pub const Runtime = struct {
             self.lifecycle_state = .failed;
         }
         self.term = try term_core.initPty(std.heap.c_allocator, .{
-            .shell = shell,
-            .command = command,
-            .start_path = start_path,
+            .shell = config.shell,
+            .command = config.command,
+            .start_path = config.start_path,
         }, 1, 1, .{ .width = 1, .height = 1 });
-        self.term.?.setFontSizePx(font_size_px);
-        self.term.?.setPrimaryFontPath(font_primary);
-        self.term.?.setFallbackFontPaths(font_fallbacks);
+        self.term.?.setFontSizePx(config.font_size_px);
+        self.term.?.setPrimaryFontPath(config.font_primary);
+        self.term.?.setFallbackFontPaths(config.font_fallbacks);
         self.term.?.start() catch |err| {
             self.lifecycle_state = .failed;
             return err;
         };
-        try self.term.?.syncFrameGeometry(render_width, render_height, grid_width, grid_height);
+        try self.term.?.syncFrameGeometry(config.frame.renderWidth(), config.frame.renderHeight(), config.frame.gridWidth(), config.frame.gridHeight());
         try self.confirmLaunchLiveness();
         self.lifecycle_state = .ready;
     }
 
     pub fn deinit(self: *Runtime) void {
+        self.render_queue.deinit();
         if (self.term) |*inst| {
             inst.stop();
             inst.deinit();
@@ -137,47 +177,17 @@ pub const Runtime = struct {
         self.lifecycle_state = .stopped;
     }
 
-    pub fn renderLatestSnapshot(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) ?RenderSnapshotResult {
-        const inst = &(self.term orelse return .rendered);
-        const rw: u16 = @intCast(@max(render_width, 1));
-        const rh: u16 = @intCast(@max(render_height, 1));
-        const gw: u16 = @intCast(@max(grid_width, 1));
-        const gh: u16 = @intCast(@max(grid_height, 1));
-        return inst.renderLatestSnapshot(rw, rh, gw, gh) catch |err| {
-            self.lifecycle_state = .failed;
-            std.log.err("terminal render failed: {s}", .{@errorName(err)});
-            return null;
-        };
-    }
-
-    pub fn prepareLatestSnapshot(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) ?PreparedRenderFrame {
+    fn prepareSnapshotForRequest(self: *Runtime, frame: FramePixels, request: RenderPipeline.RenderRequest) ?PreparedRenderFrame {
         const inst = &(self.term orelse return null);
-        const rw: u16 = @intCast(@max(render_width, 1));
-        const rh: u16 = @intCast(@max(render_height, 1));
-        const gw: u16 = @intCast(@max(grid_width, 1));
-        const gh: u16 = @intCast(@max(grid_height, 1));
-        return inst.prepareLatestSnapshot(rw, rh, gw, gh) catch |err| {
+        return inst.prepareSnapshotForRequest(frame.renderWidth(), frame.renderHeight(), frame.gridWidth(), frame.gridHeight(), request) catch |err| {
             self.lifecycle_state = .failed;
             std.log.err("terminal prepare failed: {s}", .{@errorName(err)});
             return null;
         };
     }
 
-    pub fn prepareSnapshotForRequest(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int, request: RenderPipeline.RenderRequest) ?PreparedRenderFrame {
+    fn submitPreparedSnapshot(self: *Runtime, prepared: *PreparedRenderFrame) ?term_core.RenderSnapshotResult {
         const inst = &(self.term orelse return null);
-        const rw: u16 = @intCast(@max(render_width, 1));
-        const rh: u16 = @intCast(@max(render_height, 1));
-        const gw: u16 = @intCast(@max(grid_width, 1));
-        const gh: u16 = @intCast(@max(grid_height, 1));
-        return inst.prepareSnapshotForRequest(rw, rh, gw, gh, request) catch |err| {
-            self.lifecycle_state = .failed;
-            std.log.err("terminal prepare failed: {s}", .{@errorName(err)});
-            return null;
-        };
-    }
-
-    pub fn submitPreparedSnapshot(self: *Runtime, prepared: *PreparedRenderFrame) ?RenderSnapshotResult {
-        const inst = &(self.term orelse return .rendered);
         return inst.submitPreparedSnapshot(prepared) catch |err| {
             self.lifecycle_state = .failed;
             std.log.err("terminal submit failed: {s}", .{@errorName(err)});
@@ -185,19 +195,90 @@ pub const Runtime = struct {
         };
     }
 
-    pub fn publishSnapshotToSurface(self: *Runtime, surface: *TerminalSurface, priority: RenderPipeline.PreparePriority) ?u64 {
-        const inst = &(self.term orelse return null);
-        return inst.publishSnapshotToSurface(surface, priority);
+    pub fn syncFrameGeometry(self: *Runtime, frame: FramePixels) bool {
+        const inst = &(self.term orelse return false);
+        inst.syncFrameGeometry(frame.renderWidth(), frame.renderHeight(), frame.gridWidth(), frame.gridHeight()) catch |err| {
+            self.lifecycle_state = .failed;
+            std.log.err("terminal geometry sync failed: {s}", .{@errorName(err)});
+            return false;
+        };
+        return true;
     }
 
-    pub fn snapshotToken(self: *Runtime) ?RenderPipeline.SnapshotToken {
-        const inst = &(self.term orelse return null);
-        return inst.snapshotToken();
+    pub fn hasQueuedRenderWork(self: *Runtime) bool {
+        return self.render_queue.nextAction() != .idle;
     }
 
-    pub fn lastSubmittedFrame(self: *Runtime) ?RenderPipeline.SubmittedFrame {
-        const inst = &(self.term orelse return null);
-        return inst.lastSubmittedFrame();
+    pub fn needsFrame(self: *Runtime) bool {
+        return switch (self.render_queue.nextAction()) {
+            .submit, .present => true,
+            .idle, .prepare => false,
+        };
+    }
+
+    pub fn needsPrepare(self: *Runtime) bool {
+        return self.render_queue.nextAction() == .prepare;
+    }
+
+    pub fn prepareNextFrame(self: *Runtime, frame: FramePixels) PrepareResult {
+        var ctx = PrepareCtx{ .runtime = self, .frame = frame };
+        return switch (self.render_queue.prepareStep(&ctx, prepareFrameForQueue)) {
+            .idle => .idle,
+            .prepared => .prepared,
+            .failed => .failed,
+        };
+    }
+
+    pub fn renderReadyFrame(self: *Runtime) RenderResult {
+        const decision = self.render_queue.takeValidatedSubmit();
+        switch (decision) {
+            .submit => {
+                var prepared = self.render_queue.takePreparedForSubmit() orelse return .idle;
+                defer prepared.deinit();
+                const result = self.submitPreparedSnapshot(&prepared) orelse return .failed;
+                self.acceptLastSubmittedFrame();
+                return switch (result) {
+                    .rendered => .rendered,
+                    .rendered_more_pending => blk: {
+                        _ = self.publishLatestSnapshot();
+                        break :blk .rendered_more_pending;
+                    },
+                };
+            },
+            .needs_full_prepare => {
+                self.render_queue.discardPrepared();
+                return .needs_prepare;
+            },
+            .stale => {
+                self.render_queue.discardPrepared();
+                return .stale;
+            },
+            .idle => return .idle,
+        }
+    }
+
+    pub fn awaitRenderWake(self: *Runtime, last_seen_seq: u64, timeout_ms: i32) SnapshotWake {
+        const inst = &(self.term orelse return .{ .event_seq = last_seen_seq, .published = false });
+        const event_seq = inst.awaitSnapshotEvent(last_seen_seq, timeout_ms) catch |err| {
+            self.lifecycle_state = .failed;
+            std.log.err("terminal snapshot event wait failed: {s}", .{@errorName(err)});
+            return .{ .event_seq = last_seen_seq, .published = false };
+        };
+        if (event_seq == last_seen_seq) return .{ .event_seq = event_seq, .published = false };
+        return .{ .event_seq = event_seq, .published = self.publishLatestSnapshot() };
+    }
+
+    fn publishLatestSnapshot(self: *Runtime) bool {
+        const inst = &(self.term orelse return false);
+        const token = inst.snapshotToken();
+        return self.render_queue.publishSnapshot(token, .opportunistic) != null;
+    }
+
+    fn acceptLastSubmittedFrame(self: *Runtime) void {
+        const inst = &(self.term orelse return);
+        const submitted = inst.lastSubmittedFrame() orelse return;
+        self.render_queue.acceptSubmitted(submitted);
+        self.render_queue.markPresented();
     }
 
     pub fn renderedTextContains(self: *const Runtime, text: []const u8) bool {
@@ -213,20 +294,6 @@ pub const Runtime = struct {
     pub fn inputBytesApplied(self: *const Runtime) u64 {
         const inst = &(self.term orelse return 0);
         return inst.inputBytesApplied();
-    }
-
-    pub fn syncFrameGeometry(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) bool {
-        const inst = &(self.term orelse return false);
-        const rw: u16 = @intCast(@max(render_width, 1));
-        const rh: u16 = @intCast(@max(render_height, 1));
-        const gw: u16 = @intCast(@max(grid_width, 1));
-        const gh: u16 = @intCast(@max(grid_height, 1));
-        inst.syncFrameGeometry(rw, rh, gw, gh) catch |err| {
-            self.lifecycle_state = .failed;
-            std.log.err("terminal geometry sync failed: {s}", .{@errorName(err)});
-            return false;
-        };
-        return true;
     }
 
     pub fn publishInputBytes(self: *Runtime, bytes: []const u8) void {
@@ -338,15 +405,6 @@ pub const Runtime = struct {
         return inst.selectionInProgress();
     }
 
-    pub fn awaitSnapshotEvent(self: *Runtime, last_seen_seq: u64, timeout_ms: i32) u64 {
-        const inst = &(self.term orelse return last_seen_seq);
-        return inst.awaitSnapshotEvent(last_seen_seq, timeout_ms) catch |err| {
-            self.lifecycle_state = .failed;
-            std.log.err("terminal snapshot event wait failed: {s}", .{@errorName(err)});
-            return last_seen_seq;
-        };
-    }
-
     pub fn snapshotEventSeq(self: *Runtime) u64 {
         const inst = &(self.term orelse return 0);
         return inst.snapshotEventSeq();
@@ -421,5 +479,15 @@ pub const Runtime = struct {
             _ = inst.awaitSnapshotEvent(inst.snapshotEventSeq(), 10) catch {};
         }
         if (!inst.isAlive()) return error.TransportUnavailable;
+    }
+
+    const PrepareCtx = struct {
+        runtime: *Runtime,
+        frame: FramePixels,
+    };
+
+    fn prepareFrameForQueue(ctx: *anyopaque, request: RenderPipeline.RenderRequest) anyerror!?PreparedRenderFrame {
+        const prepare_ctx: *PrepareCtx = @ptrCast(@alignCast(ctx));
+        return prepare_ctx.runtime.prepareSnapshotForRequest(prepare_ctx.frame, request) orelse return null;
     }
 };

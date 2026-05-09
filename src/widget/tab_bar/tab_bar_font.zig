@@ -1,3 +1,7 @@
+//! Responsibility: provide the Linux host tab bar bitmap font.
+//! Ownership: host widget layer owns its fallback chrome glyph data.
+//! Reason: avoids depending on terminal font shaping for host chrome labels.
+
 pub const glyph_w: c_int = 5;
 pub const glyph_h: c_int = 7;
 

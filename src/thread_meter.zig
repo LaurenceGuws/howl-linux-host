@@ -1,3 +1,7 @@
+//! Responsibility: sample Linux host thread runtime cost.
+//! Ownership: host-only timing telemetry; no terminal or render behavior.
+//! Reason: keeps optional diagnostics isolated from user-visible runtime paths.
+
 const builtin = @import("builtin");
 const std = @import("std");
 const c = @cImport({

@@ -1,3 +1,7 @@
+//! Responsibility: own the interactive Linux host executable entrypoint.
+//! Ownership: CLI parsing for normal host runs.
+//! Reason: keep process startup thin and delegate runtime policy to host_run.
+
 const std = @import("std");
 const host_run = @import("host_run.zig");
 

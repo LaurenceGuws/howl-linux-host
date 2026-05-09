@@ -1,3 +1,7 @@
+//! Responsibility: own Linux host tab bar labels and config.
+//! Ownership: host widget layer owns tab UX state.
+//! Reason: keeps tab presentation policy separate from terminal runtime tabs.
+
 const std = @import("std");
 const Shortcuts = @import("../../events.zig").Events.Shortcuts;
 

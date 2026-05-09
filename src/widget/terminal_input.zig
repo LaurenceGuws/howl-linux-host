@@ -1,5 +1,9 @@
+//! Responsibility: map Linux host input into howl-term input events.
+//! Ownership: key, modifier, mouse, and byte translation for terminal widgets.
+//! Reason: keep host event vocabulary separate from terminal runtime input.
+
 const Events = @import("../events.zig").Events;
-const term_runtime = @import("../howl-term/howl_term.zig").Runtime;
+const term_runtime = @import("../howl_term/howl_term.zig").Runtime;
 
 pub fn key(key_event: Events.Key) ?term_runtime.Key {
     return switch (key_event) {

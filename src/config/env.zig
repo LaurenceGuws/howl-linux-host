@@ -1,3 +1,7 @@
+//! Responsibility: expand environment-backed config paths.
+//! Ownership: shell-style environment substitution used during config load.
+//! Reason: keep host config loading deterministic and testable.
+
 const std = @import("std");
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;

@@ -1,3 +1,7 @@
+//! Responsibility: load Linux host configuration from Lua.
+//! Ownership: config field extraction, environment expansion, and default policy parsing.
+//! Reason: keep config I/O separate from typed config data.
+
 const std = @import("std");
 const howl_lua = @import("howl_lua");
 const Config = @import("../config.zig");

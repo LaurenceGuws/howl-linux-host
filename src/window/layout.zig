@@ -1,3 +1,7 @@
+//! Responsibility: own host window layout math.
+//! Ownership: logical-to-pixel scaling and terminal content placement.
+//! Reason: keep geometry policy outside drawing code.
+
 pub const Rect = struct {
     x: c_int,
     y: c_int,

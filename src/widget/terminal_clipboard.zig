@@ -1,3 +1,7 @@
+//! Responsibility: own terminal clipboard payload decoding.
+//! Ownership: OSC 52 base64 extraction for Linux host clipboard writes.
+//! Reason: keep clipboard protocol handling out of the widget owner.
+
 const std = @import("std");
 
 pub fn decodeOsc52(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {

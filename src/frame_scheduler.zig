@@ -1,3 +1,7 @@
+//! Responsibility: pace Linux host frame production.
+//! Ownership: frame interval timing and render wait decisions.
+//! Reason: keep scheduling policy explicit outside the SDL event loop.
+
 const std = @import("std");
 
 pub const FrameScheduler = struct {

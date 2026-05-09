@@ -1,6 +1,10 @@
+//! Responsibility: define Linux host configuration data.
+//! Ownership: loaded window, terminal, tab, font, shortcut, and policy settings.
+//! Reason: keep parsed config shape stable across host modules.
+
 const std = @import("std");
 const howl_lua = @import("howl_lua");
-const term_config = @import("howl-term/config.zig");
+const term_config = @import("howl_term/config.zig");
 const window_config = @import("config/window.zig");
 const TabBar = @import("widget/tab_bar/tab_bar.zig");
 

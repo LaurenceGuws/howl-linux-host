@@ -1,4 +1,8 @@
-const config = @import("../howl-term/config.zig");
+//! Responsibility: flatten terminal font configuration for runtime startup.
+//! Ownership: mono, symbol, and emoji fallback ordering for host config.
+//! Reason: keep host config shape separate from howl-term runtime calls.
+
+const config = @import("../howl_term/config.zig");
 
 pub fn flattenFallbacks(fonts: config.FontStack, buf: [][:0]const u8) []const [:0]const u8 {
     var n: usize = 0;

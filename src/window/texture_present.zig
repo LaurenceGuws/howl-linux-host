@@ -1,4 +1,6 @@
-//! HOT PATH: terminal texture present only. Do not add host chrome here.
+//! Responsibility: present terminal textures in the Linux host window.
+//! Ownership: SDL/GL texture blit setup and content rectangle submission.
+//! Reason: keep platform presentation code behind the window surface.
 
 pub fn drawTextureRect(comptime c: type, fb_w: c_int, fb_h: c_int, texture_id: u32, x: c_int, y: c_int, width: c_int, height: c_int) void {
     if (texture_id == 0 or width <= 0 or height <= 0) return;

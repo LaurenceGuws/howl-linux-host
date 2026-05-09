@@ -1,4 +1,6 @@
-//! Window present seam. Keep static chrome and hot-path texture work separate.
+//! Responsibility: own Linux host chrome layout and drawing entrypoints.
+//! Ownership: tab bar, scrollbar, and terminal content rectangle composition.
+//! Reason: keep host chrome separate from terminal rendering.
 
 const std = @import("std");
 const ChromeDraw = @import("chrome_draw.zig");

@@ -1,3 +1,7 @@
+//! Responsibility: run the Linux host event/render loop.
+//! Ownership: SDL lifecycle, app runtime, replay timing, and bounded host runs.
+//! Reason: keep executable entrypoints thin while host runtime policy stays reusable.
+
 const std = @import("std");
 const Window = @import("window.zig");
 const Events = @import("events.zig").Events;

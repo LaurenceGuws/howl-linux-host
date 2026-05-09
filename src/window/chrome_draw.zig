@@ -1,4 +1,6 @@
-//! STATIC CHROME: host UI only. Do not add VT frame work here.
+//! Responsibility: draw Linux host chrome primitives.
+//! Ownership: tab bar and scrollbar visual output.
+//! Reason: keep chrome drawing policy out of app state.
 
 const ChromeState = @import("chrome_state.zig");
 const Font = @import("../widget/tab_bar/tab_bar_font.zig");

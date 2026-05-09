@@ -1,4 +1,6 @@
-//! STATIC CHROME MODEL: host metadata only. No terminal frame work here.
+//! Responsibility: define Linux host chrome state snapshots.
+//! Ownership: tab, scrollbar, and focus state consumed during drawing.
+//! Reason: keep retained chrome state explicit between app and window modules.
 
 const Layout = @import("layout.zig");
 

@@ -1,3 +1,7 @@
+//! Responsibility: own Linux host app/tab orchestration.
+//! Ownership: terminal widgets, chrome state, render work collection, and presentation calls.
+//! Reason: keep SDL entrypoints separate from multi-tab host behavior.
+
 const std = @import("std");
 const Window = @import("window.zig");
 const Events = @import("events.zig").Events;
