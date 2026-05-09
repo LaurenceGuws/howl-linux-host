@@ -163,6 +163,19 @@ pub const Runtime = struct {
         };
     }
 
+    pub fn prepareSnapshotForRequest(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int, request: RenderPipeline.RenderRequest) ?PreparedRenderFrame {
+        const inst = &(self.term orelse return null);
+        const rw: u16 = @intCast(@max(render_width, 1));
+        const rh: u16 = @intCast(@max(render_height, 1));
+        const gw: u16 = @intCast(@max(grid_width, 1));
+        const gh: u16 = @intCast(@max(grid_height, 1));
+        return inst.prepareSnapshotForRequest(rw, rh, gw, gh, request) catch |err| {
+            self.lifecycle_state = .failed;
+            std.log.err("terminal prepare failed: {s}", .{@errorName(err)});
+            return null;
+        };
+    }
+
     pub fn submitPreparedSnapshot(self: *Runtime, prepared: *PreparedRenderFrame) ?RenderSnapshotResult {
         const inst = &(self.term orelse return .rendered);
         return inst.submitPreparedSnapshot(prepared) catch |err| {
@@ -185,6 +198,21 @@ pub const Runtime = struct {
     pub fn lastSubmittedFrame(self: *Runtime) ?RenderPipeline.SubmittedFrame {
         const inst = &(self.term orelse return null);
         return inst.lastSubmittedFrame();
+    }
+
+    pub fn renderedTextContains(self: *const Runtime, text: []const u8) bool {
+        const inst = &(self.term orelse return false);
+        return inst.renderedTextContains(text);
+    }
+
+    pub fn visibleTextContains(self: *const Runtime, text: []const u8) bool {
+        const inst = &(self.term orelse return false);
+        return inst.visibleTextContains(text);
+    }
+
+    pub fn inputBytesApplied(self: *const Runtime) u64 {
+        const inst = &(self.term orelse return 0);
+        return inst.inputBytesApplied();
     }
 
     pub fn syncFrameGeometry(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) bool {

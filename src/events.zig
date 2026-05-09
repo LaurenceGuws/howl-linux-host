@@ -108,6 +108,10 @@ pub const Events = struct {
         return changed;
     }
 
+    pub fn publishTextInput(self: *Events, bytes: []const u8) void {
+        appendBytesEvent(self, bytes);
+    }
+
     pub fn pollWindow(handle: *c.SDL_Window) Signal {
         return window.pollEventSignal(handle);
     }

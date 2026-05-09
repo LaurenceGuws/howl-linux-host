@@ -17,6 +17,7 @@ const Input = @import("terminal_input.zig");
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
     const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
+    const wake_wait_ms = 250;
 
     pub const SurfaceSnapshot = struct {
         surface: SurfaceHandle,
@@ -210,7 +211,8 @@ pub const Terminal = struct {
     }
 
     pub fn needsFrame(self: *Terminal) bool {
-        return switch (self.surface_executor.nextAction()) {
+        const action = self.surface_executor.nextAction();
+        return switch (action) {
             .submit, .present => true,
             .idle, .prepare => false,
         };
@@ -242,6 +244,9 @@ pub const Terminal = struct {
             .rendered => {
                 self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
                 self.markSurfaceSubmittedAndPresented();
+                if (self.surface_executor.nextAction() == .prepare) {
+                    self.signalPrepareWorker();
+                }
             },
             .rendered_more_pending => {
                 _ = self.snapshot_requeues.fetchAdd(1, .monotonic);
@@ -369,6 +374,18 @@ pub const Terminal = struct {
 
     pub fn lastRenderMetrics(self: *const Terminal) Runtime.RenderMetrics {
         return self.term.lastRenderMetrics();
+    }
+
+    pub fn renderedTextContains(self: *const Terminal, text: []const u8) bool {
+        return self.term.renderedTextContains(text);
+    }
+
+    pub fn visibleTextContains(self: *const Terminal, text: []const u8) bool {
+        return self.term.visibleTextContains(text);
+    }
+
+    pub fn inputBytesApplied(self: *const Terminal) u64 {
+        return self.term.inputBytesApplied();
     }
 
     fn scrollbarLayout(self: *const Terminal, texture_rect: window.Rect, scroll: Runtime.ScrollState) window.ScrollbarLayout {
@@ -696,7 +713,8 @@ fn wakeWorker(self: *Terminal) void {
     var event_wakes: u64 = 0;
 
     while (!self.stop_wake.load(.acquire)) {
-        if (self.surface_executor.nextAction() != .idle) {
+        const action = self.surface_executor.nextAction();
+        if (action != .idle) {
             wait_blocks += 1;
             window.c_win.SDL_Delay(16);
             reportWakeThread(self, &meter, waits, wake_hits, wait_blocks, event_wakes);
@@ -705,10 +723,17 @@ fn wakeWorker(self: *Terminal) void {
 
         waits += 1;
         const last_seen_seq = self.snapshot_quiet_seq.load(.acquire);
-        const event_seq = self.term.awaitSnapshotEvent(last_seen_seq, -1);
+        const event_seq = self.term.awaitSnapshotEvent(last_seen_seq, Terminal.wake_wait_ms);
         if (event_seq != last_seen_seq) {
             wake_hits += 1;
-            const published = if (self.term.snapshotToken()) |token| self.surface_executor.publishSnapshot(token, .opportunistic) != null else false;
+            const published = if (self.term.snapshotToken()) |token| blk: {
+                const pub_seq = self.surface_executor.publishSnapshot(token, .opportunistic);
+                if (pub_seq == null) self.snapshot_quiet_seq.store(event_seq, .release);
+                break :blk pub_seq != null;
+            } else blk: {
+                self.snapshot_quiet_seq.store(event_seq, .release);
+                break :blk false;
+            };
             if (published) {
                 event_wakes += 1;
                 self.refreshTabLabel();
@@ -752,9 +777,9 @@ fn prepareWorker(self: *Terminal) void {
     }
 }
 
-fn prepareFrameForExecutor(ctx: *anyopaque, _: Runtime.RenderPipeline.RenderRequest) anyerror!?Runtime.PreparedRenderFrame {
+fn prepareFrameForExecutor(ctx: *anyopaque, request: Runtime.RenderPipeline.RenderRequest) anyerror!?Runtime.PreparedRenderFrame {
     const self: *Terminal = @ptrCast(@alignCast(ctx));
-    return self.term.prepareLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
+    return self.term.prepareSnapshotForRequest(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h, request) orelse return null;
 }
 
 fn reportPrepareThread(
@@ -766,27 +791,13 @@ fn reportPrepareThread(
     failures: u64,
     empty_wakes: u64,
 ) void {
-    const sample = meter.sample() orelse return;
-    const surface_metrics = self.surface_executor.metricsSnapshot();
-    std.log.debug(
-        "perf host_prepare_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} prepared={} failures={} empty_wakes={} prep_req={} prep_coalesce={} forced_full={} full_req={} submit_reject={} presents={}",
-        .{
-            sample.cpuPct(),
-            @divTrunc(sample.wall_ns, std.time.ns_per_ms),
-            @divTrunc(sample.cpu_ns, std.time.ns_per_ms),
-            waits,
-            wake_hits,
-            prepared_count,
-            failures,
-            empty_wakes,
-            surface_metrics.prepare_requests,
-            surface_metrics.prepare_coalesces,
-            surface_metrics.prepare_forced_full,
-            surface_metrics.full_prepare_requests,
-            surface_metrics.submit_rejected,
-            surface_metrics.presents,
-        },
-    );
+    _ = self;
+    _ = meter;
+    _ = waits;
+    _ = wake_hits;
+    _ = prepared_count;
+    _ = failures;
+    _ = empty_wakes;
 }
 
 fn reportWakeThread(
@@ -797,19 +808,10 @@ fn reportWakeThread(
     wait_blocks: u64,
     event_wakes: u64,
 ) void {
-    const sample = meter.sample() orelse return;
-    const requeues = self.snapshot_requeues.load(.monotonic);
-    std.log.debug(
-        "perf host_wake_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} wait_blocks={} event_wakes={} snapshot_requeues={}",
-        .{
-            sample.cpuPct(),
-            @divTrunc(sample.wall_ns, std.time.ns_per_ms),
-            @divTrunc(sample.cpu_ns, std.time.ns_per_ms),
-            waits,
-            wake_hits,
-            wait_blocks,
-            event_wakes,
-            requeues,
-        },
-    );
+    _ = self;
+    _ = meter;
+    _ = waits;
+    _ = wake_hits;
+    _ = wait_blocks;
+    _ = event_wakes;
 }
