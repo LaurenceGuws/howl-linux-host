@@ -13,6 +13,13 @@ const thread_meter = @import("thread_meter.zig");
 const fps_log_every_frames: u64 = 200;
 const RenderStats = app_runtime.RenderStats;
 
+fn trace(comptime fmt: []const u8, args: anytype) void {
+    if (std.c.getenv("HOWL_TRACE_STDOUT") == null) return;
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    _ = std.posix.system.write(std.posix.STDOUT_FILENO, msg.ptr, msg.len);
+}
+
 pub const Options = struct {
     command: ?[]const u8 = null,
     shell: ?[]const u8 = null,
@@ -40,6 +47,7 @@ pub const Summary = struct {
 
 pub fn run(options: Options) !Summary {
     setCurrentThreadName("howl-main");
+    trace("howl-main event=start\n", .{});
     if (!Window.initVideo()) {
         std.debug.print("window init failed: {s}\n", .{Window.lastError()});
         return error.WindowInitFailed;
@@ -93,6 +101,7 @@ pub fn run(options: Options) !Summary {
     var next_fps_log_frame: u64 = fps_log_every_frames;
     var render_window = RenderStats{};
     var render_window_frames: u64 = 0;
+    var loop_count: u64 = 0;
     const bench_log = std.c.getenv("HOWL_BENCH_LOG") != null;
     reportRuntimeHz(bench_log, win);
     var duration_timer: Window.c_win.SDL_TimerID = 0;
@@ -110,19 +119,24 @@ pub fn run(options: Options) !Summary {
     }
 
     while (running) {
+        loop_count +%= 1;
         events.setMousePolicy(.{
             .listen_always = conf.window.mouse.listen_always,
             .link_hover = app.activeTerminalWantsLinkHover(),
             .terminal_bypass_mod = conf.window.mouse.terminal_bypass_mod,
         });
         var work = app.collectRenderWork();
+        trace("howl-main event=loop seq={} needs_frame={} frames={} polls={} waits={} idle={}\n", .{ loop_count, work.needs_frame, summary.frames, summary.polls, summary.waits, summary.idle_signals });
         const signal = if (work.needs_frame) blk: {
             summary.polls += 1;
+            trace("howl-main event=poll_enter seq={}\n", .{loop_count});
             break :blk Events.pollWindow(win);
         } else blk: {
             summary.waits += 1;
+            trace("howl-main event=wait_enter seq={}\n", .{loop_count});
             break :blk Events.waitWindow(win);
         };
+        trace("howl-main event=event_signal seq={} signal={s}\n", .{ loop_count, @tagName(signal) });
         if (signal == .quit) {
             summary.quit = true;
             running = false;
@@ -150,12 +164,15 @@ pub fn run(options: Options) !Summary {
 
         work = app.collectRenderWork();
         if (!work.needs_frame) {
+            trace("howl-main event=idle_after_events seq={} idle={}\n", .{ loop_count, summary.idle_signals });
             reportMainThread(&meter, summary);
             continue;
         }
 
         summary.frames += 1;
+        trace("howl-main event=render_enter seq={} frame={}\n", .{ loop_count, summary.frames });
         const render_stats = app.render(work);
+        trace("howl-main event=render_leave seq={} frame={} sync_us={} copy_us={} render_us={} present_us={}\n", .{ loop_count, summary.frames, render_stats.sync_us, render_stats.copy_us, render_stats.render_us, render_stats.present_us });
         render_window.sync_us += render_stats.sync_us;
         render_window.copy_us += render_stats.copy_us;
         render_window.render_us += render_stats.render_us;

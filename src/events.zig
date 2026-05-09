@@ -44,6 +44,7 @@ pub const Events = struct {
     mouse_terminal_bypass_mod: Mod,
 
     pub fn init(self: *Events) void {
+        window.clearQuitRequest();
         self.* = .{
             .input_events = undefined,
             .input_len = 0,
@@ -136,6 +137,14 @@ var watch_registered: bool = false;
 fn processEvent(event: *const c.SDL_Event) void {
     const events = active_events orelse return;
     switch (event.type) {
+        c.SDL_EVENT_QUIT,
+        c.SDL_EVENT_TERMINATING,
+        c.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+        c.SDL_EVENT_WINDOW_DESTROYED,
+        => {
+            window.requestQuit();
+            return;
+        },
         c.SDL_EVENT_TEXT_INPUT => {
             if (event.text.text != null) {
                 const p: [*:0]const u8 = @ptrCast(event.text.text);

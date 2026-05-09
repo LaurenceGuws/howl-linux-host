@@ -18,6 +18,13 @@ const Clipboard = @import("terminal_clipboard.zig");
 const Fonts = @import("terminal_fonts.zig");
 const Input = @import("terminal_input.zig");
 
+fn trace(comptime fmt: []const u8, args: anytype) void {
+    if (std.c.getenv("HOWL_TRACE_STDOUT") == null) return;
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    _ = std.posix.system.write(std.posix.STDOUT_FILENO, msg.ptr, msg.len);
+}
+
 fn setThreadName(thread: std.Thread, name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(thread.getHandle(), name.ptr);
 }
@@ -177,9 +184,11 @@ pub const Terminal = struct {
         const prepare_thread = try std.Thread.spawn(.{}, prepareWorker, .{self});
         setThreadName(prepare_thread, "howl-prepare");
         self.prepare_thread = prepare_thread;
+        trace("howl-main event=spawn thread=howl-prepare\n", .{});
         const wake_thread = try std.Thread.spawn(.{}, wakeWorker, .{self});
         setThreadName(wake_thread, "howl-wake");
         self.wake_thread = wake_thread;
+        trace("howl-main event=spawn thread=howl-wake\n", .{});
     }
 
     pub fn deinit(self: *Terminal) void {
@@ -280,6 +289,7 @@ pub const Terminal = struct {
 
     fn signalPrepareWorker(self: *Terminal) void {
         if (self.prepare_sem) |sem| window.c_win.SDL_SignalSemaphore(sem);
+        trace("howl-host event=prepare_signal\n", .{});
     }
 
     fn syncRenderBackpressure(self: *Terminal) void {
@@ -748,6 +758,7 @@ fn sameScrollState(a: Runtime.ScrollState, b: Runtime.ScrollState) bool {
 }
 
 fn wakeWorker(self: *Terminal) void {
+    trace("howl-wake event=start\n", .{});
     var meter = thread_meter.ThreadMeter.init(3 * std.time.ns_per_s);
     var waits: u64 = 0;
     var wake_hits: u64 = 0;
@@ -756,23 +767,28 @@ fn wakeWorker(self: *Terminal) void {
     while (!self.stop_wake.load(.acquire)) {
         waits += 1;
         const last_seen_seq = self.snapshot_quiet_seq.load(.acquire);
+        trace("howl-wake event=await_enter wait={} last_seen={}\n", .{ waits, last_seen_seq });
         const wake = self.term.awaitRenderWake(last_seen_seq);
+        trace("howl-wake event=await_leave wait={} last_seen={} event_seq={} published={}\n", .{ waits, last_seen_seq, wake.event_seq, wake.published });
         if (wake.event_seq != last_seen_seq) {
             wake_hits += 1;
-            if (!wake.published) self.snapshot_quiet_seq.store(wake.event_seq, .release);
+            self.snapshot_quiet_seq.store(wake.event_seq, .release);
             if (wake.published) {
                 event_wakes += 1;
                 self.extendActivePresentLease();
                 self.refreshTabLabel();
                 self.signalPrepareWorker();
                 Events.wakeWindow();
+                trace("howl-wake event=published_wake wait={} event_seq={}\n", .{ waits, wake.event_seq });
             }
         }
         reportWakeThread(self, &meter, waits, wake_hits, event_wakes);
     }
+    trace("howl-wake event=stop waits={} wake_hits={} event_wakes={}\n", .{ waits, wake_hits, event_wakes });
 }
 
 fn prepareWorker(self: *Terminal) void {
+    trace("howl-prepare event=start\n", .{});
     var meter = thread_meter.ThreadMeter.init(3 * std.time.ns_per_s);
     var waits: u64 = 0;
     var wake_hits: u64 = 0;
@@ -782,24 +798,34 @@ fn prepareWorker(self: *Terminal) void {
 
     while (!self.stop_prepare.load(.acquire)) {
         waits += 1;
+        trace("howl-prepare event=sem_wait_enter wait={}\n", .{waits});
         if (self.prepare_sem) |sem| {
             window.c_win.SDL_WaitSemaphore(sem);
         } else {
             return;
         }
+        trace("howl-prepare event=sem_wait_leave wait={} stop={}\n", .{ waits, self.stop_prepare.load(.acquire) });
         if (self.stop_prepare.load(.acquire)) break;
         wake_hits += 1;
 
         switch (self.term.prepareNextFrame(self.geometrySnapshot())) {
-            .idle => empty_wakes += 1,
+            .idle => {
+                empty_wakes += 1;
+                trace("howl-prepare event=prepare_result result=idle wait={} empty={}\n", .{ waits, empty_wakes });
+            },
             .prepared => {
                 prepared_count += 1;
+                trace("howl-prepare event=prepare_result result=prepared wait={} prepared={}\n", .{ waits, prepared_count });
                 Events.wakeWindow();
             },
-            .failed => failures += 1,
+            .failed => {
+                failures += 1;
+                trace("howl-prepare event=prepare_result result=failed wait={} failures={}\n", .{ waits, failures });
+            },
         }
         reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
     }
+    trace("howl-prepare event=stop waits={} wake_hits={} prepared={} empty={} failures={}\n", .{ waits, wake_hits, prepared_count, empty_wakes, failures });
 }
 
 fn reportPrepareThread(
