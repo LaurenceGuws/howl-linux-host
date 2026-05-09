@@ -117,9 +117,10 @@ pub const App = struct {
 
     pub fn collectRenderWork(self: *App) RenderWork {
         self.activeTab().maybeCommitGridResize();
-        const terminal_frame = self.activeTab().needsFrame();
+        const now_ns = Window.c_win.SDL_GetTicksNS();
+        const terminal_frame = self.activeTab().needsContentFrame(now_ns);
         return .{
-            .needs_frame = terminal_frame,
+            .needs_frame = terminal_frame or self.activeTab().needsPresentationFrame(now_ns),
             .terminal_frame = terminal_frame,
         };
     }

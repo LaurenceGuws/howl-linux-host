@@ -32,6 +32,8 @@ fn lockMutex(mutex: *std.atomic.Mutex) void {
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
     const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
+    const content_update_interval_ns = std.time.ns_per_s / 120;
+    const active_present_lease_ns = 100 * std.time.ns_per_ms;
     const wake_wait_ms = 250;
 
     pub const SurfaceMetrics = Runtime.SurfaceMetrics;
@@ -64,6 +66,8 @@ pub const Terminal = struct {
     last_resize_ns: u64,
     snapshot_quiet_seq: std.atomic.Value(u64),
     snapshot_requeues: std.atomic.Value(u64),
+    last_content_update_ns: std.atomic.Value(u64),
+    active_present_until_ns: std.atomic.Value(u64),
     wake_thread: ?std.Thread,
     prepare_thread: ?std.Thread,
     prepare_sem: ?*window.c_win.SDL_Semaphore,
@@ -129,6 +133,8 @@ pub const Terminal = struct {
             .last_resize_ns = 0,
             .snapshot_quiet_seq = std.atomic.Value(u64).init(0),
             .snapshot_requeues = std.atomic.Value(u64).init(0),
+            .last_content_update_ns = std.atomic.Value(u64).init(0),
+            .active_present_until_ns = std.atomic.Value(u64).init(0),
             .wake_thread = null,
             .prepare_thread = null,
             .prepare_sem = null,
@@ -240,8 +246,23 @@ pub const Terminal = struct {
         return self.term.needsFrame();
     }
 
+    pub fn hasQueuedRenderWork(self: *Terminal) bool {
+        return self.term.hasQueuedRenderWork();
+    }
+
+    pub fn needsPresentationFrame(self: *Terminal, now_ns: u64) bool {
+        return self.hasQueuedRenderWork() or now_ns < self.active_present_until_ns.load(.acquire);
+    }
+
+    pub fn needsContentFrame(self: *Terminal, now_ns: u64) bool {
+        if (!self.term.needsFrame()) return false;
+        const last_update_ns = self.last_content_update_ns.load(.acquire);
+        return last_update_ns == 0 or now_ns -| last_update_ns >= content_update_interval_ns;
+    }
+
     pub fn render(self: *Terminal) void {
         defer self.syncRenderBackpressure();
+        self.extendActivePresentLease();
         switch (self.term.renderReadyFrame()) {
             .idle, .stale, .failed => return,
             .needs_prepare => {
@@ -252,6 +273,7 @@ pub const Terminal = struct {
             .rendered => {
                 const surface = self.term.surfaceState().surface;
                 if (surface.texture_id != 0) self.last_surface = surface;
+                self.last_content_update_ns.store(window.c_win.SDL_GetTicksNS(), .release);
                 self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
                 if (self.term.needsPrepare()) {
                     self.signalPrepareWorker();
@@ -260,6 +282,7 @@ pub const Terminal = struct {
             .rendered_more_pending => {
                 const surface = self.term.surfaceState().surface;
                 if (surface.texture_id != 0) self.last_surface = surface;
+                self.last_content_update_ns.store(window.c_win.SDL_GetTicksNS(), .release);
                 _ = self.snapshot_requeues.fetchAdd(1, .monotonic);
                 self.signalPrepareWorker();
                 Events.wakeWindow();
@@ -273,6 +296,11 @@ pub const Terminal = struct {
 
     fn syncRenderBackpressure(self: *Terminal) void {
         self.term.setRenderBackpressure(self.term.hasQueuedRenderWork());
+    }
+
+    fn extendActivePresentLease(self: *Terminal) void {
+        const until_ns = window.c_win.SDL_GetTicksNS() +| active_present_lease_ns;
+        self.active_present_until_ns.store(until_ns, .release);
     }
 
     fn geometrySnapshot(self: *Terminal) Runtime.FramePixels {
@@ -756,6 +784,7 @@ fn wakeWorker(self: *Terminal) void {
             if (!wake.published) self.snapshot_quiet_seq.store(wake.event_seq, .release);
             if (wake.published) {
                 event_wakes += 1;
+                self.extendActivePresentLease();
                 self.refreshTabLabel();
                 self.signalPrepareWorker();
                 Events.wakeWindow();
@@ -784,6 +813,12 @@ fn prepareWorker(self: *Terminal) void {
             window.c_win.SDL_Delay(16);
         }
         wake_hits += 1;
+
+        const now_ns = window.c_win.SDL_GetTicksNS();
+        const last_update_ns = self.last_content_update_ns.load(.acquire);
+        if (last_update_ns != 0 and now_ns -| last_update_ns < Terminal.content_update_interval_ns) {
+            window.c_win.SDL_DelayPrecise(Terminal.content_update_interval_ns - (now_ns -| last_update_ns));
+        }
 
         switch (self.term.prepareNextFrame(self.geometrySnapshot())) {
             .idle => empty_wakes += 1,
