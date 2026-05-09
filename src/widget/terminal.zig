@@ -18,6 +18,10 @@ const Clipboard = @import("terminal_clipboard.zig");
 const Fonts = @import("terminal_fonts.zig");
 const Input = @import("terminal_input.zig");
 
+fn setThreadName(thread: std.Thread, name: [:0]const u8) void {
+    if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(thread.getHandle(), name.ptr);
+}
+
 fn lockMutex(mutex: *std.atomic.Mutex) void {
     while (!mutex.tryLock()) {
         std.atomic.spinLoopHint();
@@ -163,8 +167,12 @@ pub const Terminal = struct {
         self.syncInputFocus();
         self.refreshTabLabel();
         self.prepare_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.PrepareSemaphoreUnavailable;
-        self.prepare_thread = try std.Thread.spawn(.{}, prepareWorker, .{self});
-        self.wake_thread = try std.Thread.spawn(.{}, wakeWorker, .{self});
+        const prepare_thread = try std.Thread.spawn(.{}, prepareWorker, .{self});
+        setThreadName(prepare_thread, "howl-prepare");
+        self.prepare_thread = prepare_thread;
+        const wake_thread = try std.Thread.spawn(.{}, wakeWorker, .{self});
+        setThreadName(wake_thread, "howl-wake");
+        self.wake_thread = wake_thread;
     }
 
     pub fn deinit(self: *Terminal) void {

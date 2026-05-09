@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
         "--terminals",
         nargs="+",
         choices=("howl", "kitty", "ghostty", "alacritty", "wezterm"),
-        default=["howl", "kitty", "ghostty"],
+        default=["howl", "alacritty", "kitty"],
     )
     parser.add_argument("--howl-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_term")
     parser.add_argument("--stress-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_ascii_rain_stress")
@@ -76,6 +76,45 @@ def read_proc_stat(pid: int) -> dict[str, object] | None:
         }
     except (IndexError, ValueError):
         return None
+
+
+def read_task_stat(pid: int, tid: int) -> dict[str, object] | None:
+    try:
+        raw = Path(f"/proc/{pid}/task/{tid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    end = raw.rfind(")")
+    if end < 0:
+        return None
+    prefix = raw[: end + 1]
+    rest = raw[end + 2 :].split()
+    try:
+        return {
+            "pid": pid,
+            "tid": tid,
+            "comm": prefix[prefix.find("(") + 1 : -1],
+            "state": rest[0],
+            "utime_ticks": int(rest[11]),
+            "stime_ticks": int(rest[12]),
+        }
+    except (IndexError, ValueError):
+        return None
+
+
+def read_task_stats(pid: int) -> list[dict[str, object]]:
+    task_dir = Path(f"/proc/{pid}/task")
+    try:
+        entries = list(task_dir.iterdir())
+    except OSError:
+        return []
+    stats = []
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        stat = read_task_stat(pid, int(entry.name))
+        if stat is not None:
+            stats.append(stat)
+    return stats
 
 
 def read_proc_status(pid: int) -> dict[str, int]:
@@ -232,7 +271,9 @@ class ResourceSampler:
         self.last_gpu_by_pid: dict[int, dict[str, object]] = {}
         self.last_host_gpu: dict[str, object] | None = None
         self.prev_ticks: dict[int, int] = {}
+        self.prev_thread_ticks: dict[tuple[int, int], int] = {}
         self.prev_time: float | None = None
+        self.hottest_threads: dict[tuple[int, int], dict[str, object]] = {}
         self.samples = 0
         self.peak_rss_kib = 0
         self.peak_vram_mib: int | None = None
@@ -272,6 +313,7 @@ class ResourceSampler:
             self.peak_gpu_memory_used_mib = max(self.peak_gpu_memory_used_mib or 0, used_mib)
 
         processes = []
+        process_names: dict[int, str] = {}
         total_ticks = 0
         total_rss_kib = 0
         total_hwm_kib = 0
@@ -307,6 +349,7 @@ class ResourceSampler:
             total_vms_kib += vms_kib
             total_threads += threads
             total_fds += fd_count
+            process_names[pid] = str(stat["comm"])
             processes.append(
                 {
                     "pid": pid,
@@ -324,12 +367,48 @@ class ResourceSampler:
             )
 
         cpu_percent: float | None = None
+        elapsed: float | None = None
         if self.prev_time is not None:
             prev_total = sum(self.prev_ticks.get(pid, 0) for pid in pids)
             elapsed = max(now - self.prev_time, 0.001)
             cpu_percent = max(0.0, ((total_ticks - prev_total) / CPU_HZ) / elapsed * 100.0)
             self.max_cpu_percent = max(self.max_cpu_percent, cpu_percent)
+
+        thread_cpu = []
+        next_thread_ticks: dict[tuple[int, int], int] = {}
+        for pid in pids:
+            for thread in read_task_stats(pid):
+                tid = int(thread["tid"])
+                key = (pid, tid)
+                ticks = int(thread["utime_ticks"]) + int(thread["stime_ticks"])
+                next_thread_ticks[key] = ticks
+                thread_cpu_percent: float | None = None
+                if elapsed is not None and key in self.prev_thread_ticks:
+                    thread_cpu_percent = max(0.0, ((ticks - self.prev_thread_ticks[key]) / CPU_HZ) / elapsed * 100.0)
+                    current_hot = self.hottest_threads.get(key)
+                    if current_hot is None or thread_cpu_percent > float(current_hot["max_cpu_percent"]):
+                        self.hottest_threads[key] = {
+                            "pid": pid,
+                            "tid": tid,
+                            "process_name": process_names.get(pid),
+                            "thread_name": thread["comm"],
+                            "max_cpu_percent": round(thread_cpu_percent, 2),
+                        }
+                thread_cpu.append(
+                    {
+                        "pid": pid,
+                        "tid": tid,
+                        "process_name": process_names.get(pid),
+                        "thread_name": thread["comm"],
+                        "state": thread["state"],
+                        "cpu_ticks": ticks,
+                        "cpu_percent": round(thread_cpu_percent, 2) if thread_cpu_percent is not None else None,
+                    }
+                )
+
+        thread_cpu.sort(key=lambda item: -1.0 if item["cpu_percent"] is None else -float(item["cpu_percent"]))
         self.prev_ticks = {proc["pid"]: int(proc["cpu_ticks"]) for proc in processes}
+        self.prev_thread_ticks = next_thread_ticks
         self.prev_time = now
 
         self.samples += 1
@@ -355,6 +434,8 @@ class ResourceSampler:
             "gpu_source": "nvidia-smi compute-apps" if vram_available else None,
             "host_gpu": host_gpu,
             "processes": processes,
+            "thread_cpu": thread_cpu,
+            "top_thread_cpu": thread_cpu[:12],
         }
         self.fh.write(json.dumps(event, separators=(",", ":")) + "\n")
         self.fh.flush()
@@ -372,6 +453,7 @@ class ResourceSampler:
             "max_gpu_util_percent": self.max_gpu_util_percent,
             "peak_gpu_memory_used_mib": self.peak_gpu_memory_used_mib,
             "gpu_available": self.gpu_available,
+            "hottest_threads": sorted(self.hottest_threads.values(), key=lambda item: -float(item["max_cpu_percent"]))[:16],
             "path": str(self.out_path),
         }
 

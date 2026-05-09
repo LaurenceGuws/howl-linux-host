@@ -64,6 +64,7 @@ const RunClock = struct {
 };
 
 pub fn run(options: Options) !Summary {
+    setCurrentThreadName("howl-main");
     if (!Window.initVideo()) {
         std.debug.print("window init failed: {s}\n", .{Window.lastError()});
         return error.WindowInitFailed;
@@ -223,6 +224,10 @@ pub fn run(options: Options) !Summary {
     }
 
     return summary;
+}
+
+fn setCurrentThreadName(name: [:0]const u8) void {
+    if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(std.c.pthread_self(), name.ptr);
 }
 
 fn applyOverrides(conf: *Config.Value, options: Options) !void {
