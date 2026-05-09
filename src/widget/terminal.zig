@@ -17,7 +17,6 @@ const Input = @import("terminal_input.zig");
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
     const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
-    const max_snapshot_render_passes = 4;
 
     pub const SurfaceSnapshot = struct {
         surface: SurfaceHandle,
@@ -46,8 +45,7 @@ pub const Terminal = struct {
     last_resize_ns: u64,
     snapshot_ready: std.atomic.Value(bool),
     snapshot_quiet_seq: std.atomic.Value(u64),
-    snapshot_bursts: std.atomic.Value(u64),
-    snapshot_extra_passes: std.atomic.Value(u64),
+    snapshot_requeues: std.atomic.Value(u64),
     wake_thread: ?std.Thread,
     stop_wake: std.atomic.Value(bool),
     window_focused: bool,
@@ -109,8 +107,7 @@ pub const Terminal = struct {
             .last_resize_ns = 0,
             .snapshot_ready = std.atomic.Value(bool).init(false),
             .snapshot_quiet_seq = std.atomic.Value(u64).init(0),
-            .snapshot_bursts = std.atomic.Value(u64).init(0),
-            .snapshot_extra_passes = std.atomic.Value(u64).init(0),
+            .snapshot_requeues = std.atomic.Value(u64).init(0),
             .wake_thread = null,
             .stop_wake = std.atomic.Value(bool).init(false),
             .window_focused = true,
@@ -202,24 +199,20 @@ pub const Terminal = struct {
     }
 
     pub fn render(self: *Terminal) void {
-        var pass: usize = 0;
-        while (pass < max_snapshot_render_passes) : (pass += 1) {
-            const again = self.term.renderLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
-                self.snapshot_ready.store(false, .release);
-                return;
-            };
-            const surface = self.term.surfaceState().surface;
-            if (surface.texture_id != 0) self.last_surface = surface;
-            if (!again) {
-                if (pass > 0) _ = self.snapshot_extra_passes.fetchAdd(pass, .monotonic);
-                self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
-                self.snapshot_ready.store(false, .release);
-                return;
-            }
+        const again = self.term.renderLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
+            self.snapshot_ready.store(false, .release);
+            return;
+        };
+        const surface = self.term.surfaceState().surface;
+        if (surface.texture_id != 0) self.last_surface = surface;
+        if (again) {
+            _ = self.snapshot_requeues.fetchAdd(1, .monotonic);
+            self.snapshot_ready.store(true, .release);
+            Events.wakeWindow();
+            return;
         }
-        _ = self.snapshot_bursts.fetchAdd(1, .monotonic);
-        _ = self.snapshot_extra_passes.fetchAdd(max_snapshot_render_passes - 1, .monotonic);
-        self.snapshot_ready.store(true, .release);
+        self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
+        self.snapshot_ready.store(false, .release);
     }
 
     fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
@@ -686,10 +679,9 @@ fn reportWakeThread(
     event_wakes: u64,
 ) void {
     const sample = meter.sample() orelse return;
-    const bursts = self.snapshot_bursts.load(.monotonic);
-    const extra_passes = self.snapshot_extra_passes.load(.monotonic);
+    const requeues = self.snapshot_requeues.load(.monotonic);
     std.log.debug(
-        "perf host_wake_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} wait_blocks={} event_wakes={} snapshot_bursts={} extra_passes={}",
+        "perf host_wake_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} wait_blocks={} event_wakes={} snapshot_requeues={}",
         .{
             sample.cpuPct(),
             @divTrunc(sample.wall_ns, std.time.ns_per_ms),
@@ -698,8 +690,7 @@ fn reportWakeThread(
             wake_hits,
             wait_blocks,
             event_wakes,
-            bursts,
-            extra_passes,
+            requeues,
         },
     );
 }

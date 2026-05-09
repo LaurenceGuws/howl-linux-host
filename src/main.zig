@@ -102,6 +102,7 @@ pub fn main(init: std.process.Init) !void {
     var next_fps_log_frame: u64 = fps_log_every_frames;
     var render_window = RenderStats{};
     var render_window_frames: u64 = 0;
+    var next_render_not_before_ns: u64 = 0;
     while (running) {
         if (run_clock) |clock| if (clock.expired()) break;
         events.setMousePolicy(.{
@@ -110,8 +111,13 @@ pub fn main(init: std.process.Init) !void {
             .terminal_bypass_mod = conf.window.mouse.terminal_bypass_mod,
         });
         var work = app.collectRenderWork();
-        const wait_ms = waitTimeoutMs(run_clock, app.activeTerminalPassiveHoverWake(), app.activeTab().nextWaitTimeoutMs());
-        const signal = if (work.needs_frame) blk: {
+        const wait_ms = framePacedWaitTimeoutMs(
+            waitTimeoutMs(run_clock, app.activeTerminalPassiveHoverWake(), app.activeTab().nextWaitTimeoutMs()),
+            work.needs_frame,
+            next_render_not_before_ns,
+        );
+        const frame_due = !work.needs_frame or Window.c_win.SDL_GetTicksNS() >= next_render_not_before_ns;
+        const signal = if (work.needs_frame and frame_due) blk: {
             polls += 1;
             break :blk Events.pollWindow(win);
         } else blk: {
@@ -136,13 +142,15 @@ pub fn main(init: std.process.Init) !void {
         app.resize(size.width, size.height, logical_size.width, logical_size.height);
 
         work = app.collectRenderWork();
-        if (!work.needs_frame and signal == .none) {
+        const should_render = work.needs_frame and Window.c_win.SDL_GetTicksNS() >= next_render_not_before_ns;
+        if (!should_render) {
             reportMainThread(&meter, polls, waits, frames, idle_signals);
             continue;
         }
 
         frames += 1;
         const render_stats = app.render(work);
+        next_render_not_before_ns = if (Window.preferredFrameIntervalNs(win)) |interval_ns| Window.c_win.SDL_GetTicksNS() + interval_ns else 0;
         render_window.sync_us += render_stats.sync_us;
         render_window.copy_us += render_stats.copy_us;
         render_window.render_us += render_stats.render_us;
@@ -235,6 +243,17 @@ fn waitTimeoutMs(run_clock: ?RunClock, passive_hover_wake: bool, tab_timeout_ms:
     const merged_timeout: c_int = if (passive_timeout < 0) tab_timeout_ms else if (tab_timeout_ms < 0) passive_timeout else @min(passive_timeout, tab_timeout_ms);
     const clock = run_clock orelse return merged_timeout;
     return clock.waitTimeoutMs(merged_timeout);
+}
+
+fn framePacedWaitTimeoutMs(base_timeout_ms: c_int, needs_frame: bool, next_render_not_before_ns: u64) c_int {
+    if (!needs_frame) return base_timeout_ms;
+    if (next_render_not_before_ns == 0) return 0;
+    const now_ns = Window.c_win.SDL_GetTicksNS();
+    if (now_ns >= next_render_not_before_ns) return 0;
+    const remaining_ns = next_render_not_before_ns - now_ns;
+    const frame_timeout: c_int = @intCast(@max(@as(u64, 1), @divTrunc(remaining_ns + std.time.ns_per_ms - 1, std.time.ns_per_ms)));
+    if (base_timeout_ms < 0) return frame_timeout;
+    return @min(base_timeout_ms, frame_timeout);
 }
 
 fn reportMainThread(

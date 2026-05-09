@@ -84,6 +84,19 @@ pub fn windowLogicalSize(handle: Ptr) Size {
     return .{ .width = width, .height = height };
 }
 
+pub fn preferredFrameIntervalNs(handle: Ptr) ?u64 {
+    const display = c.SDL_GetDisplayForWindow(handle);
+    if (display == 0) return null;
+    const mode = c.SDL_GetCurrentDisplayMode(display) orelse return null;
+    if (mode.*.refresh_rate_numerator > 0 and mode.*.refresh_rate_denominator > 0) {
+        return @max(1, @divTrunc(@as(u64, @intCast(mode.*.refresh_rate_denominator)) * std.time.ns_per_s, @as(u64, @intCast(mode.*.refresh_rate_numerator))));
+    }
+    if (mode.*.refresh_rate > 0.0) {
+        return @max(1, @as(u64, @intFromFloat(@round(@as(f64, @floatFromInt(std.time.ns_per_s)) / @as(f64, @floatCast(mode.*.refresh_rate))))));
+    }
+    return null;
+}
+
 pub fn hasInputFocus(handle: Ptr) bool {
     return (c.SDL_GetWindowFlags(handle) & c.SDL_WINDOW_INPUT_FOCUS) != 0;
 }
