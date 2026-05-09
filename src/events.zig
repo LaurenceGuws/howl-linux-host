@@ -37,6 +37,7 @@ pub const Events = struct {
     shortcut_buf: [64]Shortcuts.Action,
     shortcut_len: usize,
     window_geometry_changed: bool,
+    window_focus_changed: ?bool,
     last_mouse_x: i32,
     last_mouse_y: i32,
     mouse_listen_always: bool,
@@ -54,6 +55,7 @@ pub const Events = struct {
             .shortcut_buf = undefined,
             .shortcut_len = 0,
             .window_geometry_changed = false,
+            .window_focus_changed = null,
             .last_mouse_x = 0,
             .last_mouse_y = 0,
             .mouse_listen_always = false,
@@ -126,6 +128,12 @@ pub const Events = struct {
         return changed;
     }
 
+    pub fn drainWindowFocusChanged(self: *Events) ?bool {
+        const focused = self.window_focus_changed;
+        self.window_focus_changed = null;
+        return focused;
+    }
+
     pub fn pushReplayKeys(handle: *c.SDL_Window, bytes: []const u8) void {
         for (bytes) |byte| pushReplayKeyDown(handle, byte);
     }
@@ -159,6 +167,14 @@ fn processEvent(event: *const c.SDL_Event) void {
         c.SDL_EVENT_WINDOW_DESTROYED,
         => {
             window.requestQuit();
+            return;
+        },
+        c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
+            events.window_focus_changed = true;
+            return;
+        },
+        c.SDL_EVENT_WINDOW_FOCUS_LOST => {
+            events.window_focus_changed = false;
             return;
         },
         c.SDL_EVENT_TEXT_INPUT => {

@@ -110,13 +110,12 @@ pub fn run(options: Options) !Summary {
         main_window.input_injections += 1;
         Events.wakeWindow();
     }
-
+    events.setMousePolicy(.{
+        .listen_always = conf.window.mouse.listen_always,
+        .link_hover = app.activeTerminalWantsLinkHover(),
+        .terminal_bypass_mod = conf.window.mouse.terminal_bypass_mod,
+    });
     while (running) {
-        events.setMousePolicy(.{
-            .listen_always = conf.window.mouse.listen_always,
-            .link_hover = app.activeTerminalWantsLinkHover(),
-            .terminal_bypass_mod = conf.window.mouse.terminal_bypass_mod,
-        });
         var work = app.collectRenderWork();
         const signal = if (work.needs_frame) blk: {
             summary.polls += 1;
@@ -136,14 +135,13 @@ pub fn run(options: Options) !Summary {
             summary.idle_signals += 1;
             main_window.idle_signals += 1;
         }
-        app.setWindowFocused(Window.hasInputFocus(win));
-        app.serviceHostEffects();
+        if (events.drainWindowFocusChanged()) |focused| app.setWindowFocused(focused);
 
         try app.drainShortcuts(&events);
         app.drainActiveInput(&events);
         app.handleActiveScrollInput(&events);
         app.serviceHostEffects();
-        summary.input_bytes_applied = app.activeTab().inputBytesApplied();
+        if (options.input_text != null) summary.input_bytes_applied = app.activeTab().inputBytesApplied();
         if (!summary.visible_text_seen) {
             if (options.rendered_text) |text| summary.visible_text_seen = app.activeTab().visibleTextContains(text);
         }

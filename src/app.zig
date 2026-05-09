@@ -116,26 +116,28 @@ pub const App = struct {
     }
 
     pub fn collectRenderWork(self: *App) RenderWork {
-        self.activeTab().maybeCommitGridResize();
+        const tab = self.activeTab();
+        tab.maybeCommitGridResize();
         const now_ns = Window.c_win.SDL_GetTicksNS();
-        const terminal_frame = self.activeTab().needsContentFrame(now_ns);
+        const terminal_frame = tab.needsContentFrame(now_ns);
         return .{
-            .needs_frame = terminal_frame or self.activeTab().needsPresentationFrame(now_ns),
+            .needs_frame = terminal_frame or tab.needsPresentationFrame(now_ns),
             .terminal_frame = terminal_frame,
         };
     }
 
     pub fn render(self: *App, work: RenderWork) RenderStats {
-        if (work.terminal_frame) self.activeTab().render();
-        const term_metrics = self.activeTab().lastRenderMetrics();
-        const surface_metrics = self.activeTab().takeSurfaceMetrics();
+        const tab = self.activeTab();
+        if (work.terminal_frame) tab.render();
+        const term_metrics = tab.lastRenderMetrics();
+        const surface_metrics = tab.takeSurfaceMetrics();
         const texture_rect = self.textureRect();
-        const surface = self.activeTab().surfaceSnapshot();
-        const chrome = self.activeTab().chromeSnapshot(texture_rect);
+        const surface = tab.surfaceSnapshot();
+        const chrome = tab.chromeSnapshot(texture_rect);
         var tab_chrome_buf: [max_tabs]TabChrome = undefined;
         const tab_chrome = self.tabChrome(tab_chrome_buf[0..]);
         var label_buf: [max_tabs][]const u8 = undefined;
-        for (tab_chrome, 0..) |tab, i| label_buf[i] = tab.label;
+        for (tab_chrome, 0..) |chrome_item, i| label_buf[i] = chrome_item.label;
         const present_us = Window.presentTimedUs(&self.present, .{
             .texture_id = surface.surface.texture_id,
             .texture_rect = texture_rect,

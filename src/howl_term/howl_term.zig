@@ -80,6 +80,7 @@ pub const Runtime = struct {
     };
 
     pub const RenderMetrics = term_core.RenderMetrics;
+    pub const PrepareMetrics = term_core.PrepareMetrics;
     pub const ScrollState = struct {
         viewport_rows: u16,
         scrollback_count: usize,
@@ -141,6 +142,7 @@ pub const Runtime = struct {
     term: ?term_core = null,
     render_queue: term_core.SurfaceExecutor = .{},
     lifecycle_state: LifecycleState = .stopped,
+    last_prepare_metrics: PrepareMetrics = .{},
 
     pub fn init(self: *Runtime, config: StartConfig) !void {
         self.lifecycle_state = .starting;
@@ -179,11 +181,19 @@ pub const Runtime = struct {
 
     fn prepareSnapshotForRequest(self: *Runtime, frame: FramePixels, request: RenderPipeline.RenderRequest) ?PreparedRenderFrame {
         const inst = &(self.term orelse return null);
-        return inst.prepareSnapshotForRequestIfDirty(frame.renderWidth(), frame.renderHeight(), frame.gridWidth(), frame.gridHeight(), request) catch |err| {
+        const prepared = inst.prepareSnapshotForRequestIfDirty(frame.renderWidth(), frame.renderHeight(), frame.gridWidth(), frame.gridHeight(), request) catch |err| {
             self.lifecycle_state = .failed;
             std.log.err("terminal prepare failed: {s}", .{@errorName(err)});
             return null;
         };
+        if (prepared) |frame_out| self.last_prepare_metrics = frame_out.prepare_metrics;
+        return prepared;
+    }
+
+    pub fn takePrepareMetrics(self: *Runtime) PrepareMetrics {
+        const out = self.last_prepare_metrics;
+        self.last_prepare_metrics = .{};
+        return out;
     }
 
     fn submitPreparedSnapshot(self: *Runtime, prepared: *PreparedRenderFrame) ?term_core.RenderSnapshotResult {

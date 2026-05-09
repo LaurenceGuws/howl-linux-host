@@ -23,11 +23,16 @@ fn setThreadName(thread: std.Thread, name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(thread.getHandle(), name.ptr);
 }
 
-fn lockMutex(mutex: *std.atomic.Mutex) void {
-    while (!mutex.tryLock()) {
-        std.atomic.spinLoopHint();
-        std.Thread.yield() catch {};
+const ThreadMutex = struct {
+    state: std.Io.Mutex = .init,
+
+    fn unlock(self: *ThreadMutex) void {
+        std.Io.Threaded.mutexUnlock(&self.state);
     }
+};
+
+fn lockMutex(mutex: *ThreadMutex) void {
+    std.Io.Threaded.mutexLock(&mutex.state);
 }
 
 pub const Terminal = struct {
@@ -56,7 +61,7 @@ pub const Terminal = struct {
     grid_px_h: c_int,
     pending_grid_px_w: c_int,
     pending_grid_px_h: c_int,
-    geometry_mutex: std.atomic.Mutex,
+    geometry_mutex: ThreadMutex,
     font_size_px: u16,
     default_font_size_px: u16,
     tab_label_buf: [128]u8,
@@ -123,7 +128,7 @@ pub const Terminal = struct {
             .grid_px_h = logical_h,
             .pending_grid_px_w = logical_w,
             .pending_grid_px_h = logical_h,
-            .geometry_mutex = .unlocked,
+            .geometry_mutex = .{},
             .font_size_px = font_size,
             .default_font_size_px = font_size,
             .tab_label_buf = undefined,
@@ -775,6 +780,23 @@ fn prepareWorker(self: *Terminal) void {
     var failures: u64 = 0;
     var empty_wakes: u64 = 0;
     var prepare_us: u64 = 0;
+    var geom_us: u64 = 0;
+    var step_us: u64 = 0;
+    var metrics_us: u64 = 0;
+    var wake_us: u64 = 0;
+    var term_us: u64 = 0;
+    var sync_us: u64 = 0;
+    var copy_us: u64 = 0;
+    var renderer_us: u64 = 0;
+    var input_us: u64 = 0;
+    var sparse_us: u64 = 0;
+    var clusters_us: u64 = 0;
+    var resolve_us: u64 = 0;
+    var shape_us: u64 = 0;
+    var group_us: u64 = 0;
+    var scene_us: u64 = 0;
+    var raster_us: u64 = 0;
+    var atlas_us: u64 = 0;
 
     while (!self.stop_prepare.load(.acquire)) {
         waits += 1;
@@ -787,18 +809,47 @@ fn prepareWorker(self: *Terminal) void {
         wake_hits += 1;
 
         const prepare_start_ns = window.c_win.SDL_GetTicksNS();
-        switch (self.term.prepareNextFrame(self.geometrySnapshot())) {
-            .idle => empty_wakes += 1,
-            .prepared => {
-                prepared_count += 1;
-                Events.wakeWindow();
+        const geom_start_ns = window.c_win.SDL_GetTicksNS();
+        const geom = self.geometrySnapshot();
+        geom_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| geom_start_ns, std.time.ns_per_us);
+        const step_start_ns = window.c_win.SDL_GetTicksNS();
+        switch (self.term.prepareNextFrame(geom)) {
+            .idle => {
+                step_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| step_start_ns, std.time.ns_per_us);
+                empty_wakes += 1;
             },
-            .failed => failures += 1,
+            .prepared => {
+                step_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| step_start_ns, std.time.ns_per_us);
+                prepared_count += 1;
+                const metrics_start_ns = window.c_win.SDL_GetTicksNS();
+                const metrics = self.term.takePrepareMetrics();
+                term_us += metrics.term_us;
+                sync_us += metrics.sync_us;
+                copy_us += metrics.copy_us;
+                renderer_us += metrics.renderer_us;
+                input_us += metrics.input_us;
+                sparse_us += metrics.sparse_us;
+                clusters_us += metrics.clusters_us;
+                resolve_us += metrics.resolve_us;
+                shape_us += metrics.shape_us;
+                group_us += metrics.group_us;
+                scene_us += metrics.scene_us;
+                raster_us += metrics.raster_us;
+                atlas_us += metrics.atlas_us;
+                metrics_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| metrics_start_ns, std.time.ns_per_us);
+                const wake_start_ns = window.c_win.SDL_GetTicksNS();
+                Events.wakeWindow();
+                wake_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| wake_start_ns, std.time.ns_per_us);
+            },
+            .failed => {
+                step_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| step_start_ns, std.time.ns_per_us);
+                failures += 1;
+            },
         }
         prepare_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| prepare_start_ns, std.time.ns_per_us);
         self.prepare_signal_pending.store(false, .release);
         if (self.term.needsPrepare()) self.signalPrepareWorker();
-        reportPrepareThread(self, &meter, &waits, &wake_hits, &prepared_count, &failures, &empty_wakes, &prepare_us);
+        reportPrepareThread(self, &meter, &waits, &wake_hits, &prepared_count, &failures, &empty_wakes, &prepare_us, &geom_us, &step_us, &metrics_us, &wake_us, &term_us, &sync_us, &copy_us, &renderer_us, &input_us, &sparse_us, &clusters_us, &resolve_us, &shape_us, &group_us, &scene_us, &raster_us, &atlas_us);
     }
 }
 
@@ -811,6 +862,23 @@ fn reportPrepareThread(
     failures: *u64,
     empty_wakes: *u64,
     prepare_us: *u64,
+    geom_us: *u64,
+    step_us: *u64,
+    metrics_us: *u64,
+    wake_us: *u64,
+    term_us: *u64,
+    sync_us: *u64,
+    copy_us: *u64,
+    renderer_us: *u64,
+    input_us: *u64,
+    sparse_us: *u64,
+    clusters_us: *u64,
+    resolve_us: *u64,
+    shape_us: *u64,
+    group_us: *u64,
+    scene_us: *u64,
+    raster_us: *u64,
+    atlas_us: *u64,
 ) void {
     _ = self;
     const sample = meter.sample() orelse return;
@@ -821,6 +889,23 @@ fn reportPrepareThread(
         .failed = failures.*,
         .empty_wakes = empty_wakes.*,
         .prepare_us = prepare_us.*,
+        .geom_us = geom_us.*,
+        .step_us = step_us.*,
+        .metrics_us = metrics_us.*,
+        .wake_us = wake_us.*,
+        .term_us = term_us.*,
+        .sync_us = sync_us.*,
+        .copy_us = copy_us.*,
+        .renderer_us = renderer_us.*,
+        .input_us = input_us.*,
+        .sparse_us = sparse_us.*,
+        .clusters_us = clusters_us.*,
+        .resolve_us = resolve_us.*,
+        .shape_us = shape_us.*,
+        .group_us = group_us.*,
+        .scene_us = scene_us.*,
+        .raster_us = raster_us.*,
+        .atlas_us = atlas_us.*,
     });
     waits.* = 0;
     wake_hits.* = 0;
@@ -828,6 +913,23 @@ fn reportPrepareThread(
     failures.* = 0;
     empty_wakes.* = 0;
     prepare_us.* = 0;
+    geom_us.* = 0;
+    step_us.* = 0;
+    metrics_us.* = 0;
+    wake_us.* = 0;
+    term_us.* = 0;
+    sync_us.* = 0;
+    copy_us.* = 0;
+    renderer_us.* = 0;
+    input_us.* = 0;
+    sparse_us.* = 0;
+    clusters_us.* = 0;
+    resolve_us.* = 0;
+    shape_us.* = 0;
+    group_us.* = 0;
+    scene_us.* = 0;
+    raster_us.* = 0;
+    atlas_us.* = 0;
 }
 
 fn reportWakeThread(

@@ -40,6 +40,23 @@ pub const PrepareCounters = struct {
     failed: u64 = 0,
     empty_wakes: u64 = 0,
     prepare_us: u64 = 0,
+    geom_us: u64 = 0,
+    step_us: u64 = 0,
+    metrics_us: u64 = 0,
+    wake_us: u64 = 0,
+    term_us: u64 = 0,
+    sync_us: u64 = 0,
+    copy_us: u64 = 0,
+    renderer_us: u64 = 0,
+    input_us: u64 = 0,
+    sparse_us: u64 = 0,
+    clusters_us: u64 = 0,
+    resolve_us: u64 = 0,
+    shape_us: u64 = 0,
+    group_us: u64 = 0,
+    scene_us: u64 = 0,
+    raster_us: u64 = 0,
+    atlas_us: u64 = 0,
 };
 
 pub fn cpu(thread: []const u8, cpu_pct: f64, wall_ns: u64, cpu_ns: u64) void {
@@ -106,10 +123,10 @@ pub fn cpuWake(thread: []const u8, cpu_pct: f64, wall_ns: u64, cpu_ns: u64, coun
 }
 
 pub fn cpuPrepare(thread: []const u8, cpu_pct: f64, wall_ns: u64, cpu_ns: u64, counters: PrepareCounters) void {
-    var buf: [512]u8 = undefined;
+    var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrint(
         &buf,
-        "{{\"thread\":\"{s}\",\"cpu_pct\":{d:.3},\"wall_ms\":{d:.3},\"cpu_us\":{d:.3},\"waits\":{},\"wake_hits\":{},\"prepared\":{},\"failed\":{},\"empty_wakes\":{},\"prepare_us\":{}}}\n",
+        "{{\"thread\":\"{s}\",\"cpu_pct\":{d:.3},\"wall_ms\":{d:.3},\"cpu_us\":{d:.3},\"waits\":{},\"wake_hits\":{},\"prepared\":{},\"failed\":{},\"empty_wakes\":{},\"prepare_us\":{},\"geom_us\":{},\"step_us\":{},\"metrics_us\":{},\"wake_us\":{},\"term_us\":{},\"sync_us\":{},\"copy_us\":{},\"renderer_us\":{},\"input_us\":{},\"sparse_us\":{},\"clusters_us\":{},\"resolve_us\":{},\"shape_us\":{},\"group_us\":{},\"scene_us\":{},\"raster_us\":{},\"atlas_us\":{}}}\n",
         .{
             thread,
             cpu_pct,
@@ -121,6 +138,23 @@ pub fn cpuPrepare(thread: []const u8, cpu_pct: f64, wall_ns: u64, cpu_ns: u64, c
             counters.failed,
             counters.empty_wakes,
             counters.prepare_us,
+            counters.geom_us,
+            counters.step_us,
+            counters.metrics_us,
+            counters.wake_us,
+            counters.term_us,
+            counters.sync_us,
+            counters.copy_us,
+            counters.renderer_us,
+            counters.input_us,
+            counters.sparse_us,
+            counters.clusters_us,
+            counters.resolve_us,
+            counters.shape_us,
+            counters.group_us,
+            counters.scene_us,
+            counters.raster_us,
+            counters.atlas_us,
         },
     ) catch return;
     write(msg);
