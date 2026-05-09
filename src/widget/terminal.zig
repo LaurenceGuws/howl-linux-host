@@ -28,8 +28,7 @@ pub const Terminal = struct {
     };
 
     term: Runtime,
-    surface_runtime: Runtime.TerminalSurface,
-    prepared_slot: Runtime.PreparedSlot,
+    surface_executor: Runtime.SurfaceExecutor,
     conf: *const config.Config,
     render_px_w: c_int,
     render_px_h: c_int,
@@ -94,8 +93,7 @@ pub const Terminal = struct {
         const font_size = @max(conf.font_size, 1);
         return .{
             .term = .{},
-            .surface_runtime = .{},
-            .prepared_slot = .{},
+            .surface_executor = .{},
             .conf = conf,
             .render_px_w = render_w,
             .render_px_h = render_h,
@@ -170,7 +168,7 @@ pub const Terminal = struct {
         self.wake_thread = null;
         if (self.prepare_thread) |t| t.join();
         self.prepare_thread = null;
-        self.prepared_slot.deinit();
+        self.surface_executor.deinit();
         if (self.prepare_sem) |sem| window.c_win.SDL_DestroySemaphore(sem);
         self.prepare_sem = null;
         if (self.link_cursor_active) window.useDefaultCursor();
@@ -212,28 +210,28 @@ pub const Terminal = struct {
     }
 
     pub fn needsFrame(self: *Terminal) bool {
-        return switch (self.surface_runtime.nextAction()) {
+        return switch (self.surface_executor.nextAction()) {
             .submit, .present => true,
             .idle, .prepare => false,
         };
     }
 
     pub fn render(self: *Terminal) void {
-        const decision = self.surface_runtime.takeValidatedSubmit();
+        const decision = self.surface_executor.takeValidatedSubmit();
         const result = switch (decision) {
             .submit => blk: {
-                var prepared = self.prepared_slot.take() orelse return;
+                var prepared = self.surface_executor.takePreparedForSubmit() orelse return;
                 defer prepared.deinit();
                 break :blk self.term.submitPreparedSnapshot(&prepared) orelse return;
             },
             .needs_full_prepare => {
-                self.prepared_slot.discard();
+                self.surface_executor.discardPrepared();
                 self.signalPrepareWorker();
                 Events.wakeWindow();
                 return;
             },
             .stale => {
-                self.prepared_slot.discard();
+                self.surface_executor.discardPrepared();
                 return;
             },
             .idle => return,
@@ -248,7 +246,7 @@ pub const Terminal = struct {
             .rendered_more_pending => {
                 _ = self.snapshot_requeues.fetchAdd(1, .monotonic);
                 self.markSurfaceSubmittedAndPresented();
-                _ = self.term.publishSnapshotToSurface(&self.surface_runtime, .opportunistic);
+                if (self.term.snapshotToken()) |token| _ = self.surface_executor.publishSnapshot(token, .opportunistic);
                 self.signalPrepareWorker();
                 Events.wakeWindow();
             },
@@ -261,8 +259,8 @@ pub const Terminal = struct {
 
     fn markSurfaceSubmittedAndPresented(self: *Terminal) void {
         const submitted = self.term.lastSubmittedFrame() orelse return;
-        self.surface_runtime.acceptSubmitted(submitted);
-        self.surface_runtime.markPresented();
+        self.surface_executor.acceptSubmitted(submitted);
+        self.surface_executor.markPresented();
     }
 
     fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
@@ -698,7 +696,7 @@ fn wakeWorker(self: *Terminal) void {
     var event_wakes: u64 = 0;
 
     while (!self.stop_wake.load(.acquire)) {
-        if (self.surface_runtime.nextAction() != .idle) {
+        if (self.surface_executor.nextAction() != .idle) {
             wait_blocks += 1;
             window.c_win.SDL_Delay(16);
             reportWakeThread(self, &meter, waits, wake_hits, wait_blocks, event_wakes);
@@ -710,7 +708,7 @@ fn wakeWorker(self: *Terminal) void {
         const event_seq = self.term.awaitSnapshotEvent(last_seen_seq, -1);
         if (event_seq != last_seen_seq) {
             wake_hits += 1;
-            const published = self.term.publishSnapshotToSurface(&self.surface_runtime, .opportunistic) != null;
+            const published = if (self.term.snapshotToken()) |token| self.surface_executor.publishSnapshot(token, .opportunistic) != null else false;
             if (published) {
                 event_wakes += 1;
                 self.refreshTabLabel();
@@ -742,33 +740,21 @@ fn prepareWorker(self: *Terminal) void {
         }
         wake_hits += 1;
 
-        if (self.surface_runtime.nextAction() != .prepare) {
-            empty_wakes += 1;
-            reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
-            continue;
+        switch (self.surface_executor.prepareStep(self, prepareFrameForExecutor)) {
+            .idle => empty_wakes += 1,
+            .prepared => {
+                prepared_count += 1;
+                Events.wakeWindow();
+            },
+            .failed => failures += 1,
         }
-
-        const request = self.surface_runtime.beginSynchronousRender() orelse {
-            empty_wakes += 1;
-            reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
-            continue;
-        };
-        const prepared = self.term.prepareLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
-            failures += 1;
-            reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
-            continue;
-        };
-        const prepared_meta = Runtime.RenderPipeline.PreparedFrame{
-            .token = request.token,
-            .required_base_seq = request.token.damage_base_seq,
-            .required_target_epoch = request.known_target_epoch,
-        };
-        self.prepared_slot.publish(prepared);
-        _ = self.surface_runtime.publishPrepared(prepared_meta);
-        prepared_count += 1;
-        Events.wakeWindow();
         reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
     }
+}
+
+fn prepareFrameForExecutor(ctx: *anyopaque, _: Runtime.RenderPipeline.RenderRequest) anyerror!?Runtime.PreparedRenderFrame {
+    const self: *Terminal = @ptrCast(@alignCast(ctx));
+    return self.term.prepareLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h);
 }
 
 fn reportPrepareThread(
@@ -781,7 +767,7 @@ fn reportPrepareThread(
     empty_wakes: u64,
 ) void {
     const sample = meter.sample() orelse return;
-    const surface_metrics = self.surface_runtime.metricsSnapshot();
+    const surface_metrics = self.surface_executor.metricsSnapshot();
     std.log.debug(
         "perf host_prepare_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} prepared={} failures={} empty_wakes={} prep_req={} prep_coalesce={} forced_full={} full_req={} submit_reject={} presents={}",
         .{

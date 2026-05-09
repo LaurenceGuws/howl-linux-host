@@ -21,6 +21,7 @@ pub const Runtime = struct {
     pub const PreparedSlot = term_core.PreparedSlot;
     pub const RenderPipeline = term_core.RenderPipeline;
     pub const TerminalSurface = term_core.TerminalSurface;
+    pub const SurfaceExecutor = term_core.SurfaceExecutor;
     pub const Key = term_core.Key;
     pub const Modifier = term_core.Modifier;
     pub const SurfaceState = struct {
