@@ -8,7 +8,6 @@ const Events = @import("events.zig").Events;
 const Config = @import("config.zig");
 const app_runtime = @import("app.zig");
 const App = app_runtime.App;
-const FrameScheduler = @import("frame_scheduler.zig").FrameScheduler;
 const thread_meter = @import("thread_meter.zig");
 
 const fps_log_every_frames: u64 = 200;
@@ -24,13 +23,6 @@ pub const Options = struct {
     input_after_ms: u64 = 1_000,
     rendered_text: ?[]const u8 = null,
 
-    fn runClock(self: Options) ?RunClock {
-        const duration = self.duration_ms orelse return null;
-        return .{
-            .duration_ms = duration,
-            .start_ms = Window.c_win.SDL_GetTicks(),
-        };
-    }
 };
 
 pub const Summary = struct {
@@ -44,23 +36,6 @@ pub const Summary = struct {
     rendered_text_seen: bool = false,
     quit: bool = false,
     failed: bool = false,
-};
-
-const RunClock = struct {
-    duration_ms: u64,
-    start_ms: u64,
-
-    fn expired(self: RunClock) bool {
-        return Window.c_win.SDL_GetTicks() -| self.start_ms >= self.duration_ms;
-    }
-
-    fn waitTimeoutMs(self: RunClock, base_timeout_ms: c_int) c_int {
-        const elapsed = Window.c_win.SDL_GetTicks() -| self.start_ms;
-        if (elapsed >= self.duration_ms) return 0;
-        const remaining: c_int = @intCast(@min(self.duration_ms - elapsed, @as(u64, @intCast(std.math.maxInt(c_int)))));
-        if (base_timeout_ms < 0) return remaining;
-        return @min(base_timeout_ms, remaining);
-    }
 };
 
 pub fn run(options: Options) !Summary {
@@ -112,40 +87,41 @@ pub fn run(options: Options) !Summary {
 
     var summary = Summary{};
     var running = true;
-    const run_clock = options.runClock();
     var meter = thread_meter.ThreadMeter.init(3 * std.time.ns_per_s);
     var fps_window_start_ns: u64 = Window.c_win.SDL_GetTicksNS();
     var fps_window_start_frame: u64 = 0;
     var next_fps_log_frame: u64 = fps_log_every_frames;
     var render_window = RenderStats{};
     var render_window_frames: u64 = 0;
-    var frame_scheduler = FrameScheduler{ .interval_ns = Window.preferredFrameIntervalNs(win) };
-    const start_ms = Window.c_win.SDL_GetTicks();
     const bench_log = std.c.getenv("HOWL_BENCH_LOG") != null;
     reportRuntimeHz(bench_log, win);
-    var input_sent = false;
+    var duration_timer: Window.c_win.SDL_TimerID = 0;
+    if (options.duration_ms) |duration_ms| {
+        duration_timer = Window.c_win.SDL_AddTimer(@intCast(@max(duration_ms, 1)), quitTimer, null);
+    }
+    defer {
+        if (duration_timer != 0) _ = Window.c_win.SDL_RemoveTimer(duration_timer);
+    }
+
+    if (options.input_text) |text| {
+        Events.pushReplayKeys(win, text);
+        summary.input_injections += 1;
+        Events.wakeWindow();
+    }
 
     while (running) {
-        if (run_clock) |clock| if (clock.expired()) break;
         events.setMousePolicy(.{
             .listen_always = conf.window.mouse.listen_always,
             .link_hover = app.activeTerminalWantsLinkHover(),
             .terminal_bypass_mod = conf.window.mouse.terminal_bypass_mod,
         });
         var work = app.collectRenderWork();
-        const now_before_wait_ns = Window.c_win.SDL_GetTicksNS();
-        const base_wait_ms = waitTimeoutMs(run_clock, app.activeTerminalPassiveHoverWake(), app.activeTab().nextWaitTimeoutMs());
-        const wait_ms = frame_scheduler.waitTimeoutMs(
-            inputDeadlineWaitTimeoutMs(options, input_sent, start_ms, base_wait_ms),
-            work.needs_frame,
-            now_before_wait_ns,
-        );
-        const signal = if (frame_scheduler.due(work.needs_frame, now_before_wait_ns)) blk: {
+        const signal = if (work.needs_frame) blk: {
             summary.polls += 1;
             break :blk Events.pollWindow(win);
         } else blk: {
             summary.waits += 1;
-            break :blk Events.waitWindow(win, wait_ms);
+            break :blk Events.waitWindow(win);
         };
         if (signal == .quit) {
             summary.quit = true;
@@ -155,17 +131,6 @@ pub fn run(options: Options) !Summary {
         if (!work.needs_frame and signal == .none) summary.idle_signals += 1;
         app.setWindowFocused(Window.hasInputFocus(win));
         app.serviceHostEffects();
-
-        if (!input_sent) {
-            if (options.input_text) |text| {
-                if (Window.c_win.SDL_GetTicks() -| start_ms >= options.input_after_ms) {
-                    events.publishTextInput(text);
-                    input_sent = true;
-                    summary.input_injections += 1;
-                    Events.wakeWindow();
-                }
-            }
-        }
 
         try app.drainShortcuts(&events);
         app.drainActiveInput(&events);
@@ -180,20 +145,17 @@ pub fn run(options: Options) !Summary {
             const size = Window.windowSize(win);
             const logical_size = Window.windowLogicalSize(win);
             app.resize(size.width, size.height, logical_size.width, logical_size.height);
-            frame_scheduler.setInterval(Window.preferredFrameIntervalNs(win));
             reportRuntimeHz(bench_log, win);
         }
 
         work = app.collectRenderWork();
-        const should_render = frame_scheduler.due(work.needs_frame, Window.c_win.SDL_GetTicksNS());
-        if (!should_render) {
+        if (!work.needs_frame) {
             reportMainThread(&meter, summary);
             continue;
         }
 
         summary.frames += 1;
         const render_stats = app.render(work);
-        frame_scheduler.rendered(Window.c_win.SDL_GetTicksNS());
         render_window.sync_us += render_stats.sync_us;
         render_window.copy_us += render_stats.copy_us;
         render_window.render_us += render_stats.render_us;
@@ -233,6 +195,13 @@ fn setCurrentThreadName(name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(std.c.pthread_self(), name.ptr);
 }
 
+fn quitTimer(_: ?*anyopaque, _: Window.c_win.SDL_TimerID, _: u32) callconv(.c) u32 {
+    var event: Window.c_win.SDL_Event = std.mem.zeroes(Window.c_win.SDL_Event);
+    event.type = Window.c_win.SDL_EVENT_QUIT;
+    _ = Window.c_win.SDL_PushEvent(&event);
+    return 0;
+}
+
 fn applyOverrides(conf: *Config.Value, options: Options) !void {
     if (options.shell) |shell| try overrideConfig(&conf.term.shell, shell);
     if (options.start_path) |start_path| try overrideOptionalConfig(&conf.term.start_path, start_path);
@@ -249,22 +218,6 @@ fn overrideOptionalConfig(slot: *?[]u8, value: []const u8) !void {
     const duped = try std.heap.c_allocator.dupe(u8, value);
     if (slot.*) |old| std.heap.c_allocator.free(old);
     slot.* = duped;
-}
-
-fn waitTimeoutMs(run_clock: ?RunClock, passive_hover_wake: bool, tab_timeout_ms: c_int) c_int {
-    const passive_timeout: c_int = if (passive_hover_wake) 16 else -1;
-    const merged_timeout: c_int = if (passive_timeout < 0) tab_timeout_ms else if (tab_timeout_ms < 0) passive_timeout else @min(passive_timeout, tab_timeout_ms);
-    const clock = run_clock orelse return merged_timeout;
-    return clock.waitTimeoutMs(merged_timeout);
-}
-
-fn inputDeadlineWaitTimeoutMs(options: Options, input_sent: bool, start_ms: u64, base_timeout_ms: c_int) c_int {
-    if (input_sent or options.input_text == null) return base_timeout_ms;
-    const elapsed = Window.c_win.SDL_GetTicks() -| start_ms;
-    if (elapsed >= options.input_after_ms) return 0;
-    const remaining: c_int = @intCast(@min(options.input_after_ms - elapsed, @as(u64, @intCast(std.math.maxInt(c_int)))));
-    if (base_timeout_ms < 0) return remaining;
-    return @min(base_timeout_ms, remaining);
 }
 
 fn reportMainThread(meter: *thread_meter.ThreadMeter, summary: Summary) void {

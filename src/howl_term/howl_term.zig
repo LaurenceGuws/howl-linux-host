@@ -5,7 +5,6 @@
 const term_core = @import("howl_term").HowlTerm;
 const std = @import("std");
 
-const launch_liveness_grace_ms: i64 = 50;
 const RenderPipeline = term_core.RenderPipeline;
 const PreparedRenderFrame = term_core.PreparedRenderFrame;
 
@@ -267,9 +266,9 @@ pub const Runtime = struct {
         }
     }
 
-    pub fn awaitRenderWake(self: *Runtime, last_seen_seq: u64, timeout_ms: i32) SnapshotWake {
+    pub fn awaitRenderWake(self: *Runtime, last_seen_seq: u64) SnapshotWake {
         const inst = &(self.term orelse return .{ .event_seq = last_seen_seq, .published = false });
-        const event_seq = inst.awaitSnapshotEvent(last_seen_seq, timeout_ms) catch |err| {
+        const event_seq = inst.awaitSnapshotEvent(last_seen_seq, -1) catch |err| {
             self.lifecycle_state = .failed;
             std.log.err("terminal snapshot event wait failed: {s}", .{@errorName(err)});
             return .{ .event_seq = last_seen_seq, .published = false };
@@ -483,11 +482,6 @@ pub const Runtime = struct {
 
     fn confirmLaunchLiveness(self: *Runtime) !void {
         const inst = &(self.term orelse return error.TransportUnavailable);
-        var waited_ms: i64 = 0;
-        while (waited_ms < launch_liveness_grace_ms) : (waited_ms += 10) {
-            if (!inst.isAlive()) return error.TransportUnavailable;
-            _ = inst.awaitSnapshotEvent(inst.snapshotEventSeq(), 10) catch {};
-        }
         if (!inst.isAlive()) return error.TransportUnavailable;
     }
 

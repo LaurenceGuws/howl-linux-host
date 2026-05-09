@@ -34,7 +34,6 @@ pub const Terminal = struct {
     const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
     const content_update_interval_ns = std.time.ns_per_s / 180;
     const active_present_lease_ns = 100 * std.time.ns_per_ms;
-    const wake_wait_ms = 250;
 
     pub const SurfaceMetrics = Runtime.SurfaceMetrics;
 
@@ -218,22 +217,11 @@ pub const Terminal = struct {
         self.scrollbar_cache_valid = false;
     }
 
-    pub fn nextWaitTimeoutMs(self: *Terminal) c_int {
-        lockMutex(&self.geometry_mutex);
-        defer self.geometry_mutex.unlock();
-        if (self.pending_grid_px_w == self.grid_px_w and self.pending_grid_px_h == self.grid_px_h) return -1;
-        if (self.last_resize_ns == 0) return 0;
-        const elapsed_ns = window.c_win.SDL_GetTicksNS() -| self.last_resize_ns;
-        if (elapsed_ns >= resize_coalesce_ns) return 0;
-        return @intCast(@max(1, @divTrunc(resize_coalesce_ns - elapsed_ns, std.time.ns_per_ms)));
-    }
-
     pub fn maybeCommitGridResize(self: *Terminal) void {
         const geom = blk: {
             lockMutex(&self.geometry_mutex);
             defer self.geometry_mutex.unlock();
             if (self.pending_grid_px_w == self.grid_px_w and self.pending_grid_px_h == self.grid_px_h) return;
-            if (self.last_resize_ns != 0 and window.c_win.SDL_GetTicksNS() -| self.last_resize_ns < resize_coalesce_ns) return;
             self.grid_px_w = self.pending_grid_px_w;
             self.grid_px_h = self.pending_grid_px_h;
             self.last_resize_ns = 0;
@@ -255,9 +243,9 @@ pub const Terminal = struct {
     }
 
     pub fn needsContentFrame(self: *Terminal, now_ns: u64) bool {
+        _ = now_ns;
         if (!self.term.needsFrame()) return false;
-        const last_update_ns = self.last_content_update_ns.load(.acquire);
-        return last_update_ns == 0 or now_ns -| last_update_ns >= content_update_interval_ns;
+        return true;
     }
 
     pub fn render(self: *Terminal) void {
@@ -763,22 +751,12 @@ fn wakeWorker(self: *Terminal) void {
     var meter = thread_meter.ThreadMeter.init(3 * std.time.ns_per_s);
     var waits: u64 = 0;
     var wake_hits: u64 = 0;
-    var wait_blocks: u64 = 0;
     var event_wakes: u64 = 0;
 
     while (!self.stop_wake.load(.acquire)) {
-        const queued_render_work = self.term.hasQueuedRenderWork();
-        self.term.setRenderBackpressure(queued_render_work);
-        if (queued_render_work) {
-            wait_blocks += 1;
-            window.c_win.SDL_Delay(16);
-            reportWakeThread(self, &meter, waits, wake_hits, wait_blocks, event_wakes);
-            continue;
-        }
-
         waits += 1;
         const last_seen_seq = self.snapshot_quiet_seq.load(.acquire);
-        const wake = self.term.awaitRenderWake(last_seen_seq, Terminal.wake_wait_ms);
+        const wake = self.term.awaitRenderWake(last_seen_seq);
         if (wake.event_seq != last_seen_seq) {
             wake_hits += 1;
             if (!wake.published) self.snapshot_quiet_seq.store(wake.event_seq, .release);
@@ -790,7 +768,7 @@ fn wakeWorker(self: *Terminal) void {
                 Events.wakeWindow();
             }
         }
-        reportWakeThread(self, &meter, waits, wake_hits, wait_blocks, event_wakes);
+        reportWakeThread(self, &meter, waits, wake_hits, event_wakes);
     }
 }
 
@@ -805,20 +783,12 @@ fn prepareWorker(self: *Terminal) void {
     while (!self.stop_prepare.load(.acquire)) {
         waits += 1;
         if (self.prepare_sem) |sem| {
-            if (!window.c_win.SDL_WaitSemaphoreTimeout(sem, 250)) {
-                reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
-                continue;
-            }
+            window.c_win.SDL_WaitSemaphore(sem);
         } else {
-            window.c_win.SDL_Delay(16);
+            return;
         }
+        if (self.stop_prepare.load(.acquire)) break;
         wake_hits += 1;
-
-        const now_ns = window.c_win.SDL_GetTicksNS();
-        const last_update_ns = self.last_content_update_ns.load(.acquire);
-        if (last_update_ns != 0 and now_ns -| last_update_ns < Terminal.content_update_interval_ns) {
-            window.c_win.SDL_DelayPrecise(Terminal.content_update_interval_ns - (now_ns -| last_update_ns));
-        }
 
         switch (self.term.prepareNextFrame(self.geometrySnapshot())) {
             .idle => empty_wakes += 1,
@@ -855,13 +825,11 @@ fn reportWakeThread(
     meter: *thread_meter.ThreadMeter,
     waits: u64,
     wake_hits: u64,
-    wait_blocks: u64,
     event_wakes: u64,
 ) void {
     _ = self;
     _ = meter;
     _ = waits;
     _ = wake_hits;
-    _ = wait_blocks;
     _ = event_wakes;
 }

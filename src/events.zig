@@ -11,6 +11,7 @@ const window = @import("events/window.zig");
 
 const c = window.c_win;
 const max_input_events: usize = 256;
+const replay_keyboard_id: c.SDL_KeyboardID = 0x484f574c;
 
 pub const Events = struct {
     pub const Signal = window.EventSignal;
@@ -108,16 +109,16 @@ pub const Events = struct {
         return changed;
     }
 
-    pub fn publishTextInput(self: *Events, bytes: []const u8) void {
-        appendBytesEvent(self, bytes);
+    pub fn pushReplayKeys(handle: *c.SDL_Window, bytes: []const u8) void {
+        for (bytes) |byte| pushReplayKeyDown(handle, byte);
     }
 
     pub fn pollWindow(handle: *c.SDL_Window) Signal {
         return window.pollEventSignal(handle);
     }
 
-    pub fn waitWindow(handle: *c.SDL_Window, timeout_ms: c_int) Signal {
-        return window.waitEventSignal(handle, timeout_ms);
+    pub fn waitWindow(handle: *c.SDL_Window) Signal {
+        return window.waitEventSignal(handle);
     }
 
     pub fn wakeWindow() void {
@@ -145,6 +146,11 @@ fn processEvent(event: *const c.SDL_Event) void {
             const ctrl = (event.key.mod & c.SDL_KMOD_CTRL) != 0;
             const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
             const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
+            if (event.key.which == replay_keyboard_id and !ctrl and !alt) {
+                if (event.key.key >= ' ' and event.key.key <= '~') {
+                    return appendByteEvent(events, @intCast(event.key.key));
+                }
+            }
             if (event.key.key == c.SDLK_PAGEUP) {
                 if (shift and !ctrl and !alt) {
                     events.scroll_pages += 1;
@@ -270,6 +276,20 @@ fn eventWatch(_: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.c) bool {
     if (event == null) return false;
     processEvent(event);
     return false;
+}
+
+fn pushReplayKeyDown(handle: *c.SDL_Window, byte: u8) void {
+    const key: c.SDL_Keycode = if (byte == '\n') c.SDLK_RETURN else @intCast(byte);
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.timestamp = c.SDL_GetTicksNS();
+    event.key.windowID = c.SDL_GetWindowID(handle);
+    event.key.which = replay_keyboard_id;
+    event.key.key = key;
+    event.key.scancode = c.SDL_SCANCODE_UNKNOWN;
+    event.key.mod = c.SDL_KMOD_NONE;
+    event.key.down = true;
+    _ = c.SDL_PushEvent(&event);
 }
 
 fn appendBytesEvent(events: *Events, bytes: []const u8) void {

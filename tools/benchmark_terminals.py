@@ -191,9 +191,8 @@ def query_nvidia_process_memory(pids: set[int]) -> dict[int, dict[str, object]]:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=0.5,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return {}
     if proc.returncode != 0:
         return {}
@@ -228,9 +227,8 @@ def query_nvidia_global() -> dict[str, object] | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=0.5,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return None
     if proc.returncode != 0:
         return None
@@ -544,11 +542,7 @@ def terminate(proc: subprocess.Popen[bytes]) -> None:
     if proc.poll() is not None:
         return
     proc.terminate()
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=2)
+    proc.wait()
 
 
 def read_last_json(path: Path) -> dict[str, object] | None:
@@ -592,13 +586,9 @@ def run_terminal(name: str, args: argparse.Namespace, run_dir: Path) -> dict[str
         if not args.no_resources:
             sampler = ResourceSampler(proc.pid, resources_path, args.resource_interval, args.gpu_resource_interval)
         try:
-            deadline = start + args.duration + 2.0
-            while time.monotonic() < deadline:
-                if proc.poll() is not None:
-                    break
-                if sampler is not None:
-                    sampler.maybe_sample(time.monotonic())
-                time.sleep(0.05)
+            if sampler is not None:
+                sampler.sample(time.monotonic())
+            proc.wait()
         finally:
             if sampler is not None:
                 sampler.sample(time.monotonic())

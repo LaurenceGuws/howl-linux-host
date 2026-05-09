@@ -21,15 +21,9 @@ pub fn pollEventSignal(handle: *c_win.SDL_Window) EventSignal {
     return .none;
 }
 
-pub fn waitEventSignal(handle: *c_win.SDL_Window, timeout_ms: c_int) EventSignal {
+pub fn waitEventSignal(handle: *c_win.SDL_Window) EventSignal {
     var event: c_win.SDL_Event = undefined;
-    if (timeout_ms < 0) {
-        if (c_win.SDL_WaitEvent(&event)) {
-            if (event.type == c_win.SDL_EVENT_QUIT) return .quit;
-        }
-        return pollEventSignal(handle);
-    }
-    if (c_win.SDL_WaitEventTimeout(&event, timeout_ms)) {
+    if (c_win.SDL_WaitEvent(&event)) {
         if (event.type == c_win.SDL_EVENT_QUIT) return .quit;
     }
     return pollEventSignal(handle);

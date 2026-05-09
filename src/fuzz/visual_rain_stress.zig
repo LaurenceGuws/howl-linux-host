@@ -12,7 +12,6 @@ const c = @cImport({
 const default_cols: u16 = 120;
 const default_rows: u16 = 40;
 const default_frames: u32 = 20_000;
-const frame_delay_ms: u64 = 30;
 
 const Config = struct {
     cols: ?u16 = null,
@@ -24,7 +23,6 @@ const Config = struct {
     metrics: bool = false,
     metrics_every: u32 = 300,
     duration_ms: ?u64 = null,
-    no_delay: bool = false,
 };
 
 const Drop = struct {
@@ -100,8 +98,6 @@ pub fn main(init: std.process.Init) !void {
                 try reportMetrics(err, frame_samples[0..sample_len], completed, run_start_ns, false);
             }
         }
-
-        if (!config.no_delay) std.Io.sleep(init.io, .{ .nanoseconds = frame_delay_ms * std.time.ns_per_ms }, .awake) catch {};
     }
 
     if (config.metrics) try reportMetrics(err, frame_samples[0..sample_len], frame, run_start_ns, true);
@@ -115,8 +111,6 @@ fn parseArgs(args: []const []const u8) !Config {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--metrics")) {
             config.metrics = true;
-        } else if (std.mem.eql(u8, arg, "--no-delay")) {
-            config.no_delay = true;
         } else if (std.mem.eql(u8, arg, "--cols")) {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
@@ -291,7 +285,7 @@ test "drop count follows ascii rain sizing" {
 }
 
 test "parse visual rain args" {
-    const cfg = resolveConfig(try parseArgs(&.{ "visual-rain", "--cols", "80", "--rows", "24", "--frames", "60", "--duration-ms", "100", "--metrics", "--no-delay" }));
+    const cfg = resolveConfig(try parseArgs(&.{ "visual-rain", "--cols", "80", "--rows", "24", "--frames", "60", "--duration-ms", "100", "--metrics" }));
     try std.testing.expectEqual(@as(?u16, 80), cfg.cols);
     try std.testing.expectEqual(@as(?u16, 24), cfg.rows);
     try std.testing.expect(cfg.fixed_cols);
@@ -299,7 +293,6 @@ test "parse visual rain args" {
     try std.testing.expectEqual(@as(u32, 60), cfg.frames);
     try std.testing.expectEqual(@as(?u64, 100), cfg.duration_ms);
     try std.testing.expect(cfg.metrics);
-    try std.testing.expect(cfg.no_delay);
 }
 
 test "current size respects fixed dimensions" {
