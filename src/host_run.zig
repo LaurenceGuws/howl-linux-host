@@ -122,6 +122,7 @@ pub fn run(options: Options) !Summary {
     var frame_scheduler = FrameScheduler{ .interval_ns = Window.preferredFrameIntervalNs(win) };
     const start_ms = Window.c_win.SDL_GetTicks();
     const bench_log = std.c.getenv("HOWL_BENCH_LOG") != null;
+    reportRuntimeHz(bench_log, win);
     var input_sent = false;
 
     while (running) {
@@ -180,6 +181,7 @@ pub fn run(options: Options) !Summary {
             const logical_size = Window.windowLogicalSize(win);
             app.resize(size.width, size.height, logical_size.width, logical_size.height);
             frame_scheduler.setInterval(Window.preferredFrameIntervalNs(win));
+            reportRuntimeHz(bench_log, win);
         }
 
         work = app.collectRenderWork();
@@ -267,6 +269,11 @@ fn inputDeadlineWaitTimeoutMs(options: Options, input_sent: bool, start_ms: u64,
 fn reportMainThread(meter: *thread_meter.ThreadMeter, summary: Summary) void {
     _ = meter;
     _ = summary;
+}
+
+fn reportRuntimeHz(enabled: bool, win: Window.Ptr) void {
+    if (!enabled) return;
+    Window.reportRuntimeHz(win);
 }
 
 fn reportFpsEveryWindow(

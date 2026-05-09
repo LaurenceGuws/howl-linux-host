@@ -97,6 +97,33 @@ pub fn preferredFrameIntervalNs(handle: Ptr) ?u64 {
     return null;
 }
 
+pub fn reportRuntimeHz(handle: Ptr) void {
+    const display = c.SDL_GetDisplayForWindow(handle);
+    const mode = if (display != 0) c.SDL_GetCurrentDisplayMode(display) else null;
+    var swap_interval: c_int = 0;
+    const swap_ok = c.SDL_GL_GetSwapInterval(&swap_interval);
+    const preferred_ns = preferredFrameIntervalNs(handle) orelse 0;
+    if (mode) |m| {
+        std.debug.print(
+            "{{\"type\":\"howl_sdl_runtime_hz\",\"schema\":1,\"display\":{},\"refresh_rate\":{d:.3},\"refresh_num\":{},\"refresh_den\":{},\"preferred_interval_ns\":{},\"swap_interval\":{},\"swap_interval_known\":{}}}\n",
+            .{
+                display,
+                @as(f64, @floatCast(m.*.refresh_rate)),
+                m.*.refresh_rate_numerator,
+                m.*.refresh_rate_denominator,
+                preferred_ns,
+                swap_interval,
+                swap_ok,
+            },
+        );
+    } else {
+        std.debug.print(
+            "{{\"type\":\"howl_sdl_runtime_hz\",\"schema\":1,\"display\":{},\"refresh_rate\":0.0,\"refresh_num\":0,\"refresh_den\":0,\"preferred_interval_ns\":{},\"swap_interval\":{},\"swap_interval_known\":{}}}\n",
+            .{ display, preferred_ns, swap_interval, swap_ok },
+        );
+    }
+}
+
 pub fn hasInputFocus(handle: Ptr) bool {
     return (c.SDL_GetWindowFlags(handle) & c.SDL_WINDOW_INPUT_FOCUS) != 0;
 }
