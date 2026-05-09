@@ -18,6 +18,7 @@ pub const Runtime = struct {
     pub const SurfaceHandle = term_core.SurfaceHandle;
     pub const RenderSnapshotResult = term_core.RenderSnapshotResult;
     pub const PreparedRenderFrame = term_core.PreparedRenderFrame;
+    pub const PreparedSlot = term_core.PreparedSlot;
     pub const RenderPipeline = term_core.RenderPipeline;
     pub const TerminalSurface = term_core.TerminalSurface;
     pub const Key = term_core.Key;

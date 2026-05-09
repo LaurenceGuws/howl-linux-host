@@ -14,47 +14,6 @@ const Clipboard = @import("terminal_clipboard.zig");
 const Fonts = @import("terminal_fonts.zig");
 const Input = @import("terminal_input.zig");
 
-fn lockMutex(mutex: *std.atomic.Mutex) void {
-    while (!mutex.tryLock()) {
-        std.atomic.spinLoopHint();
-        std.Thread.yield() catch {};
-    }
-}
-
-const PreparedSlot = struct {
-    mutex: std.atomic.Mutex = .unlocked,
-    frame: ?Runtime.PreparedRenderFrame = null,
-
-    fn deinit(self: *PreparedSlot) void {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        if (self.frame) |*frame| frame.deinit();
-        self.frame = null;
-    }
-
-    fn publish(self: *PreparedSlot, frame: Runtime.PreparedRenderFrame) void {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        if (self.frame) |*old| old.deinit();
-        self.frame = frame;
-    }
-
-    fn take(self: *PreparedSlot) ?Runtime.PreparedRenderFrame {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        const frame = self.frame orelse return null;
-        self.frame = null;
-        return frame;
-    }
-
-    fn discard(self: *PreparedSlot) void {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        if (self.frame) |*frame| frame.deinit();
-        self.frame = null;
-    }
-};
-
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
     const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
@@ -70,7 +29,7 @@ pub const Terminal = struct {
 
     term: Runtime,
     surface_runtime: Runtime.TerminalSurface,
-    prepared_slot: PreparedSlot,
+    prepared_slot: Runtime.PreparedSlot,
     conf: *const config.Config,
     render_px_w: c_int,
     render_px_h: c_int,
