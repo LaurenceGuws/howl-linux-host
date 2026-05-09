@@ -120,6 +120,7 @@ pub fn run(options: Options) !Summary {
     var render_window_frames: u64 = 0;
     var frame_scheduler = FrameScheduler{ .interval_ns = Window.preferredFrameIntervalNs(win) };
     const start_ms = Window.c_win.SDL_GetTicks();
+    const bench_log = std.c.getenv("HOWL_BENCH_LOG") != null;
     var input_sent = false;
 
     while (running) {
@@ -211,8 +212,8 @@ pub fn run(options: Options) !Summary {
         if (!summary.rendered_text_seen) {
             if (options.rendered_text) |text| summary.rendered_text_seen = app.activeTab().renderedTextContains(text);
         }
-        reportFpsEveryWindow(summary.frames, &fps_window_start_ns, &fps_window_start_frame, &next_fps_log_frame);
-        reportRenderStages(summary.frames, &render_window, &render_window_frames);
+        reportFpsEveryWindow(bench_log, summary.frames, &fps_window_start_ns, &fps_window_start_frame, &next_fps_log_frame);
+        reportRenderStages(bench_log, summary.frames, &render_window, &render_window_frames);
         reportMainThread(&meter, summary);
         if (app.activeTabFailed()) {
             summary.failed = true;
@@ -264,21 +265,54 @@ fn reportMainThread(meter: *thread_meter.ThreadMeter, summary: Summary) void {
 }
 
 fn reportFpsEveryWindow(
+    enabled: bool,
     frames: u64,
     window_start_ns: *u64,
     window_start_frame: *u64,
     next_log_frame: *u64,
 ) void {
-    _ = frames;
-    _ = window_start_ns;
-    _ = window_start_frame;
-    _ = next_log_frame;
+    if (!enabled) return;
+    if (frames < next_log_frame.*) return;
+    const now_ns = Window.c_win.SDL_GetTicksNS();
+    const elapsed_ns = now_ns -| window_start_ns.*;
+    const frame_delta = frames -| window_start_frame.*;
+    const fps = if (elapsed_ns == 0)
+        0
+    else
+        @as(f64, @floatFromInt(frame_delta)) / (@as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
+    std.debug.print("{{\"type\":\"howl_sdl_fps\",\"schema\":1,\"frames\":{},\"window_frames\":{},\"fps\":{d:.2}}}\n", .{ frames, frame_delta, fps });
+    window_start_ns.* = now_ns;
+    window_start_frame.* = frames;
+    next_log_frame.* = frames + fps_log_every_frames;
 }
 
-fn reportRenderStages(frames: u64, window: *RenderStats, window_frames: *u64) void {
-    _ = frames;
-    _ = window;
-    _ = window_frames;
+fn reportRenderStages(enabled: bool, frames: u64, window: *RenderStats, window_frames: *u64) void {
+    if (!enabled) return;
+    if (window_frames.* == 0 or @mod(frames, fps_log_every_frames) != 0) return;
+    const count = window_frames.*;
+    std.debug.print(
+        "{{\"type\":\"howl_render_window\",\"schema\":1,\"frames\":{},\"window_frames\":{},\"avg_sync_us\":{d:.2},\"avg_copy_us\":{d:.2},\"avg_render_us\":{d:.2},\"avg_present_us\":{d:.2},\"avg_glyphs\":{d:.2},\"avg_fills\":{d:.2},\"avg_uploads\":{d:.2},\"face_checks\":{},\"face_cache_hits\":{},\"shape_requests\":{},\"shape_cache_hits\":{},\"fallback_hits\":{},\"fallback_misses\":{},\"missing_glyphs\":{}}}\n",
+        .{
+            frames,
+            count,
+            avg(window.sync_us, count),
+            avg(window.copy_us, count),
+            avg(window.render_us, count),
+            avg(window.present_us, count),
+            avg(window.glyphs, count),
+            avg(window.fills, count),
+            avg(window.uploads, count),
+            window.face_checks,
+            window.face_cache_hits,
+            window.shape_requests,
+            window.shape_cache_hits,
+            window.fallback_hits,
+            window.fallback_misses,
+            window.missing_glyphs,
+        },
+    );
+    window.* = .{};
+    window_frames.* = 0;
 }
 
 fn avg(total: anytype, count: u64) f64 {

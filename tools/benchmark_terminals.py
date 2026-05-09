@@ -426,6 +426,7 @@ def launch_command(name: str, args: argparse.Namespace, command: str, trace_path
         if not args.howl_bin.exists():
             print(f"skip howl: missing {args.howl_bin}", file=sys.stderr)
             return None
+        env["HOWL_BENCH_LOG"] = "1"
         if args.trace_howl:
             env["HOWL_TRACE_PATH"] = str(trace_path)
         duration_ms = str(int((args.duration + 2.0) * 1000))
