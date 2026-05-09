@@ -199,20 +199,23 @@ pub const Terminal = struct {
     }
 
     pub fn render(self: *Terminal) void {
-        const again = self.term.renderLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
+        const result = self.term.renderLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
             self.snapshot_ready.store(false, .release);
             return;
         };
         const surface = self.term.surfaceState().surface;
         if (surface.texture_id != 0) self.last_surface = surface;
-        if (again) {
-            _ = self.snapshot_requeues.fetchAdd(1, .monotonic);
-            self.snapshot_ready.store(true, .release);
-            Events.wakeWindow();
-            return;
+        switch (result) {
+            .rendered => {
+                self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
+                self.snapshot_ready.store(false, .release);
+            },
+            .rendered_more_pending => {
+                _ = self.snapshot_requeues.fetchAdd(1, .monotonic);
+                self.snapshot_ready.store(true, .release);
+                Events.wakeWindow();
+            },
         }
-        self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
-        self.snapshot_ready.store(false, .release);
     }
 
     fn publishInputBytes(self: *Terminal, bytes: []const u8) void {

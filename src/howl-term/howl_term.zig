@@ -16,6 +16,7 @@ pub const Runtime = struct {
     };
 
     pub const SurfaceHandle = term_core.SurfaceHandle;
+    pub const RenderSnapshotResult = term_core.RenderSnapshotResult;
     pub const Key = term_core.Key;
     pub const Modifier = term_core.Modifier;
     pub const SurfaceState = struct {
@@ -131,8 +132,8 @@ pub const Runtime = struct {
         self.lifecycle_state = .stopped;
     }
 
-    pub fn renderLatestSnapshot(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) ?bool {
-        const inst = &(self.term orelse return false);
+    pub fn renderLatestSnapshot(self: *Runtime, render_width: c_int, render_height: c_int, grid_width: c_int, grid_height: c_int) ?RenderSnapshotResult {
+        const inst = &(self.term orelse return .rendered);
         const rw: u16 = @intCast(@max(render_width, 1));
         const rh: u16 = @intCast(@max(render_height, 1));
         const gw: u16 = @intCast(@max(grid_width, 1));

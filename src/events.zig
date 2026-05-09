@@ -35,6 +35,7 @@ pub const Events = struct {
     scroll_pages: i32,
     shortcut_buf: [64]Shortcuts.Action,
     shortcut_len: usize,
+    window_geometry_changed: bool,
     last_mouse_x: i32,
     last_mouse_y: i32,
     mouse_listen_always: bool,
@@ -48,6 +49,7 @@ pub const Events = struct {
             .scroll_pages = 0,
             .shortcut_buf = undefined,
             .shortcut_len = 0,
+            .window_geometry_changed = false,
             .last_mouse_x = 0,
             .last_mouse_y = 0,
             .mouse_listen_always = false,
@@ -98,6 +100,12 @@ pub const Events = struct {
             std.mem.copyForwards(Shortcuts.Action, self.shortcut_buf[0..self.shortcut_len], self.shortcut_buf[1 .. self.shortcut_len + 1]);
         }
         return out;
+    }
+
+    pub fn drainWindowGeometryChanged(self: *Events) bool {
+        const changed = self.window_geometry_changed;
+        self.window_geometry_changed = false;
+        return changed;
     }
 
     pub fn pollWindow(handle: *c.SDL_Window) Signal {
@@ -246,6 +254,10 @@ fn processEvent(event: *const c.SDL_Event) void {
                 });
             }
         },
+        c.SDL_EVENT_WINDOW_RESIZED,
+        c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
+        c.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
+        => events.window_geometry_changed = true,
         else => {},
     }
 }
