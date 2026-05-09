@@ -16,6 +16,8 @@ pub const RenderWork = struct {
 };
 
 pub const RenderStats = struct {
+    pub const SurfaceMetrics = Terminal.SurfaceMetrics;
+
     sync_us: u64 = 0,
     copy_us: u64 = 0,
     render_us: u64 = 0,
@@ -33,6 +35,7 @@ pub const RenderStats = struct {
     fallback_hits: u64 = 0,
     fallback_misses: u64 = 0,
     missing_glyphs: u64 = 0,
+    surface: SurfaceMetrics = .{},
 };
 
 const TabChrome = struct {
@@ -124,6 +127,7 @@ pub const App = struct {
     pub fn render(self: *App, work: RenderWork) RenderStats {
         if (work.terminal_frame) self.activeTab().render();
         const term_metrics = self.activeTab().lastRenderMetrics();
+        const surface_metrics = self.activeTab().takeSurfaceMetrics();
         const texture_rect = self.textureRect();
         const surface = self.activeTab().surfaceSnapshot();
         const chrome = self.activeTab().chromeSnapshot(texture_rect);
@@ -157,6 +161,7 @@ pub const App = struct {
             .fallback_hits = term_metrics.fallback_hits,
             .fallback_misses = term_metrics.fallback_misses,
             .missing_glyphs = term_metrics.missing_glyphs,
+            .surface = surface_metrics,
         };
     }
 

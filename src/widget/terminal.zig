@@ -34,6 +34,8 @@ pub const Terminal = struct {
     const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
     const wake_wait_ms = 250;
 
+    pub const SurfaceMetrics = Runtime.SurfaceMetrics;
+
     pub const SurfaceSnapshot = struct {
         surface: SurfaceHandle,
     };
@@ -389,6 +391,10 @@ pub const Terminal = struct {
 
     pub fn lastRenderMetrics(self: *const Terminal) Runtime.RenderMetrics {
         return self.term.lastRenderMetrics();
+    }
+
+    pub fn takeSurfaceMetrics(self: *Terminal) SurfaceMetrics {
+        return self.term.takeSurfaceMetrics();
     }
 
     pub fn renderedTextContains(self: *const Terminal, text: []const u8) bool {

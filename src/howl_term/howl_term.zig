@@ -18,6 +18,7 @@ pub const Runtime = struct {
     };
 
     pub const SurfaceHandle = term_core.SurfaceHandle;
+    pub const SurfaceMetrics = term_core.TerminalSurface.Metrics;
     pub const Key = term_core.Key;
     pub const Modifier = term_core.Modifier;
 
@@ -207,6 +208,10 @@ pub const Runtime = struct {
 
     pub fn hasQueuedRenderWork(self: *Runtime) bool {
         return self.render_queue.nextAction() != .idle;
+    }
+
+    pub fn takeSurfaceMetrics(self: *Runtime) SurfaceMetrics {
+        return self.render_queue.takeMetrics();
     }
 
     pub fn needsFrame(self: *Runtime) bool {

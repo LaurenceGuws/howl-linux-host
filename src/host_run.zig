@@ -211,6 +211,7 @@ pub fn run(options: Options) !Summary {
         render_window.fallback_hits += render_stats.fallback_hits;
         render_window.fallback_misses += render_stats.fallback_misses;
         render_window.missing_glyphs += render_stats.missing_glyphs;
+        addSurfaceMetrics(&render_window.surface, render_stats.surface);
         render_window_frames += 1;
         if (!summary.rendered_text_seen) {
             if (options.rendered_text) |text| summary.rendered_text_seen = app.activeTab().renderedTextContains(text);
@@ -303,7 +304,7 @@ fn reportRenderStages(enabled: bool, frames: u64, window: *RenderStats, window_f
     if (window_frames.* == 0 or @mod(frames, fps_log_every_frames) != 0) return;
     const count = window_frames.*;
     std.debug.print(
-        "{{\"type\":\"howl_render_window\",\"schema\":1,\"frames\":{},\"window_frames\":{},\"avg_sync_us\":{d:.2},\"avg_copy_us\":{d:.2},\"avg_render_us\":{d:.2},\"avg_present_us\":{d:.2},\"avg_glyphs\":{d:.2},\"avg_fills\":{d:.2},\"avg_uploads\":{d:.2},\"face_checks\":{},\"face_cache_hits\":{},\"shape_requests\":{},\"shape_cache_hits\":{},\"fallback_hits\":{},\"fallback_misses\":{},\"missing_glyphs\":{}}}\n",
+        "{{\"type\":\"howl_render_window\",\"schema\":1,\"frames\":{},\"window_frames\":{},\"avg_sync_us\":{d:.2},\"avg_copy_us\":{d:.2},\"avg_render_us\":{d:.2},\"avg_present_us\":{d:.2},\"avg_glyphs\":{d:.2},\"avg_fills\":{d:.2},\"avg_uploads\":{d:.2},\"face_checks\":{},\"face_cache_hits\":{},\"shape_requests\":{},\"shape_cache_hits\":{},\"fallback_hits\":{},\"fallback_misses\":{},\"missing_glyphs\":{},\"surface_snapshot_publishes\":{},\"surface_prepare_requests\":{},\"surface_prepare_coalesces\":{},\"surface_prepare_takes\":{},\"surface_prepared_publishes\":{},\"surface_prepared_coalesces\":{},\"surface_submit_takes\":{},\"surface_submit_valid\":{},\"surface_submit_rejected\":{},\"surface_full_prepare_requests\":{},\"surface_presents\":{}}}\n",
         .{
             frames,
             count,
@@ -321,10 +322,40 @@ fn reportRenderStages(enabled: bool, frames: u64, window: *RenderStats, window_f
             window.fallback_hits,
             window.fallback_misses,
             window.missing_glyphs,
+            window.surface.snapshot_publishes,
+            window.surface.prepare_requests,
+            window.surface.prepare_coalesces,
+            window.surface.prepare_takes,
+            window.surface.prepared_publishes,
+            window.surface.prepared_coalesces,
+            window.surface.submit_takes,
+            window.surface.submit_valid,
+            window.surface.submit_rejected,
+            window.surface.full_prepare_requests,
+            window.surface.presents,
         },
     );
     window.* = .{};
     window_frames.* = 0;
+}
+
+fn addSurfaceMetrics(accum: *RenderStats.SurfaceMetrics, value: RenderStats.SurfaceMetrics) void {
+    accum.snapshot_publishes +%= value.snapshot_publishes;
+    accum.snapshot_hidden_drops +%= value.snapshot_hidden_drops;
+    accum.snapshot_clean_drops +%= value.snapshot_clean_drops;
+    accum.prepare_requests +%= value.prepare_requests;
+    accum.prepare_coalesces +%= value.prepare_coalesces;
+    accum.prepare_forced_full +%= value.prepare_forced_full;
+    accum.prepare_takes +%= value.prepare_takes;
+    accum.prepared_publishes +%= value.prepared_publishes;
+    accum.prepared_coalesces +%= value.prepared_coalesces;
+    accum.submit_takes +%= value.submit_takes;
+    accum.submit_valid +%= value.submit_valid;
+    accum.submit_rejected +%= value.submit_rejected;
+    accum.full_prepare_requests +%= value.full_prepare_requests;
+    accum.submitted_accepts +%= value.submitted_accepts;
+    accum.presents +%= value.presents;
+    accum.target_invalidations +%= value.target_invalidations;
 }
 
 fn avg(total: anytype, count: u64) f64 {
