@@ -42,6 +42,8 @@ pub const Events = struct {
     mouse_listen_always: bool,
     mouse_link_hover: bool,
     mouse_terminal_bypass_mod: Mod,
+    mouse_motion_enabled: bool,
+    mouse_button_down: bool,
 
     pub fn init(self: *Events) void {
         window.clearQuitRequest();
@@ -57,13 +59,27 @@ pub const Events = struct {
             .mouse_listen_always = false,
             .mouse_link_hover = false,
             .mouse_terminal_bypass_mod = .{},
+            .mouse_motion_enabled = true,
+            .mouse_button_down = false,
         };
+        self.updateMouseMotionEvents();
     }
 
     pub fn setMousePolicy(self: *Events, policy: MousePolicy) void {
         self.mouse_listen_always = policy.listen_always;
         self.mouse_link_hover = policy.link_hover;
         self.mouse_terminal_bypass_mod = policy.terminal_bypass_mod;
+        self.updateMouseMotionEvents();
+    }
+
+    fn updateMouseMotionEvents(self: *Events) void {
+        const needs_motion = self.mouse_button_down or
+            self.mouse_listen_always or
+            self.mouse_link_hover or
+            modConfigured(self.mouse_terminal_bypass_mod);
+        if (self.mouse_motion_enabled == needs_motion) return;
+        c.SDL_SetEventEnabled(c.SDL_EVENT_MOUSE_MOTION, needs_motion);
+        self.mouse_motion_enabled = needs_motion;
     }
 
     pub fn bind(self: *Events, win: anytype) !void {
@@ -226,6 +242,8 @@ fn processEvent(event: *const c.SDL_Event) void {
             });
         },
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+            events.mouse_button_down = true;
+            events.updateMouseMotionEvents();
             const pixel_x = @as(i32, @intFromFloat(@round(event.button.x)));
             const pixel_y = @as(i32, @intFromFloat(@round(event.button.y)));
             events.last_mouse_x = pixel_x;
@@ -246,6 +264,8 @@ fn processEvent(event: *const c.SDL_Event) void {
             events.last_mouse_x = pixel_x;
             events.last_mouse_y = pixel_y;
             const button = sdlMouseButton(event.button.button) orelse return;
+            events.mouse_button_down = false;
+            events.updateMouseMotionEvents();
             appendMouseEvent(events, .{
                 .kind = .release,
                 .button = button,
@@ -475,6 +495,10 @@ fn modSubset(required: mouse.Mod, active: mouse.Mod) bool {
     if (required.alt and !active.alt) return false;
     if (required.ctrl and !active.ctrl) return false;
     return true;
+}
+
+fn modConfigured(mod: mouse.Mod) bool {
+    return mod.shift or mod.alt or mod.ctrl;
 }
 
 fn sdlButtons(state: u32) mouse.Buttons {

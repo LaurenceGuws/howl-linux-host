@@ -179,7 +179,7 @@ pub const Runtime = struct {
 
     fn prepareSnapshotForRequest(self: *Runtime, frame: FramePixels, request: RenderPipeline.RenderRequest) ?PreparedRenderFrame {
         const inst = &(self.term orelse return null);
-        return inst.prepareSnapshotForRequest(frame.renderWidth(), frame.renderHeight(), frame.gridWidth(), frame.gridHeight(), request) catch |err| {
+        return inst.prepareSnapshotForRequestIfDirty(frame.renderWidth(), frame.renderHeight(), frame.gridWidth(), frame.gridHeight(), request) catch |err| {
             self.lifecycle_state = .failed;
             std.log.err("terminal prepare failed: {s}", .{@errorName(err)});
             return null;

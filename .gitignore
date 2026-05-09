@@ -7,4 +7,5 @@ __pycache__/
 *.pyc
 /ascii-howl.ndjson
 /howl-trace.ndjson
+/howl-thread-cpu.jsonl
 /src/fuzz/ascii-rain.c

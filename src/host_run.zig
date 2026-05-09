@@ -9,16 +9,10 @@ const Config = @import("config.zig");
 const app_runtime = @import("app.zig");
 const App = app_runtime.App;
 const thread_meter = @import("thread_meter.zig");
+const trace = @import("trace.zig");
 
 const fps_log_every_frames: u64 = 200;
 const RenderStats = app_runtime.RenderStats;
-
-fn trace(comptime fmt: []const u8, args: anytype) void {
-    if (std.c.getenv("HOWL_TRACE_STDOUT") == null) return;
-    var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    _ = std.posix.system.write(std.posix.STDOUT_FILENO, msg.ptr, msg.len);
-}
 
 pub const Options = struct {
     command: ?[]const u8 = null,
@@ -29,7 +23,6 @@ pub const Options = struct {
     input_text: ?[]const u8 = null,
     input_after_ms: u64 = 1_000,
     rendered_text: ?[]const u8 = null,
-
 };
 
 pub const Summary = struct {
@@ -47,7 +40,6 @@ pub const Summary = struct {
 
 pub fn run(options: Options) !Summary {
     setCurrentThreadName("howl-main");
-    trace("howl-main event=start\n", .{});
     if (!Window.initVideo()) {
         std.debug.print("window init failed: {s}\n", .{Window.lastError()});
         return error.WindowInitFailed;
@@ -94,14 +86,14 @@ pub fn run(options: Options) !Summary {
     try events.bind(win);
 
     var summary = Summary{};
+    var main_window = trace.MainCounters{};
     var running = true;
-    var meter = thread_meter.ThreadMeter.init(3 * std.time.ns_per_s);
+    var meter = thread_meter.ThreadMeter.init(std.time.ns_per_s);
     var fps_window_start_ns: u64 = Window.c_win.SDL_GetTicksNS();
     var fps_window_start_frame: u64 = 0;
     var next_fps_log_frame: u64 = fps_log_every_frames;
     var render_window = RenderStats{};
     var render_window_frames: u64 = 0;
-    var loop_count: u64 = 0;
     const bench_log = std.c.getenv("HOWL_BENCH_LOG") != null;
     reportRuntimeHz(bench_log, win);
     var duration_timer: Window.c_win.SDL_TimerID = 0;
@@ -115,34 +107,35 @@ pub fn run(options: Options) !Summary {
     if (options.input_text) |text| {
         Events.pushReplayKeys(win, text);
         summary.input_injections += 1;
+        main_window.input_injections += 1;
         Events.wakeWindow();
     }
 
     while (running) {
-        loop_count +%= 1;
         events.setMousePolicy(.{
             .listen_always = conf.window.mouse.listen_always,
             .link_hover = app.activeTerminalWantsLinkHover(),
             .terminal_bypass_mod = conf.window.mouse.terminal_bypass_mod,
         });
         var work = app.collectRenderWork();
-        trace("howl-main event=loop seq={} needs_frame={} frames={} polls={} waits={} idle={}\n", .{ loop_count, work.needs_frame, summary.frames, summary.polls, summary.waits, summary.idle_signals });
         const signal = if (work.needs_frame) blk: {
             summary.polls += 1;
-            trace("howl-main event=poll_enter seq={}\n", .{loop_count});
+            main_window.polls += 1;
             break :blk Events.pollWindow(win);
         } else blk: {
             summary.waits += 1;
-            trace("howl-main event=wait_enter seq={}\n", .{loop_count});
+            main_window.waits += 1;
             break :blk Events.waitWindow(win);
         };
-        trace("howl-main event=event_signal seq={} signal={s}\n", .{ loop_count, @tagName(signal) });
         if (signal == .quit) {
             summary.quit = true;
             running = false;
             continue;
         }
-        if (!work.needs_frame and signal == .none) summary.idle_signals += 1;
+        if (!work.needs_frame and signal == .none) {
+            summary.idle_signals += 1;
+            main_window.idle_signals += 1;
+        }
         app.setWindowFocused(Window.hasInputFocus(win));
         app.serviceHostEffects();
 
@@ -164,15 +157,23 @@ pub fn run(options: Options) !Summary {
 
         work = app.collectRenderWork();
         if (!work.needs_frame) {
-            trace("howl-main event=idle_after_events seq={} idle={}\n", .{ loop_count, summary.idle_signals });
-            reportMainThread(&meter, summary);
+            reportMainThread(&meter, &main_window);
             continue;
         }
 
         summary.frames += 1;
-        trace("howl-main event=render_enter seq={} frame={}\n", .{ loop_count, summary.frames });
+        main_window.frames += 1;
         const render_stats = app.render(work);
-        trace("howl-main event=render_leave seq={} frame={} sync_us={} copy_us={} render_us={} present_us={}\n", .{ loop_count, summary.frames, render_stats.sync_us, render_stats.copy_us, render_stats.render_us, render_stats.present_us });
+        main_window.sync_us += render_stats.sync_us;
+        main_window.copy_us += render_stats.copy_us;
+        main_window.render_us += render_stats.render_us;
+        main_window.present_us += render_stats.present_us;
+        main_window.glyphs += render_stats.glyphs;
+        main_window.fills += render_stats.fills;
+        main_window.uploads += render_stats.uploads;
+        main_window.surface_prepares += render_stats.surface.prepare_takes;
+        main_window.surface_submits += render_stats.surface.submit_valid;
+        main_window.surface_presents += render_stats.surface.presents;
         render_window.sync_us += render_stats.sync_us;
         render_window.copy_us += render_stats.copy_us;
         render_window.render_us += render_stats.render_us;
@@ -197,7 +198,7 @@ pub fn run(options: Options) !Summary {
         }
         reportFpsEveryWindow(bench_log, summary.frames, &fps_window_start_ns, &fps_window_start_frame, &next_fps_log_frame);
         reportRenderStages(bench_log, summary.frames, &render_window, &render_window_frames);
-        reportMainThread(&meter, summary);
+        reportMainThread(&meter, &main_window);
         if (app.activeTabFailed()) {
             summary.failed = true;
             running = false;
@@ -237,9 +238,10 @@ fn overrideOptionalConfig(slot: *?[]u8, value: []const u8) !void {
     slot.* = duped;
 }
 
-fn reportMainThread(meter: *thread_meter.ThreadMeter, summary: Summary) void {
-    _ = meter;
-    _ = summary;
+fn reportMainThread(meter: *thread_meter.ThreadMeter, counters: *trace.MainCounters) void {
+    const sample = meter.sample() orelse return;
+    trace.cpuMain("howl-main", sample.cpuPct(), sample.wall_ns, sample.cpu_ns, counters.*);
+    counters.* = .{};
 }
 
 fn reportRuntimeHz(enabled: bool, win: Window.Ptr) void {
