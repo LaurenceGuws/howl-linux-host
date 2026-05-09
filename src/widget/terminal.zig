@@ -775,7 +775,7 @@ fn prepareWorker(self: *Terminal) void {
         waits += 1;
         if (self.prepare_sem) |sem| {
             if (!window.c_win.SDL_WaitSemaphoreTimeout(sem, 250)) {
-                reportPrepareThread(&meter, waits, wake_hits, prepared_count, failures, empty_wakes);
+                reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
                 continue;
             }
         } else {
@@ -785,18 +785,18 @@ fn prepareWorker(self: *Terminal) void {
 
         if (self.surface_runtime.nextAction() != .prepare) {
             empty_wakes += 1;
-            reportPrepareThread(&meter, waits, wake_hits, prepared_count, failures, empty_wakes);
+            reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
             continue;
         }
 
         const request = self.surface_runtime.beginSynchronousRender() orelse {
             empty_wakes += 1;
-            reportPrepareThread(&meter, waits, wake_hits, prepared_count, failures, empty_wakes);
+            reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
             continue;
         };
         const prepared = self.term.prepareLatestSnapshot(self.render_px_w, self.render_px_h, self.grid_px_w, self.grid_px_h) orelse {
             failures += 1;
-            reportPrepareThread(&meter, waits, wake_hits, prepared_count, failures, empty_wakes);
+            reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
             continue;
         };
         const prepared_meta = Runtime.RenderPipeline.PreparedFrame{
@@ -808,11 +808,12 @@ fn prepareWorker(self: *Terminal) void {
         _ = self.surface_runtime.publishPrepared(prepared_meta);
         prepared_count += 1;
         Events.wakeWindow();
-        reportPrepareThread(&meter, waits, wake_hits, prepared_count, failures, empty_wakes);
+        reportPrepareThread(self, &meter, waits, wake_hits, prepared_count, failures, empty_wakes);
     }
 }
 
 fn reportPrepareThread(
+    self: *Terminal,
     meter: *thread_meter.ThreadMeter,
     waits: u64,
     wake_hits: u64,
@@ -821,8 +822,9 @@ fn reportPrepareThread(
     empty_wakes: u64,
 ) void {
     const sample = meter.sample() orelse return;
+    const surface_metrics = self.surface_runtime.metricsSnapshot();
     std.log.debug(
-        "perf host_prepare_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} prepared={} failures={} empty_wakes={}",
+        "perf host_prepare_thread cpu={d:.2}% wall_ms={} cpu_ms={} waits={} wake_hits={} prepared={} failures={} empty_wakes={} prep_req={} prep_coalesce={} forced_full={} full_req={} submit_reject={} presents={}",
         .{
             sample.cpuPct(),
             @divTrunc(sample.wall_ns, std.time.ns_per_ms),
@@ -832,6 +834,12 @@ fn reportPrepareThread(
             prepared_count,
             failures,
             empty_wakes,
+            surface_metrics.prepare_requests,
+            surface_metrics.prepare_coalesces,
+            surface_metrics.prepare_forced_full,
+            surface_metrics.full_prepare_requests,
+            surface_metrics.submit_rejected,
+            surface_metrics.presents,
         },
     );
 }
