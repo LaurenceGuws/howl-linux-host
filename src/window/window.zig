@@ -1,9 +1,9 @@
-//! Responsibility: own the Linux host window surface.
-//! Ownership: SDL window, clipboard, URL opening, and public frame presentation.
+//! Responsibility: own the Linux host window entity.
+//! Ownership: SDL window, GL presentation, geometry, clipboard, URL opening, and cursor state.
 
 const std = @import("std");
-const Chrome = @import("chrome.zig");
 const Layout = @import("layout.zig");
+const Present = @import("present.zig");
 
 const c = @cImport({
     @cInclude("SDL3/SDL.h");
@@ -23,7 +23,7 @@ pub const Size = struct {
 pub const Rect = Layout.Rect;
 pub const ScrollbarLayout = Layout.ScrollbarLayout;
 pub const Frame = Layout.Frame;
-pub const PresentState = Chrome.State(c);
+pub const PresentState = Present.State(c);
 
 var pointer_cursor: ?*c.SDL_Cursor = null;
 
@@ -106,7 +106,7 @@ pub const State = struct {
     }
 
     pub fn present(self: *State, frame: Frame) void {
-        Chrome.present(c, &self.present_state, frame);
+        Present.present(c, &self.present_state, frame);
     }
 
     pub fn tabBarHeight(self: *const State, configured_height: u32) c_int {
@@ -144,19 +144,19 @@ pub fn destroyWindow(handle: Ptr) void {
 }
 
 pub fn windowFlags() Flags {
-    return Chrome.flags(c);
+    return Present.flags(c);
 }
 
 pub fn initPresent(state: *PresentState, handle: Ptr) !void {
-    try Chrome.init(c, state, handle);
+    try Present.init(c, state, handle);
 }
 
 pub fn deinitPresent(state: *PresentState) void {
-    Chrome.deinit(c, state);
+    Present.deinit(c, state);
 }
 
 pub fn present(state: *PresentState, frame: Frame) void {
-    Chrome.present(c, state, frame);
+    Present.present(c, state, frame);
 }
 
 pub fn windowSize(handle: Ptr) Size {

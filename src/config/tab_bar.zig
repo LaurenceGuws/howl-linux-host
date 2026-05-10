@@ -1,5 +1,5 @@
 //! Responsibility: define Linux host tab bar configuration and static font data.
-//! Ownership: tab bar height, key bindings, and bitmap chrome glyphs.
+//! Ownership: tab bar height, key bindings, and bitmap tab glyphs.
 //! Reason: keep tab bar config vocabulary with the typed config data.
 
 const std = @import("std");

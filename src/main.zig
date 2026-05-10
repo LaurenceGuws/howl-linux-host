@@ -128,14 +128,14 @@ fn render(conf: *const Config.State, window: *Window.State, tab_bar: *TabBar, ta
 
     const texture_rect = window.contentRect(conf.tab_bar.height);
     const surface = tab.surfaceSnapshot();
-    const chrome = tab.chromeSnapshot(texture_rect);
+    const overlay = tab.overlaySnapshot(texture_rect);
     var title_buf: [max_tabs][]const u8 = undefined;
     const tab_bar_snapshot = tab_bar.snapshot(active_tab_idx, tabTitles(tabs, title_buf[0..]));
 
     window.present(.{
         .texture_id = surface.surface.texture_id,
         .texture_rect = texture_rect,
-        .scrollbar = chrome.scrollbar,
+        .scrollbar = overlay.scrollbar,
         .tab_count = tab_bar_snapshot.labels.len,
         .active_tab = tab_bar_snapshot.active_idx,
         .tab_labels = tab_bar_snapshot.labels,

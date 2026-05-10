@@ -1,5 +1,5 @@
 //! Responsibility: own the Linux host terminal widget.
-//! Ownership: host widget layer coordinates surfaces, chrome, input, and tab state.
+//! Ownership: host widget layer coordinates surfaces, window presentation, input, and tab state.
 //! Reason: keeps platform UX orchestration outside howl-term core behavior.
 
 const std = @import("std");
@@ -40,7 +40,7 @@ pub const Terminal = struct {
         surface: SurfaceHandle,
     };
 
-    pub const ChromeSnapshot = struct {
+    pub const OverlaySnapshot = struct {
         scrollbar: window.ScrollbarLayout,
     };
 
@@ -319,7 +319,7 @@ pub const Terminal = struct {
                     if (self.handleScrollbarMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
                     if (self.handleHyperlinkMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
                     if (self.handleSelectionMouseEvent(mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
-                    // Host-only passive motion powers chrome/hover presentation
+                    // Host-only passive motion powers window/hover presentation
                     // without becoming app-visible terminal mouse input.
                     if (mouse_event.host_only) continue;
                     const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse continue;
@@ -368,7 +368,7 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn chromeSnapshot(self: *const Terminal, texture_rect: window.Rect) ChromeSnapshot {
+    pub fn overlaySnapshot(self: *const Terminal, texture_rect: window.Rect) OverlaySnapshot {
         const mut: *Terminal = @constCast(self);
         const scroll = self.term.scrollState();
         return .{

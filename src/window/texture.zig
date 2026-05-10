@@ -1,8 +1,8 @@
-//! Responsibility: present terminal textures in the Linux host window.
-//! Ownership: SDL/GL texture blit setup and content rectangle submission.
-//! Reason: keep platform presentation code behind the window surface.
+//! Responsibility: draw GL textures into the Linux host window.
+//! Ownership: texture blit setup and SDL window buffer swap.
+//! Reason: keep platform presentation code behind the window entity.
 
-pub fn drawTextureRect(comptime c: type, fb_w: c_int, fb_h: c_int, texture_id: u32, x: c_int, y: c_int, width: c_int, height: c_int) void {
+pub fn drawRect(comptime c: type, fb_w: c_int, fb_h: c_int, texture_id: u32, x: c_int, y: c_int, width: c_int, height: c_int) void {
     if (texture_id == 0 or width <= 0 or height <= 0) return;
 
     c.glEnable(c.GL_TEXTURE_2D);

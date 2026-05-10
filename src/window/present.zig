@@ -1,11 +1,10 @@
-//! Responsibility: own Linux host chrome layout and drawing entrypoints.
-//! Ownership: tab bar, scrollbar, and terminal content rectangle composition.
-//! Reason: keep host chrome separate from terminal rendering.
+//! Responsibility: own Linux host window presentation.
+//! Ownership: GL context, tab cache, texture blits, and frame composition.
+//! Reason: keep platform presentation behind the window entity.
 
-const ChromeDraw = @import("chrome_draw.zig");
-const ChromeState = @import("chrome_state.zig");
+const Draw = @import("draw.zig");
 const Layout = @import("layout.zig");
-const TexturePresent = @import("../terminal/texture_present.zig");
+const Texture = @import("texture.zig");
 const std = @import("std");
 
 pub fn State(comptime c: type) type {
@@ -60,18 +59,17 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     var fb_w: c_int = 0;
     var fb_h: c_int = 0;
     _ = c.SDL_GetWindowSizeInPixels(handle, &fb_w, &fb_h);
-    const frame_state = ChromeState.State.fromFrame(frame);
-    updateTabCacheIfNeeded(c, state, @max(fb_w, 1), @max(fb_h, 1), frame_state);
+    updateTabCacheIfNeeded(c, state, @max(fb_w, 1), @max(fb_h, 1), frame);
     c.glViewport(0, 0, @max(fb_w, 1), @max(fb_h, 1));
     c.glClearColor(0.06, 0.09, 0.14, 1.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
-    drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame_state.texture_rect.y);
-    TexturePresent.drawTextureRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
-    ChromeDraw.drawScrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame_state.scrollbar);
-    TexturePresent.swapWindow(c, handle);
+    drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.texture_rect.y);
+    Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
+    Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
+    Texture.swapWindow(c, handle);
 }
 
-fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, frame: ChromeState.State) void {
+fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {
     const bar_h = @max(frame.texture_rect.y, 0);
     if (bar_h <= 0) {
         releaseTabCache(c, state);
@@ -87,7 +85,7 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h:
     c.glViewport(0, 0, fb_w, fb_h);
     c.glClearColor(0.0, 0.0, 0.0, 0.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
-    ChromeDraw.drawTabBar(c, fb_w, fb_h, frame);
+    Draw.tabBar(c, fb_w, fb_h, frame);
     c.glBindTexture(c.GL_TEXTURE_2D, state.tab_texture_id);
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
     setTextureParams(c);
@@ -104,7 +102,7 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h:
 
 fn drawCachedTabBar(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, bar_h: c_int) void {
     if (!state.tab_cache_valid or state.tab_texture_id == 0 or bar_h <= 0) return;
-    TexturePresent.drawTextureRect(c, fb_w, fb_h, state.tab_texture_id, 0, 0, fb_w, bar_h);
+    Texture.drawRect(c, fb_w, fb_h, state.tab_texture_id, 0, 0, fb_w, bar_h);
 }
 
 fn ensureTabTexture(comptime c: type, state: *State(c)) void {
@@ -133,7 +131,7 @@ fn setTextureParams(comptime c: type) void {
     c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
 }
 
-fn hashTabBarState(frame: ChromeState.State) u64 {
+fn hashTabBarState(frame: Layout.Frame) u64 {
     var hasher = std.hash.Wyhash.init(0);
     hasher.update(std.mem.asBytes(&frame.texture_rect.y));
     hasher.update(std.mem.asBytes(&frame.tab_count));
