@@ -37,7 +37,6 @@ pub fn prepareThreadMain(self: *Terminal) void {
             },
             .failed => {},
         }
-        self.prepare_thread_signal_pending.store(false, .release);
-        if (self.term.needsPrepare()) self.signalPrepareThread();
+        self.finishPrepareThreadJob();
     }
 }

@@ -268,8 +268,15 @@ pub const Terminal = struct {
     }
 
     pub fn signalPrepareThread(self: *Terminal) void {
+        // Latest-only wake latch: requests that arrive while a prepare job is
+        // running are coalesced into the current/next observed terminal state.
         if (self.prepare_thread_signal_pending.swap(true, .acq_rel)) return;
         if (self.prepare_thread_sem) |sem| window.c_win.SDL_SignalSemaphore(sem);
+    }
+
+    pub fn finishPrepareThreadJob(self: *Terminal) void {
+        self.prepare_thread_signal_pending.store(false, .release);
+        if (self.term.needsPrepare()) self.signalPrepareThread();
     }
 
     fn syncRenderBackpressure(self: *Terminal) void {
