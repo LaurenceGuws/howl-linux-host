@@ -14,9 +14,10 @@ const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const Scrollbar = @import("scrollbar.zig");
 const Input = @import("input.zig");
+const thread = @import("thread.zig");
 
-fn setThreadName(thread: std.Thread, name: [:0]const u8) void {
-    if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(thread.getHandle(), name.ptr);
+fn setThreadName(handle: std.Thread, name: [:0]const u8) void {
+    if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(handle.getHandle(), name.ptr);
 }
 
 const ThreadMutex = struct {
@@ -63,12 +64,12 @@ pub const Terminal = struct {
     last_surface: SurfaceHandle,
     last_resize_ns: u64,
     snapshot_quiet_seq: std.atomic.Value(u64),
-    wake_worker: ?std.Thread,
-    prepare_worker: ?std.Thread,
-    prepare_worker_sem: ?*window.c_win.SDL_Semaphore,
-    prepare_worker_signal_pending: std.atomic.Value(bool),
-    wake_worker_stop: std.atomic.Value(bool),
-    prepare_worker_stop: std.atomic.Value(bool),
+    wake_thread: ?std.Thread,
+    prepare_thread: ?std.Thread,
+    prepare_thread_sem: ?*window.c_win.SDL_Semaphore,
+    prepare_thread_signal_pending: std.atomic.Value(bool),
+    wake_thread_stop: std.atomic.Value(bool),
+    prepare_thread_stop: std.atomic.Value(bool),
     window_focused: bool,
     widget_focused: bool,
     scrollbar: Scrollbar.State,
@@ -121,12 +122,12 @@ pub const Terminal = struct {
             .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .last_resize_ns = 0,
             .snapshot_quiet_seq = std.atomic.Value(u64).init(0),
-            .wake_worker = null,
-            .prepare_worker = null,
-            .prepare_worker_sem = null,
-            .prepare_worker_signal_pending = std.atomic.Value(bool).init(false),
-            .wake_worker_stop = std.atomic.Value(bool).init(false),
-            .prepare_worker_stop = std.atomic.Value(bool).init(false),
+            .wake_thread = null,
+            .prepare_thread = null,
+            .prepare_thread_sem = null,
+            .prepare_thread_signal_pending = std.atomic.Value(bool).init(false),
+            .wake_thread_stop = std.atomic.Value(bool).init(false),
+            .prepare_thread_stop = std.atomic.Value(bool).init(false),
             .window_focused = true,
             .widget_focused = true,
             .scrollbar = .{},
@@ -157,27 +158,27 @@ pub const Terminal = struct {
         self.refreshTitle();
         if (self.title_len == 0) return error.MissingTabTitle;
         self.syncInputFocus();
-        self.prepare_worker_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.PrepareSemaphoreUnavailable;
-        const prepare_worker = try std.Thread.spawn(.{}, prepareWorker, .{self});
-        setThreadName(prepare_worker, "howl-prepare-worker");
-        self.prepare_worker = prepare_worker;
-        const wake_worker = try std.Thread.spawn(.{}, wakeWorker, .{self});
-        setThreadName(wake_worker, "howl-wake-worker");
-        self.wake_worker = wake_worker;
+        self.prepare_thread_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.PrepareSemaphoreUnavailable;
+        const prepare_thread = try std.Thread.spawn(.{}, thread.prepareThreadMain, .{self});
+        setThreadName(prepare_thread, "howl-prepare");
+        self.prepare_thread = prepare_thread;
+        const wake_thread = try std.Thread.spawn(.{}, thread.wakeThreadMain, .{self});
+        setThreadName(wake_thread, "howl-wake");
+        self.wake_thread = wake_thread;
     }
 
     pub fn deinit(self: *Terminal) void {
-        self.wake_worker_stop.store(true, .release);
-        self.prepare_worker_stop.store(true, .release);
+        self.wake_thread_stop.store(true, .release);
+        self.prepare_thread_stop.store(true, .release);
         if (self.term_ready) self.term.wakeSnapshotWaiters();
-        self.signalPrepareWorker();
+        self.signalPrepareThread();
         HostInput.wakeWindow();
-        if (self.wake_worker) |t| t.join();
-        self.wake_worker = null;
-        if (self.prepare_worker) |t| t.join();
-        self.prepare_worker = null;
-        if (self.prepare_worker_sem) |sem| window.c_win.SDL_DestroySemaphore(sem);
-        self.prepare_worker_sem = null;
+        if (self.wake_thread) |t| t.join();
+        self.wake_thread = null;
+        if (self.prepare_thread) |t| t.join();
+        self.prepare_thread = null;
+        if (self.prepare_thread_sem) |sem| window.c_win.SDL_DestroySemaphore(sem);
+        self.prepare_thread_sem = null;
         if (self.link_cursor_active) window.useDefaultCursor();
         self.link_cursor_active = false;
         if (self.term_ready) self.term.deinit();
@@ -240,7 +241,7 @@ pub const Terminal = struct {
         switch (self.term.renderReadyFrame()) {
             .idle, .stale, .failed => return,
             .needs_prepare => {
-                self.signalPrepareWorker();
+                self.signalPrepareThread();
                 HostInput.wakeWindow();
                 return;
             },
@@ -249,28 +250,28 @@ pub const Terminal = struct {
                 if (surface.texture_id != 0) self.last_surface = surface;
                 self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
                 if (self.term.needsPrepare()) {
-                    self.signalPrepareWorker();
+                    self.signalPrepareThread();
                 }
             },
             .rendered_more_pending => {
                 const surface = self.term.surfaceState().surface;
                 if (surface.texture_id != 0) self.last_surface = surface;
-                self.signalPrepareWorker();
+                self.signalPrepareThread();
                 HostInput.wakeWindow();
             },
         }
     }
 
-    fn signalPrepareWorker(self: *Terminal) void {
-        if (self.prepare_worker_signal_pending.swap(true, .acq_rel)) return;
-        if (self.prepare_worker_sem) |sem| window.c_win.SDL_SignalSemaphore(sem);
+    pub fn signalPrepareThread(self: *Terminal) void {
+        if (self.prepare_thread_signal_pending.swap(true, .acq_rel)) return;
+        if (self.prepare_thread_sem) |sem| window.c_win.SDL_SignalSemaphore(sem);
     }
 
     fn syncRenderBackpressure(self: *Terminal) void {
         self.term.setRuntimeBackpressure(self.term.hasQueuedRenderWork());
     }
 
-    fn geometrySnapshot(self: *Terminal) HowlTerm.FramePixels {
+    pub fn geometrySnapshot(self: *Terminal) HowlTerm.FramePixels {
         lockMutex(&self.geometry_mutex);
         defer self.geometry_mutex.unlock();
         return self.geometrySnapshotLocked();
@@ -564,7 +565,7 @@ pub const Terminal = struct {
         return changed;
     }
 
-    fn refreshTitle(self: *Terminal) void {
+    pub fn refreshTitle(self: *Terminal) void {
         self.title_len = self.term.copyCurrentTitle(self.title_buf[0..]);
     }
 
@@ -580,40 +581,4 @@ fn scrollbarView(view: HowlTerm.ScrollState) Scrollbar.View {
         .scrollback_offset = view.scrollback_offset,
         .alternate_screen = view.alternate_screen,
     };
-}
-
-fn wakeWorker(self: *Terminal) void {
-    while (!self.wake_worker_stop.load(.acquire)) {
-        const last_seen_seq = self.snapshot_quiet_seq.load(.acquire);
-        const wake = self.term.awaitRenderWake(last_seen_seq);
-        if (wake.event_seq != last_seen_seq) {
-            self.snapshot_quiet_seq.store(wake.event_seq, .release);
-            if (wake.published) {
-                self.refreshTitle();
-                self.signalPrepareWorker();
-            }
-        }
-    }
-}
-
-fn prepareWorker(self: *Terminal) void {
-    while (!self.prepare_worker_stop.load(.acquire)) {
-        if (self.prepare_worker_sem) |sem| {
-            window.c_win.SDL_WaitSemaphore(sem);
-        } else {
-            return;
-        }
-        if (self.prepare_worker_stop.load(.acquire)) break;
-
-        const geom = self.geometrySnapshot();
-        switch (self.term.prepareNextFrame(geom)) {
-            .idle => {},
-            .prepared => {
-                HostInput.wakeWindow();
-            },
-            .failed => {},
-        }
-        self.prepare_worker_signal_pending.store(false, .release);
-        if (self.term.needsPrepare()) self.signalPrepareWorker();
-    }
 }
