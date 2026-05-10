@@ -3,10 +3,12 @@
 //! Reason: keep SDL entrypoints separate from multi-tab host behavior.
 
 const std = @import("std");
-const Window = @import("window.zig");
-const Events = @import("events.zig").Events;
-const Config = @import("config.zig");
-const Terminal = @import("widget/terminal.zig").Terminal;
+const Window = @import("../window/window.zig");
+const Events = @import("../events/events.zig").Events;
+const Config = @import("../config/config.zig");
+const TerminalWidget = @import("../terminal/terminal.zig").Terminal;
+const Clipboard = @import("../terminal/clipboard.zig");
+const TabBar = @import("../tab_bar/tab_bar.zig");
 
 const max_tabs: usize = 9;
 
@@ -16,7 +18,7 @@ pub const RenderWork = struct {
 };
 
 pub const RenderStats = struct {
-    pub const SurfaceMetrics = Terminal.SurfaceMetrics;
+    pub const SurfaceMetrics = TerminalWidget.SurfaceMetrics;
 
     sync_us: u64 = 0,
     copy_us: u64 = 0,
@@ -39,14 +41,19 @@ pub const RenderStats = struct {
 };
 
 const TabChrome = struct {
-    label: []const u8,
+    label_buf: [128]u8 = undefined,
+    label_len: usize = 0,
+
+    fn label(self: *const TabChrome) []const u8 {
+        return self.label_buf[0..self.label_len];
+    }
 };
 
 pub const App = struct {
     allocator: std.mem.Allocator,
     conf: *const Config.Value,
     present: Window.PresentState,
-    tabs: std.ArrayList(*Terminal),
+    tabs: std.ArrayList(*TerminalWidget),
     active_tab_idx: usize,
     window_px_w: c_int,
     window_px_h: c_int,
@@ -137,7 +144,7 @@ pub const App = struct {
         var tab_chrome_buf: [max_tabs]TabChrome = undefined;
         const tab_chrome = self.tabChrome(tab_chrome_buf[0..]);
         var label_buf: [max_tabs][]const u8 = undefined;
-        for (tab_chrome, 0..) |chrome_item, i| label_buf[i] = chrome_item.label;
+        for (tab_chrome, 0..) |*chrome_item, i| label_buf[i] = chrome_item.label();
         const present_us = Window.presentTimedUs(&self.present, .{
             .texture_id = surface.surface.texture_id,
             .texture_rect = texture_rect,
@@ -173,10 +180,10 @@ pub const App = struct {
     }
 
     pub fn serviceHostEffects(self: *App) void {
-        for (self.tabs.items) |tab| tab.serviceHostEffects();
+        for (self.tabs.items) |tab| self.serviceTerminalEffects(tab);
     }
 
-    pub fn activeTab(self: *const App) *Terminal {
+    pub fn activeTab(self: *const App) *TerminalWidget {
         return self.tabs.items[self.active_tab_idx];
     }
 
@@ -186,7 +193,7 @@ pub const App = struct {
             .zoom_out => _ = self.activeTab().adjustFontSize(-1),
             .zoom_reset => _ = self.activeTab().resetFontSize(),
             .zoom_stress_toggle => _ = self.activeTab().toggleStressFontSize(),
-            .terminal_paste => self.activeTab().pasteFromClipboard(),
+            .terminal_paste => self.pasteIntoActiveTab(),
             .terminal_new_tab => try self.openTab(),
             .terminal_close_tab => self.closeActiveTab(),
             .terminal_next_tab => self.selectRelative(1),
@@ -198,7 +205,7 @@ pub const App = struct {
     fn openTab(self: *App) !void {
         if (self.tabs.items.len >= max_tabs) return;
 
-        const tab = try Terminal.create(self.allocator, &self.conf.term, self.contentWidth(), self.contentHeight(), self.contentWidthLogical(), self.contentHeightLogical());
+        const tab = try TerminalWidget.create(self.allocator, &self.conf.term, self.contentWidth(), self.contentHeight(), self.contentWidthLogical(), self.contentHeightLogical());
         errdefer tab.destroy(self.allocator);
         try self.tabs.append(self.allocator, tab);
         self.active_tab_idx = self.tabs.items.len - 1;
@@ -239,11 +246,34 @@ pub const App = struct {
     fn tabChrome(self: *const App, buf: []TabChrome) []TabChrome {
         std.debug.assert(buf.len >= self.tabs.items.len);
         for (self.tabs.items, 0..) |tab, i| {
-            buf[i] = .{
-                .label = tab.tabLabelSlice(),
-            };
+            const title = tab.titleSlice();
+            buf[i] = .{};
+            const n = @min(title.len, buf[i].label_buf.len);
+            if (n > 0) @memcpy(buf[i].label_buf[0..n], title[0..n]);
+            buf[i].label_len = TabBar.label(n, buf[i].label_buf[0..]);
         }
         return buf[0..self.tabs.items.len];
+    }
+
+    fn pasteIntoActiveTab(self: *App) void {
+        const text = Window.getClipboardText(std.heap.c_allocator) catch return;
+        defer if (text) |buf| std.heap.c_allocator.free(buf);
+        const payload = text orelse return;
+        self.activeTab().paste(payload);
+    }
+
+    fn serviceTerminalEffects(self: *App, tab: *TerminalWidget) void {
+        const raw = tab.drainClipboardSet(std.heap.c_allocator) orelse return;
+        defer std.heap.c_allocator.free(raw);
+
+        switch (self.conf.term.clipboard.osc_52) {
+            .deny => return,
+            .allow => {},
+        }
+
+        const decoded = Clipboard.decodeOsc52(std.heap.c_allocator, raw) catch return;
+        defer std.heap.c_allocator.free(decoded);
+        _ = Window.setClipboardText(decoded);
     }
 
     fn tabBarHeight(self: *const App) c_int {

@@ -2,8 +2,8 @@
 //! Ownership: SDL window, clipboard, URL opening, and public frame presentation.
 
 const std = @import("std");
-const Chrome = @import("window/chrome.zig");
-const Layout = @import("window/layout.zig");
+const Chrome = @import("chrome.zig");
+const Layout = @import("layout.zig");
 
 const c = @cImport({
     @cInclude("SDL3/SDL.h");

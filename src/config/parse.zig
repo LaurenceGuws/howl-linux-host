@@ -3,7 +3,7 @@
 //! Reason: keep textual config vocabulary outside runtime modules.
 
 const std = @import("std");
-const Events = @import("../events.zig").Events;
+const Events = @import("../events/events.zig").Events;
 const term_config = @import("../howl_term/config.zig");
 const Shortcuts = Events.Shortcuts;
 

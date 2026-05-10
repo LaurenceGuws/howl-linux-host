@@ -2,8 +2,8 @@
 //! Ownership: key, modifier, mouse, and byte translation for terminal widgets.
 //! Reason: keep host event vocabulary separate from terminal runtime input.
 
-const Events = @import("../events.zig").Events;
-const term_runtime = @import("../howl_term/howl_term.zig").Runtime;
+const Events = @import("../events/events.zig").Events;
+const term_runtime = @import("howl_term").HostRuntime;
 
 pub fn key(key_event: Events.Key) ?term_runtime.Key {
     return switch (key_event) {

@@ -3,11 +3,11 @@
 //! Reason: keep Linux host on one boring event owner.
 
 const std = @import("std");
-const keys = @import("events/keys.zig");
-const mouse = @import("events/mouse.zig");
-const input = @import("events/input.zig");
-const shortcuts = @import("events/shortcuts.zig");
-const window = @import("events/window.zig");
+const keys = @import("keys.zig");
+const mouse = @import("mouse.zig");
+const input = @import("input.zig");
+const shortcuts = @import("shortcuts.zig");
+const window = @import("window.zig");
 
 const c = window.c_win;
 const max_input_events: usize = 256;

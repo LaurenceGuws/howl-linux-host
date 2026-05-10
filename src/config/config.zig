@@ -4,9 +4,9 @@
 
 const std = @import("std");
 const howl_lua = @import("howl_lua");
-const term_config = @import("howl_term/config.zig");
-const window_config = @import("config/window.zig");
-const TabBar = @import("widget/tab_bar/tab_bar.zig");
+const term_config = @import("../howl_term/config.zig");
+const window_config = @import("window.zig");
+const TabBar = @import("../tab_bar/tab_bar.zig");
 
 const Lua = howl_lua;
 
@@ -23,9 +23,9 @@ pub const Value = struct {
 };
 
 pub fn loadLua(alloc: std.mem.Allocator) !Lua.State {
-    return @import("config/load.zig").loadLua(alloc);
+    return @import("load.zig").loadLua(alloc);
 }
 
 pub fn loadFromLua(alloc: std.mem.Allocator, lua: Lua.State) !Value {
-    return @import("config/load.zig").loadFromLua(alloc, lua);
+    return @import("load.zig").loadFromLua(alloc, lua);
 }

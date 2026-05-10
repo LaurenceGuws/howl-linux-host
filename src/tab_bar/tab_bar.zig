@@ -3,7 +3,7 @@
 //! Reason: keeps tab presentation policy separate from terminal runtime tabs.
 
 const std = @import("std");
-const Shortcuts = @import("../../events.zig").Events.Shortcuts;
+const Shortcuts = @import("../events/events.zig").Events.Shortcuts;
 
 pub const Config = struct {
     height: u16,

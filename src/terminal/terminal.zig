@@ -1,23 +1,21 @@
-//! Responsibility: own the Linux host terminal widget runtime.
+//! Responsibility: own the Linux host terminal widget.
 //! Ownership: host widget layer coordinates surfaces, chrome, input, and tab state.
 //! Reason: keeps platform UX orchestration outside howl-term core behavior.
 
 const std = @import("std");
-const window = @import("../window.zig");
+const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
-const event_runtime = @import("../events.zig");
+const event_runtime = @import("../events/events.zig");
 const Events = event_runtime.Events;
-const Runtime = @import("../howl_term/howl_term.zig").Runtime;
+const Runtime = @import("howl_term").HostRuntime;
 const LifecycleState = Runtime.LifecycleState;
 const SurfaceHandle = Runtime.SurfaceHandle;
-const thread_meter = @import("../thread_meter.zig");
+const thread_meter = @import("../test/thread_meter.zig");
 const config = @import("../howl_term/config.zig");
 const Scrollbar = @import("../howl_term/scrollbar.zig");
-const TabBar = @import("tab_bar/tab_bar.zig");
-const Clipboard = @import("terminal_clipboard.zig");
-const Fonts = @import("terminal_fonts.zig");
-const Input = @import("terminal_input.zig");
-const trace = @import("../trace.zig");
+const Input = @import("input.zig");
+const TerminalInstance = @import("howl_term.zig").Terminal;
+const trace = @import("../test/trace.zig");
 
 fn setThreadName(thread: std.Thread, name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(thread.getHandle(), name.ptr);
@@ -47,11 +45,10 @@ pub const Terminal = struct {
     };
 
     pub const ChromeSnapshot = struct {
-        tab_label: []const u8,
         scrollbar: window.ScrollbarLayout,
     };
 
-    term: Runtime,
+    term: TerminalInstance,
     conf: *const config.Config,
     render_px_w: c_int,
     render_px_h: c_int,
@@ -64,8 +61,6 @@ pub const Terminal = struct {
     geometry_mutex: ThreadMutex,
     font_size_px: u16,
     default_font_size_px: u16,
-    tab_label_buf: [128]u8,
-    tab_label_len: usize,
     last_surface: SurfaceHandle,
     last_resize_ns: u64,
     snapshot_quiet_seq: std.atomic.Value(u64),
@@ -131,8 +126,6 @@ pub const Terminal = struct {
             .geometry_mutex = .{},
             .font_size_px = font_size,
             .default_font_size_px = font_size,
-            .tab_label_buf = undefined,
-            .tab_label_len = 0,
             .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .last_resize_ns = 0,
             .snapshot_quiet_seq = std.atomic.Value(u64).init(0),
@@ -165,19 +158,8 @@ pub const Terminal = struct {
     }
 
     fn startRuntime(self: *Terminal) !void {
-        var font_fallbacks_buf: [32][:0]const u8 = undefined;
-        const font_fallbacks = Fonts.flattenFallbacks(self.conf.fonts, font_fallbacks_buf[0..]);
-        try self.term.init(.{
-            .shell = self.conf.shell,
-            .start_path = self.conf.start_path,
-            .command = self.conf.command,
-            .frame = self.geometrySnapshot(),
-            .font_size_px = self.font_size_px,
-            .font_primary = self.conf.fonts.primary,
-            .font_fallbacks = font_fallbacks,
-        });
+        try self.term.init(self.conf, self.geometrySnapshot());
         self.syncInputFocus();
-        self.refreshTabLabel();
         self.prepare_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.PrepareSemaphoreUnavailable;
         const prepare_thread = try std.Thread.spawn(.{}, prepareWorker, .{self});
         setThreadName(prepare_thread, "howl-prepare");
@@ -328,10 +310,7 @@ pub const Terminal = struct {
         });
     }
 
-    pub fn pasteFromClipboard(self: *Terminal) void {
-        const text = window.getClipboardText(std.heap.c_allocator) catch return;
-        defer if (text) |buf| std.heap.c_allocator.free(buf);
-        const payload = text orelse return;
+    pub fn paste(self: *Terminal, payload: []const u8) void {
         self.term.publishPaste(payload);
     }
 
@@ -399,7 +378,6 @@ pub const Terminal = struct {
     pub fn chromeSnapshot(self: *const Terminal, texture_rect: window.Rect) ChromeSnapshot {
         const scroll = self.term.scrollState();
         return .{
-            .tab_label = self.tabLabel(),
             .scrollbar = self.scrollbarLayout(texture_rect, scroll),
         };
     }
@@ -408,8 +386,8 @@ pub const Terminal = struct {
         return self.term.surfaceState().state;
     }
 
-    pub fn tabLabelSlice(self: *const Terminal) []const u8 {
-        return self.tabLabel();
+    pub fn titleSlice(self: *const Terminal) []const u8 {
+        return self.term.titleSlice();
     }
 
     pub fn lastRenderMetrics(self: *const Terminal) Runtime.RenderMetrics {
@@ -491,22 +469,8 @@ pub const Terminal = struct {
         self.syncInputFocus();
     }
 
-    pub fn serviceHostEffects(self: *Terminal) void {
-        const request = self.term.drainPendingClipboardSet(std.heap.c_allocator) orelse return;
-        defer std.heap.c_allocator.free(request.osc52_payload);
-
-        switch (self.conf.clipboard.osc_52) {
-            .deny => return,
-            .allow => {},
-        }
-
-        const decoded = Clipboard.decodeOsc52(std.heap.c_allocator, request.osc52_payload) catch return;
-        defer std.heap.c_allocator.free(decoded);
-        _ = window.setClipboardText(decoded);
-    }
-
-    fn tabLabel(self: *const Terminal) []const u8 {
-        return self.tab_label_buf[0..self.tab_label_len];
+    pub fn drainClipboardSet(self: *Terminal, allocator: std.mem.Allocator) ?[]u8 {
+        return self.term.drainClipboardSet(allocator);
     }
 
     fn presentSurfaceHandle(self: *const Terminal, view: Runtime.SurfaceState) SurfaceHandle {
@@ -729,8 +693,8 @@ pub const Terminal = struct {
         return Scrollbar.focus(origin_x, origin_y, logical_width, logical_height, self.mouse_logical_x, self.mouse_logical_y, self.scrollbar_dragging, self.window_focused);
     }
 
-    fn refreshTabLabel(self: *Terminal) void {
-        self.tab_label_len = TabBar.label(self.term.copyTabTitle(self.tab_label_buf[0..]), self.tab_label_buf[0..]);
+    fn refreshTitle(self: *Terminal) void {
+        self.term.refreshTitle();
     }
 
     fn syncInputFocus(self: *Terminal) void {
@@ -764,7 +728,7 @@ fn wakeWorker(self: *Terminal) void {
             self.snapshot_quiet_seq.store(wake.event_seq, .release);
             if (wake.published) {
                 event_wakes += 1;
-                self.refreshTabLabel();
+                self.refreshTitle();
                 self.signalPrepareWorker();
             }
         }

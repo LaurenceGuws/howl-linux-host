@@ -3,7 +3,7 @@
 //! Reason: keep SDL event details behind host event vocabulary.
 
 const std = @import("std");
-const Window = @import("../window.zig");
+const Window = @import("../window/window.zig");
 
 pub const c_win = Window.c_win;
 

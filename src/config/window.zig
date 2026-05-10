@@ -3,8 +3,8 @@
 //! Reason: keep window configuration separate from SDL calls.
 
 const std = @import("std");
-const Shortcuts = @import("../events.zig").Events.Shortcuts;
-const Mod = @import("../events.zig").Events.Mod;
+const Shortcuts = @import("../events/events.zig").Events.Shortcuts;
+const Mod = @import("../events/events.zig").Events.Mod;
 
 pub const Window = struct {
     pub const MousePolicy = struct {

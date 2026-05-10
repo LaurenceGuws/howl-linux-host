@@ -31,7 +31,6 @@ pub fn build(b: *std.Build) void {
     });
 
     const build_options = b.addOptions();
-
     const exe = b.addExecutable(.{
         .name = "howl_term",
         .root_module = b.createModule(.{

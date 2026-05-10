@@ -3,7 +3,7 @@
 //! Reason: separates platform config loading from terminal runtime ownership.
 
 const std = @import("std");
-const Events = @import("../events.zig").Events;
+const Events = @import("../events/events.zig").Events;
 
 pub const FontStack = struct {
     primary: ?[:0]u8,
