@@ -7,9 +7,14 @@ const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
 const input_runtime = @import("../input/input.zig");
 const HostInput = input_runtime.Input;
-const HowlTerm = @import("howl_term").HowlTerm;
-const LifecycleState = HowlTerm.LifecycleState;
-const SurfaceHandle = HowlTerm.SurfaceHandle;
+const howl_term = @import("howl_term");
+const HowlTerm = howl_term.HowlTerm;
+const LifecycleState = howl_term.runtime.LifecycleState;
+const FramePixels = howl_term.runtime.FramePixels;
+const SurfaceHandle = howl_term.surface.Handle;
+const SurfaceState = howl_term.surface.State;
+const LinkUnderlineStyle = howl_term.viewport.LinkUnderlineStyle;
+const ScrollState = howl_term.viewport.ScrollState;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const Scrollbar = @import("scrollbar.zig");
@@ -35,7 +40,7 @@ fn lockMutex(mutex: *ThreadMutex) void {
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
 
-    pub const SurfaceMetrics = HowlTerm.SurfaceMetrics;
+    pub const SurfaceMetrics = howl_term.surface.Metrics;
 
     pub const SurfaceSnapshot = struct {
         surface: SurfaceHandle,
@@ -271,13 +276,13 @@ pub const Terminal = struct {
         self.term.setRuntimeBackpressure(self.term.hasQueuedRenderWork());
     }
 
-    pub fn geometrySnapshot(self: *Terminal) HowlTerm.FramePixels {
+    pub fn geometrySnapshot(self: *Terminal) FramePixels {
         lockMutex(&self.geometry_mutex);
         defer self.geometry_mutex.unlock();
         return self.geometrySnapshotLocked();
     }
 
-    fn geometrySnapshotLocked(self: *const Terminal) HowlTerm.FramePixels {
+    fn geometrySnapshotLocked(self: *const Terminal) FramePixels {
         return .{
             .render_width = @max(self.render_px_w, 1),
             .render_height = @max(self.render_px_h, 1),
@@ -420,7 +425,7 @@ pub const Terminal = struct {
         _ = window.setClipboardText(text);
     }
 
-    fn presentSurfaceHandle(self: *const Terminal, view: HowlTerm.SurfaceState) SurfaceHandle {
+    fn presentSurfaceHandle(self: *const Terminal, view: SurfaceState) SurfaceHandle {
         if (self.last_surface.texture_id != 0) return self.last_surface;
         return view.surface;
     }
@@ -547,7 +552,7 @@ pub const Terminal = struct {
         return true;
     }
 
-    fn linkUnderlineStyle(style: Config.TerminalLinkUnderlineStyle) HowlTerm.LinkUnderlineStyle {
+    fn linkUnderlineStyle(style: Config.TerminalLinkUnderlineStyle) LinkUnderlineStyle {
         return switch (style) {
             .straight => .straight,
             .curly => .curly,
@@ -574,7 +579,7 @@ pub const Terminal = struct {
     }
 };
 
-fn scrollbarView(view: HowlTerm.ScrollState) Scrollbar.View {
+fn scrollbarView(view: ScrollState) Scrollbar.View {
     return .{
         .viewport_rows = view.viewport_rows,
         .scrollback_count = view.scrollback_count,
