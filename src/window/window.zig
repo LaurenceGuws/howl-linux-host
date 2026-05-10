@@ -2,6 +2,7 @@
 //! Ownership: SDL window, GL presentation, geometry, clipboard, URL opening, and cursor state.
 
 const std = @import("std");
+const icon = @import("icon.zig");
 const Layout = @import("layout.zig");
 const Present = @import("present.zig");
 
@@ -135,6 +136,7 @@ pub fn quit() void {
 pub fn createWindow(title: [*:0]const u8, width: c_int, height: c_int, flags: Flags) ?Ptr {
     const handle = c.SDL_CreateWindow(title, width, height, @intCast(flags)) orelse return null;
     _ = c.SDL_StartTextInput(handle);
+    icon.apply(handle);
     return handle;
 }
 

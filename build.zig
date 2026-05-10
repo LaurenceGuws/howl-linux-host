@@ -3,6 +3,7 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const term_backend_ffi = b.option(bool, "term-backend-ffi", "Use howl-term's FFI-shaped backend inside the Linux host") orelse false;
     const check_host_runtime_surface = b.addSystemCommand(&.{
         "bash",
         "../../tools/check_host_runtime_surface.sh",
@@ -14,12 +15,14 @@ pub fn build(b: *std.Build) void {
         .@"render-variant" = "gl",
         .@"session-pty-variant" = "unix_pty",
     });
-    const howl_term_mod = howl_term_dep.module("howl_term");
+    const howl_term_mod = howl_term_dep.module(if (term_backend_ffi) "howl_term_ffi" else "howl_term");
     const howl_lua_dep = b.dependency("howl_lua", .{
         .target = target,
         .optimize = optimize,
     });
     const howl_lua_mod = howl_lua_dep.module("howl_lua");
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "term_backend_ffi", term_backend_ffi);
     const host_test_mod = b.createModule(.{
         .root_source_file = b.path("src/test_host.zig"),
         .target = target,
@@ -27,10 +30,10 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "howl_term", .module = howl_term_mod },
             .{ .name = "howl_lua", .module = howl_lua_mod },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
 
-    const build_options = b.addOptions();
     const exe = b.addExecutable(.{
         .name = "howl_term",
         .root_module = b.createModule(.{
@@ -54,6 +57,8 @@ pub fn build(b: *std.Build) void {
     });
     const sdl_lib = sdl_dep.artifact("SDL3");
     exe.root_module.addIncludePath(sdl_dep.path("include"));
+    exe.root_module.addIncludePath(b.path("../vendor"));
+    exe.root_module.addCSourceFile(.{ .file = b.path("src/window/stb_image.c") });
     exe.root_module.linkLibrary(sdl_lib);
 
     exe.root_module.linkSystemLibrary("GL", .{});
@@ -155,6 +160,8 @@ pub fn build(b: *std.Build) void {
     visual_rain_stress_tests.use_llvm = true;
     visual_rain_stress_tests.root_module.link_libc = true;
     mod_tests.root_module.addIncludePath(sdl_dep.path("include"));
+    mod_tests.root_module.addIncludePath(b.path("../vendor"));
+    mod_tests.root_module.addCSourceFile(.{ .file = b.path("src/window/stb_image.c") });
     mod_tests.root_module.linkLibrary(sdl_lib);
     mod_tests.root_module.link_libc = true;
     mod_tests.root_module.linkSystemLibrary("lua5.4", .{ .use_pkg_config = .force });

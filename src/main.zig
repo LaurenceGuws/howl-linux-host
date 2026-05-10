@@ -93,8 +93,6 @@ fn start(options: Options) !void {
         const content_logical = window.contentLogicalSize(conf.tab_bar.height);
         activeTab(tabs.items, active_tab_idx).drainInput(&input, 0, window.tabBarHeightLogical(conf.tab_bar.height), content_logical.width, content_logical.height);
         activeTab(tabs.items, active_tab_idx).handleScrollInput(&input);
-        serviceHostEffects(tabs.items);
-
         if (input.drainWindowGeometryChanged()) {
             if (window.refreshGeometry()) resizeTerminals(&conf, &window, tabs.items);
         }
@@ -174,10 +172,6 @@ fn handleBindingAction(conf: *const Config.State, window: *Window.State, tabs: *
         .terminal_prev_tab => selectRelative(window, tabs.items, active_tab_idx, -1),
         else => if (Input.Bindings.focusTabIndex(action)) |idx| selectTab(window, tabs.items, active_tab_idx, idx),
     }
-}
-
-fn serviceHostEffects(tabs: []*TerminalWidget) void {
-    for (tabs) |tab| tab.serviceHostEffects(std.heap.c_allocator);
 }
 
 fn openTab(alloc: std.mem.Allocator, conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *usize) !void {

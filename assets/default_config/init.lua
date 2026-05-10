@@ -21,10 +21,10 @@ return {
     start_path = "$HOME",
     -- Default font size
     font_size = 16,
-    -- Optional primary font path (nil => system default search)
-    font_primary = nil,
+    -- Optional primary font path
+    font_primary = "assets/fonts/IosevkaTermNerdFont-Regular.ttf",
     -- Ordered fallback stacks (paths)
-    fallback_mono = {"/home/home/personal/zide/assets/fonts/IosevkaTermNerdFont-Regular.ttf"},
+    fallback_mono = {},
     fallback_symbols = {},
     fallback_emoji = {},
     -- Optional command string
