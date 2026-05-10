@@ -21,6 +21,26 @@ pub const FontStack = struct {
         freeZSlice(alloc, self.symbols);
         freeZSlice(alloc, self.emoji);
     }
+
+    pub fn flattenFallbacks(self: FontStack, buf: [][:0]const u8) []const [:0]const u8 {
+        var n: usize = 0;
+        for (self.mono) |p| {
+            if (n >= buf.len) return buf[0..n];
+            buf[n] = p;
+            n += 1;
+        }
+        for (self.symbols) |p| {
+            if (n >= buf.len) return buf[0..n];
+            buf[n] = p;
+            n += 1;
+        }
+        for (self.emoji) |p| {
+            if (n >= buf.len) return buf[0..n];
+            buf[n] = p;
+            n += 1;
+        }
+        return buf[0..n];
+    }
 };
 
 pub const ClipboardOsc52Policy = enum {

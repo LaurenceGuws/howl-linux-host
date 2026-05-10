@@ -3,65 +3,65 @@
 //! Reason: keep host event vocabulary separate from terminal runtime input.
 
 const Input = @import("../input/input.zig").Input;
-const term_runtime = @import("howl_term").HostRuntime;
+const HowlTerm = @import("howl_term").HowlTerm;
 
-pub fn key(key_event: Input.Key) ?term_runtime.Key {
+pub fn key(key_event: Input.Key) ?HowlTerm.Key {
     return switch (key_event) {
-        .escape => term_runtime.key_escape,
-        .tab => term_runtime.key_tab,
-        .enter => term_runtime.key_enter,
-        .backspace => term_runtime.key_backspace,
-        .insert => term_runtime.key_insert,
-        .delete => term_runtime.key_delete,
-        .home => term_runtime.key_home,
-        .end => term_runtime.key_end,
-        .page_up => term_runtime.key_pageup,
-        .page_down => term_runtime.key_pagedown,
-        .up => term_runtime.key_up,
-        .down => term_runtime.key_down,
-        .left => term_runtime.key_left,
-        .right => term_runtime.key_right,
-        .f1 => term_runtime.key_f1,
-        .f2 => term_runtime.key_f2,
-        .f3 => term_runtime.key_f3,
-        .f4 => term_runtime.key_f4,
-        .f5 => term_runtime.key_f5,
-        .f6 => term_runtime.key_f6,
-        .f7 => term_runtime.key_f7,
-        .f8 => term_runtime.key_f8,
-        .f9 => term_runtime.key_f9,
-        .f10 => term_runtime.key_f10,
-        .f11 => term_runtime.key_f11,
-        .f12 => term_runtime.key_f12,
+        .escape => HowlTerm.key_escape,
+        .tab => HowlTerm.key_tab,
+        .enter => HowlTerm.key_enter,
+        .backspace => HowlTerm.key_backspace,
+        .insert => HowlTerm.key_insert,
+        .delete => HowlTerm.key_delete,
+        .home => HowlTerm.key_home,
+        .end => HowlTerm.key_end,
+        .page_up => HowlTerm.key_pageup,
+        .page_down => HowlTerm.key_pagedown,
+        .up => HowlTerm.key_up,
+        .down => HowlTerm.key_down,
+        .left => HowlTerm.key_left,
+        .right => HowlTerm.key_right,
+        .f1 => HowlTerm.key_f1,
+        .f2 => HowlTerm.key_f2,
+        .f3 => HowlTerm.key_f3,
+        .f4 => HowlTerm.key_f4,
+        .f5 => HowlTerm.key_f5,
+        .f6 => HowlTerm.key_f6,
+        .f7 => HowlTerm.key_f7,
+        .f8 => HowlTerm.key_f8,
+        .f9 => HowlTerm.key_f9,
+        .f10 => HowlTerm.key_f10,
+        .f11 => HowlTerm.key_f11,
+        .f12 => HowlTerm.key_f12,
         else => null,
     };
 }
 
-pub fn mods(input_mods: Input.Mod) term_runtime.Modifier {
-    var out: term_runtime.Modifier = 0;
-    if (input_mods.shift) out |= term_runtime.mod_shift;
-    if (input_mods.alt) out |= term_runtime.mod_alt;
-    if (input_mods.ctrl) out |= term_runtime.mod_ctrl;
+pub fn mods(input_mods: Input.Mod) HowlTerm.Modifier {
+    var out: HowlTerm.Modifier = 0;
+    if (input_mods.shift) out |= HowlTerm.mod_shift;
+    if (input_mods.alt) out |= HowlTerm.mod_alt;
+    if (input_mods.ctrl) out |= HowlTerm.mod_ctrl;
     return out;
 }
 
-pub fn mouseKind(kind: Input.Mouse.Kind) term_runtime.MouseEventKind {
+pub fn mouseKind(kind: Input.Mouse.Kind) HowlTerm.MouseEventKind {
     return switch (kind) {
-        .move => term_runtime.mouse_move,
-        .press => term_runtime.mouse_press,
-        .release => term_runtime.mouse_release,
-        .wheel => term_runtime.mouse_wheel,
+        .move => HowlTerm.mouse_move,
+        .press => HowlTerm.mouse_press,
+        .release => HowlTerm.mouse_release,
+        .wheel => HowlTerm.mouse_wheel,
     };
 }
 
-pub fn mouseButton(button: Input.Mouse.Button) term_runtime.MouseButton {
+pub fn mouseButton(button: Input.Mouse.Button) HowlTerm.MouseButton {
     return switch (button) {
-        .none => term_runtime.mouse_button_none,
-        .left => term_runtime.mouse_button_left,
-        .middle => term_runtime.mouse_button_middle,
-        .right => term_runtime.mouse_button_right,
-        .wheel_up => term_runtime.mouse_button_wheel_up,
-        .wheel_down => term_runtime.mouse_button_wheel_down,
+        .none => HowlTerm.mouse_button_none,
+        .left => HowlTerm.mouse_button_left,
+        .middle => HowlTerm.mouse_button_middle,
+        .right => HowlTerm.mouse_button_right,
+        .wheel_up => HowlTerm.mouse_button_wheel_up,
+        .wheel_down => HowlTerm.mouse_button_wheel_down,
     };
 }
 

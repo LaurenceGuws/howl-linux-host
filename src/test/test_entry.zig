@@ -6,6 +6,6 @@ test {
     _ = @import("host").Config;
     _ = @import("host").Input;
     _ = @import("host").Main;
-    _ = @import("host").Terminal;
+    _ = @import("host").TerminalWidget;
     _ = @import("host").Window;
 }

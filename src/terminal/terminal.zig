@@ -7,14 +7,13 @@ const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
 const input_runtime = @import("../input/input.zig");
 const HostInput = input_runtime.Input;
-const Runtime = @import("howl_term").HostRuntime;
-const LifecycleState = Runtime.LifecycleState;
-const SurfaceHandle = Runtime.SurfaceHandle;
-const terminal_config = @import("../config/terminal.zig");
-const TerminalConfig = terminal_config.Config;
+const HowlTerm = @import("howl_term").HowlTerm;
+const LifecycleState = HowlTerm.LifecycleState;
+const SurfaceHandle = HowlTerm.SurfaceHandle;
+const Config = @import("../config/config.zig");
+const TerminalConfig = Config.Terminal;
 const Scrollbar = @import("scrollbar.zig");
 const Input = @import("input.zig");
-const TerminalInstance = @import("howl_term.zig").Terminal;
 
 fn setThreadName(thread: std.Thread, name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(thread.getHandle(), name.ptr);
@@ -34,9 +33,8 @@ fn lockMutex(mutex: *ThreadMutex) void {
 
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
-    const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
 
-    pub const SurfaceMetrics = Runtime.SurfaceMetrics;
+    pub const SurfaceMetrics = HowlTerm.SurfaceMetrics;
 
     pub const SurfaceSnapshot = struct {
         surface: SurfaceHandle,
@@ -46,8 +44,11 @@ pub const Terminal = struct {
         scrollbar: window.ScrollbarLayout,
     };
 
-    term: TerminalInstance,
+    term: HowlTerm,
+    term_ready: bool,
     conf: *const TerminalConfig,
+    title_buf: [128]u8,
+    title_len: usize,
     render_px_w: c_int,
     render_px_h: c_int,
     logical_w: c_int,
@@ -70,15 +71,7 @@ pub const Terminal = struct {
     stop_prepare: std.atomic.Value(bool),
     window_focused: bool,
     widget_focused: bool,
-    mouse_logical_x: i32,
-    mouse_logical_y: i32,
-    scrollbar_dragging: bool,
-    scrollbar_grab_offset: f32,
-    scrollbar_cache_valid: bool,
-    scrollbar_cache_rect: window.Rect,
-    scrollbar_cache_view: Runtime.ScrollState,
-    scrollbar_cache_layout: window.ScrollbarLayout,
-    scrollbar_cache_ns: u64,
+    scrollbar: Scrollbar.State,
     link_cursor_active: bool,
 
     pub fn create(
@@ -109,8 +102,11 @@ pub const Terminal = struct {
         const logical_h = @max(logical_height, 1);
         const font_size = @max(conf.font_size, 1);
         return .{
-            .term = .{},
+            .term = undefined,
+            .term_ready = false,
             .conf = conf,
+            .title_buf = undefined,
+            .title_len = 0,
             .render_px_w = render_w,
             .render_px_h = render_h,
             .logical_w = logical_w,
@@ -133,26 +129,33 @@ pub const Terminal = struct {
             .stop_prepare = std.atomic.Value(bool).init(false),
             .window_focused = true,
             .widget_focused = true,
-            .mouse_logical_x = 0,
-            .mouse_logical_y = 0,
-            .scrollbar_dragging = false,
-            .scrollbar_grab_offset = 0,
-            .scrollbar_cache_valid = false,
-            .scrollbar_cache_rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-            .scrollbar_cache_view = .{
-                .viewport_rows = 1,
-                .scrollback_count = 0,
-                .scrollback_offset = 0,
-                .alternate_screen = false,
-            },
-            .scrollbar_cache_layout = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
-            .scrollbar_cache_ns = 0,
+            .scrollbar = .{},
             .link_cursor_active = false,
         };
     }
 
     fn startRuntime(self: *Terminal) !void {
-        try self.term.init(self.conf, self.geometrySnapshot());
+        var font_fallbacks_buf: [32][:0]const u8 = undefined;
+        const font_fallbacks = self.conf.fonts.flattenFallbacks(font_fallbacks_buf[0..]);
+        self.term = try HowlTerm.initPty(std.heap.c_allocator, .{
+            .shell = self.conf.shell,
+            .start_path = self.conf.start_path,
+            .command = self.conf.command,
+        }, 1, 1, .{ .width = 1, .height = 1 });
+        self.term_ready = true;
+        errdefer {
+            self.term.deinit();
+            self.term_ready = false;
+        }
+        self.term.setFontSizePx(@max(self.conf.font_size, 1));
+        self.term.setPrimaryFontPath(self.conf.fonts.primary);
+        self.term.setFallbackFontPaths(font_fallbacks);
+        try self.term.start();
+        const geom = self.geometrySnapshot();
+        try self.term.syncFrameGeometry(geom.renderWidth(), geom.renderHeight(), geom.gridWidth(), geom.gridHeight());
+        if (!self.term.isAlive()) return error.TransportUnavailable;
+        self.refreshTitle();
+        if (self.title_len == 0) return error.MissingTabTitle;
         self.syncInputFocus();
         self.prepare_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.PrepareSemaphoreUnavailable;
         const prepare_thread = try std.Thread.spawn(.{}, prepareWorker, .{self});
@@ -166,7 +169,7 @@ pub const Terminal = struct {
     pub fn deinit(self: *Terminal) void {
         self.stop_wake.store(true, .release);
         self.stop_prepare.store(true, .release);
-        self.term.wakeSnapshotWaiters();
+        if (self.term_ready) self.term.wakeSnapshotWaiters();
         self.signalPrepareWorker();
         HostInput.wakeWindow();
         if (self.wake_thread) |t| t.join();
@@ -177,7 +180,8 @@ pub const Terminal = struct {
         self.prepare_sem = null;
         if (self.link_cursor_active) window.useDefaultCursor();
         self.link_cursor_active = false;
-        self.term.deinit();
+        if (self.term_ready) self.term.deinit();
+        self.term_ready = false;
     }
 
     pub fn resize(self: *Terminal, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
@@ -195,7 +199,7 @@ pub const Terminal = struct {
         self.pending_grid_px_w = lw;
         self.pending_grid_px_h = lh;
         self.last_resize_ns = window.c_win.SDL_GetTicksNS();
-        self.scrollbar_cache_valid = false;
+        self.scrollbar.invalidate();
     }
 
     pub fn maybeCommitGridResize(self: *Terminal) void {
@@ -208,7 +212,7 @@ pub const Terminal = struct {
             self.last_resize_ns = 0;
             break :blk self.geometrySnapshotLocked();
         };
-        _ = self.term.syncFrameGeometry(geom);
+        self.term.syncFrameGeometry(geom.renderWidth(), geom.renderHeight(), geom.gridWidth(), geom.gridHeight()) catch return;
     }
 
     pub fn needsFrame(self: *Terminal) bool {
@@ -263,16 +267,16 @@ pub const Terminal = struct {
     }
 
     fn syncRenderBackpressure(self: *Terminal) void {
-        self.term.setRenderBackpressure(self.term.hasQueuedRenderWork());
+        self.term.setRuntimeBackpressure(self.term.hasQueuedRenderWork());
     }
 
-    fn geometrySnapshot(self: *Terminal) Runtime.FramePixels {
+    fn geometrySnapshot(self: *Terminal) HowlTerm.FramePixels {
         lockMutex(&self.geometry_mutex);
         defer self.geometry_mutex.unlock();
         return self.geometrySnapshotLocked();
     }
 
-    fn geometrySnapshotLocked(self: *const Terminal) Runtime.FramePixels {
+    fn geometrySnapshotLocked(self: *const Terminal) HowlTerm.FramePixels {
         return .{
             .render_width = @max(self.render_px_w, 1),
             .render_height = @max(self.render_px_h, 1),
@@ -282,12 +286,12 @@ pub const Terminal = struct {
     }
 
     fn publishInputBytes(self: *Terminal, bytes: []const u8) void {
-        self.term.publishInputBytes(bytes);
+        self.term.publishInputBytes(bytes) catch return;
     }
 
     fn publishInputKey(self: *Terminal, key: HostInput.Keys.Event) void {
         const terminal_key = Input.key(key.key) orelse return;
-        self.term.publishInputKey(terminal_key, Input.mods(key.mods));
+        self.term.publishInputKey(terminal_key, Input.mods(key.mods)) catch return;
     }
 
     fn publishMouseEvent(self: *Terminal, mouse_event: HostInput.Mouse.Event) bool {
@@ -298,11 +302,11 @@ pub const Terminal = struct {
             .pixel_y = mouse_event.pixel_y,
             .mods = Input.mods(mouse_event.mods),
             .buttons_down = Input.buttons(mouse_event.buttons_down),
-        });
+        }) catch false;
     }
 
     pub fn paste(self: *Terminal, payload: []const u8) void {
-        self.term.publishPaste(payload);
+        self.term.publishPaste(payload) catch return;
     }
 
     pub fn drainInput(self: *Terminal, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
@@ -345,13 +349,11 @@ pub const Terminal = struct {
     }
 
     pub fn wantsPassiveHoverWake(self: *const Terminal, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-        const model = self.scrollbarModel(self.term.scrollState());
-        if (!model.visible or !self.window_focused) return false;
         _ = origin_x;
         _ = origin_y;
         _ = logical_width;
         _ = logical_height;
-        return self.scrollbar_dragging;
+        return self.scrollbar.wantsPassiveHoverWake(scrollbarView(self.term.scrollState()), self.window_focused);
     }
 
     /// Report whether this terminal needs unpressed mouse motion for link hover.
@@ -367,9 +369,10 @@ pub const Terminal = struct {
     }
 
     pub fn chromeSnapshot(self: *const Terminal, texture_rect: window.Rect) ChromeSnapshot {
+        const mut: *Terminal = @constCast(self);
         const scroll = self.term.scrollState();
         return .{
-            .scrollbar = self.scrollbarLayout(texture_rect, scroll),
+            .scrollbar = mut.scrollbar.layout(texture_rect, scrollbarView(scroll), self.logical_w, self.logical_h, self.window_focused, window.c_win.SDL_GetTicksNS()),
         };
     }
 
@@ -378,77 +381,45 @@ pub const Terminal = struct {
     }
 
     pub fn titleSlice(self: *const Terminal) []const u8 {
-        return self.term.titleSlice();
+        return self.title_buf[0..self.title_len];
     }
 
     pub fn renderedTextContains(self: *const Terminal, text: []const u8) bool {
         return self.term.renderedTextContains(text);
     }
 
-    fn scrollbarLayout(self: *const Terminal, texture_rect: window.Rect, scroll: Runtime.ScrollState) window.ScrollbarLayout {
-        const mut: *Terminal = @constCast(self);
-        if (!mut.shouldRefreshScrollbar(texture_rect, scroll)) return mut.scrollbar_cache_layout;
-        const model = self.scrollbarModel(scroll);
-        const layout = if (!model.visible or texture_rect.width <= 0 or texture_rect.height <= 0)
-            window.ScrollbarLayout{ .visible = false, .x = texture_rect.x + texture_rect.width, .y = texture_rect.y, .width = 0, .height = 0, .thumb_y = texture_rect.y, .thumb_height = 0 }
-        else blk: {
-            const logical_w = @max(self.logical_w, 1);
-            const logical_h = @max(self.logical_h, 1);
-            const focus_t = self.scrollbarFocusT(0, 0, logical_w, logical_h);
-            const track = Scrollbar.track(0, 0, logical_w, logical_h, focus_t);
-            const thumb = Scrollbar.thumb(track.y, track.height, model.rows, model.total_lines, model.scrollback_offset);
-            break :blk window.ScrollbarLayout{
-                .visible = true,
-                .x = texture_rect.x + Layout.scaleLogicalToPixel(track.x, logical_w, texture_rect.width),
-                .y = texture_rect.y + Layout.scaleLogicalToPixel(track.y, logical_h, texture_rect.height),
-                .width = Layout.scaleLogicalSpan(track.width, logical_w, texture_rect.width),
-                .height = Layout.scaleLogicalSpan(track.height, logical_h, texture_rect.height),
-                .thumb_y = texture_rect.y + Layout.scaleLogicalToPixel(thumb.y, logical_h, texture_rect.height),
-                .thumb_height = Layout.scaleLogicalSpan(thumb.height, logical_h, texture_rect.height),
-            };
-        };
-        mut.scrollbar_cache_valid = true;
-        mut.scrollbar_cache_rect = texture_rect;
-        mut.scrollbar_cache_view = scroll;
-        mut.scrollbar_cache_layout = layout;
-        mut.scrollbar_cache_ns = window.c_win.SDL_GetTicksNS();
-        return layout;
-    }
-
-    fn shouldRefreshScrollbar(self: *Terminal, texture_rect: window.Rect, scroll: Runtime.ScrollState) bool {
-        if (!self.scrollbar_cache_valid) return true;
-        if (!sameRect(self.scrollbar_cache_rect, texture_rect)) return true;
-        if (!sameScrollState(self.scrollbar_cache_view, scroll)) {
-            if (self.scrollbar_dragging) return true;
-            const elapsed_ns = window.c_win.SDL_GetTicksNS() -| self.scrollbar_cache_ns;
-            return elapsed_ns >= scrollbar_output_cap_ns;
-        }
-        return false;
-    }
-
     pub fn setWindowFocused(self: *Terminal, focused: bool) void {
         if (self.window_focused == focused) return;
         self.window_focused = focused;
-        if (!focused and self.scrollbar_dragging) {
-            self.scrollbar_dragging = false;
-            self.scrollbar_grab_offset = 0;
-        }
-        self.scrollbar_cache_valid = false;
+        self.scrollbar.setFocused(focused);
         self.syncInputFocus();
     }
 
     pub fn setWidgetFocused(self: *Terminal, focused: bool) void {
         if (self.widget_focused == focused) return;
         self.widget_focused = focused;
-        self.scrollbar_cache_valid = false;
+        self.scrollbar.invalidate();
         self.syncInputFocus();
     }
 
-    pub fn drainClipboardSet(self: *Terminal, allocator: std.mem.Allocator) ?[]u8 {
-        return self.term.drainClipboardSet(allocator);
+    fn drainClipboardSet(self: *Terminal, allocator: std.mem.Allocator) ?[]u8 {
+        const request = (self.term.drainPendingClipboardSet(allocator) catch return null) orelse return null;
+        return request.text;
     }
 
-    fn presentSurfaceHandle(self: *const Terminal, view: Runtime.SurfaceState) SurfaceHandle {
+    pub fn serviceHostEffects(self: *Terminal, allocator: std.mem.Allocator) void {
+        const text = self.drainClipboardSet(allocator) orelse return;
+        defer allocator.free(text);
+
+        switch (self.conf.clipboard.osc_52) {
+            .deny => return,
+            .allow => {},
+        }
+
+        _ = window.setClipboardText(text);
+    }
+
+    fn presentSurfaceHandle(self: *const Terminal, view: HowlTerm.SurfaceState) SurfaceHandle {
         if (self.last_surface.texture_id != 0) return self.last_surface;
         return view.surface;
     }
@@ -497,68 +468,13 @@ pub const Terminal = struct {
             @intCast(current_usize);
         const target = std.math.clamp(current + delta_rows, 0, history_count);
         if (target == current) return;
-        if (target == 0)
-            _ = self.term.followLiveBottom()
-        else
-            _ = self.term.setScrollbackOffset(@intCast(target));
-    }
-
-    fn scrollbarModel(self: *const Terminal, view: Runtime.ScrollState) Scrollbar.Model {
-        _ = self;
-        const rows: usize = @intCast(@max(view.viewport_rows, 1));
-        const history_count = view.scrollback_count;
-        const alt = view.alternate_screen;
-        const visible = !alt and history_count > 0 and rows > 0;
-        return .{
-            .visible = visible,
-            .rows = rows,
-            .total_lines = history_count + rows,
-            .scrollback_offset = @min(view.scrollback_offset, history_count),
-        };
+        _ = self.setScrollbackOffset(@intCast(target));
     }
 
     fn handleScrollbarMouseEvent(self: *Terminal, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-        self.mouse_logical_x = mouse_event.pixel_x;
-        self.mouse_logical_y = mouse_event.pixel_y;
-        const model = self.scrollbarModel(self.term.scrollState());
-        if (!model.visible or logical_width <= 0 or logical_height <= 0) {
-            if (self.scrollbar_dragging) {
-                self.scrollbar_dragging = false;
-                self.scrollbar_grab_offset = 0;
-            }
-            return false;
-        }
-
-        const geometry = Scrollbar.track(origin_x, origin_y, logical_width, logical_height, self.scrollbarFocusT(origin_x, origin_y, logical_width, logical_height));
-        const over_track = Scrollbar.pointInTrack(mouse_event.pixel_x, mouse_event.pixel_y, geometry);
-        const over_thumb = Scrollbar.pointInThumb(mouse_event.pixel_x, mouse_event.pixel_y, geometry, model);
-
-        switch (mouse_event.kind) {
-            .move => {
-                if (self.scrollbar_dragging) {
-                    _ = self.updateScrollbarFromMouse(mouse_event.pixel_y, geometry, model);
-                    return true;
-                }
-                return false;
-            },
-            .press => {
-                if (mouse_event.button != .left or !over_track) return false;
-                self.scrollbar_dragging = true;
-                self.scrollbar_grab_offset = if (over_thumb)
-                    @as(f32, @floatFromInt(mouse_event.pixel_y - geometry.thumbY(model)))
-                else
-                    @as(f32, @floatFromInt(geometry.thumbHeight(model))) * 0.5;
-                _ = self.updateScrollbarFromMouse(mouse_event.pixel_y, geometry, model);
-                return true;
-            },
-            .release => {
-                if (mouse_event.button != .left or !self.scrollbar_dragging) return false;
-                self.scrollbar_dragging = false;
-                self.scrollbar_grab_offset = 0;
-                return true;
-            },
-            .wheel => return false,
-        }
+        const result = self.scrollbar.handleMouse(mouse_event, origin_x, origin_y, logical_width, logical_height, scrollbarView(self.term.scrollState()), self.window_focused);
+        if (result.target_offset) |offset| _ = self.setScrollbackOffset(offset);
+        return result.consumed;
     }
 
     fn handleSelectionMouseEvent(self: *Terminal, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
@@ -624,13 +540,13 @@ pub const Terminal = struct {
         const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse return false;
         if (self.publishMouseEvent(local_mouse)) return true;
 
-        const uri = self.term.copyHyperlinkUriAtPixel(std.heap.c_allocator, local_mouse.pixel_x, local_mouse.pixel_y) orelse return false;
+        const uri = (self.term.copyHyperlinkUriAtPixel(std.heap.c_allocator, local_mouse.pixel_x, local_mouse.pixel_y) catch return false) orelse return false;
         defer std.heap.c_allocator.free(uri);
         _ = window.openUrl(uri);
         return true;
     }
 
-    fn linkUnderlineStyle(style: terminal_config.LinkUnderlineStyle) Runtime.LinkUnderlineStyle {
+    fn linkUnderlineStyle(style: Config.TerminalLinkUnderlineStyle) HowlTerm.LinkUnderlineStyle {
         return switch (style) {
             .straight => .straight,
             .curly => .curly,
@@ -639,53 +555,31 @@ pub const Terminal = struct {
         };
     }
 
-    fn updateScrollbarFromMouse(self: *Terminal, mouse_y: i32, geometry: Scrollbar.Geometry, model: Scrollbar.Model) bool {
-        const available = geometry.thumbAvailable(model);
-        const clamped_mouse = std.math.clamp(
-            @as(f32, @floatFromInt(mouse_y)) - self.scrollbar_grab_offset,
-            @as(f32, @floatFromInt(geometry.y)),
-            @as(f32, @floatFromInt(geometry.y)) + available,
-        );
-        const ratio_from_top = if (available > 0) (clamped_mouse - @as(f32, @floatFromInt(geometry.y))) / available else 1.0;
-        const max_offset = model.total_lines - model.rows;
-        const target = if (max_offset == 0)
-            0
-        else
-            @as(usize, @intFromFloat(@round((1.0 - ratio_from_top) * @as(f32, @floatFromInt(max_offset)))));
-        return self.setScrollbackOffset(target);
-    }
-
     fn setScrollbackOffset(self: *Terminal, offset: usize) bool {
         const changed = if (offset == 0)
             self.term.followLiveBottom()
         else
             self.term.setScrollbackOffset(offset);
-        if (changed) self.scrollbar_cache_valid = false;
+        if (changed) self.scrollbar.invalidate();
         return changed;
     }
 
-    fn scrollbarFocusT(self: *const Terminal, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) f32 {
-        return Scrollbar.focus(origin_x, origin_y, logical_width, logical_height, self.mouse_logical_x, self.mouse_logical_y, self.scrollbar_dragging, self.window_focused);
-    }
-
     fn refreshTitle(self: *Terminal) void {
-        self.term.refreshTitle();
+        self.title_len = self.term.copyCurrentTitle(self.title_buf[0..]);
     }
 
     fn syncInputFocus(self: *Terminal) void {
-        self.term.setInputFocus(self.window_focused and self.widget_focused);
+        _ = self.term.setInputFocus(self.window_focused and self.widget_focused) catch return;
     }
 };
 
-fn sameRect(a: window.Rect, b: window.Rect) bool {
-    return a.x == b.x and a.y == b.y and a.width == b.width and a.height == b.height;
-}
-
-fn sameScrollState(a: Runtime.ScrollState, b: Runtime.ScrollState) bool {
-    return a.viewport_rows == b.viewport_rows and
-        a.scrollback_count == b.scrollback_count and
-        a.scrollback_offset == b.scrollback_offset and
-        a.alternate_screen == b.alternate_screen;
+fn scrollbarView(view: HowlTerm.ScrollState) Scrollbar.View {
+    return .{
+        .viewport_rows = view.viewport_rows,
+        .scrollback_count = view.scrollback_count,
+        .scrollback_offset = view.scrollback_offset,
+        .alternate_screen = view.alternate_screen,
+    };
 }
 
 fn wakeWorker(self: *Terminal) void {

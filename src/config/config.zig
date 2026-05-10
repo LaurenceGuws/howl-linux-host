@@ -9,6 +9,9 @@ const tab_bar_config = @import("tab_bar.zig");
 
 const Lua = howl_lua;
 
+pub const Terminal = term_config.Config;
+pub const TerminalLinkUnderlineStyle = term_config.LinkUnderlineStyle;
+
 pub const State = struct {
     term: term_config.Config,
     window: window_config.Window,
