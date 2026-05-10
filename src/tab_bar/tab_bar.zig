@@ -1,26 +1,37 @@
-//! Responsibility: own Linux host tab bar labels and config.
-//! Ownership: host widget layer owns tab UX state.
-//! Reason: keeps tab presentation policy separate from terminal runtime tabs.
+//! Responsibility: own Linux host tab bar widget state.
+//! Ownership: tab label storage and active-tab presentation snapshot.
+//! Reason: keep tab bar runtime behavior separate from config data.
 
 const std = @import("std");
-const Shortcuts = @import("../events/events.zig").Events.Shortcuts;
 
-pub const Config = struct {
-    height: u16,
-    shortcuts: Shortcuts.Map,
+pub const TabBar = struct {
+    pub const max_tabs: usize = 9;
 
-    pub fn deinit(self: *Config, alloc: std.mem.Allocator) void {
-        self.shortcuts.deinit(alloc);
+    pub const Snapshot = struct {
+        active_idx: usize,
+        labels: []const []const u8,
+    };
+
+    label_bufs: [max_tabs][128]u8 = undefined,
+    label_slices: [max_tabs][]const u8 = undefined,
+
+    pub fn snapshot(self: *TabBar, active_idx: usize, titles: []const []const u8) Snapshot {
+        if (titles.len > max_tabs) @panic("too many tabs");
+        if (active_idx >= titles.len) @panic("active tab out of range");
+        for (titles, 0..) |title, i| {
+            self.label_slices[i] = label(title, self.label_bufs[i][0..]);
+        }
+        return .{
+            .active_idx = active_idx,
+            .labels = self.label_slices[0..titles.len],
+        };
     }
 };
 
-pub fn label(title_len: usize, buf: []u8) usize {
-    const title = std.mem.trim(u8, buf[0..title_len], " \t\r\n");
-    if (title.len > 0 and !std.mem.eql(u8, title, "Terminal")) {
-        if (title.ptr != buf.ptr) std.mem.copyForwards(u8, buf[0..title.len], title);
-        return title.len;
-    }
-    const fallback = "Terminal";
-    @memcpy(buf[0..fallback.len], fallback);
-    return fallback.len;
+fn label(title_raw: []const u8, buf: []u8) []const u8 {
+    const title = std.mem.trim(u8, title_raw, " \t\r\n");
+    if (title.len == 0) @panic("missing tab title");
+    const n = @min(title.len, buf.len);
+    @memcpy(buf[0..n], title[0..n]);
+    return buf[0..n];
 }

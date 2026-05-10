@@ -4,7 +4,8 @@
 
 test {
     _ = @import("host").Config;
-    _ = @import("host").Events;
-    _ = @import("host").FrameScheduler;
+    _ = @import("host").Input;
+    _ = @import("host").Main;
     _ = @import("host").Terminal;
+    _ = @import("host").Window;
 }

@@ -153,7 +153,7 @@ For host-level focus and mouse iteration where shell-only testing is awkward:
 ## Slice 3: Bracketed Paste
 
 Status:
-- landed in Linux-host through an explicit paste shortcut path
+- landed in Linux-host through an explicit paste binding path
 - paste is now emitted by `howl-term`, so bracket wrappers come from `vt-core` mode state
 
 Test flow:
@@ -161,9 +161,9 @@ Test flow:
 2. Copy some plain text into the desktop clipboard.
 3. Run `printf '\033[?2004h'`.
 4. Run `cat -v`.
-5. Press the configured paste shortcut.
+5. Press the configured paste binding.
 
-Default paste shortcuts:
+Default paste bindings:
 - `Ctrl+Shift+V`
 - `Shift+Insert`
 
@@ -172,7 +172,7 @@ Expected output:
 - pasted text should be wrapped with `^[[201~` after it
 
 If bracketed paste is not enabled:
-- the same paste shortcut should still paste text
+- the same paste binding should still paste text
 - wrapper sequences should be absent
 
 ## Slice 4: OSC 52 Clipboard Policy
@@ -289,7 +289,7 @@ Links:
 - configured underline style, such as straight or curly, matches the selected host presentation option once implemented
 
 Clipboard and paste:
-- normal paste works through the configured paste shortcuts
+- normal paste works through the configured paste bindings
 - bracketed paste wraps pasted text only when the app enables bracketed paste
 - OSC 52 clipboard writes obey the configured allow/deny policy
 - denied OSC 52 requests do not alter the desktop clipboard

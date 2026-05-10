@@ -61,41 +61,12 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
-    const replay_exe = b.addExecutable(.{
-        .name = "howl_host_replay",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/replay_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "howl_term", .module = howl_term_mod },
-                .{ .name = "howl_lua", .module = howl_lua_mod },
-                .{ .name = "build_options", .module = build_options.createModule() },
-            },
-        }),
-    });
-    replay_exe.use_llvm = true;
-    replay_exe.step.dependOn(&check_host_runtime_surface.step);
-    replay_exe.root_module.addIncludePath(sdl_dep.path("include"));
-    replay_exe.root_module.linkLibrary(sdl_lib);
-    replay_exe.root_module.linkSystemLibrary("GL", .{});
-    replay_exe.root_module.link_libc = true;
-    b.installArtifact(replay_exe);
-
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
 
     const run_step = b.step("run", "Run host window");
     run_step.dependOn(&run_cmd.step);
-
-    const run_replay = b.addRunArtifact(replay_exe);
-    if (b.args) |args| run_replay.addArgs(args);
-    const replay_step = b.step("replay", "Run bounded host replay scenario");
-    replay_step.dependOn(&run_replay.step);
-
-    const replay_build_step = b.step("replay:build", "Build host replay scenario runner");
-    replay_build_step.dependOn(&b.addInstallArtifact(replay_exe, .{}).step);
 
     const rain_stress = b.addExecutable(.{
         .name = "howl_ascii_rain_stress",
@@ -178,32 +149,11 @@ pub fn build(b: *std.Build) void {
         .filters = b.args orelse &.{},
     });
     visual_rain_stress_tests.step.dependOn(&check_host_runtime_surface.step);
-    const replay_tests = b.addTest(.{
-        .name = "test-host-replay",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/replay_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "howl_term", .module = howl_term_mod },
-                .{ .name = "howl_lua", .module = howl_lua_mod },
-                .{ .name = "build_options", .module = build_options.createModule() },
-            },
-        }),
-        .filters = b.args orelse &.{},
-    });
-    replay_tests.step.dependOn(&check_host_runtime_surface.step);
     mod_tests.use_llvm = true;
     rain_stress_tests.use_llvm = true;
     rain_stress_tests.root_module.link_libc = true;
     visual_rain_stress_tests.use_llvm = true;
     visual_rain_stress_tests.root_module.link_libc = true;
-    replay_tests.use_llvm = true;
-    replay_tests.root_module.addIncludePath(sdl_dep.path("include"));
-    replay_tests.root_module.linkLibrary(sdl_lib);
-    replay_tests.root_module.link_libc = true;
-    replay_tests.root_module.linkSystemLibrary("lua5.4", .{ .use_pkg_config = .force });
-    replay_tests.root_module.linkSystemLibrary("GL", .{});
     mod_tests.root_module.addIncludePath(sdl_dep.path("include"));
     mod_tests.root_module.linkLibrary(sdl_lib);
     mod_tests.root_module.link_libc = true;
@@ -211,12 +161,10 @@ pub fn build(b: *std.Build) void {
     const run_mod_tests = b.addRunArtifact(mod_tests);
     const run_rain_stress_tests = b.addRunArtifact(rain_stress_tests);
     const run_visual_rain_stress_tests = b.addRunArtifact(visual_rain_stress_tests);
-    const run_replay_tests = b.addRunArtifact(replay_tests);
     if (b.args != null) {
         run_mod_tests.has_side_effects = true;
         run_rain_stress_tests.has_side_effects = true;
         run_visual_rain_stress_tests.has_side_effects = true;
-        run_replay_tests.has_side_effects = true;
     }
 
     const test_step = b.step("test", "Run all tests");
@@ -225,10 +173,8 @@ pub fn build(b: *std.Build) void {
     test_unit_build_step.dependOn(&b.addInstallArtifact(mod_tests, .{}).step);
     test_unit_build_step.dependOn(&b.addInstallArtifact(rain_stress_tests, .{}).step);
     test_unit_build_step.dependOn(&b.addInstallArtifact(visual_rain_stress_tests, .{}).step);
-    test_unit_build_step.dependOn(&b.addInstallArtifact(replay_tests, .{}).step);
     test_unit_step.dependOn(&run_mod_tests.step);
     test_unit_step.dependOn(&run_rain_stress_tests.step);
     test_unit_step.dependOn(&run_visual_rain_stress_tests.step);
-    test_unit_step.dependOn(&run_replay_tests.step);
     test_step.dependOn(test_unit_step);
 }

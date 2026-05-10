@@ -1,6 +1,6 @@
 //! Responsibility: own interactive Linux host CLI arguments.
 //! Ownership: process argument parsing for normal host runs.
-//! Reason: keep process startup thin and delegate runtime policy to the host runner.
+//! Reason: keep process startup thin and leave runtime policy in main.zig.
 
 const std = @import("std");
 
@@ -10,9 +10,6 @@ pub const Options = struct {
     start_path: ?[]const u8 = null,
     duration_ms: ?u64 = null,
     window_title: ?[:0]const u8 = null,
-    input_text: ?[]const u8 = null,
-    input_after_ms: u64 = 1_000,
-    rendered_text: ?[]const u8 = null,
 };
 
 pub fn parse(args: []const []const u8) !Options {

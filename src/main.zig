@@ -1,44 +1,197 @@
-//! Responsibility: own interactive Linux host process execution.
-//! Ownership: CLI entrypoint, SDL lifecycle, app runtime, replay timing, and bounded host runs.
-//! Reason: keep process startup and runtime policy in one executable owner.
+//! Responsibility: own interactive Linux host process execution and runtime loop.
+//! Ownership: process entrypoint, config startup, tabs, event dispatch, and frame scheduling.
+//! Reason: keep production runtime direct and unshaped by test harnesses.
 
 const std = @import("std");
 const cli_args = @import("cli/args.zig");
-const Window = @import("window/window.zig");
-const Events = @import("events/events.zig").Events;
 const Config = @import("config/config.zig");
-const app_runtime = @import("app/app.zig");
-const App = app_runtime.App;
-const thread_meter = @import("test/thread_meter.zig");
-const trace = @import("test/trace.zig");
-
-const fps_log_every_frames: u64 = 200;
-const RenderStats = app_runtime.RenderStats;
+const Input = @import("input/input.zig").Input;
+const Clipboard = @import("terminal/clipboard.zig");
+const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
+const TerminalWidget = @import("terminal/terminal.zig").Terminal;
+const Window = @import("window/window.zig");
 
 pub const Options = cli_args.Options;
+
+const max_tabs: usize = TabBar.max_tabs;
+
+const RenderWork = struct {
+    needs_frame: bool,
+    terminal_frame: bool,
+};
+
+const Runtime = struct {
+    allocator: std.mem.Allocator,
+    conf: *const Config.State,
+    window: *Window.State,
+    tab_bar: TabBar,
+    tabs: std.ArrayList(*TerminalWidget),
+    active_tab_idx: usize,
+
+    fn init(self: *Runtime) !void {
+        self.active_tab_idx = 0;
+        try self.openTab();
+        self.syncTerminalFocus();
+    }
+
+    fn deinit(self: *Runtime) void {
+        for (self.tabs.items) |tab| {
+            tab.destroy(self.allocator);
+        }
+        self.tabs.deinit(self.allocator);
+    }
+
+    fn collectRenderWork(self: *Runtime) RenderWork {
+        const tab = self.activeTab();
+        tab.maybeCommitGridResize();
+        const now_ns = Window.c_win.SDL_GetTicksNS();
+        const terminal_frame = tab.needsContentFrame(now_ns);
+        return .{
+            .needs_frame = terminal_frame or tab.needsPresentationFrame(now_ns),
+            .terminal_frame = terminal_frame,
+        };
+    }
+
+    fn render(self: *Runtime, work: RenderWork) void {
+        const tab = self.activeTab();
+        if (work.terminal_frame) tab.render();
+
+        const texture_rect = self.window.contentRect(self.conf.tab_bar.height);
+        const surface = tab.surfaceSnapshot();
+        const chrome = tab.chromeSnapshot(texture_rect);
+        var title_buf: [max_tabs][]const u8 = undefined;
+        const tab_bar = self.tab_bar.snapshot(self.active_tab_idx, self.tabTitles(title_buf[0..]));
+
+        self.window.present(.{
+            .texture_id = surface.surface.texture_id,
+            .texture_rect = texture_rect,
+            .scrollbar = chrome.scrollbar,
+            .tab_count = tab_bar.labels.len,
+            .active_tab = tab_bar.active_idx,
+            .tab_labels = tab_bar.labels,
+        });
+    }
+
+    fn resizeTerminals(self: *Runtime) void {
+        const px = self.window.contentPixelSize(self.conf.tab_bar.height);
+        const logical = self.window.contentLogicalSize(self.conf.tab_bar.height);
+        for (self.tabs.items) |tab| tab.resize(px.width, px.height, logical.width, logical.height);
+    }
+
+    fn setWindowFocused(self: *Runtime, focused: bool) void {
+        _ = self.window.setFocused(focused);
+        self.syncTerminalFocus();
+    }
+
+    fn activeTabFailed(self: *const Runtime) bool {
+        return self.tabs.items.len == 0 or self.activeTab().lifecycleState() == .failed;
+    }
+
+    fn activeTab(self: *const Runtime) *TerminalWidget {
+        return self.tabs.items[self.active_tab_idx];
+    }
+
+    fn handleBindingAction(self: *Runtime, action: Input.Bindings.Action) !void {
+        switch (action) {
+            .zoom_in => _ = self.activeTab().adjustFontSize(1),
+            .zoom_out => _ = self.activeTab().adjustFontSize(-1),
+            .zoom_reset => _ = self.activeTab().resetFontSize(),
+            .zoom_stress_toggle => _ = self.activeTab().toggleStressFontSize(),
+            .terminal_paste => self.pasteIntoActiveTab(),
+            .terminal_new_tab => try self.openTab(),
+            .terminal_close_tab => self.closeActiveTab(),
+            .terminal_next_tab => self.selectRelative(1),
+            .terminal_prev_tab => self.selectRelative(-1),
+            else => if (Input.Bindings.focusTabIndex(action)) |idx| self.selectTab(idx),
+        }
+    }
+
+    fn serviceHostEffects(self: *Runtime) void {
+        for (self.tabs.items) |tab| self.serviceTerminalEffects(tab);
+    }
+
+    fn openTab(self: *Runtime) !void {
+        if (self.tabs.items.len >= max_tabs) return;
+
+        const px = self.window.contentPixelSize(self.conf.tab_bar.height);
+        const logical = self.window.contentLogicalSize(self.conf.tab_bar.height);
+        const tab = try TerminalWidget.create(self.allocator, &self.conf.term, px.width, px.height, logical.width, logical.height);
+        errdefer tab.destroy(self.allocator);
+        try self.tabs.append(self.allocator, tab);
+        self.active_tab_idx = self.tabs.items.len - 1;
+        self.syncTerminalFocus();
+    }
+
+    fn closeActiveTab(self: *Runtime) void {
+        if (self.tabs.items.len <= 1) return;
+        const idx = self.active_tab_idx;
+        const tab = self.tabs.items[idx];
+        _ = self.tabs.orderedRemove(idx);
+        tab.destroy(self.allocator);
+        if (self.active_tab_idx >= self.tabs.items.len) self.active_tab_idx = self.tabs.items.len - 1;
+        self.syncTerminalFocus();
+    }
+
+    fn selectRelative(self: *Runtime, delta: i32) void {
+        if (self.tabs.items.len <= 1) return;
+        const len_i: i32 = @intCast(self.tabs.items.len);
+        var idx: i32 = @intCast(self.active_tab_idx);
+        idx = @mod(idx + delta, len_i);
+        self.selectTab(@intCast(idx));
+    }
+
+    fn selectTab(self: *Runtime, idx: usize) void {
+        if (idx >= self.tabs.items.len or idx == self.active_tab_idx) return;
+        self.active_tab_idx = idx;
+        self.syncTerminalFocus();
+    }
+
+    fn syncTerminalFocus(self: *Runtime) void {
+        for (self.tabs.items, 0..) |tab, i| {
+            tab.setWindowFocused(self.window.focused);
+            tab.setWidgetFocused(i == self.active_tab_idx);
+        }
+    }
+
+    fn tabTitles(self: *const Runtime, buf: [][]const u8) []const []const u8 {
+        std.debug.assert(buf.len >= self.tabs.items.len);
+        for (self.tabs.items, 0..) |tab, i| {
+            buf[i] = tab.titleSlice();
+        }
+        return buf[0..self.tabs.items.len];
+    }
+
+    fn pasteIntoActiveTab(self: *Runtime) void {
+        const text = Window.getClipboardText(std.heap.c_allocator) catch return;
+        defer if (text) |buf| std.heap.c_allocator.free(buf);
+        const payload = text orelse return;
+        self.activeTab().paste(payload);
+    }
+
+    fn serviceTerminalEffects(self: *Runtime, tab: *TerminalWidget) void {
+        const raw = tab.drainClipboardSet(std.heap.c_allocator) orelse return;
+        defer std.heap.c_allocator.free(raw);
+
+        switch (self.conf.term.clipboard.osc_52) {
+            .deny => return,
+            .allow => {},
+        }
+
+        const decoded = Clipboard.decodeOsc52(std.heap.c_allocator, raw) catch return;
+        defer std.heap.c_allocator.free(decoded);
+        _ = Window.setClipboardText(decoded);
+    }
+};
 
 pub fn main(init: std.process.Init) !void {
     const options = cli_args.parse(try init.minimal.args.toSlice(init.arena.allocator())) catch |err| switch (err) {
         error.HelpRequested => return,
         else => |e| return e,
     };
-    _ = try run(options);
+    try start(options);
 }
 
-pub const Summary = struct {
-    frames: u64 = 0,
-    polls: u64 = 0,
-    waits: u64 = 0,
-    idle_signals: u64 = 0,
-    input_injections: u64 = 0,
-    input_bytes_applied: u64 = 0,
-    visible_text_seen: bool = false,
-    rendered_text_seen: bool = false,
-    quit: bool = false,
-    failed: bool = false,
-};
-
-pub fn run(options: Options) !Summary {
+fn start(options: Options) !void {
     setCurrentThreadName("howl-main");
     if (!Window.initVideo()) {
         std.debug.print("window init failed: {s}\n", .{Window.lastError()});
@@ -46,56 +199,38 @@ pub fn run(options: Options) !Summary {
     }
     defer Window.quit();
 
-    var lua = try Config.loadLua(std.heap.c_allocator);
-    defer lua.deinit();
-
-    var conf = try Config.loadFromLua(std.heap.c_allocator, lua);
+    var conf = try Config.State.load(std.heap.c_allocator);
     defer conf.deinit(std.heap.c_allocator);
     try applyOverrides(&conf, options);
 
-    Events.Shortcuts.installConfig(&conf);
+    Input.Bindings.setConfigBindings(&conf);
 
     const title: [*:0]const u8 = if (options.window_title) |value| value.ptr else conf.window.title.ptr;
-    const win = Window.createWindow(title, conf.window.width, conf.window.height, Window.windowFlags()) orelse {
-        std.debug.print("window create failed: {s}\n", .{Window.lastError()});
-        return error.WindowCreateFailed;
+    var window = Window.State.create(title, conf.window.width, conf.window.height) catch |err| switch (err) {
+        error.WindowCreateFailed => {
+            std.debug.print("window create failed: {s}\n", .{Window.lastError()});
+            return err;
+        },
+        else => return err,
     };
-    defer Window.destroyWindow(win);
+    defer window.deinit();
 
-    var app = App{
+    var runtime = Runtime{
         .allocator = std.heap.c_allocator,
-        .conf = @as(*const Config.Value, &conf),
-        .present = undefined,
+        .conf = @as(*const Config.State, &conf),
+        .window = &window,
+        .tab_bar = .{},
         .tabs = .empty,
         .active_tab_idx = 0,
-        .window_px_w = 1,
-        .window_px_h = 1,
-        .window_logical_w = 1,
-        .window_logical_h = 1,
-        .window_focused = true,
     };
+    try runtime.init();
+    defer runtime.deinit();
 
-    const initial_size = Window.windowSize(win);
-    const initial_logical_size = Window.windowLogicalSize(win);
-    try app.init(win, initial_size.width, initial_size.height, initial_logical_size.width, initial_logical_size.height);
-    app.setWindowFocused(Window.hasInputFocus(win));
-    defer app.deinit();
+    var input: Input = undefined;
+    input.init();
+    try input.bind(window.handle);
 
-    var events: Events = undefined;
-    events.init();
-    try events.bind(win);
-
-    var summary = Summary{};
-    var main_window = trace.MainCounters{};
     var running = true;
-    var meter = thread_meter.ThreadMeter.init(std.time.ns_per_s);
-    var fps_window_start_ns: u64 = Window.c_win.SDL_GetTicksNS();
-    var fps_window_start_frame: u64 = 0;
-    var next_fps_log_frame: u64 = fps_log_every_frames;
-    var render_window = RenderStats{};
-    var render_window_frames: u64 = 0;
-    const bench_log = std.c.getenv("HOWL_BENCH_LOG") != null;
-    reportRuntimeHz(bench_log, win);
     var duration_timer: Window.c_win.SDL_TimerID = 0;
     if (options.duration_ms) |duration_ms| {
         duration_timer = Window.c_win.SDL_AddTimer(@intCast(@max(duration_ms, 1)), quitTimer, null);
@@ -104,107 +239,40 @@ pub fn run(options: Options) !Summary {
         if (duration_timer != 0) _ = Window.c_win.SDL_RemoveTimer(duration_timer);
     }
 
-    if (options.input_text) |text| {
-        Events.pushReplayKeys(win, text);
-        summary.input_injections += 1;
-        main_window.input_injections += 1;
-        Events.wakeWindow();
-    }
-    events.setMousePolicy(.{
+    input.setHostMousePolicy(.{
         .listen_always = conf.window.mouse.listen_always,
-        .link_hover = app.activeTerminalWantsLinkHover(),
-        .terminal_bypass_mod = conf.window.mouse.terminal_bypass_mod,
+        .link_hover = runtime.activeTab().wantsLinkHover(),
+    });
+    input.setTerminalMousePolicy(.{
+        .bypass_mod = conf.term.mouse.bypass_mod,
     });
     while (running) {
-        var work = app.collectRenderWork();
-        const signal = if (work.needs_frame) blk: {
-            summary.polls += 1;
-            main_window.polls += 1;
-            break :blk Events.pollWindow(win);
-        } else blk: {
-            summary.waits += 1;
-            main_window.waits += 1;
-            break :blk Events.waitWindow(win);
-        };
+        var work = runtime.collectRenderWork();
+        const signal = if (work.needs_frame) Input.pollWindow(window.handle) else Input.waitWindow(window.handle);
         if (signal == .quit) {
-            summary.quit = true;
             running = false;
             continue;
         }
-        if (!work.needs_frame and signal == .none) {
-            summary.idle_signals += 1;
-            main_window.idle_signals += 1;
-        }
-        if (events.drainWindowFocusChanged()) |focused| app.setWindowFocused(focused);
 
-        try app.drainShortcuts(&events);
-        app.drainActiveInput(&events);
-        app.handleActiveScrollInput(&events);
-        app.serviceHostEffects();
-        if (options.input_text != null) summary.input_bytes_applied = app.activeTab().inputBytesApplied();
-        if (!summary.visible_text_seen) {
-            if (options.rendered_text) |text| summary.visible_text_seen = app.activeTab().visibleTextContains(text);
-        }
+        if (input.drainWindowFocusChanged()) |focused| runtime.setWindowFocused(focused);
 
-        if (events.drainWindowGeometryChanged()) {
-            const size = Window.windowSize(win);
-            const logical_size = Window.windowLogicalSize(win);
-            app.resize(size.width, size.height, logical_size.width, logical_size.height);
-            reportRuntimeHz(bench_log, win);
+        while (input.drainBindingAction()) |action| try runtime.handleBindingAction(action);
+
+        const content_logical = window.contentLogicalSize(conf.tab_bar.height);
+        runtime.activeTab().drainInput(&input, 0, window.tabBarHeightLogical(conf.tab_bar.height), content_logical.width, content_logical.height);
+        runtime.activeTab().handleScrollInput(&input);
+        runtime.serviceHostEffects();
+
+        if (input.drainWindowGeometryChanged()) {
+            if (window.refreshGeometry()) runtime.resizeTerminals();
         }
 
-        work = app.collectRenderWork();
-        if (!work.needs_frame) {
-            reportMainThread(&meter, &main_window);
-            continue;
-        }
+        work = runtime.collectRenderWork();
+        if (!work.needs_frame) continue;
 
-        summary.frames += 1;
-        main_window.frames += 1;
-        const render_stats = app.render(work);
-        main_window.sync_us += render_stats.sync_us;
-        main_window.copy_us += render_stats.copy_us;
-        main_window.render_us += render_stats.render_us;
-        main_window.present_us += render_stats.present_us;
-        main_window.glyphs += render_stats.glyphs;
-        main_window.fills += render_stats.fills;
-        main_window.uploads += render_stats.uploads;
-        main_window.surface_prepares += render_stats.surface.prepare_takes;
-        main_window.surface_submits += render_stats.surface.submit_valid;
-        main_window.surface_presents += render_stats.surface.presents;
-        render_window.sync_us += render_stats.sync_us;
-        render_window.copy_us += render_stats.copy_us;
-        render_window.render_us += render_stats.render_us;
-        render_window.present_us += render_stats.present_us;
-        render_window.glyphs += render_stats.glyphs;
-        render_window.fills += render_stats.fills;
-        render_window.background_fills += render_stats.background_fills;
-        render_window.decoration_fills += render_stats.decoration_fills;
-        render_window.cursor_fills += render_stats.cursor_fills;
-        render_window.uploads += render_stats.uploads;
-        render_window.face_checks += render_stats.face_checks;
-        render_window.face_cache_hits += render_stats.face_cache_hits;
-        render_window.shape_requests += render_stats.shape_requests;
-        render_window.shape_cache_hits += render_stats.shape_cache_hits;
-        render_window.fallback_hits += render_stats.fallback_hits;
-        render_window.fallback_misses += render_stats.fallback_misses;
-        render_window.missing_glyphs += render_stats.missing_glyphs;
-        addSurfaceMetrics(&render_window.surface, render_stats.surface);
-        render_window_frames += 1;
-        if (!summary.rendered_text_seen) {
-            if (options.rendered_text) |text| summary.rendered_text_seen = app.activeTab().renderedTextContains(text);
-        }
-        reportFpsEveryWindow(bench_log, summary.frames, &fps_window_start_ns, &fps_window_start_frame, &next_fps_log_frame);
-        reportRenderStages(bench_log, summary.frames, &render_window, &render_window_frames);
-        reportMainThread(&meter, &main_window);
-        if (app.activeTabFailed()) {
-            summary.failed = true;
-            running = false;
-            continue;
-        }
+        runtime.render(work);
+        if (runtime.activeTabFailed()) return error.HostTabFailed;
     }
-
-    return summary;
 }
 
 fn setCurrentThreadName(name: [:0]const u8) void {
@@ -218,7 +286,7 @@ fn quitTimer(_: ?*anyopaque, _: Window.c_win.SDL_TimerID, _: u32) callconv(.c) u
     return 0;
 }
 
-fn applyOverrides(conf: *Config.Value, options: Options) !void {
+fn applyOverrides(conf: *Config.State, options: Options) !void {
     if (options.shell) |shell| try overrideConfig(&conf.term.shell, shell);
     if (options.start_path) |start_path| try overrideOptionalConfig(&conf.term.start_path, start_path);
     if (options.command) |command| try overrideOptionalConfig(&conf.term.command, command);
@@ -234,101 +302,4 @@ fn overrideOptionalConfig(slot: *?[]u8, value: []const u8) !void {
     const duped = try std.heap.c_allocator.dupe(u8, value);
     if (slot.*) |old| std.heap.c_allocator.free(old);
     slot.* = duped;
-}
-
-fn reportMainThread(meter: *thread_meter.ThreadMeter, counters: *trace.MainCounters) void {
-    const sample = meter.sample() orelse return;
-    trace.cpuMain("howl-main", sample.cpuPct(), sample.wall_ns, sample.cpu_ns, counters.*);
-    counters.* = .{};
-}
-
-fn reportRuntimeHz(enabled: bool, win: Window.Ptr) void {
-    if (!enabled) return;
-    Window.reportRuntimeHz(win);
-}
-
-fn reportFpsEveryWindow(
-    enabled: bool,
-    frames: u64,
-    window_start_ns: *u64,
-    window_start_frame: *u64,
-    next_log_frame: *u64,
-) void {
-    if (!enabled) return;
-    if (frames < next_log_frame.*) return;
-    const now_ns = Window.c_win.SDL_GetTicksNS();
-    const elapsed_ns = now_ns -| window_start_ns.*;
-    const frame_delta = frames -| window_start_frame.*;
-    const fps = if (elapsed_ns == 0)
-        0
-    else
-        @as(f64, @floatFromInt(frame_delta)) / (@as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
-    std.debug.print("{{\"type\":\"howl_sdl_fps\",\"schema\":1,\"frames\":{},\"window_frames\":{},\"fps\":{d:.2}}}\n", .{ frames, frame_delta, fps });
-    window_start_ns.* = now_ns;
-    window_start_frame.* = frames;
-    next_log_frame.* = frames + fps_log_every_frames;
-}
-
-fn reportRenderStages(enabled: bool, frames: u64, window: *RenderStats, window_frames: *u64) void {
-    if (!enabled) return;
-    if (window_frames.* == 0 or @mod(frames, fps_log_every_frames) != 0) return;
-    const count = window_frames.*;
-    std.debug.print(
-        "{{\"type\":\"howl_render_window\",\"schema\":1,\"frames\":{},\"window_frames\":{},\"avg_sync_us\":{d:.2},\"avg_copy_us\":{d:.2},\"avg_render_us\":{d:.2},\"avg_present_us\":{d:.2},\"avg_glyphs\":{d:.2},\"avg_fills\":{d:.2},\"avg_uploads\":{d:.2},\"face_checks\":{},\"face_cache_hits\":{},\"shape_requests\":{},\"shape_cache_hits\":{},\"fallback_hits\":{},\"fallback_misses\":{},\"missing_glyphs\":{},\"surface_snapshot_publishes\":{},\"surface_prepare_requests\":{},\"surface_prepare_coalesces\":{},\"surface_prepare_takes\":{},\"surface_prepared_publishes\":{},\"surface_prepared_coalesces\":{},\"surface_submit_takes\":{},\"surface_submit_valid\":{},\"surface_submit_rejected\":{},\"surface_full_prepare_requests\":{},\"surface_presents\":{}}}\n",
-        .{
-            frames,
-            count,
-            avg(window.sync_us, count),
-            avg(window.copy_us, count),
-            avg(window.render_us, count),
-            avg(window.present_us, count),
-            avg(window.glyphs, count),
-            avg(window.fills, count),
-            avg(window.uploads, count),
-            window.face_checks,
-            window.face_cache_hits,
-            window.shape_requests,
-            window.shape_cache_hits,
-            window.fallback_hits,
-            window.fallback_misses,
-            window.missing_glyphs,
-            window.surface.snapshot_publishes,
-            window.surface.prepare_requests,
-            window.surface.prepare_coalesces,
-            window.surface.prepare_takes,
-            window.surface.prepared_publishes,
-            window.surface.prepared_coalesces,
-            window.surface.submit_takes,
-            window.surface.submit_valid,
-            window.surface.submit_rejected,
-            window.surface.full_prepare_requests,
-            window.surface.presents,
-        },
-    );
-    window.* = .{};
-    window_frames.* = 0;
-}
-
-fn addSurfaceMetrics(accum: *RenderStats.SurfaceMetrics, value: RenderStats.SurfaceMetrics) void {
-    accum.snapshot_publishes +%= value.snapshot_publishes;
-    accum.snapshot_hidden_drops +%= value.snapshot_hidden_drops;
-    accum.snapshot_clean_drops +%= value.snapshot_clean_drops;
-    accum.prepare_requests +%= value.prepare_requests;
-    accum.prepare_coalesces +%= value.prepare_coalesces;
-    accum.prepare_forced_full +%= value.prepare_forced_full;
-    accum.prepare_takes +%= value.prepare_takes;
-    accum.prepared_publishes +%= value.prepared_publishes;
-    accum.prepared_coalesces +%= value.prepared_coalesces;
-    accum.submit_takes +%= value.submit_takes;
-    accum.submit_valid +%= value.submit_valid;
-    accum.submit_rejected +%= value.submit_rejected;
-    accum.full_prepare_requests +%= value.full_prepare_requests;
-    accum.submitted_accepts +%= value.submitted_accepts;
-    accum.presents +%= value.presents;
-    accum.target_invalidations +%= value.target_invalidations;
-}
-
-fn avg(total: anytype, count: u64) f64 {
-    if (count == 0) return 0;
-    return @as(f64, @floatFromInt(total)) / @as(f64, @floatFromInt(count));
 }

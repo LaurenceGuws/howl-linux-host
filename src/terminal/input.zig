@@ -2,10 +2,10 @@
 //! Ownership: key, modifier, mouse, and byte translation for terminal widgets.
 //! Reason: keep host event vocabulary separate from terminal runtime input.
 
-const Events = @import("../events/events.zig").Events;
+const Input = @import("../input/input.zig").Input;
 const term_runtime = @import("howl_term").HostRuntime;
 
-pub fn key(key_event: Events.Key) ?term_runtime.Key {
+pub fn key(key_event: Input.Key) ?term_runtime.Key {
     return switch (key_event) {
         .escape => term_runtime.key_escape,
         .tab => term_runtime.key_tab,
@@ -37,7 +37,7 @@ pub fn key(key_event: Events.Key) ?term_runtime.Key {
     };
 }
 
-pub fn mods(input_mods: Events.Mod) term_runtime.Modifier {
+pub fn mods(input_mods: Input.Mod) term_runtime.Modifier {
     var out: term_runtime.Modifier = 0;
     if (input_mods.shift) out |= term_runtime.mod_shift;
     if (input_mods.alt) out |= term_runtime.mod_alt;
@@ -45,7 +45,7 @@ pub fn mods(input_mods: Events.Mod) term_runtime.Modifier {
     return out;
 }
 
-pub fn mouseKind(kind: Events.Mouse.Kind) term_runtime.MouseEventKind {
+pub fn mouseKind(kind: Input.Mouse.Kind) term_runtime.MouseEventKind {
     return switch (kind) {
         .move => term_runtime.mouse_move,
         .press => term_runtime.mouse_press,
@@ -54,7 +54,7 @@ pub fn mouseKind(kind: Events.Mouse.Kind) term_runtime.MouseEventKind {
     };
 }
 
-pub fn mouseButton(button: Events.Mouse.Button) term_runtime.MouseButton {
+pub fn mouseButton(button: Input.Mouse.Button) term_runtime.MouseButton {
     return switch (button) {
         .none => term_runtime.mouse_button_none,
         .left => term_runtime.mouse_button_left,
@@ -65,7 +65,7 @@ pub fn mouseButton(button: Events.Mouse.Button) term_runtime.MouseButton {
     };
 }
 
-pub fn buttons(input_buttons: Events.Buttons) u8 {
+pub fn buttons(input_buttons: Input.Buttons) u8 {
     var out: u8 = 0;
     if (input_buttons.left) out |= 0x01;
     if (input_buttons.middle) out |= 0x02;

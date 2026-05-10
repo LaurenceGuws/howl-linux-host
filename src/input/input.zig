@@ -1,141 +1,144 @@
-//! Responsibility: own the public host event runtime for the Linux host.
-//! Ownership: input watch, queue, and shortcut/event drain.
-//! Reason: keep Linux host on one boring event owner.
+//! Responsibility: own the public host input runtime for the Linux host.
+//! Ownership: SDL input watch, queue, and key binding drain.
+//! Reason: keep Linux host on one boring input owner.
 
 const std = @import("std");
 const keys = @import("keys.zig");
 const mouse = @import("mouse.zig");
-const input = @import("input.zig");
-const shortcuts = @import("shortcuts.zig");
 const window = @import("window.zig");
 
 const c = window.c_win;
 const max_input_events: usize = 256;
-const replay_keyboard_id: c.SDL_KeyboardID = 0x484f574c;
 
-pub const Events = struct {
+pub const Input = struct {
     pub const Signal = window.EventSignal;
     pub const Keys = keys;
     pub const Mouse = mouse;
-    pub const Input = input;
-    pub const Shortcuts = shortcuts.Shortcuts;
+    pub const Bindings = keys.Bindings;
     pub const Key = keys.Key;
     pub const Mod = mouse.Mod;
     pub const Buttons = mouse.Buttons;
-    pub const MousePolicy = struct {
+    pub const Event = union(enum) {
+        bytes: keys.ByteInput,
+        key: keys.Event,
+        mouse: mouse.Event,
+    };
+    pub const HostMousePolicy = struct {
         /// Capture unpressed mouse motion for host/window UI such as tabs and scrollbars.
         listen_always: bool = false,
         /// Capture unpressed mouse motion for link hover without publishing it to the PTY.
         link_hover: bool = false,
+    };
+    pub const TerminalMousePolicy = struct {
         /// Modifier that temporarily forwards unpressed motion to the terminal input path.
-        terminal_bypass_mod: Mod = .{},
+        bypass_mod: Mod = .{},
     };
 
-    input_events: [max_input_events]input.Event,
+    input_events: [max_input_events]Event,
     input_len: usize,
     scroll_pages: i32,
-    shortcut_buf: [64]Shortcuts.Action,
-    shortcut_len: usize,
+    binding_buf: [64]Bindings.Action,
+    binding_len: usize,
     window_geometry_changed: bool,
     window_focus_changed: ?bool,
     last_mouse_x: i32,
     last_mouse_y: i32,
     mouse_listen_always: bool,
     mouse_link_hover: bool,
-    mouse_terminal_bypass_mod: Mod,
+    terminal_motion_mod: Mod,
     mouse_motion_enabled: bool,
     mouse_button_down: bool,
 
-    pub fn init(self: *Events) void {
+    pub fn init(self: *Input) void {
         window.clearQuitRequest();
         self.* = .{
             .input_events = undefined,
             .input_len = 0,
             .scroll_pages = 0,
-            .shortcut_buf = undefined,
-            .shortcut_len = 0,
+            .binding_buf = undefined,
+            .binding_len = 0,
             .window_geometry_changed = false,
             .window_focus_changed = null,
             .last_mouse_x = 0,
             .last_mouse_y = 0,
             .mouse_listen_always = false,
             .mouse_link_hover = false,
-            .mouse_terminal_bypass_mod = .{},
+            .terminal_motion_mod = .{},
             .mouse_motion_enabled = true,
             .mouse_button_down = false,
         };
         self.updateMouseMotionEvents();
     }
 
-    pub fn setMousePolicy(self: *Events, policy: MousePolicy) void {
+    pub fn setHostMousePolicy(self: *Input, policy: HostMousePolicy) void {
         self.mouse_listen_always = policy.listen_always;
         self.mouse_link_hover = policy.link_hover;
-        self.mouse_terminal_bypass_mod = policy.terminal_bypass_mod;
         self.updateMouseMotionEvents();
     }
 
-    fn updateMouseMotionEvents(self: *Events) void {
+    pub fn setTerminalMousePolicy(self: *Input, policy: TerminalMousePolicy) void {
+        self.terminal_motion_mod = policy.bypass_mod;
+        self.updateMouseMotionEvents();
+    }
+
+    fn updateMouseMotionEvents(self: *Input) void {
         const needs_motion = self.mouse_button_down or
             self.mouse_listen_always or
             self.mouse_link_hover or
-            modConfigured(self.mouse_terminal_bypass_mod);
+            modConfigured(self.terminal_motion_mod);
         if (self.mouse_motion_enabled == needs_motion) return;
         c.SDL_SetEventEnabled(c.SDL_EVENT_MOUSE_MOTION, needs_motion);
         self.mouse_motion_enabled = needs_motion;
     }
 
-    pub fn bind(self: *Events, win: anytype) !void {
+    pub fn bind(self: *Input, win: anytype) !void {
         _ = win;
-        if (active_events) |bound| {
-            if (bound != self) return error.EventsAlreadyBound;
+        if (active_input) |bound| {
+            if (bound != self) return error.InputAlreadyBound;
         }
-        active_events = self;
+        active_input = self;
         if (!watch_registered) {
             _ = c.SDL_AddEventWatch(eventWatch, null);
             watch_registered = true;
         }
     }
 
-    pub fn drainInputEvent(self: *Events) ?input.Event {
+    pub fn drainInputEvent(self: *Input) ?Event {
         if (self.input_len == 0) return null;
         const out = self.input_events[0];
         self.input_len -= 1;
         if (self.input_len > 0) {
-            std.mem.copyForwards(input.Event, self.input_events[0..self.input_len], self.input_events[1 .. self.input_len + 1]);
+            std.mem.copyForwards(Event, self.input_events[0..self.input_len], self.input_events[1 .. self.input_len + 1]);
         }
         return out;
     }
 
-    pub fn drainScrollPages(self: *Events) i32 {
+    pub fn drainScrollPages(self: *Input) i32 {
         const out = self.scroll_pages;
         self.scroll_pages = 0;
         return out;
     }
 
-    pub fn drainShortcutAction(self: *Events) ?Shortcuts.Action {
-        if (self.shortcut_len == 0) return null;
-        const out = self.shortcut_buf[0];
-        self.shortcut_len -= 1;
-        if (self.shortcut_len > 0) {
-            std.mem.copyForwards(Shortcuts.Action, self.shortcut_buf[0..self.shortcut_len], self.shortcut_buf[1 .. self.shortcut_len + 1]);
+    pub fn drainBindingAction(self: *Input) ?Bindings.Action {
+        if (self.binding_len == 0) return null;
+        const out = self.binding_buf[0];
+        self.binding_len -= 1;
+        if (self.binding_len > 0) {
+            std.mem.copyForwards(Bindings.Action, self.binding_buf[0..self.binding_len], self.binding_buf[1 .. self.binding_len + 1]);
         }
         return out;
     }
 
-    pub fn drainWindowGeometryChanged(self: *Events) bool {
+    pub fn drainWindowGeometryChanged(self: *Input) bool {
         const changed = self.window_geometry_changed;
         self.window_geometry_changed = false;
         return changed;
     }
 
-    pub fn drainWindowFocusChanged(self: *Events) ?bool {
+    pub fn drainWindowFocusChanged(self: *Input) ?bool {
         const focused = self.window_focus_changed;
         self.window_focus_changed = null;
         return focused;
-    }
-
-    pub fn pushReplayKeys(handle: *c.SDL_Window, bytes: []const u8) void {
-        for (bytes) |byte| pushReplayKeyDown(handle, byte);
     }
 
     pub fn pollWindow(handle: *c.SDL_Window) Signal {
@@ -155,11 +158,11 @@ pub const Events = struct {
     }
 };
 
-var active_events: ?*Events = null;
+var active_input: ?*Input = null;
 var watch_registered: bool = false;
 
 fn processEvent(event: *const c.SDL_Event) void {
-    const events = active_events orelse return;
+    const input = active_input orelse return;
     switch (event.type) {
         c.SDL_EVENT_QUIT,
         c.SDL_EVENT_TERMINATING,
@@ -170,84 +173,79 @@ fn processEvent(event: *const c.SDL_Event) void {
             return;
         },
         c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
-            events.window_focus_changed = true;
+            input.window_focus_changed = true;
             return;
         },
         c.SDL_EVENT_WINDOW_FOCUS_LOST => {
-            events.window_focus_changed = false;
+            input.window_focus_changed = false;
             return;
         },
         c.SDL_EVENT_TEXT_INPUT => {
             if (event.text.text != null) {
                 const p: [*:0]const u8 = @ptrCast(event.text.text);
-                appendBytesEvent(events, std.mem.span(p));
+                appendBytesEvent(input, std.mem.span(p));
             }
         },
         c.SDL_EVENT_KEY_DOWN => {
             const ctrl = (event.key.mod & c.SDL_KMOD_CTRL) != 0;
             const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
             const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
-            if (event.key.which == replay_keyboard_id and !ctrl and !alt) {
-                if (event.key.key >= ' ' and event.key.key <= '~') {
-                    return appendByteEvent(events, @intCast(event.key.key));
-                }
-            }
             if (event.key.key == c.SDLK_PAGEUP) {
                 if (shift and !ctrl and !alt) {
-                    events.scroll_pages += 1;
+                    input.scroll_pages += 1;
                     return;
                 }
             }
             if (event.key.key == c.SDLK_PAGEDOWN) {
                 if (shift and !ctrl and !alt) {
-                    events.scroll_pages -= 1;
+                    input.scroll_pages -= 1;
                     return;
                 }
             }
             if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
                 if (sdlKey(event.key.key)) |key| {
-                    if (Events.Shortcuts.resolve(key, ctrl, shift, alt)) |shortcut| {
-                        appendShortcut(events, shortcut);
+                    if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
+                        appendBindingAction(input, action);
                         return;
                     }
                 }
                 const code: u8 = @intCast((event.key.key - c.SDLK_A) + 1);
-                return appendByteEvent(events, code);
+                return appendByteEvent(input, code);
             }
             if (alt and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
                 if (sdlKey(event.key.key)) |key| {
-                    if (Events.Shortcuts.resolve(key, ctrl, shift, alt)) |shortcut| {
-                        appendShortcut(events, shortcut);
+                    if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
+                        appendBindingAction(input, action);
                         return;
                     }
                 }
-                appendByteEvent(events, 0x1b);
+                appendByteEvent(input, 0x1b);
                 const ch: u8 = @intCast((event.key.key - c.SDLK_A) + 'a');
-                return appendByteEvent(events, ch);
+                return appendByteEvent(input, ch);
             }
             if (sdlKey(event.key.key)) |key| {
-                if (Events.Shortcuts.resolve(key, ctrl, shift, alt)) |shortcut| {
-                    appendShortcut(events, shortcut);
+                if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
+                    appendBindingAction(input, action);
                     return;
                 }
-                appendKeyEvent(events, key, sdlMods(event.key.mod));
+                appendKeyEvent(input, key, sdlMods(event.key.mod));
                 return;
             }
         },
         c.SDL_EVENT_MOUSE_MOTION => {
             const buttons_down = sdlButtons(event.motion.state);
             const mods = sdlMods(c.SDL_GetModState());
-            const mouse_bypass_active = modSubset(events.mouse_terminal_bypass_mod, mods);
+            const terminal_motion_active = modSubset(input.terminal_motion_mod, mods);
             const button_down = buttons_down.left or buttons_down.middle or buttons_down.right;
             // Passive motion is host UI by default. Only button drags and the
-            // explicit terminal-bypass modifier make motion app-visible.
-            const host_only = !button_down and !mouse_bypass_active;
-            if (!button_down and !events.mouse_listen_always and !mouse_bypass_active and !events.mouse_link_hover) return;
+            // explicit terminal motion modifier make motion app-visible.
+            const host_only = !button_down and !terminal_motion_active;
+            if (!button_down and !input.mouse_listen_always and !terminal_motion_active and !input.mouse_link_hover) return;
             const pixel_x = @as(i32, @intFromFloat(@round(event.motion.x)));
             const pixel_y = @as(i32, @intFromFloat(@round(event.motion.y)));
-            events.last_mouse_x = pixel_x;
-            events.last_mouse_y = pixel_y;
-            appendMouseEvent(events, .{
+            input.last_mouse_x = pixel_x;
+            input.last_mouse_y = pixel_y;
+            appendMouseEvent(input, .{
                 .kind = .move,
                 .button = .none,
                 .pixel_x = pixel_x,
@@ -258,14 +256,14 @@ fn processEvent(event: *const c.SDL_Event) void {
             });
         },
         c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-            events.mouse_button_down = true;
-            events.updateMouseMotionEvents();
+            input.mouse_button_down = true;
+            input.updateMouseMotionEvents();
             const pixel_x = @as(i32, @intFromFloat(@round(event.button.x)));
             const pixel_y = @as(i32, @intFromFloat(@round(event.button.y)));
-            events.last_mouse_x = pixel_x;
-            events.last_mouse_y = pixel_y;
+            input.last_mouse_x = pixel_x;
+            input.last_mouse_y = pixel_y;
             const button = sdlMouseButton(event.button.button) orelse return;
-            appendMouseEvent(events, .{
+            appendMouseEvent(input, .{
                 .kind = .press,
                 .button = button,
                 .pixel_x = pixel_x,
@@ -277,12 +275,12 @@ fn processEvent(event: *const c.SDL_Event) void {
         c.SDL_EVENT_MOUSE_BUTTON_UP => {
             const pixel_x = @as(i32, @intFromFloat(@round(event.button.x)));
             const pixel_y = @as(i32, @intFromFloat(@round(event.button.y)));
-            events.last_mouse_x = pixel_x;
-            events.last_mouse_y = pixel_y;
+            input.last_mouse_x = pixel_x;
+            input.last_mouse_y = pixel_y;
             const button = sdlMouseButton(event.button.button) orelse return;
-            events.mouse_button_down = false;
-            events.updateMouseMotionEvents();
-            appendMouseEvent(events, .{
+            input.mouse_button_down = false;
+            input.updateMouseMotionEvents();
+            appendMouseEvent(input, .{
                 .kind = .release,
                 .button = button,
                 .pixel_x = pixel_x,
@@ -299,11 +297,11 @@ fn processEvent(event: *const c.SDL_Event) void {
             const step_count: u32 = @intCast(@abs(ticks));
             var i: u32 = 0;
             while (i < step_count) : (i += 1) {
-                appendMouseEvent(events, .{
+                appendMouseEvent(input, .{
                     .kind = .wheel,
                     .button = button,
-                    .pixel_x = events.last_mouse_x,
-                    .pixel_y = events.last_mouse_y,
+                    .pixel_x = input.last_mouse_x,
+                    .pixel_y = input.last_mouse_y,
                     .mods = sdlMods(c.SDL_GetModState()),
                     .buttons_down = .{},
                 });
@@ -312,7 +310,7 @@ fn processEvent(event: *const c.SDL_Event) void {
         c.SDL_EVENT_WINDOW_RESIZED,
         c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
         c.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
-        => events.window_geometry_changed = true,
+        => input.window_geometry_changed = true,
         else => {},
     }
 }
@@ -323,57 +321,43 @@ fn eventWatch(_: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.c) bool {
     return false;
 }
 
-fn pushReplayKeyDown(handle: *c.SDL_Window, byte: u8) void {
-    const key: c.SDL_Keycode = if (byte == '\n') c.SDLK_RETURN else @intCast(byte);
-    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
-    event.type = c.SDL_EVENT_KEY_DOWN;
-    event.key.timestamp = c.SDL_GetTicksNS();
-    event.key.windowID = c.SDL_GetWindowID(handle);
-    event.key.which = replay_keyboard_id;
-    event.key.key = key;
-    event.key.scancode = c.SDL_SCANCODE_UNKNOWN;
-    event.key.mod = c.SDL_KMOD_NONE;
-    event.key.down = true;
-    _ = c.SDL_PushEvent(&event);
-}
-
-fn appendBytesEvent(events: *Events, bytes: []const u8) void {
+fn appendBytesEvent(input: *Input, bytes: []const u8) void {
     var offset: usize = 0;
     while (offset < bytes.len) {
         const remaining = bytes.len - offset;
         const chunk_len: u8 = @intCast(@min(remaining, keys.max_event_bytes));
         var chunk = keys.ByteInput{ .len = chunk_len, .buf = undefined };
         @memcpy(chunk.buf[0..chunk_len], bytes[offset .. offset + chunk_len]);
-        if (!appendInputEvent(events, .{ .bytes = chunk })) return;
+        if (!appendInputEvent(input, .{ .bytes = chunk })) return;
         offset += chunk_len;
     }
 }
 
-fn appendByteEvent(events: *Events, b: u8) void {
+fn appendByteEvent(input: *Input, b: u8) void {
     var chunk = keys.ByteInput{ .len = 1, .buf = undefined };
     chunk.buf[0] = b;
-    _ = appendInputEvent(events, .{ .bytes = chunk });
+    _ = appendInputEvent(input, .{ .bytes = chunk });
 }
 
-fn appendKeyEvent(events: *Events, key: keys.Key, mods: mouse.Mod) void {
-    _ = appendInputEvent(events, .{ .key = .{ .key = key, .mods = mods } });
+fn appendKeyEvent(input: *Input, key: keys.Key, mods: mouse.Mod) void {
+    _ = appendInputEvent(input, .{ .key = .{ .key = key, .mods = mods } });
 }
 
-fn appendMouseEvent(events: *Events, event: mouse.Event) void {
-    _ = appendInputEvent(events, .{ .mouse = event });
+fn appendMouseEvent(input: *Input, event: mouse.Event) void {
+    _ = appendInputEvent(input, .{ .mouse = event });
 }
 
-fn appendInputEvent(events: *Events, event: input.Event) bool {
-    if (events.input_len >= events.input_events.len) return false;
-    events.input_events[events.input_len] = event;
-    events.input_len += 1;
+fn appendInputEvent(input: *Input, event: Input.Event) bool {
+    if (input.input_len >= input.input_events.len) return false;
+    input.input_events[input.input_len] = event;
+    input.input_len += 1;
     return true;
 }
 
-fn appendShortcut(events: *Events, action: Events.Shortcuts.Action) void {
-    if (events.shortcut_len >= events.shortcut_buf.len) return;
-    events.shortcut_buf[events.shortcut_len] = action;
-    events.shortcut_len += 1;
+fn appendBindingAction(input: *Input, action: Input.Bindings.Action) void {
+    if (input.binding_len >= input.binding_buf.len) return;
+    input.binding_buf[input.binding_len] = action;
+    input.binding_len += 1;
 }
 
 fn sdlKey(sdl_key: c_uint) ?keys.Key {
@@ -525,14 +509,14 @@ fn sdlButtons(state: u32) mouse.Buttons {
     };
 }
 
-test "sdl mod mapping" {
+test "sdl mod binding" {
     const mods = sdlMods(c.SDL_KMOD_SHIFT | c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL);
     try std.testing.expect(mods.shift);
     try std.testing.expect(mods.alt);
     try std.testing.expect(mods.ctrl);
 }
 
-test "special key mapping" {
+test "special key binding" {
     try std.testing.expectEqual(keys.Key.up, sdlKey(c.SDLK_UP).?);
     try std.testing.expectEqual(keys.Key.page_up, sdlKey(c.SDLK_PAGEUP).?);
     try std.testing.expectEqual(@as(?keys.Key, null), sdlKey('a'));
@@ -545,13 +529,13 @@ test "mod subset requires at least one configured mod" {
 }
 
 test "byte chunking preserves order" {
-    var events: Events = undefined;
-    events.init();
+    var input: Input = undefined;
+    input.init();
     const bytes = "abcdefghijklmnopqrstuvwxyz0123456789";
-    appendBytesEvent(&events, bytes);
+    appendBytesEvent(&input, bytes);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(std.testing.allocator);
-    while (events.drainInputEvent()) |event| switch (event) {
+    while (input.drainInputEvent()) |event| switch (event) {
         .bytes => |chunk| try out.appendSlice(std.testing.allocator, chunk.slice()),
         else => return error.UnexpectedEvent,
     };

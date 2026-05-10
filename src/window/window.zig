@@ -27,6 +27,99 @@ pub const PresentState = Chrome.State(c);
 
 var pointer_cursor: ?*c.SDL_Cursor = null;
 
+pub const State = struct {
+    handle: Ptr,
+    present_state: PresentState,
+    px_w: c_int,
+    px_h: c_int,
+    logical_w: c_int,
+    logical_h: c_int,
+    focused: bool,
+
+    pub fn create(title: [*:0]const u8, width: c_int, height: c_int) !State {
+        const handle = createWindow(title, width, height, windowFlags()) orelse return error.WindowCreateFailed;
+        errdefer destroyWindow(handle);
+
+        var self = State{
+            .handle = handle,
+            .present_state = undefined,
+            .px_w = 1,
+            .px_h = 1,
+            .logical_w = 1,
+            .logical_h = 1,
+            .focused = hasInputFocus(handle),
+        };
+        try initPresent(&self.present_state, handle);
+        errdefer deinitPresent(&self.present_state);
+        _ = self.refreshGeometry();
+        return self;
+    }
+
+    pub fn deinit(self: *State) void {
+        deinitPresent(&self.present_state);
+        destroyWindow(self.handle);
+    }
+
+    pub fn refreshGeometry(self: *State) bool {
+        const size = windowSize(self.handle);
+        const logical_size = windowLogicalSize(self.handle);
+        const w = @max(size.width, 1);
+        const h = @max(size.height, 1);
+        const lw = @max(logical_size.width, 1);
+        const lh = @max(logical_size.height, 1);
+        const changed = w != self.px_w or h != self.px_h or lw != self.logical_w or lh != self.logical_h;
+        self.px_w = w;
+        self.px_h = h;
+        self.logical_w = lw;
+        self.logical_h = lh;
+        return changed;
+    }
+
+    pub fn setFocused(self: *State, focused: bool) bool {
+        if (self.focused == focused) return false;
+        self.focused = focused;
+        return true;
+    }
+
+    pub fn contentPixelSize(self: *const State, tab_bar_height: u32) Size {
+        return .{
+            .width = @max(self.px_w, 1),
+            .height = @max(self.px_h - self.tabBarHeight(tab_bar_height), 1),
+        };
+    }
+
+    pub fn contentLogicalSize(self: *const State, tab_bar_height: u32) Size {
+        return .{
+            .width = @max(self.logical_w, 1),
+            .height = @max(self.logical_h - self.tabBarHeightLogical(tab_bar_height), 1),
+        };
+    }
+
+    pub fn contentRect(self: *const State, tab_bar_height: u32) Rect {
+        const size = self.contentPixelSize(tab_bar_height);
+        return .{
+            .x = 0,
+            .y = self.tabBarHeight(tab_bar_height),
+            .width = size.width,
+            .height = size.height,
+        };
+    }
+
+    pub fn present(self: *State, frame: Frame) void {
+        Chrome.present(c, &self.present_state, frame);
+    }
+
+    pub fn tabBarHeight(self: *const State, configured_height: u32) c_int {
+        if (self.px_h <= 1) return 0;
+        return @min(@as(c_int, @intCast(configured_height)), self.px_h - 1);
+    }
+
+    pub fn tabBarHeightLogical(self: *const State, configured_height: u32) c_int {
+        if (self.logical_h <= 1) return 0;
+        return @min(@as(c_int, @intCast(configured_height)), self.logical_h - 1);
+    }
+};
+
 pub fn initVideo() bool {
     return c.SDL_Init(c.SDL_INIT_VIDEO);
 }
@@ -66,10 +159,6 @@ pub fn present(state: *PresentState, frame: Frame) void {
     Chrome.present(c, state, frame);
 }
 
-pub fn presentTimedUs(state: *PresentState, frame: Frame) u64 {
-    return Chrome.presentTimedUs(c, state, frame);
-}
-
 pub fn windowSize(handle: Ptr) Size {
     var width: c_int = 0;
     var height: c_int = 0;
@@ -82,46 +171,6 @@ pub fn windowLogicalSize(handle: Ptr) Size {
     var height: c_int = 0;
     _ = c.SDL_GetWindowSize(handle, &width, &height);
     return .{ .width = width, .height = height };
-}
-
-pub fn preferredFrameIntervalNs(handle: Ptr) ?u64 {
-    const display = c.SDL_GetDisplayForWindow(handle);
-    if (display == 0) return null;
-    const mode = c.SDL_GetCurrentDisplayMode(display) orelse return null;
-    if (mode.*.refresh_rate_numerator > 0 and mode.*.refresh_rate_denominator > 0) {
-        return @max(1, @divTrunc(@as(u64, @intCast(mode.*.refresh_rate_denominator)) * std.time.ns_per_s, @as(u64, @intCast(mode.*.refresh_rate_numerator))));
-    }
-    if (mode.*.refresh_rate > 0.0) {
-        return @max(1, @as(u64, @intFromFloat(@round(@as(f64, @floatFromInt(std.time.ns_per_s)) / @as(f64, @floatCast(mode.*.refresh_rate))))));
-    }
-    return null;
-}
-
-pub fn reportRuntimeHz(handle: Ptr) void {
-    const display = c.SDL_GetDisplayForWindow(handle);
-    const mode = if (display != 0) c.SDL_GetCurrentDisplayMode(display) else null;
-    var swap_interval: c_int = 0;
-    const swap_ok = c.SDL_GL_GetSwapInterval(&swap_interval);
-    const preferred_ns = preferredFrameIntervalNs(handle) orelse 0;
-    if (mode) |m| {
-        std.debug.print(
-            "{{\"type\":\"howl_sdl_runtime_hz\",\"schema\":1,\"display\":{},\"refresh_rate\":{d:.3},\"refresh_num\":{},\"refresh_den\":{},\"preferred_interval_ns\":{},\"swap_interval\":{},\"swap_interval_known\":{}}}\n",
-            .{
-                display,
-                @as(f64, @floatCast(m.*.refresh_rate)),
-                m.*.refresh_rate_numerator,
-                m.*.refresh_rate_denominator,
-                preferred_ns,
-                swap_interval,
-                swap_ok,
-            },
-        );
-    } else {
-        std.debug.print(
-            "{{\"type\":\"howl_sdl_runtime_hz\",\"schema\":1,\"display\":{},\"refresh_rate\":0.0,\"refresh_num\":0,\"refresh_den\":0,\"preferred_interval_ns\":{},\"swap_interval\":{},\"swap_interval_known\":{}}}\n",
-            .{ display, preferred_ns, swap_interval, swap_ok },
-        );
-    }
 }
 
 pub fn hasInputFocus(handle: Ptr) bool {

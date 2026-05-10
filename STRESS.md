@@ -72,7 +72,7 @@ The CLI metrics report generator-side throughput and backpressure (`fps`, `p50_u
 
 The generator intentionally emits dense cursor movement, SGR changes, erases, scroll operations, long lines, ASCII, box drawing, symbols, and fallback glyph candidates. It is not meant to look good. It is meant to attack terminal hot paths.
 
-For resize stress, hold the configured zoom stress shortcut while the generator is running. The default binding is `ctrl+shift+equal` or `ctrl+shift+kp_add`, and it toggles between very small and very large font sizes.
+For resize stress, hold the configured zoom stress binding while the generator is running. The default binding is `ctrl+shift+equal` or `ctrl+shift+kp_add`, and it toggles between very small and very large font sizes.
 
 ## Scripted Terminal Baselines
 

@@ -5,17 +5,16 @@
 const std = @import("std");
 const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
-const event_runtime = @import("../events/events.zig");
-const Events = event_runtime.Events;
+const input_runtime = @import("../input/input.zig");
+const HostInput = input_runtime.Input;
 const Runtime = @import("howl_term").HostRuntime;
 const LifecycleState = Runtime.LifecycleState;
 const SurfaceHandle = Runtime.SurfaceHandle;
-const thread_meter = @import("../test/thread_meter.zig");
-const config = @import("../howl_term/config.zig");
-const Scrollbar = @import("../howl_term/scrollbar.zig");
+const terminal_config = @import("../config/terminal.zig");
+const TerminalConfig = terminal_config.Config;
+const Scrollbar = @import("scrollbar.zig");
 const Input = @import("input.zig");
 const TerminalInstance = @import("howl_term.zig").Terminal;
-const trace = @import("../test/trace.zig");
 
 fn setThreadName(thread: std.Thread, name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(thread.getHandle(), name.ptr);
@@ -36,7 +35,6 @@ fn lockMutex(mutex: *ThreadMutex) void {
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
     const scrollbar_output_cap_ns = std.time.ns_per_s / 30;
-    const content_update_interval_ns = std.time.ns_per_s / 180;
 
     pub const SurfaceMetrics = Runtime.SurfaceMetrics;
 
@@ -49,7 +47,7 @@ pub const Terminal = struct {
     };
 
     term: TerminalInstance,
-    conf: *const config.Config,
+    conf: *const TerminalConfig,
     render_px_w: c_int,
     render_px_h: c_int,
     logical_w: c_int,
@@ -64,8 +62,6 @@ pub const Terminal = struct {
     last_surface: SurfaceHandle,
     last_resize_ns: u64,
     snapshot_quiet_seq: std.atomic.Value(u64),
-    snapshot_requeues: std.atomic.Value(u64),
-    last_content_update_ns: std.atomic.Value(u64),
     wake_thread: ?std.Thread,
     prepare_thread: ?std.Thread,
     prepare_sem: ?*window.c_win.SDL_Semaphore,
@@ -87,7 +83,7 @@ pub const Terminal = struct {
 
     pub fn create(
         allocator: std.mem.Allocator,
-        conf: *const config.Config,
+        conf: *const TerminalConfig,
         render_width: c_int,
         render_height: c_int,
         logical_width: c_int,
@@ -106,7 +102,7 @@ pub const Terminal = struct {
         allocator.destroy(self);
     }
 
-    fn initial(conf: *const config.Config, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) Terminal {
+    fn initial(conf: *const TerminalConfig, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) Terminal {
         const render_w = @max(render_width, 1);
         const render_h = @max(render_height, 1);
         const logical_w = @max(logical_width, 1);
@@ -129,8 +125,6 @@ pub const Terminal = struct {
             .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .last_resize_ns = 0,
             .snapshot_quiet_seq = std.atomic.Value(u64).init(0),
-            .snapshot_requeues = std.atomic.Value(u64).init(0),
-            .last_content_update_ns = std.atomic.Value(u64).init(0),
             .wake_thread = null,
             .prepare_thread = null,
             .prepare_sem = null,
@@ -174,7 +168,7 @@ pub const Terminal = struct {
         self.stop_prepare.store(true, .release);
         self.term.wakeSnapshotWaiters();
         self.signalPrepareWorker();
-        Events.wakeWindow();
+        HostInput.wakeWindow();
         if (self.wake_thread) |t| t.join();
         self.wake_thread = null;
         if (self.prepare_thread) |t| t.join();
@@ -243,13 +237,12 @@ pub const Terminal = struct {
             .idle, .stale, .failed => return,
             .needs_prepare => {
                 self.signalPrepareWorker();
-                Events.wakeWindow();
+                HostInput.wakeWindow();
                 return;
             },
             .rendered => {
                 const surface = self.term.surfaceState().surface;
                 if (surface.texture_id != 0) self.last_surface = surface;
-                self.last_content_update_ns.store(window.c_win.SDL_GetTicksNS(), .release);
                 self.snapshot_quiet_seq.store(self.term.renderedSnapshotSeq(), .release);
                 if (self.term.needsPrepare()) {
                     self.signalPrepareWorker();
@@ -258,10 +251,8 @@ pub const Terminal = struct {
             .rendered_more_pending => {
                 const surface = self.term.surfaceState().surface;
                 if (surface.texture_id != 0) self.last_surface = surface;
-                self.last_content_update_ns.store(window.c_win.SDL_GetTicksNS(), .release);
-                _ = self.snapshot_requeues.fetchAdd(1, .monotonic);
                 self.signalPrepareWorker();
-                Events.wakeWindow();
+                HostInput.wakeWindow();
             },
         }
     }
@@ -294,12 +285,12 @@ pub const Terminal = struct {
         self.term.publishInputBytes(bytes);
     }
 
-    fn publishInputKey(self: *Terminal, key: Events.Keys.Event) void {
+    fn publishInputKey(self: *Terminal, key: HostInput.Keys.Event) void {
         const terminal_key = Input.key(key.key) orelse return;
         self.term.publishInputKey(terminal_key, Input.mods(key.mods));
     }
 
-    fn publishMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event) bool {
+    fn publishMouseEvent(self: *Terminal, mouse_event: HostInput.Mouse.Event) bool {
         return self.term.publishMouseEvent(.{
             .kind = Input.mouseKind(mouse_event.kind),
             .button = Input.mouseButton(mouse_event.button),
@@ -314,7 +305,7 @@ pub const Terminal = struct {
         self.term.publishPaste(payload);
     }
 
-    pub fn drainInput(self: *Terminal, input_events: *Events, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
+    pub fn drainInput(self: *Terminal, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
         while (input_events.drainInputEvent()) |event| {
             switch (event) {
                 .bytes => |bytes| self.publishInputBytes(bytes.slice()),
@@ -342,7 +333,7 @@ pub const Terminal = struct {
         }
     }
 
-    pub fn handleScrollInput(self: *Terminal, input_events: *Events) void {
+    pub fn handleScrollInput(self: *Terminal, input_events: *HostInput) void {
         const page_steps = input_events.drainScrollPages();
         var delta_rows: i32 = 0;
         if (page_steps != 0) {
@@ -390,24 +381,8 @@ pub const Terminal = struct {
         return self.term.titleSlice();
     }
 
-    pub fn lastRenderMetrics(self: *const Terminal) Runtime.RenderMetrics {
-        return self.term.lastRenderMetrics();
-    }
-
-    pub fn takeSurfaceMetrics(self: *Terminal) SurfaceMetrics {
-        return self.term.takeSurfaceMetrics();
-    }
-
     pub fn renderedTextContains(self: *const Terminal, text: []const u8) bool {
         return self.term.renderedTextContains(text);
-    }
-
-    pub fn visibleTextContains(self: *const Terminal, text: []const u8) bool {
-        return self.term.visibleTextContains(text);
-    }
-
-    pub fn inputBytesApplied(self: *const Terminal) u64 {
-        return self.term.inputBytesApplied();
     }
 
     fn scrollbarLayout(self: *const Terminal, texture_rect: window.Rect, scroll: Runtime.ScrollState) window.ScrollbarLayout {
@@ -542,7 +517,7 @@ pub const Terminal = struct {
         };
     }
 
-    fn handleScrollbarMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    fn handleScrollbarMouseEvent(self: *Terminal, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         self.mouse_logical_x = mouse_event.pixel_x;
         self.mouse_logical_y = mouse_event.pixel_y;
         const model = self.scrollbarModel(self.term.scrollState());
@@ -586,7 +561,7 @@ pub const Terminal = struct {
         }
     }
 
-    fn handleSelectionMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    fn handleSelectionMouseEvent(self: *Terminal, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         const dragging = self.term.selectionInProgress();
         const relevant = mouse_event.button == .left or dragging;
         if (!relevant or logical_width <= 0 or logical_height <= 0) return false;
@@ -618,7 +593,7 @@ pub const Terminal = struct {
         }
     }
 
-    fn updateHyperlinkHover(self: *Terminal, mouse_event: Events.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
+    fn updateHyperlinkHover(self: *Terminal, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
         if (mouse_event.kind != .move) return;
 
         // Link hover has two independent host presentation effects: a render
@@ -642,7 +617,7 @@ pub const Terminal = struct {
         }
     }
 
-    fn handleHyperlinkMouseEvent(self: *Terminal, mouse_event: Events.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    fn handleHyperlinkMouseEvent(self: *Terminal, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         if (self.conf.links.open != .system) return false;
         if (mouse_event.kind != .press or mouse_event.button != .left) return false;
         if (!mouse_event.mods.ctrl) return false;
@@ -655,7 +630,7 @@ pub const Terminal = struct {
         return true;
     }
 
-    fn linkUnderlineStyle(style: config.LinkUnderlineStyle) Runtime.LinkUnderlineStyle {
+    fn linkUnderlineStyle(style: terminal_config.LinkUnderlineStyle) Runtime.LinkUnderlineStyle {
         return switch (style) {
             .straight => .straight,
             .curly => .curly,
@@ -714,203 +689,37 @@ fn sameScrollState(a: Runtime.ScrollState, b: Runtime.ScrollState) bool {
 }
 
 fn wakeWorker(self: *Terminal) void {
-    var meter = thread_meter.ThreadMeter.init(std.time.ns_per_s);
-    var waits: u64 = 0;
-    var wake_hits: u64 = 0;
-    var event_wakes: u64 = 0;
-
     while (!self.stop_wake.load(.acquire)) {
-        waits += 1;
         const last_seen_seq = self.snapshot_quiet_seq.load(.acquire);
         const wake = self.term.awaitRenderWake(last_seen_seq);
         if (wake.event_seq != last_seen_seq) {
-            wake_hits += 1;
             self.snapshot_quiet_seq.store(wake.event_seq, .release);
             if (wake.published) {
-                event_wakes += 1;
                 self.refreshTitle();
                 self.signalPrepareWorker();
             }
         }
-        reportWakeThread(self, &meter, &waits, &wake_hits, &event_wakes);
     }
 }
 
 fn prepareWorker(self: *Terminal) void {
-    var meter = thread_meter.ThreadMeter.init(std.time.ns_per_s);
-    var waits: u64 = 0;
-    var wake_hits: u64 = 0;
-    var prepared_count: u64 = 0;
-    var failures: u64 = 0;
-    var empty_wakes: u64 = 0;
-    var prepare_us: u64 = 0;
-    var geom_us: u64 = 0;
-    var step_us: u64 = 0;
-    var metrics_us: u64 = 0;
-    var wake_us: u64 = 0;
-    var term_us: u64 = 0;
-    var sync_us: u64 = 0;
-    var copy_us: u64 = 0;
-    var renderer_us: u64 = 0;
-    var input_us: u64 = 0;
-    var sparse_us: u64 = 0;
-    var clusters_us: u64 = 0;
-    var resolve_us: u64 = 0;
-    var shape_us: u64 = 0;
-    var group_us: u64 = 0;
-    var scene_us: u64 = 0;
-    var raster_us: u64 = 0;
-    var atlas_us: u64 = 0;
-
     while (!self.stop_prepare.load(.acquire)) {
-        waits += 1;
         if (self.prepare_sem) |sem| {
             window.c_win.SDL_WaitSemaphore(sem);
         } else {
             return;
         }
         if (self.stop_prepare.load(.acquire)) break;
-        wake_hits += 1;
 
-        const prepare_start_ns = window.c_win.SDL_GetTicksNS();
-        const geom_start_ns = window.c_win.SDL_GetTicksNS();
         const geom = self.geometrySnapshot();
-        geom_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| geom_start_ns, std.time.ns_per_us);
-        const step_start_ns = window.c_win.SDL_GetTicksNS();
         switch (self.term.prepareNextFrame(geom)) {
-            .idle => {
-                step_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| step_start_ns, std.time.ns_per_us);
-                empty_wakes += 1;
-            },
+            .idle => {},
             .prepared => {
-                step_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| step_start_ns, std.time.ns_per_us);
-                prepared_count += 1;
-                const metrics_start_ns = window.c_win.SDL_GetTicksNS();
-                const metrics = self.term.takePrepareMetrics();
-                term_us += metrics.term_us;
-                sync_us += metrics.sync_us;
-                copy_us += metrics.copy_us;
-                renderer_us += metrics.renderer_us;
-                input_us += metrics.input_us;
-                sparse_us += metrics.sparse_us;
-                clusters_us += metrics.clusters_us;
-                resolve_us += metrics.resolve_us;
-                shape_us += metrics.shape_us;
-                group_us += metrics.group_us;
-                scene_us += metrics.scene_us;
-                raster_us += metrics.raster_us;
-                atlas_us += metrics.atlas_us;
-                metrics_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| metrics_start_ns, std.time.ns_per_us);
-                const wake_start_ns = window.c_win.SDL_GetTicksNS();
-                Events.wakeWindow();
-                wake_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| wake_start_ns, std.time.ns_per_us);
+                HostInput.wakeWindow();
             },
-            .failed => {
-                step_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| step_start_ns, std.time.ns_per_us);
-                failures += 1;
-            },
+            .failed => {},
         }
-        prepare_us += @divTrunc(window.c_win.SDL_GetTicksNS() -| prepare_start_ns, std.time.ns_per_us);
         self.prepare_signal_pending.store(false, .release);
         if (self.term.needsPrepare()) self.signalPrepareWorker();
-        reportPrepareThread(self, &meter, &waits, &wake_hits, &prepared_count, &failures, &empty_wakes, &prepare_us, &geom_us, &step_us, &metrics_us, &wake_us, &term_us, &sync_us, &copy_us, &renderer_us, &input_us, &sparse_us, &clusters_us, &resolve_us, &shape_us, &group_us, &scene_us, &raster_us, &atlas_us);
     }
-}
-
-fn reportPrepareThread(
-    self: *Terminal,
-    meter: *thread_meter.ThreadMeter,
-    waits: *u64,
-    wake_hits: *u64,
-    prepared_count: *u64,
-    failures: *u64,
-    empty_wakes: *u64,
-    prepare_us: *u64,
-    geom_us: *u64,
-    step_us: *u64,
-    metrics_us: *u64,
-    wake_us: *u64,
-    term_us: *u64,
-    sync_us: *u64,
-    copy_us: *u64,
-    renderer_us: *u64,
-    input_us: *u64,
-    sparse_us: *u64,
-    clusters_us: *u64,
-    resolve_us: *u64,
-    shape_us: *u64,
-    group_us: *u64,
-    scene_us: *u64,
-    raster_us: *u64,
-    atlas_us: *u64,
-) void {
-    _ = self;
-    const sample = meter.sample() orelse return;
-    trace.cpuPrepare("howl-prepare", sample.cpuPct(), sample.wall_ns, sample.cpu_ns, .{
-        .waits = waits.*,
-        .wake_hits = wake_hits.*,
-        .prepared = prepared_count.*,
-        .failed = failures.*,
-        .empty_wakes = empty_wakes.*,
-        .prepare_us = prepare_us.*,
-        .geom_us = geom_us.*,
-        .step_us = step_us.*,
-        .metrics_us = metrics_us.*,
-        .wake_us = wake_us.*,
-        .term_us = term_us.*,
-        .sync_us = sync_us.*,
-        .copy_us = copy_us.*,
-        .renderer_us = renderer_us.*,
-        .input_us = input_us.*,
-        .sparse_us = sparse_us.*,
-        .clusters_us = clusters_us.*,
-        .resolve_us = resolve_us.*,
-        .shape_us = shape_us.*,
-        .group_us = group_us.*,
-        .scene_us = scene_us.*,
-        .raster_us = raster_us.*,
-        .atlas_us = atlas_us.*,
-    });
-    waits.* = 0;
-    wake_hits.* = 0;
-    prepared_count.* = 0;
-    failures.* = 0;
-    empty_wakes.* = 0;
-    prepare_us.* = 0;
-    geom_us.* = 0;
-    step_us.* = 0;
-    metrics_us.* = 0;
-    wake_us.* = 0;
-    term_us.* = 0;
-    sync_us.* = 0;
-    copy_us.* = 0;
-    renderer_us.* = 0;
-    input_us.* = 0;
-    sparse_us.* = 0;
-    clusters_us.* = 0;
-    resolve_us.* = 0;
-    shape_us.* = 0;
-    group_us.* = 0;
-    scene_us.* = 0;
-    raster_us.* = 0;
-    atlas_us.* = 0;
-}
-
-fn reportWakeThread(
-    self: *Terminal,
-    meter: *thread_meter.ThreadMeter,
-    waits: *u64,
-    wake_hits: *u64,
-    event_wakes: *u64,
-) void {
-    _ = self;
-    const sample = meter.sample() orelse return;
-    trace.cpuWake("howl-wake", sample.cpuPct(), sample.wall_ns, sample.cpu_ns, .{
-        .waits = waits.*,
-        .wake_hits = wake_hits.*,
-        .event_wakes = event_wakes.*,
-    });
-    waits.* = 0;
-    wake_hits.* = 0;
-    event_wakes.* = 0;
 }

@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const Runtime = @import("howl_term").HostRuntime;
-const config = @import("../howl_term/config.zig");
+const config = @import("../config/terminal.zig");
 const Fonts = @import("fonts.zig");
 
 /// One terminal session/runtime, without host window or tab UI policy.
@@ -104,10 +104,6 @@ pub const Terminal = struct {
         return self.runtime.surfaceState();
     }
 
-    pub fn lastRenderMetrics(self: *const Terminal) RenderMetrics {
-        return self.runtime.lastRenderMetrics();
-    }
-
     pub fn lifecycleState(self: *const Terminal) LifecycleState {
         return self.runtime.surfaceState().state;
     }
@@ -179,14 +175,6 @@ pub const Terminal = struct {
 
     pub fn renderedTextContains(self: *const Terminal, text: []const u8) bool {
         return self.runtime.renderedTextContains(text);
-    }
-
-    pub fn visibleTextContains(self: *const Terminal, text: []const u8) bool {
-        return self.runtime.visibleTextContains(text);
-    }
-
-    pub fn inputBytesApplied(self: *const Terminal) u64 {
-        return self.runtime.inputBytesApplied();
     }
 
     pub fn renderedSnapshotSeq(self: *Terminal) u64 {

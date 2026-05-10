@@ -11,7 +11,7 @@ It owns app/window/input/chrome orchestration. It does not own terminal semantic
 ## Public Surface
 
 - `Config`: loads typed host config.
-- `Events`: owns the SDL event queue and exposes typed input/window/shortcut events.
+- `Input`: owns the SDL input queue and exposes typed input/window/key binding events.
 - `Window`: owns SDL window lifecycle, clipboard/URL helpers, and frame presentation.
 - `Terminal`: owns one host terminal widget/tab.
 - `howl-term/Runtime`: owns the host handoff to the imported `howl-term` package.
@@ -20,17 +20,17 @@ It owns app/window/input/chrome orchestration. It does not own terminal semantic
 classDiagram
     class Main
     class Config
-    class Events
+    class Input
     class Window
     class TerminalWidget
     class Runtime
     class HowlTermCore
 
     Main --> Config
-    Main --> Events
+    Main --> Input
     Main --> Window
     Main --> TerminalWidget
-    TerminalWidget --> Events
+    TerminalWidget --> Input
     TerminalWidget --> Window
     TerminalWidget --> Runtime
     Runtime --> HowlTermCore
@@ -42,7 +42,7 @@ classDiagram
 - `src/widget/terminal.zig` owns one terminal widget boundary: input translation, widget focus, scrollbar interaction, tab label snapshot, and terminal runtime lifetime.
 - `src/howl-term/howl_term.zig` owns the host-local runtime facade over the imported `howl-term` package.
 - `Window` owns the OS window and host chrome presentation. It receives a texture handle; it does not infer terminal state.
-- `Events` owns event collection and queueing. Event payload types live under `src/events/`.
+- `Input` owns input collection and queueing. Input payload types live under `src/input/`.
 - Hosts send events, await snapshot events, render the latest snapshot, and present returned surfaces. They do not mutate scrollback or render dirty state.
 
 ## Lifecycle
@@ -62,18 +62,18 @@ stateDiagram-v2
 sequenceDiagram
     participant Main
     participant W as Window
-    participant E as Events
+    participant I as Input
     participant T as Terminal
     participant R as Runtime
     participant C as howl-term
 
     Main->>W: initVideo/createWindow/initPresent
-    Main->>E: init/bind
+    Main->>I: init/bind
     Main->>T: create(...)
     T->>R: init(...)
     R->>C: initPty/start
     loop event loop
-        Main->>E: poll/wait/drain
+        Main->>I: poll/wait/drain
         Main->>T: drainInput/resize/render
         T->>R: publish input / awaitSnapshotEvent
         T->>R: renderLatestSnapshot

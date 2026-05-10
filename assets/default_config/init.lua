@@ -9,11 +9,8 @@ return {
     mouse = {
       -- Listen to unpressed pointer motion for host hover effects.
       listen_always = false,
-      -- When this modifier is held, send move events continuously to terminal.
-      -- One of: "none", "shift", "alt", "ctrl".
-      terminal_bypass_mod = "ctrl",
     },
-    shortcuts = {},
+    bindings = {},
   },
   -- inherited from how-term
   term = {
@@ -43,7 +40,12 @@ return {
       -- One of: "straight", "curly", "dotted", "dashed".
       underline = "curly",
     },
-    shortcuts = {
+    mouse = {
+      -- When this modifier is held, send move events continuously to terminal.
+      -- One of: "none", "shift", "alt", "ctrl".
+      bypass_mod = "ctrl",
+    },
+    bindings = {
       zoom_in = { "ctrl+equal", "ctrl+kp_add" },
       zoom_out = { "ctrl+minus", "ctrl+kp_subtract" },
       zoom_reset = { "ctrl+zero" },
@@ -53,7 +55,7 @@ return {
   },
   tab_bar = {
     height = 30,
-    shortcuts = {
+    bindings = {
       new_tab = { "ctrl+shift+t" },
       close_tab = { "ctrl+shift+w" },
       next_tab = { "ctrl+tab", "ctrl+shift+right" },

@@ -3,7 +3,7 @@
 //! Reason: keep chrome drawing policy out of app state.
 
 const ChromeState = @import("chrome_state.zig");
-const Font = @import("../tab_bar/font.zig");
+const Font = @import("../config/tab_bar.zig");
 const Layout = @import("layout.zig");
 
 pub fn drawFrame(comptime c: type, fb_w: c_int, fb_h: c_int, frame: ChromeState.State) void {

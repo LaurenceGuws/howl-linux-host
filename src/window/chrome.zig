@@ -2,11 +2,11 @@
 //! Ownership: tab bar, scrollbar, and terminal content rectangle composition.
 //! Reason: keep host chrome separate from terminal rendering.
 
-const std = @import("std");
 const ChromeDraw = @import("chrome_draw.zig");
 const ChromeState = @import("chrome_state.zig");
 const Layout = @import("layout.zig");
-const TexturePresent = @import("texture_present.zig");
+const TexturePresent = @import("../terminal/texture_present.zig");
+const std = @import("std");
 
 pub fn State(comptime c: type) type {
     return struct {
@@ -69,12 +69,6 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     TexturePresent.drawTextureRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
     ChromeDraw.drawScrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame_state.scrollbar);
     TexturePresent.swapWindow(c, handle);
-}
-
-pub fn presentTimedUs(comptime c: type, state: *State(c), frame: Layout.Frame) u64 {
-    const start_ns = c.SDL_GetTicksNS();
-    present(c, state, frame);
-    return @divTrunc(c.SDL_GetTicksNS() -| start_ns, std.time.ns_per_us);
 }
 
 fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, frame: ChromeState.State) void {
