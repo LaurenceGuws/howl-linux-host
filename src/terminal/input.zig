@@ -3,8 +3,8 @@
 //! Reason: keep host event vocabulary separate from terminal runtime input.
 
 const Input = @import("../input/input.zig").Input;
-const term = @import("howl_term");
-const TermInput = term.Input;
+const howl_term = @import("howl_term");
+const TermInput = howl_term.Input;
 
 pub fn key(key_event: Input.Key) ?TermInput.Key {
     return switch (key_event) {
