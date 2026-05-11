@@ -187,11 +187,11 @@ fn parseU16(text: []const u8) !u16 {
 
 fn usage() void {
     std.debug.print(
-        \\usage: howl_visual_rain_stress [--cols N] [--rows N] [--frames N] [--duration-ms N] [--seed N] [--metrics] [--metrics-every N] [--no-delay]
+        \\usage: visual_rain_stress [--cols N] [--rows N] [--frames N] [--duration-ms N] [--seed N] [--metrics] [--metrics-every N] [--no-delay]
         \\
         \\Emits deterministic, visually recognizable rain traffic based on src/fuzz/ascii-rain.c.
         \\Defaults to the current terminal size; --cols/--rows override it for fixed-size tests.
-        \\Unlike howl_ascii_rain_stress, this is meant for judging visible rendering correctness.
+        \\Unlike ascii_rain_stress, this is meant for judging visible rendering correctness.
         \\
     , .{});
 }

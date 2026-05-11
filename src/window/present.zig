@@ -7,6 +7,8 @@ const Layout = @import("layout.zig");
 const Texture = @import("texture.zig");
 const std = @import("std");
 
+const sdl_fps_log_every_frames: u64 = 200;
+
 pub fn State(comptime c: type) type {
     return struct {
         window: ?*c.SDL_Window,
@@ -16,6 +18,10 @@ pub fn State(comptime c: type) type {
         tab_cache_w: c_int,
         tab_cache_h: c_int,
         tab_cache_hash: u64,
+        present_frames: u64,
+        fps_window_start_ns: u64,
+        fps_window_start_frame: u64,
+        fps_next_log_frame: u64,
     };
 }
 
@@ -24,15 +30,19 @@ pub fn flags(comptime c: type) c_uint {
 }
 
 pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
-    state.* = .{
-        .window = handle,
-        .gl_context = null,
-        .tab_texture_id = 0,
-        .tab_cache_valid = false,
-        .tab_cache_w = 0,
-        .tab_cache_h = 0,
-        .tab_cache_hash = 0,
-    };
+        state.* = .{
+            .window = handle,
+            .gl_context = null,
+            .tab_texture_id = 0,
+            .tab_cache_valid = false,
+            .tab_cache_w = 0,
+            .tab_cache_h = 0,
+            .tab_cache_hash = 0,
+            .present_frames = 0,
+            .fps_window_start_ns = c.SDL_GetTicksNS(),
+            .fps_window_start_frame = 0,
+            .fps_next_log_frame = sdl_fps_log_every_frames,
+        };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_PROFILE_MASK, c.SDL_GL_CONTEXT_PROFILE_COMPATIBILITY)) return error.GlAttrFailed;
@@ -67,6 +77,23 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
     Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
     Texture.swapWindow(c, handle);
+    state.present_frames += 1;
+    logSdlFps(c, state);
+}
+
+fn logSdlFps(comptime c: type, state: *State(c)) void {
+    if (state.present_frames < state.fps_next_log_frame) return;
+    const now_ns = c.SDL_GetTicksNS();
+    const elapsed_ns = now_ns -| state.fps_window_start_ns;
+    const frame_delta = state.present_frames -| state.fps_window_start_frame;
+    const fps = if (elapsed_ns == 0)
+        0
+    else
+        @as(f64, @floatFromInt(frame_delta)) / (@as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
+    std.debug.print("{{\"type\":\"howl_sdl_fps\",\"schema\":1,\"frames\":{},\"window_frames\":{},\"fps\":{d:.2}}}\n", .{ state.present_frames, frame_delta, fps });
+    state.fps_window_start_ns = now_ns;
+    state.fps_window_start_frame = state.present_frames;
+    state.fps_next_log_frame = state.present_frames + sdl_fps_log_every_frames;
 }
 
 fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {

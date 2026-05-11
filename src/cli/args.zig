@@ -18,7 +18,6 @@ pub fn parse(args: []const []const u8) !Options {
     while (i < args.len) : (i += 1) {
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--help")) {
-            usage();
             return error.HelpRequested;
         } else if (std.mem.eql(u8, arg, "--command")) {
             i += 1;
@@ -37,18 +36,8 @@ pub fn parse(args: []const []const u8) !Options {
             if (i >= args.len) return error.InvalidArgs;
             options.duration_ms = try std.fmt.parseInt(u64, args[i], 10);
         } else {
-            usage();
             return error.InvalidArgs;
         }
     }
     return options;
-}
-
-fn usage() void {
-    std.debug.print(
-        \\usage: howl_term [--command CMD] [--shell PATH] [--start-path PATH] [--duration-ms N]
-        \\
-        \\Options override the Lua config for scriptable stress and peer comparisons.
-        \\
-    , .{});
 }

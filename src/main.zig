@@ -6,7 +6,6 @@ const std = @import("std");
 const cli_args = @import("cli/args.zig");
 const Config = @import("config/config.zig");
 const Input = @import("input/input.zig").Input;
-const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TerminalWidget = @import("terminal/terminal.zig").Terminal;
 const Window = @import("window/window.zig");
@@ -32,10 +31,7 @@ pub fn main(init: std.process.Init) !void {
 
 fn start(options: Options) !void {
     setCurrentThreadName("howl-main");
-    if (!Window.initVideo()) {
-        std.debug.print("window init failed: {s}\n", .{Window.lastError()});
-        return error.WindowInitFailed;
-    }
+    if (!Window.initVideo()) return error.WindowInitFailed;
     defer Window.quit();
 
     var conf = try Config.State.load(std.heap.c_allocator);
@@ -45,13 +41,7 @@ fn start(options: Options) !void {
     Input.Bindings.setConfigBindings(&conf);
 
     const title: [*:0]const u8 = if (options.window_title) |value| value.ptr else conf.window.title.ptr;
-    var window = Window.State.create(title, conf.window.width, conf.window.height) catch |err| switch (err) {
-        error.WindowCreateFailed => {
-            std.debug.print("window create failed: {s}\n", .{Window.lastError()});
-            return err;
-        },
-        else => return err,
-    };
+    var window = try Window.State.create(title, conf.window.width, conf.window.height);
     defer window.deinit();
 
     var tab_bar = TabBar{};
@@ -59,10 +49,6 @@ fn start(options: Options) !void {
     defer destroyTabs(std.heap.c_allocator, &tabs);
     var active_tab_idx: usize = 0;
     try openTab(std.heap.c_allocator, &conf, &window, &tabs, &active_tab_idx);
-
-    var perf: PerfLog.State = undefined;
-    try perf.init(&activeTab(tabs.items, active_tab_idx).term);
-    defer perf.stopAndDeinit();
 
     var input: Input = undefined;
     input.init();

@@ -146,9 +146,9 @@ fn parseU16(text: []const u8) !u16 {
 
 fn usage() void {
     std.debug.print(
-        \\usage: howl_ascii_rain_stress [--cols N] [--rows N] [--frames N] [--duration-ms N] [--seed N] [--ascii|--mixed] [--sparse] [--metrics] [--metrics-every N] [--flush-every N]
+        \\usage: ascii_rain_stress [--cols N] [--rows N] [--frames N] [--duration-ms N] [--seed N] [--ascii|--mixed] [--sparse] [--metrics] [--metrics-every N] [--flush-every N]
         \\
-        \\Emits deliberately hostile terminal traffic for Linux-host throughput testing.
+        \\Emits deliberately hostile terminal traffic for terminal throughput testing.
         \\Stdout is deterministic for a fixed seed/config. Metrics go to stderr.
         \\
     , .{});

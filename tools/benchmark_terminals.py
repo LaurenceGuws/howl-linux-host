@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
         default=["howl", "alacritty", "kitty"],
     )
     parser.add_argument("--howl-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_term")
-    parser.add_argument("--stress-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_ascii_rain_stress")
+    parser.add_argument("--stress-bin", type=Path, default=ROOT / "zig-out" / "bin" / "ascii_rain_stress")
     parser.add_argument("--kitty-bin", default="kitty")
     parser.add_argument("--ghostty-bin", default="ghostty")
     parser.add_argument("--alacritty-bin", default="alacritty")
@@ -577,24 +577,22 @@ def run_terminal(name: str, args: argparse.Namespace, run_dir: Path) -> dict[str
     argv, env = launched
     print(f"run {name}: {' '.join(shlex.quote(part) for part in argv)}")
     start = time.monotonic()
-    process_log_path = run_dir / f"{name}-{args.mode}.process.log"
     resources_path = run_dir / f"{name}-{args.mode}.resources.ndjson"
     resource_summary: dict[str, object] | None = None
-    with process_log_path.open("wb") as process_log:
-        proc = subprocess.Popen(argv, cwd=ROOT, env=env, stdout=process_log, stderr=subprocess.STDOUT)
-        sampler: ResourceSampler | None = None
-        if not args.no_resources:
-            sampler = ResourceSampler(proc.pid, resources_path, args.resource_interval, args.gpu_resource_interval)
-        try:
-            if sampler is not None:
-                sampler.sample(time.monotonic())
-            proc.wait()
-        finally:
-            if sampler is not None:
-                sampler.sample(time.monotonic())
-                resource_summary = sampler.summary()
-                sampler.close()
-            terminate(proc)
+    proc = subprocess.Popen(argv, cwd=ROOT, env=env)
+    sampler: ResourceSampler | None = None
+    if not args.no_resources:
+        sampler = ResourceSampler(proc.pid, resources_path, args.resource_interval, args.gpu_resource_interval)
+    try:
+        if sampler is not None:
+            sampler.sample(time.monotonic())
+        proc.wait()
+    finally:
+        if sampler is not None:
+            sampler.sample(time.monotonic())
+            resource_summary = sampler.summary()
+            sampler.close()
+        terminate(proc)
     elapsed = time.monotonic() - start
     metrics = read_last_json(metrics_path)
     return {
@@ -604,7 +602,7 @@ def run_terminal(name: str, args: argparse.Namespace, run_dir: Path) -> dict[str
         "returncode": proc.returncode,
         "metrics_path": str(metrics_path),
         "trace_path": str(trace_path) if name == "howl" and args.trace_howl else None,
-        "process_log_path": str(process_log_path),
+        "process_log_path": None,
         "resources_path": str(resources_path) if resource_summary is not None else None,
         "resource_summary": resource_summary,
         "last_metrics": metrics,

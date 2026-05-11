@@ -52,20 +52,20 @@ zig build
 Run the stress emitter inside Howl Term:
 
 ```sh
-zig-out/bin/howl_ascii_rain_stress --cols 320 --rows 120 --frames 100000 --mixed
+zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --mixed
 ```
 
 Pure ASCII mode isolates parser, cursor movement, SGR, erases, wrapping, and scroll behavior without fallback glyph pressure:
 
 ```sh
-zig-out/bin/howl_ascii_rain_stress --cols 320 --rows 120 --frames 100000 --ascii
+zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --ascii
 ```
 
 For cross-terminal comparisons, keep stdout deterministic and send metrics to stderr:
 
 ```sh
-zig-out/bin/howl_ascii_rain_stress --cols 320 --rows 120 --frames 100000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.log
-zig-out/bin/howl_ascii_rain_stress --cols 320 --rows 120 --frames 100000 --seed 0xC0FFEE --mixed --metrics --metrics-every 100 --flush-every 1 2>mixed.metrics.log
+zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.log
+zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --seed 0xC0FFEE --mixed --metrics --metrics-every 100 --flush-every 1 2>mixed.metrics.log
 ```
 
 The CLI metrics report generator-side throughput and backpressure (`fps`, `p50_us`, `p95_us`, `p99_us`, `max_us`). They do not measure emulator render FPS directly; use host telemetry for Howl render/present timings.
@@ -79,13 +79,13 @@ For resize stress, hold the configured zoom stress binding while the generator i
 The host accepts CLI overrides for deterministic automation:
 
 ```sh
-zig-out/bin/howl_term --duration-ms 12000 --command 'zig-out/bin/howl_ascii_rain_stress --cols 320 --rows 120 --frames 100000000 --duration-ms 10000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.ndjson'
+zig-out/bin/howl_term --duration-ms 12000 --command 'zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000000 --duration-ms 10000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.ndjson'
 ```
 
 For Howl render/present telemetry, set `HOWL_TRACE_PATH`:
 
 ```sh
-HOWL_TRACE_PATH=howl.trace.ndjson zig-out/bin/howl_term --duration-ms 12000 --command 'zig-out/bin/howl_ascii_rain_stress --cols 320 --rows 120 --frames 100000000 --duration-ms 10000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.ndjson'
+HOWL_TRACE_PATH=howl.trace.ndjson zig-out/bin/howl_term --duration-ms 12000 --command 'zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000000 --duration-ms 10000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.ndjson'
 ```
 
 Use the Python launcher to run the same payload against Howl, kitty, and ghostty for a fixed duration:
