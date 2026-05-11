@@ -6,6 +6,7 @@ const std = @import("std");
 const cli_args = @import("cli/args.zig");
 const Config = @import("config/config.zig");
 const Input = @import("input/input.zig").Input;
+const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TerminalWidget = @import("terminal/terminal.zig").Terminal;
 const Window = @import("window/window.zig");
@@ -58,6 +59,10 @@ fn start(options: Options) !void {
     var active_tab_idx: usize = 0;
     try openTab(std.heap.c_allocator, &conf, &window, &tabs, &active_tab_idx);
 
+    var perf: PerfLog.State = undefined;
+    try perf.init(&activeTab(tabs.items, active_tab_idx).term);
+    defer perf.stopAndDeinit();
+
     var input: Input = undefined;
     input.init();
     try input.bind(window.handle);
@@ -101,6 +106,7 @@ fn start(options: Options) !void {
         if (!work.needs_frame) continue;
 
         render(&conf, &window, &tab_bar, tabs.items, active_tab_idx, work);
+        perf.notePresent();
         if (activeTabFailed(tabs.items, active_tab_idx)) return error.HostTabFailed;
     }
 }

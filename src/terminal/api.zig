@@ -23,6 +23,9 @@ pub const FramePixels = howl_term.runtime.FramePixels;
 pub const SurfaceHandle = howl_term.surface.Handle;
 pub const SurfaceState = howl_term.surface.State;
 pub const SurfaceMetrics = howl_term.surface.Metrics;
+pub const PrepareMetrics = Ffi.FfiPrepareMetrics;
+pub const QueueMetrics = Ffi.FfiSurfaceMetrics;
+pub const RenderMetrics = Ffi.FfiRenderMetrics;
 pub const ScrollState = howl_term.viewport.ScrollState;
 pub const LinkUnderlineStyle = howl_term.viewport.LinkUnderlineStyle;
 pub const LinkHoverResult = zig_hover_result;
@@ -339,6 +342,73 @@ pub fn setRuntimeBackpressure(term: *Term, enabled: bool) void {
         return;
     }
     term.inner.setRuntimeBackpressure(enabled);
+}
+
+pub fn takePrepareMetrics(term: *Term) PrepareMetrics {
+    if (use_ffi) return Ffi.takePrepareMetrics(term.handle);
+    const metrics = term.inner.takePrepareMetrics();
+    return .{
+        .term_us = metrics.us,
+        .sync_us = metrics.sync_us,
+        .copy_us = metrics.copy_us,
+        .renderer_us = metrics.renderer_us,
+        .input_us = metrics.input_us,
+        .sparse_us = metrics.sparse_us,
+        .clusters_us = metrics.clusters_us,
+        .resolve_us = metrics.resolve_us,
+        .shape_us = metrics.shape_us,
+        .group_us = metrics.group_us,
+        .scene_us = metrics.scene_us,
+        .raster_us = metrics.raster_us,
+        .atlas_us = metrics.atlas_us,
+    };
+}
+
+pub fn takeSurfaceMetrics(term: *Term) QueueMetrics {
+    if (use_ffi) return Ffi.takeSurfaceMetrics(term.handle);
+    const metrics = term.inner.takeSurfaceMetrics();
+    return .{
+        .snapshot_publishes = metrics.snapshot_publishes,
+        .snapshot_hidden_drops = metrics.snapshot_hidden_drops,
+        .snapshot_clean_drops = metrics.snapshot_clean_drops,
+        .prepare_requests = metrics.prepare_requests,
+        .prepare_coalesces = metrics.prepare_coalesces,
+        .prepare_forced_full = metrics.prepare_forced_full,
+        .prepare_takes = metrics.prepare_takes,
+        .prepared_publishes = metrics.prepared_publishes,
+        .prepared_coalesces = metrics.prepared_coalesces,
+        .submit_takes = metrics.submit_takes,
+        .submit_valid = metrics.submit_valid,
+        .submit_rejected = metrics.submit_rejected,
+        .full_prepare_requests = metrics.full_prepare_requests,
+        .submitted_accepts = metrics.submitted_accepts,
+        .presents = metrics.presents,
+        .target_invalidations = metrics.target_invalidations,
+    };
+}
+
+pub fn lastRenderMetrics(term: *const Term) RenderMetrics {
+    if (use_ffi) return Ffi.lastRenderMetrics(term.handle);
+    const metrics = term.inner.lastRenderMetrics();
+    return .{
+        .sync_us = metrics.sync_us,
+        .copy_us = metrics.copy_us,
+        .render_us = metrics.render_us,
+        .glyphs = metrics.glyphs,
+        .fills = metrics.fills,
+        .clear_fills = metrics.clear_fills,
+        .background_fills = metrics.background_fills,
+        .decoration_fills = metrics.decoration_fills,
+        .cursor_fills = metrics.cursor_fills,
+        .uploads = metrics.uploads,
+        .face_checks = metrics.face_checks,
+        .face_cache_hits = metrics.face_cache_hits,
+        .shape_requests = metrics.shape_requests,
+        .shape_cache_hits = metrics.shape_cache_hits,
+        .fallback_hits = metrics.fallback_hits,
+        .fallback_misses = metrics.fallback_misses,
+        .missing_glyphs = metrics.missing_glyphs,
+    };
 }
 
 pub fn renderedTextContains(term: *const Term, text: []const u8) bool {

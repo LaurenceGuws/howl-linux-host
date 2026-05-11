@@ -52,9 +52,6 @@ pub fn render(self: anytype) void {
             const surface = api.surfaceState(&self.term).surface;
             if (surface.texture_id != 0) self.last_surface = surface;
             self.snapshot_quiet_seq.store(api.renderedSnapshotSeq(&self.term), .release);
-            if (api.needsPrepare(&self.term)) {
-                self.signalPrepareThread();
-            }
         },
         .rendered_more_pending => {
             const surface = api.surfaceState(&self.term).surface;

@@ -3,11 +3,19 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const shape_check = b.addSystemCommand(&.{
+        "sh",
+        "../../tools/check_module_shape.sh",
+    });
     // const term_backend_ffi = b.option(bool, "term-backend-ffi", "Use howl-term's FFI-shaped backend inside the Linux host") orelse false;
     const check_host_runtime_surface = b.addSystemCommand(&.{
         "bash",
         "../../tools/check_host_runtime_surface.sh",
     });
+    const check_step = b.step("check", "Run repository hygiene checks");
+    check_step.dependOn(&shape_check.step);
+    check_step.dependOn(&check_host_runtime_surface.step);
+    b.default_step.dependOn(check_step);
 
     // const howl_term_dep = b.dependency("howl_term", .{
     //     .target = target,
@@ -52,6 +60,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     exe.use_llvm = true;
+    exe.step.dependOn(&shape_check.step);
     exe.step.dependOn(&check_host_runtime_surface.step);
 
     const sdl_dep = b.dependency("sdl", .{
@@ -137,6 +146,7 @@ pub fn build(b: *std.Build) void {
         .root_module = test_mod,
         .filters = b.args orelse &.{},
     });
+    mod_tests.step.dependOn(&shape_check.step);
     mod_tests.step.dependOn(&check_host_runtime_surface.step);
     const rain_stress_tests = b.addTest(.{
         .name = "test-rain-stress",
@@ -147,6 +157,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = b.args orelse &.{},
     });
+    rain_stress_tests.step.dependOn(&shape_check.step);
     rain_stress_tests.step.dependOn(&check_host_runtime_surface.step);
     const visual_rain_stress_tests = b.addTest(.{
         .name = "test-visual-rain-stress",
@@ -157,6 +168,7 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = b.args orelse &.{},
     });
+    visual_rain_stress_tests.step.dependOn(&shape_check.step);
     visual_rain_stress_tests.step.dependOn(&check_host_runtime_surface.step);
     mod_tests.use_llvm = true;
     rain_stress_tests.use_llvm = true;
