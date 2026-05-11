@@ -66,6 +66,7 @@ fn start(options: Options) !void {
     var input: Input = undefined;
     input.init();
     try input.bind(window.handle);
+    Input.wakeWindow();
 
     var running = true;
     var duration_timer: Window.c_win.SDL_TimerID = 0;
@@ -90,6 +91,8 @@ fn start(options: Options) !void {
             running = false;
             continue;
         }
+
+        activeTab(tabs.items, active_tab_idx).clearWakeEventPending();
 
         if (input.drainWindowFocusChanged()) |focused| setWindowFocused(&window, tabs.items, active_tab_idx, focused);
 
@@ -117,7 +120,6 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
 
 fn collectRenderWork(tab: *TerminalWidget) RenderWork {
     tab.maybeCommitGridResize();
-    tab.pollFrameWake();
     const now_ns = Window.c_win.SDL_GetTicksNS();
     const terminal_frame = tab.needsContentFrame(now_ns);
     return .{

@@ -32,6 +32,7 @@ pub const LinkHoverResult = zig_hover_result;
 pub const PrepareResult = zig_prepare_result;
 pub const RenderResult = zig_render_result;
 pub const SnapshotWake = zig_snapshot_wake;
+pub const RenderWakeNotify = howl_term.HowlTerm.RenderWakeNotify;
 pub const MetadataWake = u64;
 pub const PtyLaunchConfig = zig_init_pty_params[1].type.?;
 pub const RenderCellSize = zig_init_pty_params[4].type.?;
@@ -107,6 +108,15 @@ pub fn wakeSnapshotWaiters(term: *Term) void {
         return;
     }
     term.inner.wakeSnapshotWaiters();
+}
+
+pub fn setRenderWakeNotify(term: *Term, notify: ?RenderWakeNotify, context: ?*anyopaque) !void {
+    if (use_ffi) {
+        const rc = Ffi.setRenderWakeNotify(term.handle, notify, context);
+        if (rc == 0) return;
+        return error.TransportUnavailable;
+    }
+    term.inner.setRenderWakeNotify(notify, context);
 }
 
 pub fn wakeMetadataWaiters(term: *Term) void {

@@ -55,7 +55,7 @@ pub const Terminal = struct {
     default_font_size_px: u16,
     last_surface: SurfaceHandle,
     last_resize_ns: u64,
-    snapshot_quiet_seq: std.atomic.Value(u64),
+    wake_event_pending: std.atomic.Value(bool),
     metadata_quiet_seq: std.atomic.Value(u64),
     metadata_thread: ?std.Thread,
     window_focused: bool,
@@ -109,7 +109,7 @@ pub const Terminal = struct {
             .default_font_size_px = start_font_px,
             .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .last_resize_ns = 0,
-            .snapshot_quiet_seq = std.atomic.Value(u64).init(0),
+            .wake_event_pending = std.atomic.Value(bool).init(false),
             .metadata_quiet_seq = std.atomic.Value(u64).init(0),
             .metadata_thread = null,
             .window_focused = true,
@@ -131,8 +131,15 @@ pub const Terminal = struct {
         geometry.maybeCommitGridResize(self);
     }
 
-    pub fn pollFrameWake(self: *Terminal) void {
-        frame.pollWake(self);
+    pub fn clearWakeEventPending(self: *Terminal) void {
+        self.wake_event_pending.store(false, .release);
+    }
+
+    pub fn renderWakeNotify(context: ?*anyopaque) callconv(.c) void {
+        const wake_context = context orelse return;
+        const self: *Terminal = @ptrCast(@alignCast(wake_context));
+        const was_pending = self.wake_event_pending.swap(true, .acq_rel);
+        if (!was_pending) HostInput.wakeWindow();
     }
 
     pub fn needsPresentationFrame(self: *Terminal, now_ns: u64) bool {

@@ -25,6 +25,8 @@ pub fn start(self: anytype) !void {
     api.setPrimaryFontPath(&self.term, self.conf.fonts.primary);
     api.setFallbackFontPaths(&self.term, font_fallbacks);
     try api.start(&self.term);
+    try api.setRenderWakeNotify(&self.term, @TypeOf(self.*).renderWakeNotify, self);
+    HostInput.wakeWindow();
     const geom = self.geometrySnapshot();
     try api.syncFrameGeometry(&self.term, geom);
     if (!api.isAlive(&self.term)) return error.TransportUnavailable;
@@ -38,6 +40,7 @@ pub fn start(self: anytype) !void {
 
 pub fn stop(self: anytype) void {
     self.metadata_thread = null;
+    if (self.term_ready) _ = api.setRenderWakeNotify(&self.term, null, null) catch {};
     if (self.link_cursor_active) window.useDefaultCursor();
     self.link_cursor_active = false;
     if (self.term_ready) api.deinit(&self.term);

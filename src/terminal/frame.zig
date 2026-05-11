@@ -17,17 +17,10 @@ pub fn needsContentFrame(self: anytype, now_ns: u64) bool {
     return self.last_surface.texture_id == 0 or api.needsPrepare(&self.term) or api.needsFrame(&self.term);
 }
 
-pub fn pollWake(self: anytype) void {
-    const last_seen_seq = self.snapshot_quiet_seq.load(.acquire);
-    const wake = api.awaitRenderWakeTimeout(&self.term, last_seen_seq, 0);
-    if (wake.event_seq != last_seen_seq) {
-        self.snapshot_quiet_seq.store(wake.event_seq, .release);
-    }
-}
-
 pub fn prepareNext(self: anytype) bool {
     const geom = self.geometrySnapshot();
-    switch (api.prepareNextFrame(&self.term, geom)) {
+    const result = api.prepareNextFrame(&self.term, geom);
+    switch (result) {
         .idle => return false,
         .prepared => {
             HostInput.wakeWindow();
@@ -39,8 +32,11 @@ pub fn prepareNext(self: anytype) bool {
 
 pub fn render(self: anytype) void {
     defer syncBackpressure(self);
+    const force_first_prepare = self.last_surface.texture_id == 0;
+    if (force_first_prepare and !prepareNext(self)) return;
     if (api.needsPrepare(&self.term) and !prepareNext(self)) return;
-    switch (api.renderReadyFrame(&self.term)) {
+    const result = api.renderReadyFrame(&self.term);
+    switch (result) {
         .idle, .stale, .failed, .needs_prepare => return,
         .rendered, .rendered_more_pending => {
             const surface = api.surfaceState(&self.term).surface;
