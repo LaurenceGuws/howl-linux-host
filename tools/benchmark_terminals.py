@@ -498,7 +498,7 @@ def stress_command(args: argparse.Namespace, metrics_path: Path) -> str:
     return " ".join(parts)
 
 
-def launch_command(name: str, args: argparse.Namespace, command: str, trace_path: Path) -> tuple[list[str], dict[str, str]] | None:
+def launch_command(name: str, args: argparse.Namespace, command: str, trace_path: Path, runtime_log_path: Path) -> tuple[list[str], dict[str, str]] | None:
     env = os.environ.copy()
     title = f"howl-stress-{name}-{args.mode}"
     titled_command = f"printf '\\033]0;{title}\\007'; exec {command}"
@@ -506,9 +506,9 @@ def launch_command(name: str, args: argparse.Namespace, command: str, trace_path
         if not args.howl_bin.exists():
             print(f"skip howl: missing {args.howl_bin}", file=sys.stderr)
             return None
-        env["HOWL_BENCH_LOG"] = "1"
         if args.trace_howl:
             env["HOWL_TRACE_PATH"] = str(trace_path)
+        env["HOWL_RUNTIME_LOG_PATH"] = str(runtime_log_path)
         duration_ms = str(int((args.duration + 2.0) * 1000))
         return ([str(args.howl_bin), "--duration-ms", duration_ms, "--command", command], env)
     if name == "kitty":
@@ -569,8 +569,9 @@ def read_last_json(path: Path) -> dict[str, object] | None:
 def run_terminal(name: str, args: argparse.Namespace, run_dir: Path) -> dict[str, object] | None:
     metrics_path = run_dir / f"{name}-{args.mode}.metrics.ndjson"
     trace_path = run_dir / f"{name}-{args.mode}.trace.ndjson"
+    runtime_log_path = run_dir / f"{name}-{args.mode}.runtime.jsonl"
     cmd = stress_command(args, metrics_path)
-    launched = launch_command(name, args, cmd, trace_path)
+    launched = launch_command(name, args, cmd, trace_path, runtime_log_path)
     if launched is None:
         return None
 
@@ -602,6 +603,7 @@ def run_terminal(name: str, args: argparse.Namespace, run_dir: Path) -> dict[str
         "returncode": proc.returncode,
         "metrics_path": str(metrics_path),
         "trace_path": str(trace_path) if name == "howl" and args.trace_howl else None,
+        "runtime_log_path": str(runtime_log_path) if name == "howl" else None,
         "process_log_path": None,
         "resources_path": str(resources_path) if resource_summary is not None else None,
         "resource_summary": resource_summary,

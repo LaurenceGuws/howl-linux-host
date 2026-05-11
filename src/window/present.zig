@@ -4,6 +4,7 @@
 
 const Draw = @import("draw.zig");
 const Layout = @import("layout.zig");
+const PerfLog = @import("../perf/log.zig");
 const Texture = @import("texture.zig");
 const std = @import("std");
 
@@ -22,6 +23,10 @@ pub fn State(comptime c: type) type {
         fps_window_start_ns: u64,
         fps_window_start_frame: u64,
         fps_next_log_frame: u64,
+        cache_window_ns: u64,
+        draw_window_ns: u64,
+        swap_window_ns: u64,
+        total_window_ns: u64,
     };
 }
 
@@ -42,6 +47,10 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
             .fps_window_start_ns = c.SDL_GetTicksNS(),
             .fps_window_start_frame = 0,
             .fps_next_log_frame = sdl_fps_log_every_frames,
+            .cache_window_ns = 0,
+            .draw_window_ns = 0,
+            .swap_window_ns = 0,
+            .total_window_ns = 0,
         };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
@@ -66,18 +75,26 @@ pub fn deinit(comptime c: type, state: *State(c)) void {
 
 pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     const handle = state.window orelse return;
+    const start_ns = c.SDL_GetTicksNS();
     var fb_w: c_int = 0;
     var fb_h: c_int = 0;
     _ = c.SDL_GetWindowSizeInPixels(handle, &fb_w, &fb_h);
     updateTabCacheIfNeeded(c, state, @max(fb_w, 1), @max(fb_h, 1), frame);
+    const after_cache_ns = c.SDL_GetTicksNS();
     c.glViewport(0, 0, @max(fb_w, 1), @max(fb_h, 1));
     c.glClearColor(0.06, 0.09, 0.14, 1.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.texture_rect.y);
     Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
     Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
+    const before_swap_ns = c.SDL_GetTicksNS();
     Texture.swapWindow(c, handle);
+    const end_ns = c.SDL_GetTicksNS();
     state.present_frames += 1;
+    state.cache_window_ns +%= after_cache_ns -| start_ns;
+    state.draw_window_ns +%= before_swap_ns -| after_cache_ns;
+    state.swap_window_ns +%= end_ns -| before_swap_ns;
+    state.total_window_ns +%= end_ns -| start_ns;
     logSdlFps(c, state);
 }
 
@@ -90,10 +107,23 @@ fn logSdlFps(comptime c: type, state: *State(c)) void {
         0
     else
         @as(f64, @floatFromInt(frame_delta)) / (@as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
-    std.debug.print("{{\"type\":\"howl_sdl_fps\",\"schema\":1,\"frames\":{},\"window_frames\":{},\"fps\":{d:.2}}}\n", .{ state.present_frames, frame_delta, fps });
+    const denom = @as(f64, @floatFromInt(@max(frame_delta, 1)));
+    PerfLog.logSdlFpsWindow(
+        state.present_frames,
+        frame_delta,
+        fps,
+        @as(f64, @floatFromInt(state.cache_window_ns)) / denom / 1000.0,
+        @as(f64, @floatFromInt(state.draw_window_ns)) / denom / 1000.0,
+        @as(f64, @floatFromInt(state.swap_window_ns)) / denom / 1000.0,
+        @as(f64, @floatFromInt(state.total_window_ns)) / denom / 1000.0,
+    );
     state.fps_window_start_ns = now_ns;
     state.fps_window_start_frame = state.present_frames;
     state.fps_next_log_frame = state.present_frames + sdl_fps_log_every_frames;
+    state.cache_window_ns = 0;
+    state.draw_window_ns = 0;
+    state.swap_window_ns = 0;
+    state.total_window_ns = 0;
 }
 
 fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {
