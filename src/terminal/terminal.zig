@@ -57,13 +57,7 @@ pub const Terminal = struct {
     last_resize_ns: u64,
     snapshot_quiet_seq: std.atomic.Value(u64),
     metadata_quiet_seq: std.atomic.Value(u64),
-    wake_thread: ?std.Thread,
     metadata_thread: ?std.Thread,
-    prepare_thread: ?std.Thread,
-    prepare_thread_sem: ?*window.c_win.SDL_Semaphore,
-    prepare_thread_signal_pending: std.atomic.Value(bool),
-    wake_thread_stop: std.atomic.Value(bool),
-    prepare_thread_stop: std.atomic.Value(bool),
     window_focused: bool,
     widget_focused: bool,
     scrollbar: scroll.State,
@@ -117,13 +111,7 @@ pub const Terminal = struct {
             .last_resize_ns = 0,
             .snapshot_quiet_seq = std.atomic.Value(u64).init(0),
             .metadata_quiet_seq = std.atomic.Value(u64).init(0),
-            .wake_thread = null,
             .metadata_thread = null,
-            .prepare_thread = null,
-            .prepare_thread_sem = null,
-            .prepare_thread_signal_pending = std.atomic.Value(bool).init(false),
-            .wake_thread_stop = std.atomic.Value(bool).init(false),
-            .prepare_thread_stop = std.atomic.Value(bool).init(false),
             .window_focused = true,
             .widget_focused = true,
             .scrollbar = .{},
@@ -143,6 +131,10 @@ pub const Terminal = struct {
         geometry.maybeCommitGridResize(self);
     }
 
+    pub fn pollFrameWake(self: *Terminal) void {
+        frame.pollWake(self);
+    }
+
     pub fn needsPresentationFrame(self: *Terminal, now_ns: u64) bool {
         return frame.needsPresentationFrame(self, now_ns);
     }
@@ -153,18 +145,6 @@ pub const Terminal = struct {
 
     pub fn render(self: *Terminal) void {
         frame.render(self);
-    }
-
-    pub fn signalPrepareThread(self: *Terminal) void {
-        // Latest-only wake latch: requests that arrive while a prepare job is
-        // running are coalesced into the current/next observed terminal state.
-        if (self.prepare_thread_signal_pending.swap(true, .acq_rel)) return;
-        if (self.prepare_thread_sem) |sem| window.c_win.SDL_SignalSemaphore(sem);
-    }
-
-    pub fn finishPrepareThreadJob(self: *Terminal) void {
-        self.prepare_thread_signal_pending.store(false, .release);
-        if (self.term.needsPrepare()) self.signalPrepareThread();
     }
 
     pub fn geometrySnapshot(self: *Terminal) FramePixels {

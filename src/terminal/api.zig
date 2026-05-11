@@ -281,6 +281,14 @@ pub fn awaitRenderWake(term: *Term, last_seen_seq: u64) SnapshotWake {
     return term.inner.awaitRenderWake(last_seen_seq);
 }
 
+pub fn awaitRenderWakeTimeout(term: *Term, last_seen_seq: u64, timeout_ms: i32) SnapshotWake {
+    if (use_ffi) {
+        const wake = Ffi.awaitRenderWake(term.handle, last_seen_seq, timeout_ms);
+        return .{ .event_seq = wake.event_seq, .published = wake.published != 0 };
+    }
+    return term.inner.awaitRenderWakeTimeout(last_seen_seq, timeout_ms);
+}
+
 pub fn awaitMetadataWake(term: *Term, last_seen_seq: u64) MetadataWake {
     if (use_ffi) return last_seen_seq;
     return term.inner.awaitMetadataWake(last_seen_seq, -1) catch last_seen_seq;

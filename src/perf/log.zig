@@ -21,7 +21,6 @@ pub const State = struct {
     wake_sem: ?*window.c_win.SDL_Semaphore,
     thread: ?std.Thread,
     stop: std.atomic.Value(bool),
-    present_count: std.atomic.Value(u64),
     term: *api.Term,
 
     pub fn init(self: *State, term: *api.Term) !void {
@@ -35,7 +34,6 @@ pub const State = struct {
             .wake_sem = sem,
             .thread = null,
             .stop = std.atomic.Value(bool).init(false),
-            .present_count = std.atomic.Value(u64).init(0),
             .term = term,
         };
         const thread = try std.Thread.spawn(.{}, threadMain, .{self});
@@ -52,10 +50,6 @@ pub const State = struct {
         self.wake_sem = null;
         if (self.file) |file| _ = c.fclose(file);
         self.file = null;
-    }
-
-    pub fn notePresent(self: *State) void {
-        _ = self.present_count.fetchAdd(1, .acq_rel);
     }
 };
 
@@ -76,7 +70,6 @@ fn threadMain(self: *State) void {
     defer prev_threads.deinit(std.heap.c_allocator);
 
     var last_sample_ns = monoNs();
-    var last_present_count: u64 = 0;
 
     while (true) {
         if (self.wake_sem) |sem| {
@@ -84,12 +77,12 @@ fn threadMain(self: *State) void {
         }
 
         const now_ns = monoNs();
-        sample(self, &prev_threads, &last_sample_ns, &last_present_count, now_ns) catch return;
+        sample(self, &prev_threads, &last_sample_ns, now_ns) catch return;
         if (self.stop.load(.acquire)) return;
     }
 }
 
-fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns: *u64, last_present_count: *u64, now_ns: u64) !void {
+fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns: *u64, now_ns: u64) !void {
     const elapsed_ns = now_ns - last_sample_ns.*;
     if (elapsed_ns == 0) return;
 
@@ -97,11 +90,10 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
     if (ticks_per_second_raw <= 0) return;
     const ticks_per_second: u64 = @intCast(ticks_per_second_raw);
 
-    const present_count = self.present_count.load(.acquire);
-    const frame_delta = present_count - last_present_count.*;
-    const fps = @as(f64, @floatFromInt(frame_delta)) * @as(f64, std.time.ns_per_s) / @as(f64, @floatFromInt(elapsed_ns));
     const prepare_metrics = api.takePrepareMetrics(self.term);
     const queue_metrics = api.takeSurfaceMetrics(self.term);
+    const present_count = queue_metrics.presents;
+    const fps = @as(f64, @floatFromInt(present_count)) * @as(f64, std.time.ns_per_s) / @as(f64, @floatFromInt(elapsed_ns));
     const render_metrics = api.lastRenderMetrics(self.term);
 
     const task_dir = c.opendir("/proc/self/task") orelse return error.TaskDirOpenFailed;
@@ -173,7 +165,6 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
         prev_threads.items[idx] = .{ .tid = thread.tid, .total_ticks = thread.total_ticks };
     }
     last_sample_ns.* = now_ns;
-    last_present_count.* = present_count;
 }
 
 fn readThreadSample(tid: u32) !ThreadSample {

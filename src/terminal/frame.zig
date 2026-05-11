@@ -1,5 +1,5 @@
 //! Responsibility: own Linux host frame handoff to howl-term.
-//! Ownership: render wake waiting, frame preparation, and ready-frame rendering.
+//! Ownership: frame preparation and ready-frame rendering.
 //! Reason: keeps term frame API choreography out of the terminal widget and thread loops.
 
 const HostInput = @import("../input/input.zig").Input;
@@ -14,50 +14,37 @@ pub fn needsPresentationFrame(self: anytype, now_ns: u64) bool {
 
 pub fn needsContentFrame(self: anytype, now_ns: u64) bool {
     _ = now_ns;
-    return api.needsFrame(&self.term);
+    return self.last_surface.texture_id == 0 or api.needsPrepare(&self.term) or api.needsFrame(&self.term);
 }
 
-pub fn waitWake(self: anytype, last_seen_seq: u64) void {
-    const wake = api.awaitRenderWake(&self.term, last_seen_seq);
+pub fn pollWake(self: anytype) void {
+    const last_seen_seq = self.snapshot_quiet_seq.load(.acquire);
+    const wake = api.awaitRenderWakeTimeout(&self.term, last_seen_seq, 0);
     if (wake.event_seq != last_seen_seq) {
         self.snapshot_quiet_seq.store(wake.event_seq, .release);
-        if (wake.published) {
-            self.signalPrepareThread();
-        }
     }
 }
 
-pub fn prepareNext(self: anytype) void {
+pub fn prepareNext(self: anytype) bool {
     const geom = self.geometrySnapshot();
     switch (api.prepareNextFrame(&self.term, geom)) {
-        .idle => {},
+        .idle => return false,
         .prepared => {
             HostInput.wakeWindow();
+            return true;
         },
-        .failed => {},
+        .failed => return false,
     }
-    self.finishPrepareThreadJob();
 }
 
 pub fn render(self: anytype) void {
     defer syncBackpressure(self);
+    if (api.needsPrepare(&self.term) and !prepareNext(self)) return;
     switch (api.renderReadyFrame(&self.term)) {
-        .idle, .stale, .failed => return,
-        .needs_prepare => {
-            self.signalPrepareThread();
-            HostInput.wakeWindow();
-            return;
-        },
-        .rendered => {
+        .idle, .stale, .failed, .needs_prepare => return,
+        .rendered, .rendered_more_pending => {
             const surface = api.surfaceState(&self.term).surface;
             if (surface.texture_id != 0) self.last_surface = surface;
-            self.snapshot_quiet_seq.store(api.renderedSnapshotSeq(&self.term), .release);
-        },
-        .rendered_more_pending => {
-            const surface = api.surfaceState(&self.term).surface;
-            if (surface.texture_id != 0) self.last_surface = surface;
-            self.signalPrepareThread();
-            HostInput.wakeWindow();
         },
     }
 }

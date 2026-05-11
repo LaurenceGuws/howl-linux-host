@@ -106,7 +106,6 @@ fn start(options: Options) !void {
         if (!work.needs_frame) continue;
 
         render(&conf, &window, &tab_bar, tabs.items, active_tab_idx, work);
-        perf.notePresent();
         if (activeTabFailed(tabs.items, active_tab_idx)) return error.HostTabFailed;
     }
 }
@@ -118,6 +117,7 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
 
 fn collectRenderWork(tab: *TerminalWidget) RenderWork {
     tab.maybeCommitGridResize();
+    tab.pollFrameWake();
     const now_ns = Window.c_win.SDL_GetTicksNS();
     const terminal_frame = tab.needsContentFrame(now_ns);
     return .{
