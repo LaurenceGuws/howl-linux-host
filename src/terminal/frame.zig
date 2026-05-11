@@ -14,7 +14,7 @@ pub fn needsPresentationFrame(self: anytype, now_ns: u64) bool {
 
 pub fn needsContentFrame(self: anytype, now_ns: u64) bool {
     _ = now_ns;
-    return self.last_surface.texture_id == 0 or api.needsPrepare(&self.term) or api.needsFrame(&self.term);
+    return self.last_surface.texture_id == 0 or api.needsPrepare(&self.term) or api.needsFrame(&self.term) or api.hasQueuedRenderWork(&self.term);
 }
 
 pub fn prepareNext(self: anytype) bool {

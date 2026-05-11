@@ -14,6 +14,7 @@ const Window = @import("window/window.zig");
 pub const Options = cli_args.Options;
 
 const max_tabs: usize = TabBar.max_tabs;
+const max_binding_actions_per_turn: usize = 8;
 const TabList = std.ArrayList(*TerminalWidget);
 
 const RenderWork = struct {
@@ -96,7 +97,11 @@ fn start(options: Options) !void {
 
         if (input.drainWindowFocusChanged()) |focused| setWindowFocused(&window, tabs.items, active_tab_idx, focused);
 
-        while (input.drainBindingAction()) |action| try handleBindingAction(&conf, &window, &tabs, &active_tab_idx, action);
+        var drained_binding_actions: usize = 0;
+        while (drained_binding_actions < max_binding_actions_per_turn) : (drained_binding_actions += 1) {
+            const action = input.drainBindingAction() orelse break;
+            try handleBindingAction(&conf, &window, &tabs, &active_tab_idx, action);
+        }
 
         const content_logical = window.contentLogicalSize(conf.tab_bar.height);
         activeTab(tabs.items, active_tab_idx).drainInput(&input, 0, window.tabBarHeightLogical(conf.tab_bar.height), content_logical.width, content_logical.height);
