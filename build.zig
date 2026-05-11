@@ -3,26 +3,32 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const term_backend_ffi = b.option(bool, "term-backend-ffi", "Use howl-term's FFI-shaped backend inside the Linux host") orelse false;
+    // const term_backend_ffi = b.option(bool, "term-backend-ffi", "Use howl-term's FFI-shaped backend inside the Linux host") orelse false;
     const check_host_runtime_surface = b.addSystemCommand(&.{
         "bash",
         "../../tools/check_host_runtime_surface.sh",
     });
 
+    // const howl_term_dep = b.dependency("howl_term", .{
+    //     .target = target,
+    //     .optimize = optimize,
+    //     .@"render-variant" = "gl",
+    //     .@"session-pty-variant" = "unix_pty",
+    // });
     const howl_term_dep = b.dependency("howl_term", .{
         .target = target,
         .optimize = optimize,
+        .@"c-abi" = true,
         .@"render-variant" = "gl",
         .@"session-pty-variant" = "unix_pty",
     });
-    const howl_term_mod = howl_term_dep.module(if (term_backend_ffi) "howl_term_ffi" else "howl_term");
+    const howl_term_mod = howl_term_dep.module("howl_term");
+    // const howl_term_mod = howl_term_dep.module(if (term_backend_ffi) "howl_term_ffi" else "howl_term");
     const howl_lua_dep = b.dependency("howl_lua", .{
         .target = target,
         .optimize = optimize,
     });
     const howl_lua_mod = howl_lua_dep.module("howl_lua");
-    const build_options = b.addOptions();
-    build_options.addOption(bool, "term_backend_ffi", term_backend_ffi);
     const host_test_mod = b.createModule(.{
         .root_source_file = b.path("src/test_host.zig"),
         .target = target,
@@ -30,7 +36,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "howl_term", .module = howl_term_mod },
             .{ .name = "howl_lua", .module = howl_lua_mod },
-            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
 
@@ -43,7 +48,6 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "howl_term", .module = howl_term_mod },
                 .{ .name = "howl_lua", .module = howl_lua_mod },
-                .{ .name = "build_options", .module = build_options.createModule() },
             },
         }),
     });

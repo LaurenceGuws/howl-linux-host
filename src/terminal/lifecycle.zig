@@ -40,21 +40,21 @@ pub fn start(self: anytype) !void {
     const wake_thread = try std.Thread.spawn(.{}, thread.wakeThreadMain, .{self});
     setThreadName(wake_thread, "howl-wake");
     self.wake_thread = wake_thread;
-    const metadata_thread = try std.Thread.spawn(.{}, thread.metadataThreadMain, .{self});
-    setThreadName(metadata_thread, "howl-meta");
-    self.metadata_thread = metadata_thread;
+    // const metadata_thread = try std.Thread.spawn(.{}, thread.metadataThreadMain, .{self});
+    // setThreadName(metadata_thread, "howl-meta");
+    // self.metadata_thread = metadata_thread;
 }
 
 pub fn stop(self: anytype) void {
     self.wake_thread_stop.store(true, .release);
     self.prepare_thread_stop.store(true, .release);
     if (self.term_ready) api.wakeSnapshotWaiters(&self.term);
-    if (self.term_ready) api.wakeMetadataWaiters(&self.term);
+    // if (self.term_ready) api.wakeMetadataWaiters(&self.term);
     self.signalPrepareThread();
     HostInput.wakeWindow();
     if (self.wake_thread) |t| t.join();
     self.wake_thread = null;
-    if (self.metadata_thread) |t| t.join();
+    // if (self.metadata_thread) |t| t.join();
     self.metadata_thread = null;
     if (self.prepare_thread) |t| t.join();
     self.prepare_thread = null;

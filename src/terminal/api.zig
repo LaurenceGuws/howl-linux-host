@@ -1,9 +1,8 @@
 //! Responsibility: own the Linux host terminal API seam.
 //! Ownership: host-facing term calls and types, independent from the backing ABI.
-//! Reason: keeps the Linux host swappable between direct Zig and C ABI term backends.
+//! Reason: keeps the Linux host pinned to the shared C ABI while leaving the old direct path visible for audit only.
 
 const std = @import("std");
-const build_options = @import("build_options");
 const howl_term = @import("howl_term");
 
 const zig_init_pty_params = @typeInfo(@TypeOf(howl_term.HowlTerm.initPty)).@"fn".params;
@@ -15,7 +14,8 @@ const zig_snapshot_wake = @typeInfo(@TypeOf(howl_term.HowlTerm.awaitRenderWake))
 const zig_clipboard_result = @typeInfo(@TypeOf(howl_term.HowlTerm.drainPendingClipboardSet)).@"fn".return_type.?;
 
 const Ffi = howl_term.Ffi;
-const use_ffi = build_options.term_backend_ffi;
+const use_ffi = true;
+// const use_ffi = build_options.term_backend_ffi;
 
 pub const Input = howl_term.Input;
 pub const LifecycleState = howl_term.runtime.LifecycleState;
@@ -107,10 +107,7 @@ pub fn wakeSnapshotWaiters(term: *Term) void {
 }
 
 pub fn wakeMetadataWaiters(term: *Term) void {
-    if (use_ffi) {
-        Ffi.wakeMetadataWaiters(term.handle);
-        return;
-    }
+    if (use_ffi) return;
     term.inner.wakeMetadataWaiters();
 }
 
@@ -163,16 +160,20 @@ pub fn copyCurrentTitle(term: *const Term, out_buf: []u8) usize {
 }
 
 pub fn setInputFocus(term: *Term, focused: bool) !bool {
-    if (use_ffi) return Ffi.setInputFocusChanged(term.handle, focused);
+    if (use_ffi) {
+        if (Ffi.setInputFocus(term.handle, boolInt(focused)) != 0) return error.TransportUnavailable;
+        return true;
+    }
     return term.inner.setInputFocus(focused);
 }
 
 pub fn drainPendingClipboardSet(term: *Term, allocator: std.mem.Allocator) ClipboardDrainResult {
     if (use_ffi) {
-        return Ffi.drainPendingClipboardSetAlloc(term.handle, allocator) catch |err| switch (err) {
+        const text = copyOwnedBytes(allocator, Ffi.drainPendingClipboardSet, term.handle) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
             else => null,
         };
+        return if (text) |buf| .{ .text = buf } else null;
     }
     return term.inner.drainPendingClipboardSet(allocator);
 }
@@ -235,7 +236,7 @@ pub fn setHoveredLinkAtPixel(term: *Term, pixel_x: i32, pixel_y: i32, underline_
 }
 
 pub fn copyHyperlinkUriAtPixel(term: *Term, allocator: std.mem.Allocator, pixel_x: i32, pixel_y: i32) !?[]u8 {
-    if (use_ffi) return Ffi.copyHyperlinkUriAtPixelAlloc(term.handle, allocator, pixel_x, pixel_y);
+    if (use_ffi) return copyOwnedBytesAtPixel(allocator, Ffi.copyHyperlinkUriAtPixel, term.handle, pixel_x, pixel_y);
     return term.inner.copyHyperlinkUriAtPixel(allocator, pixel_x, pixel_y);
 }
 
@@ -278,10 +279,7 @@ pub fn awaitRenderWake(term: *Term, last_seen_seq: u64) SnapshotWake {
 }
 
 pub fn awaitMetadataWake(term: *Term, last_seen_seq: u64) MetadataWake {
-    if (use_ffi) {
-        const wake = Ffi.awaitMetadataWake(term.handle, last_seen_seq, -1);
-        return wake.event_seq;
-    }
+    if (use_ffi) return last_seen_seq;
     return term.inner.awaitMetadataWake(last_seen_seq, -1) catch last_seen_seq;
 }
 
@@ -349,12 +347,18 @@ pub fn renderedTextContains(term: *const Term, text: []const u8) bool {
 }
 
 pub fn followLiveBottom(term: *Term) bool {
-    if (use_ffi) return Ffi.followLiveBottomChanged(term.handle);
+    if (use_ffi) {
+        _ = Ffi.followLiveBottom(term.handle);
+        return true;
+    }
     return term.inner.followLiveBottom();
 }
 
 pub fn setScrollbackOffset(term: *Term, offset: usize) bool {
-    if (use_ffi) return Ffi.setScrollbackOffsetChanged(term.handle, offset);
+    if (use_ffi) {
+        _ = Ffi.setScrollbackOffset(term.handle, @intCast(@min(offset, @as(usize, std.math.maxInt(c_int)))));
+        return true;
+    }
     return term.inner.setScrollbackOffset(offset);
 }
 
@@ -372,6 +376,36 @@ fn startFfiTerm(term: *FfiHostTerm) ?Ffi.TermHandle {
         term.cell_px.width,
         term.cell_px.height,
     );
+}
+
+fn copyOwnedBytes(
+    allocator: std.mem.Allocator,
+    comptime copier: fn (Ffi.TermHandle, [*]u8, usize) callconv(.c) usize,
+    handle: Ffi.TermHandle,
+) !?[]u8 {
+    var scratch: [1]u8 = undefined;
+    const len = copier(handle, scratch[0..].ptr, 0);
+    if (len == 0) return null;
+    const buf = try allocator.alloc(u8, len);
+    errdefer allocator.free(buf);
+    const written = copier(handle, buf.ptr, buf.len);
+    return buf[0..@min(written, buf.len)];
+}
+
+fn copyOwnedBytesAtPixel(
+    allocator: std.mem.Allocator,
+    comptime copier: fn (Ffi.TermHandle, i32, i32, [*]u8, usize) callconv(.c) usize,
+    handle: Ffi.TermHandle,
+    pixel_x: i32,
+    pixel_y: i32,
+) !?[]u8 {
+    var scratch: [1]u8 = undefined;
+    const len = copier(handle, pixel_x, pixel_y, scratch[0..].ptr, 0);
+    if (len == 0) return null;
+    const buf = try allocator.alloc(u8, len);
+    errdefer allocator.free(buf);
+    const written = copier(handle, pixel_x, pixel_y, buf.ptr, buf.len);
+    return buf[0..@min(written, buf.len)];
 }
 
 fn applyFfiFontConfig(term: *FfiHostTerm) !void {
