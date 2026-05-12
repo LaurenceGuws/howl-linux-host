@@ -109,9 +109,7 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
     if (ticks_per_second_raw <= 0) return;
     const ticks_per_second: u64 = @intCast(ticks_per_second_raw);
 
-    const prepare_metrics = api.takePrepareMetrics(self.term);
-    const queue_metrics = api.takeSurfaceMetrics(self.term);
-    const render_metrics = api.lastRenderMetrics(self.term);
+    const render_metrics = api.takeRenderMetrics(self.term);
 
     const task_dir = c.opendir("/proc/self/task") orelse return error.TaskDirOpenFailed;
     defer _ = c.closedir(task_dir);
@@ -130,43 +128,25 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
     defer unlockFile();
     if (c.fprintf(
         file,
-        "{\"type\":\"thread_cpu\",\"schema\":1,\"mono_ns\":%llu,\"elapsed_ns\":%llu,\"prepare\":{\"term_us\":%llu,\"sync_us\":%llu,\"copy_us\":%llu,\"renderer_us\":%llu,\"input_us\":%llu,\"sparse_us\":%llu,\"clusters_us\":%llu,\"resolve_us\":%llu,\"shape_us\":%llu,\"group_us\":%llu,\"scene_us\":%llu,\"raster_us\":%llu,\"atlas_us\":%llu},\"queue\":{\"prepare_requests\":%llu,\"prepare_coalesces\":%llu,\"prepare_takes\":%llu,\"prepared_publishes\":%llu,\"submit_takes\":%llu,\"submit_valid\":%llu,\"submitted_accepts\":%llu,\"presents\":%llu},\"render\":{\"sync_us\":%llu,\"copy_us\":%llu,\"render_us\":%llu,\"glyphs\":%llu,\"fills\":%llu,\"uploads\":%llu,\"shape_requests\":%llu,\"shape_cache_hits\":%llu,\"face_checks\":%llu,\"face_cache_hits\":%llu,\"fallback_hits\":%llu,\"fallback_misses\":%llu,\"missing_glyphs\":%llu},\"threads\":[",
+        "{\"type\":\"thread_cpu\",\"schema\":1,\"mono_ns\":%llu,\"elapsed_ns\":%llu,\"render\":{\"snapshot_publishes\":%llu,\"snapshot_hidden_drops\":%llu,\"snapshot_clean_drops\":%llu,\"prepare_requests\":%llu,\"prepare_coalesces\":%llu,\"prepare_forced_full\":%llu,\"prepare_takes\":%llu,\"prepared_publishes\":%llu,\"prepared_coalesces\":%llu,\"submit_takes\":%llu,\"submit_valid\":%llu,\"submit_rejected\":%llu,\"full_prepare_requests\":%llu,\"submitted_accepts\":%llu,\"presents\":%llu,\"target_invalidations\":%llu},\"threads\":[",
         @as(c_ulonglong, now_ns),
         @as(c_ulonglong, elapsed_ns),
-        @as(c_ulonglong, prepare_metrics.term_us),
-        @as(c_ulonglong, prepare_metrics.sync_us),
-        @as(c_ulonglong, prepare_metrics.copy_us),
-        @as(c_ulonglong, prepare_metrics.renderer_us),
-        @as(c_ulonglong, prepare_metrics.input_us),
-        @as(c_ulonglong, prepare_metrics.sparse_us),
-        @as(c_ulonglong, prepare_metrics.clusters_us),
-        @as(c_ulonglong, prepare_metrics.resolve_us),
-        @as(c_ulonglong, prepare_metrics.shape_us),
-        @as(c_ulonglong, prepare_metrics.group_us),
-        @as(c_ulonglong, prepare_metrics.scene_us),
-        @as(c_ulonglong, prepare_metrics.raster_us),
-        @as(c_ulonglong, prepare_metrics.atlas_us),
-        @as(c_ulonglong, queue_metrics.prepare_requests),
-        @as(c_ulonglong, queue_metrics.prepare_coalesces),
-        @as(c_ulonglong, queue_metrics.prepare_takes),
-        @as(c_ulonglong, queue_metrics.prepared_publishes),
-        @as(c_ulonglong, queue_metrics.submit_takes),
-        @as(c_ulonglong, queue_metrics.submit_valid),
-        @as(c_ulonglong, queue_metrics.submitted_accepts),
-        @as(c_ulonglong, queue_metrics.presents),
-        @as(c_ulonglong, render_metrics.sync_us),
-        @as(c_ulonglong, render_metrics.copy_us),
-        @as(c_ulonglong, render_metrics.render_us),
-        @as(c_ulonglong, render_metrics.glyphs),
-        @as(c_ulonglong, render_metrics.fills),
-        @as(c_ulonglong, render_metrics.uploads),
-        @as(c_ulonglong, render_metrics.shape_requests),
-        @as(c_ulonglong, render_metrics.shape_cache_hits),
-        @as(c_ulonglong, render_metrics.face_checks),
-        @as(c_ulonglong, render_metrics.face_cache_hits),
-        @as(c_ulonglong, render_metrics.fallback_hits),
-        @as(c_ulonglong, render_metrics.fallback_misses),
-        @as(c_ulonglong, render_metrics.missing_glyphs),
+        @as(c_ulonglong, render_metrics.snapshot_publishes),
+        @as(c_ulonglong, render_metrics.snapshot_hidden_drops),
+        @as(c_ulonglong, render_metrics.snapshot_clean_drops),
+        @as(c_ulonglong, render_metrics.prepare_requests),
+        @as(c_ulonglong, render_metrics.prepare_coalesces),
+        @as(c_ulonglong, render_metrics.prepare_forced_full),
+        @as(c_ulonglong, render_metrics.prepare_takes),
+        @as(c_ulonglong, render_metrics.prepared_publishes),
+        @as(c_ulonglong, render_metrics.prepared_coalesces),
+        @as(c_ulonglong, render_metrics.submit_takes),
+        @as(c_ulonglong, render_metrics.submit_valid),
+        @as(c_ulonglong, render_metrics.submit_rejected),
+        @as(c_ulonglong, render_metrics.full_prepare_requests),
+        @as(c_ulonglong, render_metrics.submitted_accepts),
+        @as(c_ulonglong, render_metrics.presents),
+        @as(c_ulonglong, render_metrics.target_invalidations),
     ) < 0) return error.PerfLogWriteFailed;
 
     for (threads.items, 0..) |thread, idx| {

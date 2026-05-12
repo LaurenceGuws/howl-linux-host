@@ -7,9 +7,7 @@ const HostInput = @import("../input/input.zig").Input;
 const window = @import("../input/window.zig");
 const api = @import("api.zig");
 const term_input = @import("input.zig");
-const links = @import("links.zig");
 const scroll = @import("scroll.zig");
-const selection = @import("selection.zig");
 
 pub fn paste(self: anytype, payload: []const u8) void {
     window.logf("host-loop ts_ns={d} stage=publish-paste len={d}", .{ window.nowNs(), payload.len });
@@ -22,10 +20,7 @@ pub fn drain(self: anytype, input_events: *HostInput, origin_x: i32, origin_y: i
             .bytes => |bytes| publishBytes(self, bytes.slice()),
             .key => |key| publishKey(self, key),
             .mouse => |mouse_event| {
-                links.updateHover(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
                 if (scroll.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
-                if (links.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
-                if (selection.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
                 if (mouse_event.host_only) continue;
 
                 const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse continue;

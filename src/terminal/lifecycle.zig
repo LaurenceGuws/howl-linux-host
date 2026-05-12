@@ -12,7 +12,7 @@ const thread = @import("thread.zig");
 pub fn start(self: anytype) !void {
     var font_fallbacks_buf: [32][:0]const u8 = undefined;
     const font_fallbacks = self.conf.fonts.flattenFallbacks(font_fallbacks_buf[0..]);
-    // Backing Zig path stays aligned with HowlTerm.initPty; api.zig is the host swap point.
+    // api.zig is the C-ABI host seam; lifecycle stays host-owned.
     self.term = try api.initPty(std.heap.c_allocator, .{
         .shell = self.conf.shell,
         .start_path = self.conf.start_path,
@@ -28,12 +28,11 @@ pub fn start(self: anytype) !void {
     api.setFallbackFontPaths(&self.term, font_fallbacks);
     try api.start(&self.term);
     self.progress_stop.store(false, .release);
-    try api.setRenderWakeNotify(&self.term, @TypeOf(self.*).renderWakeNotify, self);
     const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
     setThreadName(progress_thread, "howl-term-host");
     self.progress_thread = progress_thread;
     const geom = self.geometrySnapshot();
-    try api.syncFrameGeometry(&self.term, geom);
+    try api.syncRenderGeometry(&self.term, geom);
     if (!api.isAlive(&self.term)) return error.TransportUnavailable;
     effects.refreshTitle(self);
     effects.syncInputFocus(self);
@@ -42,7 +41,6 @@ pub fn start(self: anytype) !void {
 
 pub fn stop(self: anytype) void {
     self.progress_stop.store(true, .release);
-    if (self.term_ready) _ = api.setRenderWakeNotify(&self.term, null, null) catch {};
     if (self.term_ready) api.stop(&self.term);
     if (self.progress_thread) |handle| handle.join();
     self.progress_thread = null;

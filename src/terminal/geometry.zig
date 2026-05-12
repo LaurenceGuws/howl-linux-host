@@ -6,9 +6,8 @@ const std = @import("std");
 const api = @import("api.zig");
 const window = @import("../window/window.zig");
 const scroll = @import("scroll.zig");
-const howl_term = @import("howl_term");
 
-pub const FramePixels = howl_term.frame.Pixels;
+pub const RenderGeometry = api.RenderGeometry;
 
 pub const Mutex = struct {
     state: std.Io.Mutex = .init,
@@ -46,21 +45,20 @@ pub fn maybeCommitGridResize(self: anytype) void {
         self.last_resize_ns = 0;
         break :blk snapshotLocked(self);
     };
-    api.syncFrameGeometry(&self.term, geom) catch return;
+    api.syncRenderGeometry(&self.term, geom) catch return;
 }
 
-pub fn snapshot(self: anytype) FramePixels {
+pub fn snapshot(self: anytype) RenderGeometry {
     lock(&self.geometry_mutex);
     defer self.geometry_mutex.unlock();
     return snapshotLocked(self);
 }
 
-fn snapshotLocked(self: anytype) FramePixels {
+fn snapshotLocked(self: anytype) RenderGeometry {
     return .{
-        .render_width = @max(self.render_px_w, 1),
-        .render_height = @max(self.render_px_h, 1),
-        .grid_width = @max(self.grid_px_w, 1),
-        .grid_height = @max(self.grid_px_h, 1),
+        .render_px = .{ .width = @as(u16, @intCast(@max(self.render_px_w, 1))), .height = @as(u16, @intCast(@max(self.render_px_h, 1))) },
+        .grid_px = .{ .width = @as(u16, @intCast(@max(self.grid_px_w, 1))), .height = @as(u16, @intCast(@max(self.grid_px_h, 1))) },
+        .cell_px = .{ .width = @as(u16, @intCast(@max(self.logical_w, 1))), .height = @as(u16, @intCast(@max(self.logical_h, 1))) },
     };
 }
 

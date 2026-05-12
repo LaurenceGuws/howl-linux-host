@@ -86,8 +86,6 @@ fn start(options: Options) !void {
                 continue;
             }
         }
-        activeTab(tabs.items, active_tab_idx).clearWakeEventPending();
-
         if (input.drainWindowFocusChanged()) |focused| setWindowFocused(&window, tabs.items, active_tab_idx, focused);
 
         var drained_binding_actions: usize = 0;

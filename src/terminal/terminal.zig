@@ -9,9 +9,8 @@ const howl_term = @import("howl_term");
 const api = @import("api.zig");
 const HowlTerm = api.Term;
 const LifecycleState = howl_term.lifecycle.State;
-const FramePixels = howl_term.frame.Pixels;
-const SurfaceHandle = howl_term.surface.Handle;
-const SurfaceState = howl_term.surface.State;
+const RenderGeometry = api.RenderGeometry;
+const SurfaceHandle = api.RenderSurface;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const effects = @import("effects.zig");
@@ -20,14 +19,13 @@ const font_size = @import("font_size.zig");
 const geometry = @import("geometry.zig");
 const input_flow = @import("input_flow.zig");
 const lifecycle = @import("lifecycle.zig");
-const links = @import("links.zig");
 const query = @import("query.zig");
 const scroll = @import("scroll.zig");
 
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
 
-    pub const SurfaceMetrics = howl_term.surface.Metrics;
+    pub const SurfaceMetrics = api.RenderMetrics;
 
     pub const SurfaceSnapshot = struct {
         surface: SurfaceHandle,
@@ -55,7 +53,6 @@ pub const Terminal = struct {
     default_font_size_px: u16,
     last_surface: SurfaceHandle,
     last_resize_ns: u64,
-    wake_event_pending: std.atomic.Value(bool),
     progress_stop: std.atomic.Value(bool),
     progress_thread: ?std.Thread,
     window_focused: bool,
@@ -109,7 +106,6 @@ pub const Terminal = struct {
             .default_font_size_px = start_font_px,
             .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .last_resize_ns = 0,
-            .wake_event_pending = std.atomic.Value(bool).init(false),
             .progress_stop = std.atomic.Value(bool).init(false),
             .progress_thread = null,
             .window_focused = true,
@@ -131,18 +127,6 @@ pub const Terminal = struct {
         geometry.maybeCommitGridResize(self);
     }
 
-    pub fn clearWakeEventPending(self: *Terminal) void {
-        self.wake_event_pending.store(false, .release);
-    }
-
-    pub fn renderWakeNotify(context: ?*anyopaque) callconv(.c) void {
-        const wake_context = context orelse return;
-        const self: *Terminal = @ptrCast(@alignCast(wake_context));
-        if (!api.needsFrame(&self.term) and api.needsPrepare(&self.term)) return;
-        const was_pending = self.wake_event_pending.swap(true, .acq_rel);
-        if (!was_pending) HostInput.wakeWindow();
-    }
-
     pub fn needsPresentationFrame(self: *Terminal, now_ns: u64) bool {
         return frame.needsPresentationFrame(self, now_ns);
     }
@@ -155,7 +139,7 @@ pub const Terminal = struct {
         frame.render(self);
     }
 
-    pub fn geometrySnapshot(self: *Terminal) FramePixels {
+    pub fn geometrySnapshot(self: *Terminal) RenderGeometry {
         return geometry.snapshot(self);
     }
 
@@ -177,7 +161,7 @@ pub const Terminal = struct {
 
     /// Report whether this terminal needs unpressed mouse motion for link hover.
     pub fn wantsLinkHover(self: *const Terminal) bool {
-        return links.wantsHover(self);
+        return self.conf.links.hover != .off;
     }
 
     pub fn surfaceSnapshot(self: *const Terminal) SurfaceSnapshot {
@@ -194,10 +178,6 @@ pub const Terminal = struct {
 
     pub fn titleSlice(self: *const Terminal) []const u8 {
         return effects.titleSlice(self);
-    }
-
-    pub fn renderedTextContains(self: *const Terminal, text: []const u8) bool {
-        return query.renderedTextContains(self, text);
     }
 
     pub fn setWindowFocused(self: *Terminal, focused: bool) void {

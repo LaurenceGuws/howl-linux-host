@@ -1,61 +1,65 @@
 //! Responsibility: own the Linux host terminal API seam.
-//! Ownership: host-facing term calls and types, independent from the backing ABI.
-//! Reason: keeps the Linux host pinned to the shared C ABI while leaving the old direct path visible for audit only.
+//! Ownership: host-facing term calls and types, pinned to the C ABI.
+//! Reason: keeps the Linux host on one public contract instead of a Zig/C split.
 
 const std = @import("std");
 const howl_term = @import("howl_term");
-
-const zig_init_pty_params = @typeInfo(@TypeOf(howl_term.HowlTerm.initPty)).@"fn".params;
-const zig_publish_mouse_params = @typeInfo(@TypeOf(howl_term.HowlTerm.publishMouseEvent)).@"fn".params;
-const zig_hover_result = @typeInfo(@TypeOf(howl_term.HowlTerm.setHoveredLinkAtPixel)).@"fn".return_type.?;
-const zig_transport_limits = @typeInfo(@TypeOf(howl_term.HowlTerm.pumpTransport)).@"fn".params[1].type.?;
-const zig_transport_progress = @typeInfo(@TypeOf(howl_term.HowlTerm.pumpTransport)).@"fn".return_type.?;
-const zig_apply_progress = @typeInfo(@TypeOf(howl_term.HowlTerm.applyPending)).@"fn".return_type.?;
-const zig_publish_result = @typeInfo(@TypeOf(howl_term.HowlTerm.publishSnapshot)).@"fn".return_type.?;
-const zig_prepare_result = @typeInfo(@TypeOf(howl_term.HowlTerm.prepareNextFrame)).@"fn".return_type.?;
-const zig_render_result = @typeInfo(@TypeOf(howl_term.HowlTerm.renderReadyFrame)).@"fn".return_type.?;
-const zig_snapshot_wake = @typeInfo(@TypeOf(howl_term.HowlTerm.awaitRenderWake)).@"fn".return_type.?;
-const zig_clipboard_result = @typeInfo(@TypeOf(howl_term.HowlTerm.drainPendingClipboardSet)).@"fn".return_type.?;
-
-const Ffi = howl_term.C;
-const use_ffi = true;
-// const use_ffi = build_options.term_backend_ffi;
+const contract = howl_term.C;
 
 pub const Input = howl_term.input;
 pub const LifecycleState = howl_term.lifecycle.State;
-pub const FramePixels = howl_term.frame.Pixels;
-pub const TransportLimits = zig_transport_limits;
-pub const TransportProgress = zig_transport_progress;
-pub const ApplyProgress = zig_apply_progress;
-pub const PublishResult = zig_publish_result;
-pub const SurfaceHandle = howl_term.surface.Handle;
-pub const SurfaceState = howl_term.surface.State;
-pub const SurfaceMetrics = howl_term.surface.Metrics;
-pub const PrepareMetrics = Ffi.HowlTermPrepareMetrics;
-pub const QueueMetrics = Ffi.HowlTermSurfaceMetrics;
-pub const RenderMetrics = Ffi.HowlTermRenderMetrics;
-pub const ScrollState = howl_term.viewport.ScrollState;
-pub const LinkUnderlineStyle = howl_term.viewport.LinkUnderlineStyle;
-pub const LinkHoverResult = zig_hover_result;
-pub const PrepareResult = zig_prepare_result;
-pub const RenderResult = zig_render_result;
-pub const SnapshotWake = zig_snapshot_wake;
-pub const RenderWakeNotify = howl_term.HowlTerm.RenderWakeNotify;
-pub const MetadataWake = u64;
-pub const PtyLaunchConfig = zig_init_pty_params[1].type.?;
-pub const RenderCellSize = zig_init_pty_params[4].type.?;
-pub const MouseInput = zig_publish_mouse_params[1].type.?;
-pub const ClipboardDrainResult = zig_clipboard_result;
-
-pub const Term = if (use_ffi) FfiHostTerm else ZigHostTerm;
-
-const ZigHostTerm = struct {
-    inner: howl_term.HowlTerm,
-
-    pub fn needsPrepare(self: *ZigHostTerm) bool {
-        return self.inner.needsPrepare();
-    }
+pub const TransportLimits = struct {
+    max_reads: usize,
+    max_bytes: usize,
 };
+pub const TransportProgress = struct {
+    drained_input_bytes: usize,
+    reads: usize,
+    bytes_read: usize,
+    pending_input_bytes: usize,
+    queued_events: usize,
+};
+pub const ApplyProgress = struct {
+    applied_events: usize,
+    remaining_events: usize,
+    state_changed: bool,
+};
+pub const SourceReceipt = contract.SourceReceipt;
+pub const RenderAction = contract.RenderAction;
+pub const RenderPrepareResult = contract.RenderPrepareResult;
+pub const RenderSubmitResult = contract.RenderSubmitResult;
+pub const RenderGeometry = contract.RenderGeometry;
+pub const RenderGeometryReceipt = contract.RenderGeometryReceipt;
+pub const RenderSurfaceQuery = contract.RenderSurfaceQuery;
+pub const RenderSurface = contract.RenderSurface;
+pub const RenderMetrics = contract.RenderMetrics;
+pub const ScrollState = struct {
+    viewport_rows: u16,
+    scrollback_count: usize,
+    scrollback_offset: usize,
+    alternate_screen: bool,
+};
+pub const RenderCellSize = contract.FfiCellSize;
+pub const MouseInput = struct {
+    kind: Input.MouseEventKind,
+    button: Input.MouseButton,
+    pixel_x: i32,
+    pixel_y: i32,
+    mods: Input.Modifier,
+    buttons_down: u8,
+};
+pub const PtyLaunchConfig = struct {
+    shell: []const u8,
+    command: ?[]const u8 = null,
+    start_path: ?[]const u8 = null,
+};
+pub const ClipboardDrainResult = ?struct {
+    text: []u8,
+};
+
+pub const Term = FfiHostTerm;
+
+const Ffi = howl_term.C;
 
 const FfiHostTerm = struct {
     handle: Ffi.TermHandle = 0,
@@ -66,10 +70,6 @@ const FfiHostTerm = struct {
     font_size_px: u16,
     primary_font_path: ?[:0]const u8 = null,
     fallback_font_paths: []const [:0]const u8 = &.{},
-
-    pub fn needsPrepare(self: *FfiHostTerm) bool {
-        return Ffi.needsPrepare(self.handle) != 0;
-    }
 };
 
 pub fn initPty(
@@ -79,475 +79,221 @@ pub fn initPty(
     rows: u16,
     cell_px: RenderCellSize,
 ) !Term {
-    if (use_ffi) {
-        return .{
-            .launch = launch,
-            .cols = cols,
-            .rows = rows,
-            .cell_px = cell_px,
-            .font_size_px = cell_px.height,
-        };
-    }
-    return .{ .inner = try howl_term.HowlTerm.initPty(allocator, launch, cols, rows, cell_px) };
+    _ = allocator;
+    return .{
+        .launch = launch,
+        .cols = cols,
+        .rows = rows,
+        .cell_px = cell_px,
+        .font_size_px = cell_px.height,
+    };
 }
 
 pub fn deinit(term: *Term) void {
-    if (use_ffi) {
-        if (term.handle != 0) Ffi.deinit(term.handle);
-        term.handle = 0;
-        return;
-    }
-    term.inner.deinit();
+    if (term.handle != 0) Ffi.deinit(term.handle);
+    term.handle = 0;
 }
 
 pub fn stop(term: *Term) void {
-    if (use_ffi) {
-        if (term.handle != 0) _ = Ffi.stop(term.handle);
-        return;
-    }
-    term.inner.stop();
+    if (term.handle != 0) _ = Ffi.stop(term.handle);
 }
 
 pub fn start(term: *Term) !void {
-    if (use_ffi) {
-        if (term.handle != 0) return error.AlreadyStarted;
-        term.handle = startFfiTerm(term) orelse return error.TransportUnavailable;
-        errdefer {
-            Ffi.deinit(term.handle);
-            term.handle = 0;
-        }
-        try applyFfiFontConfig(term);
-        return;
+    if (term.handle != 0) return error.AlreadyStarted;
+    term.handle = startFfiTerm(term) orelse return error.TransportUnavailable;
+    errdefer {
+        Ffi.deinit(term.handle);
+        term.handle = 0;
     }
-    try term.inner.start();
+    try applyFfiFontConfig(term);
 }
 
 pub fn waitTransport(term: *Term, timeout_ms: i32) bool {
-    if (use_ffi) return Ffi.waitTransport(term.handle, timeout_ms) != 0;
-    return term.inner.waitTransport(timeout_ms);
+    return Ffi.waitTransport(term.handle, timeout_ms) != 0;
 }
 
 pub fn pumpTransport(term: *Term, limits: TransportLimits) TransportProgress {
-    if (use_ffi) {
-        const progress = Ffi.pumpTransport(term.handle, .{ .max_reads = limits.max_reads, .max_bytes = limits.max_bytes });
-        return .{
-            .drained_input_bytes = progress.drained_input_bytes,
-            .reads = progress.reads,
-            .bytes_read = progress.bytes_read,
-            .pending_input_bytes = progress.pending_input_bytes,
-            .queued_events = progress.queued_events,
-        };
-    }
-    return term.inner.pumpTransport(limits);
+    const progress = Ffi.pumpTransport(term.handle, .{
+        .max_reads = limits.max_reads,
+        .max_bytes = limits.max_bytes,
+    });
+    return .{
+        .drained_input_bytes = progress.drained_input_bytes,
+        .reads = progress.reads,
+        .bytes_read = progress.bytes_read,
+        .pending_input_bytes = progress.pending_input_bytes,
+        .queued_events = progress.queued_events,
+    };
 }
 
 pub fn applyPending(term: *Term, max_events: usize) ApplyProgress {
-    if (use_ffi) {
-        const progress = Ffi.applyPending(term.handle, max_events);
-        return .{
-            .applied_events = progress.applied_events,
-            .remaining_events = progress.remaining_events,
-            .state_changed = progress.state_changed != 0,
-        };
-    }
-    return term.inner.applyPending(max_events);
+    const progress = Ffi.applyPending(term.handle, max_events);
+    return .{
+        .applied_events = progress.applied_events,
+        .remaining_events = progress.remaining_events,
+        .state_changed = progress.state_changed != 0,
+    };
 }
 
-pub fn publishSnapshot(term: *Term) PublishResult {
-    if (use_ffi) {
-        return switch (Ffi.publishSnapshot(term.handle)) {
-            0 => .idle,
-            1 => .published,
-            2 => .queued,
-            else => .blocked,
-        };
-    }
-    return term.inner.publishSnapshot();
+pub fn publishSource(term: *Term) SourceReceipt {
+    return Ffi.publishSource(term.handle);
 }
 
-pub fn setRenderWakeNotify(term: *Term, notify: ?RenderWakeNotify, context: ?*anyopaque) !void {
-    if (use_ffi) {
-        const rc = Ffi.setRenderWakeNotify(term.handle, notify, context);
-        if (rc == 0) return;
-        return error.TransportUnavailable;
-    }
-    term.inner.setRenderWakeNotify(notify, context);
+pub fn syncRenderGeometry(term: *Term, geometry: RenderGeometry) !void {
+    _ = Ffi.syncRenderGeometry(term.handle, geometry);
+    _ = publishSource(term);
 }
 
-pub fn wakeMetadataWaiters(term: *Term) void {
-    if (use_ffi) return;
-    term.inner.wakeMetadataWaiters();
+pub fn lifecycleState(term: *const Term) LifecycleState {
+    return @enumFromInt(Ffi.lifecycleState(term.handle));
 }
 
-pub fn syncFrameGeometry(term: *Term, frame: FramePixels) !void {
-    if (use_ffi) {
-        switch (Ffi.syncFrameGeometry(term.handle, ffiFrame(frame))) {
-            0 => {},
-            -2 => return error.InvalidDimensions,
-            else => return error.TransportUnavailable,
-        }
-        _ = publishSnapshot(term);
-        return;
-    }
-    try term.inner.syncFrameGeometry(frame.renderWidth(), frame.renderHeight(), frame.gridWidth(), frame.gridHeight());
-    _ = publishSnapshot(term);
+pub fn renderAction(term: *const Term) RenderAction {
+    return Ffi.renderAction(term.handle);
+}
+
+pub fn prepareRender(term: *Term) RenderPrepareResult {
+    return Ffi.prepareRender(term.handle);
+}
+
+pub fn submitRender(term: *Term) RenderSubmitResult {
+    return Ffi.submitRender(term.handle);
+}
+
+pub fn renderQuery(term: *const Term) RenderSurfaceQuery {
+    return Ffi.renderQuery(term.handle);
+}
+
+pub fn takeRenderMetrics(term: *Term) RenderMetrics {
+    return Ffi.takeRenderMetrics(term.handle);
+}
+
+pub fn resetRenderMetrics(term: *Term) void {
+    Ffi.resetRenderMetrics(term.handle);
 }
 
 pub fn isAlive(term: *const Term) bool {
-    if (use_ffi) return Ffi.isSessionAlive(term.handle) != 0;
-    return term.inner.isAlive();
+    return Ffi.isSessionAlive(term.handle) != 0;
 }
 
 pub fn hasOutboundInputBacklog(term: *const Term) bool {
-    if (use_ffi) return Ffi.hasOutboundInputBacklog(term.handle) != 0;
-    return term.inner.hasOutboundInputBacklog();
+    return Ffi.hasOutboundInputBacklog(term.handle) != 0;
 }
 
 pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
-    if (use_ffi) {
-        term.font_size_px = font_size_px;
-        if (term.handle != 0) {
-            std.debug.assert(Ffi.setFontSizePx(term.handle, font_size_px) == 0);
-            _ = publishSnapshot(term);
-        }
-        return;
+    term.font_size_px = font_size_px;
+    if (term.handle != 0) {
+        std.debug.assert(Ffi.setFontSizePx(term.handle, font_size_px) == 0);
+        _ = publishSource(term);
     }
-    term.inner.setFontSizePx(font_size_px);
-    _ = publishSnapshot(term);
 }
 
 pub fn setPrimaryFontPath(term: *Term, font_path: ?[:0]const u8) void {
-    if (use_ffi) {
-        term.primary_font_path = font_path;
-        if (term.handle != 0) {
-            _ = applyFfiPrimaryFont(term);
-            _ = publishSnapshot(term);
-        }
-        return;
+    term.primary_font_path = font_path;
+    if (term.handle != 0) {
+        std.debug.assert(applyFfiPrimaryFont(term));
+        _ = publishSource(term);
     }
-    term.inner.setPrimaryFontPath(font_path);
-    _ = publishSnapshot(term);
 }
 
 pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) void {
-    if (use_ffi) {
-        term.fallback_font_paths = paths;
-        if (term.handle != 0) {
-            _ = applyFfiFallbackFonts(term);
-            _ = publishSnapshot(term);
-        }
-        return;
+    term.fallback_font_paths = paths;
+    if (term.handle != 0) {
+        std.debug.assert(applyFfiFallbackFonts(term));
+        _ = publishSource(term);
     }
-    term.inner.setFallbackFontPaths(paths);
-    _ = publishSnapshot(term);
-}
-
-pub fn copyCurrentTitle(term: *const Term, out_buf: []u8) usize {
-    if (use_ffi) return Ffi.copyCurrentTitle(term.handle, out_buf.ptr, out_buf.len);
-    return term.inner.copyCurrentTitle(out_buf);
 }
 
 pub fn setInputFocus(term: *Term, focused: bool) !bool {
-    if (use_ffi) {
-        if (Ffi.setInputFocus(term.handle, boolInt(focused)) != 0) return error.TransportUnavailable;
-        _ = publishSnapshot(term);
-        return true;
-    }
-    const changed = try term.inner.setInputFocus(focused);
-    if (changed) _ = publishSnapshot(term);
-    return changed;
+    if (Ffi.setInputFocus(term.handle, boolInt(focused)) != 0) return error.TransportUnavailable;
+    _ = publishSource(term);
+    return true;
 }
 
-pub fn drainPendingClipboardSet(term: *Term, allocator: std.mem.Allocator) ClipboardDrainResult {
-    if (use_ffi) {
-        const text = copyOwnedBytes(allocator, Ffi.drainPendingClipboardSet, term.handle) catch |err| switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            else => null,
-        };
-        return if (text) |buf| .{ .text = buf } else null;
-    }
-    return term.inner.drainPendingClipboardSet(allocator);
+pub fn drainPendingClipboardSet(term: *Term, allocator: std.mem.Allocator) !ClipboardDrainResult {
+    const text = try copyOwnedBytes(allocator, Ffi.drainPendingClipboardSet, term.handle);
+    return if (text) |buf| .{ .text = buf } else null;
 }
 
 pub fn publishPaste(term: *Term, text: []const u8) !void {
-    if (use_ffi) {
-        const rc = Ffi.publishPaste(term.handle, text.ptr, text.len);
-        if (rc != 0) return error.TransportUnavailable;
-        return;
-    }
-    try term.inner.publishPaste(text);
+    if (Ffi.publishPaste(term.handle, text.ptr, text.len) != 0) return error.TransportUnavailable;
 }
 
 pub fn publishInputBytes(term: *Term, bytes: []const u8) !void {
-    if (use_ffi) {
-        const rc = Ffi.publishInputBytes(term.handle, bytes.ptr, bytes.len);
-        if (rc != 0) return error.TransportUnavailable;
-        return;
-    }
-    try term.inner.publishInputBytes(bytes);
+    if (Ffi.publishInputBytes(term.handle, bytes.ptr, bytes.len) != 0) return error.TransportUnavailable;
 }
 
 pub fn publishInputKey(term: *Term, key: Input.Key, mods: Input.Modifier) !void {
-    if (use_ffi) {
-        const rc = Ffi.publishInputKey(term.handle, key, mods);
-        if (rc != 0) return error.TransportUnavailable;
-        return;
-    }
-    try term.inner.publishInputKey(key, mods);
+    if (Ffi.publishInputKey(term.handle, key, mods) != 0) return error.TransportUnavailable;
 }
 
 pub fn publishMouseEvent(term: *Term, mouse: MouseInput) !bool {
-    if (use_ffi) {
-        const rc = Ffi.publishMouseEvent(term.handle, abiMouseKind(mouse.kind), abiMouseButton(mouse.button), mouse.pixel_x, mouse.pixel_y, mouse.mods, mouse.buttons_down);
-        if (rc < 0) return error.TransportUnavailable;
-        return rc != 0;
-    }
-    return term.inner.publishMouseEvent(mouse);
+    const rc = Ffi.publishMouseEvent(term.handle, abiMouseKind(mouse.kind), abiMouseButton(mouse.button), mouse.pixel_x, mouse.pixel_y, mouse.mods, mouse.buttons_down);
+    if (rc < 0) return error.TransportUnavailable;
+    return rc != 0;
 }
 
 pub fn scrollState(term: *const Term) ScrollState {
-    if (use_ffi) {
-        const state = Ffi.scrollState(term.handle);
-        return .{
-            .viewport_rows = state.viewport_rows,
-            .scrollback_count = state.scrollback_count,
-            .scrollback_offset = state.scrollback_offset,
-            .alternate_screen = state.alternate_screen != 0,
-        };
-    }
-    return term.inner.scrollState();
-}
-
-pub fn setHoveredLinkAtPixel(term: *Term, pixel_x: i32, pixel_y: i32, underline_style: ?LinkUnderlineStyle) LinkHoverResult {
-    if (use_ffi) {
-        const result = Ffi.setHoveredLinkAtPixel(term.handle, pixel_x, pixel_y, abiUnderlineStyle(underline_style));
-        if (result.changed != 0) _ = publishSnapshot(term);
-        return .{ .over_link = result.over_link != 0, .changed = result.changed != 0 };
-    }
-    const result = term.inner.setHoveredLinkAtPixel(pixel_x, pixel_y, underline_style);
-    if (result.changed) _ = publishSnapshot(term);
-    return result;
-}
-
-pub fn copyHyperlinkUriAtPixel(term: *Term, allocator: std.mem.Allocator, pixel_x: i32, pixel_y: i32) !?[]u8 {
-    if (use_ffi) return copyOwnedBytesAtPixel(allocator, Ffi.copyHyperlinkUriAtPixel, term.handle, pixel_x, pixel_y);
-    return term.inner.copyHyperlinkUriAtPixel(allocator, pixel_x, pixel_y);
-}
-
-pub fn selectionInProgress(term: *const Term) bool {
-    if (use_ffi) return Ffi.selectionInProgress(term.handle) != 0;
-    return term.inner.selectionInProgress();
-}
-
-pub fn beginSelection(term: *Term, pixel_x: i32, pixel_y: i32) bool {
-    if (use_ffi) {
-        const changed = Ffi.beginSelection(term.handle, pixel_x, pixel_y) != 0;
-        if (changed) _ = publishSnapshot(term);
-        return changed;
-    }
-    const changed = term.inner.beginSelection(pixel_x, pixel_y);
-    if (changed) _ = publishSnapshot(term);
-    return changed;
-}
-
-pub fn updateSelection(term: *Term, pixel_x: i32, pixel_y: i32) bool {
-    if (use_ffi) {
-        const changed = Ffi.updateSelection(term.handle, pixel_x, pixel_y) != 0;
-        if (changed) _ = publishSnapshot(term);
-        return changed;
-    }
-    const changed = term.inner.updateSelection(pixel_x, pixel_y);
-    if (changed) _ = publishSnapshot(term);
-    return changed;
-}
-
-pub fn finishSelection(term: *Term) bool {
-    if (use_ffi) {
-        const changed = Ffi.finishSelection(term.handle) != 0;
-        if (changed) _ = publishSnapshot(term);
-        return changed;
-    }
-    const changed = term.inner.finishSelection();
-    if (changed) _ = publishSnapshot(term);
-    return changed;
-}
-
-pub fn needsFrame(term: *Term) bool {
-    if (use_ffi) return Ffi.needsFrame(term.handle) != 0;
-    return term.inner.needsFrame();
-}
-
-pub fn hasQueuedRenderWork(term: *Term) bool {
-    if (use_ffi) return Ffi.hasQueuedRenderWork(term.handle) != 0;
-    return term.inner.hasQueuedRenderWork();
-}
-
-pub fn awaitRenderWake(term: *Term, last_seen_seq: u64) SnapshotWake {
-    if (use_ffi) {
-        const wake = Ffi.awaitRenderWake(term.handle, last_seen_seq, -1);
-        return .{ .event_seq = wake.event_seq, .published = wake.published != 0 };
-    }
-    return term.inner.awaitRenderWake(last_seen_seq);
-}
-
-pub fn awaitRenderWakeTimeout(term: *Term, last_seen_seq: u64, timeout_ms: i32) SnapshotWake {
-    if (use_ffi) {
-        const wake = Ffi.awaitRenderWake(term.handle, last_seen_seq, timeout_ms);
-        return .{ .event_seq = wake.event_seq, .published = wake.published != 0 };
-    }
-    return term.inner.awaitRenderWakeTimeout(last_seen_seq, timeout_ms);
-}
-
-pub fn awaitMetadataWake(term: *Term, last_seen_seq: u64) MetadataWake {
-    if (use_ffi) return last_seen_seq;
-    return term.inner.awaitMetadataWake(last_seen_seq, -1) catch last_seen_seq;
-}
-
-pub fn prepareNextFrame(term: *Term, frame: FramePixels) PrepareResult {
-    if (use_ffi) {
-        return switch (Ffi.prepareNextFrame(term.handle, ffiFrame(frame))) {
-            0 => .idle,
-            1 => .prepared,
-            else => .failed,
-        };
-    }
-    return term.inner.prepareNextFrame(frame);
-}
-
-pub fn renderReadyFrame(term: *Term) RenderResult {
-    if (use_ffi) {
-        return switch (Ffi.renderReadyFrame(term.handle)) {
-            0 => .idle,
-            1 => .rendered,
-            2 => .rendered_more_pending,
-            3 => .needs_prepare,
-            4 => .stale,
-            else => .failed,
-        };
-    }
-    return term.inner.renderReadyFrame();
-}
-
-pub fn surfaceState(term: *const Term) SurfaceState {
-    if (use_ffi) {
-        const state = Ffi.surfaceState(term.handle);
-        return .{
-            .surface = .{
-                .texture_id = state.texture_id,
-                .width = state.width,
-                .height = state.height,
-                .epoch = state.epoch,
-            },
-            .state = @enumFromInt(state.state),
-        };
-    }
-    return term.inner.surfaceState();
-}
-
-pub fn renderedSnapshotSeq(term: *const Term) u64 {
-    if (use_ffi) return Ffi.renderedSnapshotSeq(term.handle);
-    return term.inner.renderedSnapshotSeq();
-}
-
-pub fn needsPrepare(term: *Term) bool {
-    return term.needsPrepare();
-}
-
-pub fn takePrepareMetrics(term: *Term) PrepareMetrics {
-    if (use_ffi) return Ffi.takePrepareMetrics(term.handle);
-    const metrics = term.inner.takePrepareMetrics();
+    const state = Ffi.scrollState(term.handle);
     return .{
-        .term_us = metrics.us,
-        .sync_us = metrics.sync_us,
-        .copy_us = metrics.copy_us,
-        .renderer_us = metrics.renderer_us,
-        .input_us = metrics.input_us,
-        .sparse_us = metrics.sparse_us,
-        .clusters_us = metrics.clusters_us,
-        .resolve_us = metrics.resolve_us,
-        .shape_us = metrics.shape_us,
-        .group_us = metrics.group_us,
-        .scene_us = metrics.scene_us,
-        .raster_us = metrics.raster_us,
-        .atlas_us = metrics.atlas_us,
+        .viewport_rows = state.viewport_rows,
+        .scrollback_count = state.scrollback_count,
+        .scrollback_offset = state.scrollback_offset,
+        .alternate_screen = state.alternate_screen != 0,
     };
 }
 
-pub fn takeSurfaceMetrics(term: *Term) QueueMetrics {
-    if (use_ffi) return Ffi.takeSurfaceMetrics(term.handle);
-    const metrics = term.inner.takeSurfaceMetrics();
-    return .{
-        .snapshot_publishes = metrics.snapshot_publishes,
-        .snapshot_hidden_drops = metrics.snapshot_hidden_drops,
-        .snapshot_clean_drops = metrics.snapshot_clean_drops,
-        .prepare_requests = metrics.prepare_requests,
-        .prepare_coalesces = metrics.prepare_coalesces,
-        .prepare_forced_full = metrics.prepare_forced_full,
-        .prepare_takes = metrics.prepare_takes,
-        .prepared_publishes = metrics.prepared_publishes,
-        .prepared_coalesces = metrics.prepared_coalesces,
-        .submit_takes = metrics.submit_takes,
-        .submit_valid = metrics.submit_valid,
-        .submit_rejected = metrics.submit_rejected,
-        .full_prepare_requests = metrics.full_prepare_requests,
-        .submitted_accepts = metrics.submitted_accepts,
-        .presents = metrics.presents,
-        .target_invalidations = metrics.target_invalidations,
-    };
+pub fn currentScrollbackCount(term: *const Term) usize {
+    const value = Ffi.currentScrollbackCount(term.handle);
+    return if (value < 0) 0 else @intCast(value);
 }
 
-pub fn lastRenderMetrics(term: *const Term) RenderMetrics {
-    if (use_ffi) return Ffi.lastRenderMetrics(term.handle);
-    const metrics = term.inner.lastRenderMetrics();
-    return .{
-        .sync_us = metrics.sync_us,
-        .copy_us = metrics.copy_us,
-        .render_us = metrics.render_us,
-        .glyphs = metrics.glyphs,
-        .fills = metrics.fills,
-        .clear_fills = metrics.clear_fills,
-        .background_fills = metrics.background_fills,
-        .decoration_fills = metrics.decoration_fills,
-        .cursor_fills = metrics.cursor_fills,
-        .uploads = metrics.uploads,
-        .face_checks = metrics.face_checks,
-        .face_cache_hits = metrics.face_cache_hits,
-        .shape_requests = metrics.shape_requests,
-        .shape_cache_hits = metrics.shape_cache_hits,
-        .fallback_hits = metrics.fallback_hits,
-        .fallback_misses = metrics.fallback_misses,
-        .missing_glyphs = metrics.missing_glyphs,
-    };
-}
-
-pub fn renderedTextContains(term: *const Term, text: []const u8) bool {
-    if (use_ffi) return Ffi.renderedTextContains(term.handle, text.ptr, text.len) != 0;
-    return term.inner.renderedTextContains(text);
-}
-
-pub fn followLiveBottom(term: *Term) bool {
-    if (use_ffi) {
-        const changed = Ffi.followLiveBottom(term.handle) != 0;
-        if (changed) _ = publishSnapshot(term);
-        return changed;
-    }
-    const changed = term.inner.followLiveBottom();
-    if (changed) _ = publishSnapshot(term);
-    return changed;
+pub fn currentScrollbackOffset(term: *const Term) usize {
+    const value = Ffi.currentScrollbackOffset(term.handle);
+    return if (value < 0) 0 else @intCast(value);
 }
 
 pub fn setScrollbackOffset(term: *Term, offset: usize) bool {
-    if (use_ffi) {
-        const changed = Ffi.setScrollbackOffset(term.handle, @intCast(@min(offset, @as(usize, std.math.maxInt(c_int))))) != 0;
-        if (changed) _ = publishSnapshot(term);
-        return changed;
-    }
-    const changed = term.inner.setScrollbackOffset(offset);
-    if (changed) _ = publishSnapshot(term);
+    const changed = Ffi.setScrollbackOffset(term.handle, @intCast(@min(offset, @as(usize, std.math.maxInt(c_int))))) != 0;
+    if (changed) _ = publishSource(term);
     return changed;
 }
 
-fn startFfiTerm(term: *FfiHostTerm) ?Ffi.TermHandle {
+pub fn followLiveBottom(term: *Term) bool {
+    const changed = Ffi.followLiveBottom(term.handle) != 0;
+    if (changed) _ = publishSource(term);
+    return changed;
+}
+
+pub fn viewportRows(term: *const Term) u16 {
+    return @max(@as(u16, 1), @as(u16, @intCast(Ffi.viewportRows(term.handle))));
+}
+
+pub fn isAlternateScreen(term: *const Term) bool {
+    return Ffi.isAlternateScreen(term.handle) != 0;
+}
+
+pub fn hasOutputProof(term: *const Term) bool {
+    return Ffi.hasOutputProof(term.handle) != 0;
+}
+
+pub fn inputBytesApplied(term: *const Term) u64 {
+    return Ffi.inputBytesApplied(term.handle);
+}
+
+pub fn snapshotEventSeq(term: *const Term) u64 {
+    return Ffi.snapshotEventSeq(term.handle);
+}
+
+pub fn copyCurrentTitle(term: *const Term, out_buf: []u8) usize {
+    return Ffi.copyCurrentTitle(term.handle, out_buf.ptr, out_buf.len);
+}
+
+pub fn isSessionAlive(term: *const Term) bool {
+    return Ffi.isSessionAlive(term.handle) != 0;
+}
+
+fn startFfiTerm(term: *Term) ?Ffi.TermHandle {
     term.handle = Ffi.init(.{
         .shell_ptr = term.launch.shell.ptr,
         .shell_len = term.launch.shell.len,
@@ -583,48 +329,23 @@ fn copyOwnedBytes(
     return buf[0..@min(written, buf.len)];
 }
 
-fn copyOwnedBytesAtPixel(
-    allocator: std.mem.Allocator,
-    comptime copier: fn (Ffi.TermHandle, i32, i32, [*]u8, usize) callconv(.c) usize,
-    handle: Ffi.TermHandle,
-    pixel_x: i32,
-    pixel_y: i32,
-) !?[]u8 {
-    var scratch: [1]u8 = undefined;
-    const len = copier(handle, pixel_x, pixel_y, scratch[0..].ptr, 0);
-    if (len == 0) return null;
-    const buf = try allocator.alloc(u8, len);
-    errdefer allocator.free(buf);
-    const written = copier(handle, pixel_x, pixel_y, buf.ptr, buf.len);
-    return buf[0..@min(written, buf.len)];
-}
-
-fn applyFfiFontConfig(term: *FfiHostTerm) !void {
+fn applyFfiFontConfig(term: *Term) !void {
     if (Ffi.setFontSizePx(term.handle, term.font_size_px) != 0) return error.TransportUnavailable;
     if (!applyFfiPrimaryFont(term)) return error.TransportUnavailable;
     if (!applyFfiFallbackFonts(term)) return error.TransportUnavailable;
 }
 
-fn applyFfiPrimaryFont(term: *FfiHostTerm) bool {
+fn applyFfiPrimaryFont(term: *Term) bool {
     const font_path = term.primary_font_path orelse return true;
     return Ffi.setPrimaryFontPath(term.handle, font_path.ptr, font_path.len) == 0;
 }
 
-fn applyFfiFallbackFonts(term: *FfiHostTerm) bool {
+fn applyFfiFallbackFonts(term: *Term) bool {
     if (Ffi.clearFallbackFontPaths(term.handle) != 0) return false;
     for (term.fallback_font_paths) |path| {
         if (Ffi.addFallbackFontPath(term.handle, path.ptr, path.len) != 0) return false;
     }
     return true;
-}
-
-fn ffiFrame(frame: FramePixels) Ffi.HowlTermFramePixels {
-    return .{
-        .render_width = frame.render_width,
-        .render_height = frame.render_height,
-        .grid_width = frame.grid_width,
-        .grid_height = frame.grid_height,
-    };
 }
 
 fn abiMouseKind(kind: Input.MouseEventKind) u8 {
@@ -644,15 +365,6 @@ fn abiMouseButton(button: Input.MouseButton) u8 {
         .right => Ffi.mouseButtonRight(),
         .wheel_up => Ffi.mouseButtonWheelUp(),
         .wheel_down => Ffi.mouseButtonWheelDown(),
-    };
-}
-
-fn abiUnderlineStyle(style: ?LinkUnderlineStyle) i32 {
-    return switch (style orelse return -1) {
-        .straight => 0,
-        .curly => 1,
-        .dotted => 2,
-        .dashed => 3,
     };
 }
 

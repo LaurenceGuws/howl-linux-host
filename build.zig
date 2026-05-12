@@ -36,6 +36,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "howl_lua", .module = howl_lua_mod },
         },
     });
+    const host_loop_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/test_host_loop.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "howl_term", .module = howl_term_mod },
+        },
+    });
 
     const exe = b.addExecutable(.{
         .name = "howl_term",
@@ -152,11 +160,23 @@ pub fn build(b: *std.Build) void {
         }),
         .filters = b.args orelse &.{},
     });
+    const host_loop_tests = b.addTest(.{
+        .name = "test-host-loop",
+        .root_module = host_loop_test_mod,
+        .filters = b.args orelse &.{},
+    });
     mod_tests.use_llvm = true;
     rain_stress_tests.use_llvm = true;
     rain_stress_tests.root_module.link_libc = true;
     visual_rain_stress_tests.use_llvm = true;
     visual_rain_stress_tests.root_module.link_libc = true;
+    host_loop_tests.use_llvm = true;
+    host_loop_tests.root_module.addIncludePath(sdl_dep.path("include"));
+    host_loop_tests.root_module.addIncludePath(b.path("../vendor"));
+    host_loop_tests.root_module.addCSourceFile(.{ .file = b.path("src/window/stb_image.c") });
+    host_loop_tests.root_module.linkLibrary(sdl_lib);
+    host_loop_tests.root_module.link_libc = true;
+    host_loop_tests.root_module.linkSystemLibrary("GL", .{});
     mod_tests.root_module.addIncludePath(sdl_dep.path("include"));
     mod_tests.root_module.addIncludePath(b.path("../vendor"));
     mod_tests.root_module.addCSourceFile(.{ .file = b.path("src/window/stb_image.c") });
@@ -178,8 +198,11 @@ pub fn build(b: *std.Build) void {
     test_unit_build_step.dependOn(&b.addInstallArtifact(mod_tests, .{}).step);
     test_unit_build_step.dependOn(&b.addInstallArtifact(rain_stress_tests, .{}).step);
     test_unit_build_step.dependOn(&b.addInstallArtifact(visual_rain_stress_tests, .{}).step);
+    test_unit_build_step.dependOn(&b.addInstallArtifact(host_loop_tests, .{}).step);
     test_unit_step.dependOn(&run_mod_tests.step);
     test_unit_step.dependOn(&run_rain_stress_tests.step);
     test_unit_step.dependOn(&run_visual_rain_stress_tests.step);
+    const run_host_loop_tests = b.addRunArtifact(host_loop_tests);
+    test_unit_step.dependOn(&run_host_loop_tests.step);
     test_step.dependOn(test_unit_step);
 }

@@ -4,7 +4,6 @@
 
 const std = @import("std");
 const api = @import("api.zig");
-const howl_term = @import("howl_term");
 const window = @import("../window/window.zig");
 const HostInput = @import("../input/input.zig").Input;
 const scrollbar = @import("scrollbar.zig");
@@ -67,7 +66,7 @@ fn setOffset(self: anytype, offset: usize) bool {
     return changed;
 }
 
-fn scrollbarView(term_view: howl_term.viewport.ScrollState) scrollbar.View {
+fn scrollbarView(term_view: api.ScrollState) scrollbar.View {
     return .{
         .viewport_rows = term_view.viewport_rows,
         .scrollback_count = term_view.scrollback_count,
