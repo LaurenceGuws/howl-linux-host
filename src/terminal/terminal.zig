@@ -58,7 +58,6 @@ pub const Terminal = struct {
     wake_event_pending: std.atomic.Value(bool),
     progress_stop: std.atomic.Value(bool),
     progress_thread: ?std.Thread,
-    progress_wake: ?*window.c_win.SDL_Semaphore,
     window_focused: bool,
     widget_focused: bool,
     scrollbar: scroll.State,
@@ -113,7 +112,6 @@ pub const Terminal = struct {
             .wake_event_pending = std.atomic.Value(bool).init(false),
             .progress_stop = std.atomic.Value(bool).init(false),
             .progress_thread = null,
-            .progress_wake = null,
             .window_focused = true,
             .widget_focused = true,
             .scrollbar = .{},
@@ -140,6 +138,7 @@ pub const Terminal = struct {
     pub fn renderWakeNotify(context: ?*anyopaque) callconv(.c) void {
         const wake_context = context orelse return;
         const self: *Terminal = @ptrCast(@alignCast(wake_context));
+        if (!api.needsFrame(&self.term) and api.needsPrepare(&self.term)) return;
         const was_pending = self.wake_event_pending.swap(true, .acq_rel);
         if (!was_pending) HostInput.wakeWindow();
     }

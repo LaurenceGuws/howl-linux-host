@@ -6,7 +6,6 @@ const std = @import("std");
 const api = @import("api.zig");
 const window = @import("../window/window.zig");
 const scroll = @import("scroll.zig");
-const thread = @import("thread.zig");
 
 pub fn titleSlice(self: anytype) []const u8 {
     return self.title_buf[0..self.title_len];
@@ -49,7 +48,6 @@ pub fn serviceMetadata(self: anytype, allocator: std.mem.Allocator) void {
 
 pub fn syncInputFocus(self: anytype) void {
     _ = api.setInputFocus(&self.term, self.window_focused and self.widget_focused) catch return;
-    thread.wakeProgress(self);
 }
 
 fn drainClipboardSet(self: anytype, allocator: std.mem.Allocator) ?[]u8 {

@@ -31,9 +31,10 @@ pub fn prepareNext(self: anytype) bool {
 }
 
 pub fn render(self: anytype) void {
-    const force_first_prepare = self.last_surface.texture_id == 0;
-    if (force_first_prepare and !prepareNext(self)) return;
-    if (api.needsPrepare(&self.term) and !prepareNext(self)) return;
+    const needs_prepare = self.last_surface.texture_id == 0 or api.needsPrepare(&self.term);
+    // Keep each host render turn bounded to one prepare so large output does not
+    // stall the main thread behind multiple expensive renderer passes.
+    if (needs_prepare and !prepareNext(self)) return;
     const result = api.renderReadyFrame(&self.term);
     switch (result) {
         .idle, .stale, .failed, .needs_prepare => return,

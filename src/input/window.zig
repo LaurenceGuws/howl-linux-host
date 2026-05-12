@@ -18,30 +18,32 @@ pub fn clearQuitRequest() void {
     quit_requested.store(false, .release);
 }
 
+pub fn nowNs() u64 {
+    return c_win.SDL_GetTicksNS();
+}
+
+pub fn logf(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print(fmt ++ "\n", args);
+}
+
+pub fn logSdlEvent(stage: []const u8, event_type: u32) void {
+    logf("host-loop ts_ns={d} stage={s} event_type={d}", .{ nowNs(), stage, event_type });
+}
+
 pub fn requestQuit() void {
     quit_requested.store(true, .release);
     wakeEventLoop();
 }
 
-pub fn pollEventSignal(handle: *c_win.SDL_Window) EventSignal {
-    _ = handle;
-    if (quit_requested.load(.acquire)) return .quit;
-    var event: c_win.SDL_Event = undefined;
-    while (c_win.SDL_PollEvent(&event)) {
-        if (isQuitEvent(event.type)) return .quit;
-        if (quit_requested.load(.acquire)) return .quit;
-    }
-    return .none;
-}
-
 pub fn waitEventSignal(handle: *c_win.SDL_Window) EventSignal {
+    _ = handle;
     if (quit_requested.load(.acquire)) return .quit;
     var event: c_win.SDL_Event = undefined;
     if (c_win.SDL_WaitEvent(&event)) {
         if (isQuitEvent(event.type)) return .quit;
         if (quit_requested.load(.acquire)) return .quit;
     }
-    return pollEventSignal(handle);
+    return .none;
 }
 
 fn isQuitEvent(event_type: u32) bool {

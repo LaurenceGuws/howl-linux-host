@@ -27,34 +27,25 @@ pub fn start(self: anytype) !void {
     api.setPrimaryFontPath(&self.term, self.conf.fonts.primary);
     api.setFallbackFontPaths(&self.term, font_fallbacks);
     try api.start(&self.term);
-    const progress_wake = window.c_win.SDL_CreateSemaphore(0) orelse return error.ProgressSemaphoreUnavailable;
-    self.progress_wake = progress_wake;
-    errdefer {
-        window.c_win.SDL_DestroySemaphore(progress_wake);
-        self.progress_wake = null;
-    }
     self.progress_stop.store(false, .release);
     try api.setRenderWakeNotify(&self.term, @TypeOf(self.*).renderWakeNotify, self);
+    const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
+    setThreadName(progress_thread, "howl-term-host");
+    self.progress_thread = progress_thread;
     const geom = self.geometrySnapshot();
     try api.syncFrameGeometry(&self.term, geom);
     if (!api.isAlive(&self.term)) return error.TransportUnavailable;
     effects.refreshTitle(self);
     effects.syncInputFocus(self);
-    const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
-    setThreadName(progress_thread, "howl-term-host");
-    self.progress_thread = progress_thread;
     HostInput.wakeWindow();
 }
 
 pub fn stop(self: anytype) void {
     self.progress_stop.store(true, .release);
-    thread.wakeProgress(self);
     if (self.term_ready) _ = api.setRenderWakeNotify(&self.term, null, null) catch {};
     if (self.term_ready) api.stop(&self.term);
     if (self.progress_thread) |handle| handle.join();
     self.progress_thread = null;
-    if (self.progress_wake) |sem| window.c_win.SDL_DestroySemaphore(sem);
-    self.progress_wake = null;
     if (self.link_cursor_active) window.useDefaultCursor();
     self.link_cursor_active = false;
     if (self.term_ready) api.deinit(&self.term);

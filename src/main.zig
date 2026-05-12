@@ -4,8 +4,9 @@
 
 const std = @import("std");
 const cli_args = @import("cli/args.zig");
-const Config = @import("config/config.zig");
+ const Config = @import("config/config.zig");
 const Input = @import("input/input.zig").Input;
+const InputWindow = @import("input/window.zig");
 const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TerminalWidget = @import("terminal/terminal.zig").Terminal;
@@ -78,12 +79,13 @@ fn start(options: Options) !void {
     });
     while (running) {
         var work = collectRenderWork(activeTab(tabs.items, active_tab_idx));
-        const signal = if (work.needs_frame) Input.pollWindow(window.handle) else Input.waitWindow(window.handle);
-        if (signal == .quit) {
-            running = false;
-            continue;
+        if (!work.needs_frame) {
+            const signal = Input.waitWindow(window.handle);
+            if (signal == .quit) {
+                running = false;
+                continue;
+            }
         }
-
         activeTab(tabs.items, active_tab_idx).clearWakeEventPending();
 
         if (input.drainWindowFocusChanged()) |focused| setWindowFocused(&window, tabs.items, active_tab_idx, focused);
@@ -104,8 +106,14 @@ fn start(options: Options) !void {
         work = collectRenderWork(activeTab(tabs.items, active_tab_idx));
         if (!work.needs_frame) continue;
 
+        InputWindow.logf("host-loop ts_ns={d} stage=render-begin terminal_frame={}", .{ InputWindow.nowNs(), work.terminal_frame });
         render(&conf, &window, &tab_bar, tabs.items, active_tab_idx, work);
+        InputWindow.logf("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
         if (activeTabFailed(tabs.items, active_tab_idx)) return error.HostTabFailed;
+
+        if (activeTab(tabs.items, active_tab_idx).needsContentFrame(Window.c_win.SDL_GetTicksNS())) {
+            Input.wakeWindow();
+        }
     }
 }
 

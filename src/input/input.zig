@@ -106,6 +106,7 @@ pub const Input = struct {
     pub fn drainInputEvent(self: *Input) ?Event {
         if (self.input_len == 0) return null;
         const out = self.input_events[0];
+        logQueuedInputEvent("dequeue-input", out);
         self.input_len -= 1;
         if (self.input_len > 0) {
             std.mem.copyForwards(Event, self.input_events[0..self.input_len], self.input_events[1 .. self.input_len + 1]);
@@ -122,6 +123,7 @@ pub const Input = struct {
     pub fn drainBindingAction(self: *Input) ?Bindings.Action {
         if (self.binding_len == 0) return null;
         const out = self.binding_buf[0];
+        window.logf("host-loop ts_ns={d} stage=dequeue-binding action={s}", .{ window.nowNs(), @tagName(out) });
         self.binding_len -= 1;
         if (self.binding_len > 0) {
             std.mem.copyForwards(Bindings.Action, self.binding_buf[0..self.binding_len], self.binding_buf[1 .. self.binding_len + 1]);
@@ -131,18 +133,16 @@ pub const Input = struct {
 
     pub fn drainWindowGeometryChanged(self: *Input) bool {
         const changed = self.window_geometry_changed;
+        if (changed) window.logf("host-loop ts_ns={d} stage=dequeue-window-geometry", .{window.nowNs()});
         self.window_geometry_changed = false;
         return changed;
     }
 
     pub fn drainWindowFocusChanged(self: *Input) ?bool {
         const focused = self.window_focus_changed;
+        if (focused) |value| window.logf("host-loop ts_ns={d} stage=dequeue-window-focus focused={}", .{ window.nowNs(), value });
         self.window_focus_changed = null;
         return focused;
-    }
-
-    pub fn pollWindow(handle: *c.SDL_Window) Signal {
-        return window.pollEventSignal(handle);
     }
 
     pub fn waitWindow(handle: *c.SDL_Window) Signal {
@@ -163,6 +163,7 @@ var watch_registered: bool = false;
 
 fn processEvent(event: *const c.SDL_Event) void {
     const input = active_input orelse return;
+    defer if (shouldLogSdlEvent(event.type)) window.logSdlEvent("handled", event.type);
     switch (event.type) {
         c.SDL_EVENT_QUIT,
         c.SDL_EVENT_TERMINATING,
@@ -317,6 +318,7 @@ fn processEvent(event: *const c.SDL_Event) void {
 
 fn eventWatch(_: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.c) bool {
     if (event == null) return false;
+    if (shouldLogSdlEvent(event.*.type)) window.logSdlEvent("received", event.*.type);
     processEvent(event);
     return false;
 }
@@ -351,6 +353,7 @@ fn appendInputEvent(input: *Input, event: Input.Event) bool {
     if (input.input_len >= input.input_events.len) return false;
     input.input_events[input.input_len] = event;
     input.input_len += 1;
+    logQueuedInputEvent("queue-input", event);
     return true;
 }
 
@@ -358,6 +361,29 @@ fn appendBindingAction(input: *Input, action: Input.Bindings.Action) void {
     if (input.binding_len >= input.binding_buf.len) return;
     input.binding_buf[input.binding_len] = action;
     input.binding_len += 1;
+    window.logf("host-loop ts_ns={d} stage=queue-binding action={s}", .{ window.nowNs(), @tagName(action) });
+}
+
+fn logQueuedInputEvent(stage: []const u8, event: Input.Event) void {
+    if (event == .mouse) return;
+    const kind = switch (event) {
+        .bytes => "bytes",
+        .key => "key",
+        .mouse => "mouse",
+    };
+    window.logf("host-loop ts_ns={d} stage={s} kind={s}", .{ window.nowNs(), stage, kind });
+}
+
+fn isMouseEventType(event_type: u32) bool {
+    return event_type == c.SDL_EVENT_MOUSE_MOTION or
+        event_type == c.SDL_EVENT_MOUSE_BUTTON_DOWN or
+        event_type == c.SDL_EVENT_MOUSE_BUTTON_UP or
+        event_type == c.SDL_EVENT_MOUSE_WHEEL;
+}
+
+fn shouldLogSdlEvent(event_type: u32) bool {
+    if (isMouseEventType(event_type)) return false;
+    return event_type != c.SDL_EVENT_USER;
 }
 
 fn sdlKey(sdl_key: c_uint) ?keys.Key {
