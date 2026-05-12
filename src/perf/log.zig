@@ -15,13 +15,12 @@ const c = @cImport({
 const sample_interval_ms: u32 = 1000;
 const default_log_name: [*:0]const u8 = "howl-runtime.jsonl";
 
-var shared_mutex: ?*window.c_win.SDL_Mutex = null;
+var shared_state_mutex: std.Io.Mutex = .init;
 var shared_file: ?*c.FILE = null;
 
 pub const State = struct {
     file: ?*c.FILE,
     wake_sem: ?*window.c_win.SDL_Semaphore,
-    file_mutex: ?*window.c_win.SDL_Mutex,
     thread: ?std.Thread,
     stop: std.atomic.Value(bool),
     term: *api.Term,
@@ -29,21 +28,18 @@ pub const State = struct {
     pub fn init(self: *State, term: *api.Term, path: ?[*:0]const u8) !void {
         const file = c.fopen(path orelse default_log_name, "w") orelse return error.PerfLogOpenFailed;
         errdefer _ = c.fclose(file);
-        const file_mutex = window.c_win.SDL_CreateMutex() orelse return error.PerfMutexUnavailable;
-        errdefer window.c_win.SDL_DestroyMutex(file_mutex);
         const sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.PerfSemaphoreUnavailable;
         errdefer window.c_win.SDL_DestroySemaphore(sem);
 
         self.* = .{
             .file = file,
             .wake_sem = sem,
-            .file_mutex = file_mutex,
             .thread = null,
             .stop = std.atomic.Value(bool).init(false),
             .term = term,
         };
-        setSharedState(file_mutex, file);
-        errdefer setSharedState(null, null);
+        setSharedState(file);
+        errdefer setSharedState(null);
 
         const thread = try std.Thread.spawn(.{}, threadMain, .{self});
         setThreadName(thread, "howl-perf");
@@ -55,11 +51,9 @@ pub const State = struct {
         if (self.wake_sem) |sem| window.c_win.SDL_SignalSemaphore(sem);
         if (self.thread) |thread| thread.join();
         self.thread = null;
-        setSharedState(null, null);
+        setSharedState(null);
         if (self.wake_sem) |sem| window.c_win.SDL_DestroySemaphore(sem);
         self.wake_sem = null;
-        if (self.file_mutex) |mutex| window.c_win.SDL_DestroyMutex(mutex);
-        self.file_mutex = null;
         if (self.file) |file| _ = c.fclose(file);
         self.file = null;
     }
@@ -78,9 +72,9 @@ const ThreadSample = struct {
 };
 
 pub fn logSdlFpsWindow(frames: u64, window_frames: u64, fps: f64, avg_cache_us: f64, avg_draw_us: f64, avg_swap_us: f64, avg_total_us: f64) void {
-    const file = getSharedFile() orelse return;
     lockFile();
     defer unlockFile();
+    const file = shared_file orelse return;
     _ = c.fprintf(
         file,
         "{\"type\":\"sdl_fps\",\"schema\":1,\"frames\":%llu,\"window_frames\":%llu,\"fps\":%.2f,\"avg_cache_us\":%.2f,\"avg_draw_us\":%.2f,\"avg_swap_us\":%.2f,\"avg_total_us\":%.2f}\n",
@@ -192,25 +186,18 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
     last_sample_ns.* = now_ns;
 }
 
-fn setSharedState(mutex: ?*window.c_win.SDL_Mutex, file: ?*c.FILE) void {
+fn setSharedState(file: ?*c.FILE) void {
     lockFile();
     defer unlockFile();
-    shared_mutex = mutex;
     shared_file = file;
 }
 
-fn getSharedFile() ?*c.FILE {
-    lockFile();
-    defer unlockFile();
-    return shared_file;
-}
-
 fn lockFile() void {
-    if (shared_mutex) |mutex| _ = window.c_win.SDL_LockMutex(mutex);
+    std.Io.Threaded.mutexLock(&shared_state_mutex);
 }
 
 fn unlockFile() void {
-    if (shared_mutex) |mutex| window.c_win.SDL_UnlockMutex(mutex);
+    std.Io.Threaded.mutexUnlock(&shared_state_mutex);
 }
 
 fn readThreadSample(tid: u32) !ThreadSample {

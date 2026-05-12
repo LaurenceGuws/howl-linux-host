@@ -7,6 +7,8 @@ const window = @import("../window/window.zig");
 const HostInput = @import("../input/input.zig").Input;
 const api = @import("api.zig");
 const effects = @import("effects.zig");
+const thread = @import("thread.zig");
+
 pub fn start(self: anytype) !void {
     var font_fallbacks_buf: [32][:0]const u8 = undefined;
     const font_fallbacks = self.conf.fonts.flattenFallbacks(font_fallbacks_buf[0..]);
@@ -25,24 +27,40 @@ pub fn start(self: anytype) !void {
     api.setPrimaryFontPath(&self.term, self.conf.fonts.primary);
     api.setFallbackFontPaths(&self.term, font_fallbacks);
     try api.start(&self.term);
+    const progress_wake = window.c_win.SDL_CreateSemaphore(0) orelse return error.ProgressSemaphoreUnavailable;
+    self.progress_wake = progress_wake;
+    errdefer {
+        window.c_win.SDL_DestroySemaphore(progress_wake);
+        self.progress_wake = null;
+    }
+    self.progress_stop.store(false, .release);
     try api.setRenderWakeNotify(&self.term, @TypeOf(self.*).renderWakeNotify, self);
-    HostInput.wakeWindow();
     const geom = self.geometrySnapshot();
     try api.syncFrameGeometry(&self.term, geom);
     if (!api.isAlive(&self.term)) return error.TransportUnavailable;
     effects.refreshTitle(self);
-    if (self.title_len == 0) return error.MissingTabTitle;
     effects.syncInputFocus(self);
-    // const metadata_thread = try std.Thread.spawn(.{}, thread.metadataThreadMain, .{self});
-    // setThreadName(metadata_thread, "howl-meta");
-    // self.metadata_thread = metadata_thread;
+    const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
+    setThreadName(progress_thread, "howl-term-host");
+    self.progress_thread = progress_thread;
+    HostInput.wakeWindow();
 }
 
 pub fn stop(self: anytype) void {
-    self.metadata_thread = null;
+    self.progress_stop.store(true, .release);
+    thread.wakeProgress(self);
     if (self.term_ready) _ = api.setRenderWakeNotify(&self.term, null, null) catch {};
+    if (self.term_ready) api.stop(&self.term);
+    if (self.progress_thread) |handle| handle.join();
+    self.progress_thread = null;
+    if (self.progress_wake) |sem| window.c_win.SDL_DestroySemaphore(sem);
+    self.progress_wake = null;
     if (self.link_cursor_active) window.useDefaultCursor();
     self.link_cursor_active = false;
     if (self.term_ready) api.deinit(&self.term);
     self.term_ready = false;
+}
+
+fn setThreadName(handle: std.Thread, name: [:0]const u8) void {
+    if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(handle.getHandle(), name.ptr);
 }

@@ -63,6 +63,7 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
 }
 
 pub fn deinit(comptime c: type, state: *State(c)) void {
+    logSdlFps(c, state, true);
     releaseTabCache(c, state);
     if (state.gl_context) |ctx| {
         _ = ctx;
@@ -95,14 +96,15 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     state.draw_window_ns +%= before_swap_ns -| after_cache_ns;
     state.swap_window_ns +%= end_ns -| before_swap_ns;
     state.total_window_ns +%= end_ns -| start_ns;
-    logSdlFps(c, state);
+    logSdlFps(c, state, false);
 }
 
-fn logSdlFps(comptime c: type, state: *State(c)) void {
-    if (state.present_frames < state.fps_next_log_frame) return;
+fn logSdlFps(comptime c: type, state: *State(c), force: bool) void {
+    if (!force and state.present_frames < state.fps_next_log_frame) return;
     const now_ns = c.SDL_GetTicksNS();
     const elapsed_ns = now_ns -| state.fps_window_start_ns;
     const frame_delta = state.present_frames -| state.fps_window_start_frame;
+    if (frame_delta == 0) return;
     const fps = if (elapsed_ns == 0)
         0
     else

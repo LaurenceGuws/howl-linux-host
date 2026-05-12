@@ -8,8 +8,8 @@ const HostInput = @import("../input/input.zig").Input;
 const howl_term = @import("howl_term");
 const api = @import("api.zig");
 const HowlTerm = api.Term;
-const LifecycleState = howl_term.runtime.LifecycleState;
-const FramePixels = howl_term.runtime.FramePixels;
+const LifecycleState = howl_term.lifecycle.State;
+const FramePixels = howl_term.frame.Pixels;
 const SurfaceHandle = howl_term.surface.Handle;
 const SurfaceState = howl_term.surface.State;
 const Config = @import("../config/config.zig");
@@ -56,8 +56,9 @@ pub const Terminal = struct {
     last_surface: SurfaceHandle,
     last_resize_ns: u64,
     wake_event_pending: std.atomic.Value(bool),
-    metadata_quiet_seq: std.atomic.Value(u64),
-    metadata_thread: ?std.Thread,
+    progress_stop: std.atomic.Value(bool),
+    progress_thread: ?std.Thread,
+    progress_wake: ?*window.c_win.SDL_Semaphore,
     window_focused: bool,
     widget_focused: bool,
     scrollbar: scroll.State,
@@ -110,8 +111,9 @@ pub const Terminal = struct {
             .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .last_resize_ns = 0,
             .wake_event_pending = std.atomic.Value(bool).init(false),
-            .metadata_quiet_seq = std.atomic.Value(u64).init(0),
-            .metadata_thread = null,
+            .progress_stop = std.atomic.Value(bool).init(false),
+            .progress_thread = null,
+            .progress_wake = null,
             .window_focused = true,
             .widget_focused = true,
             .scrollbar = .{},

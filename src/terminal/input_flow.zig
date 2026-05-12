@@ -9,9 +9,11 @@ const term_input = @import("input.zig");
 const links = @import("links.zig");
 const scroll = @import("scroll.zig");
 const selection = @import("selection.zig");
+const thread = @import("thread.zig");
 
 pub fn paste(self: anytype, payload: []const u8) void {
     api.publishPaste(&self.term, payload) catch return;
+    thread.wakeProgress(self);
 }
 
 pub fn drain(self: anytype, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
@@ -43,11 +45,13 @@ pub fn drain(self: anytype, input_events: *HostInput, origin_x: i32, origin_y: i
 
 fn publishBytes(self: anytype, bytes: []const u8) void {
     api.publishInputBytes(&self.term, bytes) catch return;
+    thread.wakeProgress(self);
 }
 
 fn publishKey(self: anytype, key: HostInput.Keys.Event) void {
     const terminal_key = term_input.key(key.key) orelse return;
     api.publishInputKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return;
+    thread.wakeProgress(self);
 }
 
 fn publishMouse(self: anytype, mouse_event: HostInput.Mouse.Event) bool {

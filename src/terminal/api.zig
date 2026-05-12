@@ -8,24 +8,32 @@ const howl_term = @import("howl_term");
 const zig_init_pty_params = @typeInfo(@TypeOf(howl_term.HowlTerm.initPty)).@"fn".params;
 const zig_publish_mouse_params = @typeInfo(@TypeOf(howl_term.HowlTerm.publishMouseEvent)).@"fn".params;
 const zig_hover_result = @typeInfo(@TypeOf(howl_term.HowlTerm.setHoveredLinkAtPixel)).@"fn".return_type.?;
+const zig_transport_limits = @typeInfo(@TypeOf(howl_term.HowlTerm.pumpTransport)).@"fn".params[1].type.?;
+const zig_transport_progress = @typeInfo(@TypeOf(howl_term.HowlTerm.pumpTransport)).@"fn".return_type.?;
+const zig_apply_progress = @typeInfo(@TypeOf(howl_term.HowlTerm.applyPending)).@"fn".return_type.?;
+const zig_publish_result = @typeInfo(@TypeOf(howl_term.HowlTerm.publishSnapshot)).@"fn".return_type.?;
 const zig_prepare_result = @typeInfo(@TypeOf(howl_term.HowlTerm.prepareNextFrame)).@"fn".return_type.?;
 const zig_render_result = @typeInfo(@TypeOf(howl_term.HowlTerm.renderReadyFrame)).@"fn".return_type.?;
 const zig_snapshot_wake = @typeInfo(@TypeOf(howl_term.HowlTerm.awaitRenderWake)).@"fn".return_type.?;
 const zig_clipboard_result = @typeInfo(@TypeOf(howl_term.HowlTerm.drainPendingClipboardSet)).@"fn".return_type.?;
 
-const Ffi = howl_term.Ffi;
+const Ffi = howl_term.C;
 const use_ffi = true;
 // const use_ffi = build_options.term_backend_ffi;
 
-pub const Input = howl_term.Input;
-pub const LifecycleState = howl_term.runtime.LifecycleState;
-pub const FramePixels = howl_term.runtime.FramePixels;
+pub const Input = howl_term.input;
+pub const LifecycleState = howl_term.lifecycle.State;
+pub const FramePixels = howl_term.frame.Pixels;
+pub const TransportLimits = zig_transport_limits;
+pub const TransportProgress = zig_transport_progress;
+pub const ApplyProgress = zig_apply_progress;
+pub const PublishResult = zig_publish_result;
 pub const SurfaceHandle = howl_term.surface.Handle;
 pub const SurfaceState = howl_term.surface.State;
 pub const SurfaceMetrics = howl_term.surface.Metrics;
-pub const PrepareMetrics = Ffi.FfiPrepareMetrics;
-pub const QueueMetrics = Ffi.FfiSurfaceMetrics;
-pub const RenderMetrics = Ffi.FfiRenderMetrics;
+pub const PrepareMetrics = Ffi.HowlTermPrepareMetrics;
+pub const QueueMetrics = Ffi.HowlTermSurfaceMetrics;
+pub const RenderMetrics = Ffi.HowlTermRenderMetrics;
 pub const ScrollState = howl_term.viewport.ScrollState;
 pub const LinkUnderlineStyle = howl_term.viewport.LinkUnderlineStyle;
 pub const LinkHoverResult = zig_hover_result;
@@ -52,6 +60,8 @@ const ZigHostTerm = struct {
 const FfiHostTerm = struct {
     handle: Ffi.TermHandle = 0,
     launch: PtyLaunchConfig,
+    cols: u16,
+    rows: u16,
     cell_px: RenderCellSize,
     font_size_px: u16,
     primary_font_path: ?[:0]const u8 = null,
@@ -72,6 +82,8 @@ pub fn initPty(
     if (use_ffi) {
         return .{
             .launch = launch,
+            .cols = cols,
+            .rows = rows,
             .cell_px = cell_px,
             .font_size_px = cell_px.height,
         };
@@ -81,11 +93,19 @@ pub fn initPty(
 
 pub fn deinit(term: *Term) void {
     if (use_ffi) {
-        if (term.handle != 0) Ffi.destroy(term.handle);
+        if (term.handle != 0) Ffi.deinit(term.handle);
         term.handle = 0;
         return;
     }
     term.inner.deinit();
+}
+
+pub fn stop(term: *Term) void {
+    if (use_ffi) {
+        if (term.handle != 0) _ = Ffi.stop(term.handle);
+        return;
+    }
+    term.inner.stop();
 }
 
 pub fn start(term: *Term) !void {
@@ -93,7 +113,7 @@ pub fn start(term: *Term) !void {
         if (term.handle != 0) return error.AlreadyStarted;
         term.handle = startFfiTerm(term) orelse return error.TransportUnavailable;
         errdefer {
-            Ffi.destroy(term.handle);
+            Ffi.deinit(term.handle);
             term.handle = 0;
         }
         try applyFfiFontConfig(term);
@@ -102,12 +122,47 @@ pub fn start(term: *Term) !void {
     try term.inner.start();
 }
 
-pub fn wakeSnapshotWaiters(term: *Term) void {
+pub fn waitTransport(term: *Term, timeout_ms: i32) bool {
+    if (use_ffi) return Ffi.waitTransport(term.handle, timeout_ms) != 0;
+    return term.inner.waitTransport(timeout_ms);
+}
+
+pub fn pumpTransport(term: *Term, limits: TransportLimits) TransportProgress {
     if (use_ffi) {
-        Ffi.wakeSnapshotWaiters(term.handle);
-        return;
+        const progress = Ffi.pumpTransport(term.handle, .{ .max_reads = limits.max_reads, .max_bytes = limits.max_bytes });
+        return .{
+            .drained_input_bytes = progress.drained_input_bytes,
+            .reads = progress.reads,
+            .bytes_read = progress.bytes_read,
+            .pending_input_bytes = progress.pending_input_bytes,
+            .queued_events = progress.queued_events,
+        };
     }
-    term.inner.wakeSnapshotWaiters();
+    return term.inner.pumpTransport(limits);
+}
+
+pub fn applyPending(term: *Term, max_events: usize) ApplyProgress {
+    if (use_ffi) {
+        const progress = Ffi.applyPending(term.handle, max_events);
+        return .{
+            .applied_events = progress.applied_events,
+            .remaining_events = progress.remaining_events,
+            .state_changed = progress.state_changed != 0,
+        };
+    }
+    return term.inner.applyPending(max_events);
+}
+
+pub fn publishSnapshot(term: *Term) PublishResult {
+    if (use_ffi) {
+        return switch (Ffi.publishSnapshot(term.handle)) {
+            0 => .idle,
+            1 => .published,
+            2 => .queued,
+            else => .blocked,
+        };
+    }
+    return term.inner.publishSnapshot();
 }
 
 pub fn setRenderWakeNotify(term: *Term, notify: ?RenderWakeNotify, context: ?*anyopaque) !void {
@@ -127,12 +182,15 @@ pub fn wakeMetadataWaiters(term: *Term) void {
 pub fn syncFrameGeometry(term: *Term, frame: FramePixels) !void {
     if (use_ffi) {
         switch (Ffi.syncFrameGeometry(term.handle, ffiFrame(frame))) {
-            0 => return,
+            0 => {},
             -2 => return error.InvalidDimensions,
             else => return error.TransportUnavailable,
         }
+        _ = publishSnapshot(term);
+        return;
     }
     try term.inner.syncFrameGeometry(frame.renderWidth(), frame.renderHeight(), frame.gridWidth(), frame.gridHeight());
+    _ = publishSnapshot(term);
 }
 
 pub fn isAlive(term: *const Term) bool {
@@ -140,31 +198,48 @@ pub fn isAlive(term: *const Term) bool {
     return term.inner.isAlive();
 }
 
+pub fn hasOutboundInputBacklog(term: *const Term) bool {
+    if (use_ffi) return Ffi.hasOutboundInputBacklog(term.handle) != 0;
+    return term.inner.hasOutboundInputBacklog();
+}
+
 pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
     if (use_ffi) {
         term.font_size_px = font_size_px;
-        if (term.handle != 0) std.debug.assert(Ffi.setFontSizePx(term.handle, font_size_px) == 0);
+        if (term.handle != 0) {
+            std.debug.assert(Ffi.setFontSizePx(term.handle, font_size_px) == 0);
+            _ = publishSnapshot(term);
+        }
         return;
     }
     term.inner.setFontSizePx(font_size_px);
+    _ = publishSnapshot(term);
 }
 
 pub fn setPrimaryFontPath(term: *Term, font_path: ?[:0]const u8) void {
     if (use_ffi) {
         term.primary_font_path = font_path;
-        if (term.handle != 0) _ = applyFfiPrimaryFont(term);
+        if (term.handle != 0) {
+            _ = applyFfiPrimaryFont(term);
+            _ = publishSnapshot(term);
+        }
         return;
     }
     term.inner.setPrimaryFontPath(font_path);
+    _ = publishSnapshot(term);
 }
 
 pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) void {
     if (use_ffi) {
         term.fallback_font_paths = paths;
-        if (term.handle != 0) _ = applyFfiFallbackFonts(term);
+        if (term.handle != 0) {
+            _ = applyFfiFallbackFonts(term);
+            _ = publishSnapshot(term);
+        }
         return;
     }
     term.inner.setFallbackFontPaths(paths);
+    _ = publishSnapshot(term);
 }
 
 pub fn copyCurrentTitle(term: *const Term, out_buf: []u8) usize {
@@ -175,9 +250,12 @@ pub fn copyCurrentTitle(term: *const Term, out_buf: []u8) usize {
 pub fn setInputFocus(term: *Term, focused: bool) !bool {
     if (use_ffi) {
         if (Ffi.setInputFocus(term.handle, boolInt(focused)) != 0) return error.TransportUnavailable;
+        _ = publishSnapshot(term);
         return true;
     }
-    return term.inner.setInputFocus(focused);
+    const changed = try term.inner.setInputFocus(focused);
+    if (changed) _ = publishSnapshot(term);
+    return changed;
 }
 
 pub fn drainPendingClipboardSet(term: *Term, allocator: std.mem.Allocator) ClipboardDrainResult {
@@ -243,9 +321,12 @@ pub fn scrollState(term: *const Term) ScrollState {
 pub fn setHoveredLinkAtPixel(term: *Term, pixel_x: i32, pixel_y: i32, underline_style: ?LinkUnderlineStyle) LinkHoverResult {
     if (use_ffi) {
         const result = Ffi.setHoveredLinkAtPixel(term.handle, pixel_x, pixel_y, abiUnderlineStyle(underline_style));
+        if (result.changed != 0) _ = publishSnapshot(term);
         return .{ .over_link = result.over_link != 0, .changed = result.changed != 0 };
     }
-    return term.inner.setHoveredLinkAtPixel(pixel_x, pixel_y, underline_style);
+    const result = term.inner.setHoveredLinkAtPixel(pixel_x, pixel_y, underline_style);
+    if (result.changed) _ = publishSnapshot(term);
+    return result;
 }
 
 pub fn copyHyperlinkUriAtPixel(term: *Term, allocator: std.mem.Allocator, pixel_x: i32, pixel_y: i32) !?[]u8 {
@@ -259,18 +340,36 @@ pub fn selectionInProgress(term: *const Term) bool {
 }
 
 pub fn beginSelection(term: *Term, pixel_x: i32, pixel_y: i32) bool {
-    if (use_ffi) return Ffi.beginSelection(term.handle, pixel_x, pixel_y) != 0;
-    return term.inner.beginSelection(pixel_x, pixel_y);
+    if (use_ffi) {
+        const changed = Ffi.beginSelection(term.handle, pixel_x, pixel_y) != 0;
+        if (changed) _ = publishSnapshot(term);
+        return changed;
+    }
+    const changed = term.inner.beginSelection(pixel_x, pixel_y);
+    if (changed) _ = publishSnapshot(term);
+    return changed;
 }
 
 pub fn updateSelection(term: *Term, pixel_x: i32, pixel_y: i32) bool {
-    if (use_ffi) return Ffi.updateSelection(term.handle, pixel_x, pixel_y) != 0;
-    return term.inner.updateSelection(pixel_x, pixel_y);
+    if (use_ffi) {
+        const changed = Ffi.updateSelection(term.handle, pixel_x, pixel_y) != 0;
+        if (changed) _ = publishSnapshot(term);
+        return changed;
+    }
+    const changed = term.inner.updateSelection(pixel_x, pixel_y);
+    if (changed) _ = publishSnapshot(term);
+    return changed;
 }
 
 pub fn finishSelection(term: *Term) bool {
-    if (use_ffi) return Ffi.finishSelection(term.handle) != 0;
-    return term.inner.finishSelection();
+    if (use_ffi) {
+        const changed = Ffi.finishSelection(term.handle) != 0;
+        if (changed) _ = publishSnapshot(term);
+        return changed;
+    }
+    const changed = term.inner.finishSelection();
+    if (changed) _ = publishSnapshot(term);
+    return changed;
 }
 
 pub fn needsFrame(term: *Term) bool {
@@ -354,14 +453,6 @@ pub fn needsPrepare(term: *Term) bool {
     return term.needsPrepare();
 }
 
-pub fn setRuntimeBackpressure(term: *Term, enabled: bool) void {
-    if (use_ffi) {
-        Ffi.setRuntimeBackpressure(term.handle, boolInt(enabled));
-        return;
-    }
-    term.inner.setRuntimeBackpressure(enabled);
-}
-
 pub fn takePrepareMetrics(term: *Term) PrepareMetrics {
     if (use_ffi) return Ffi.takePrepareMetrics(term.handle);
     const metrics = term.inner.takePrepareMetrics();
@@ -436,34 +527,46 @@ pub fn renderedTextContains(term: *const Term, text: []const u8) bool {
 
 pub fn followLiveBottom(term: *Term) bool {
     if (use_ffi) {
-        _ = Ffi.followLiveBottom(term.handle);
-        return true;
+        const changed = Ffi.followLiveBottom(term.handle) != 0;
+        if (changed) _ = publishSnapshot(term);
+        return changed;
     }
-    return term.inner.followLiveBottom();
+    const changed = term.inner.followLiveBottom();
+    if (changed) _ = publishSnapshot(term);
+    return changed;
 }
 
 pub fn setScrollbackOffset(term: *Term, offset: usize) bool {
     if (use_ffi) {
-        _ = Ffi.setScrollbackOffset(term.handle, @intCast(@min(offset, @as(usize, std.math.maxInt(c_int)))));
-        return true;
+        const changed = Ffi.setScrollbackOffset(term.handle, @intCast(@min(offset, @as(usize, std.math.maxInt(c_int))))) != 0;
+        if (changed) _ = publishSnapshot(term);
+        return changed;
     }
-    return term.inner.setScrollbackOffset(offset);
+    const changed = term.inner.setScrollbackOffset(offset);
+    if (changed) _ = publishSnapshot(term);
+    return changed;
 }
 
 fn startFfiTerm(term: *FfiHostTerm) ?Ffi.TermHandle {
-    const empty = "";
-    return Ffi.createWithStartPath(
-        term.launch.shell.ptr,
-        term.launch.shell.len,
-        if (term.launch.command) |value| value.ptr else empty.ptr,
-        if (term.launch.command) |value| value.len else 0,
-        if (term.launch.start_path) |value| value.ptr else empty.ptr,
-        if (term.launch.start_path) |value| value.len else 0,
-        1,
-        1,
-        term.cell_px.width,
-        term.cell_px.height,
-    );
+    term.handle = Ffi.init(.{
+        .shell_ptr = term.launch.shell.ptr,
+        .shell_len = term.launch.shell.len,
+        .command_ptr = if (term.launch.command) |value| value.ptr else null,
+        .command_len = if (term.launch.command) |value| value.len else 0,
+        .start_path_ptr = if (term.launch.start_path) |value| value.ptr else null,
+        .start_path_len = if (term.launch.start_path) |value| value.len else 0,
+        .cols = term.cols,
+        .rows = term.rows,
+        .cell_width = term.cell_px.width,
+        .cell_height = term.cell_px.height,
+    });
+    if (term.handle == 0) return null;
+    if (Ffi.start(term.handle) != @intFromEnum(Ffi.HowlTermLifecycleStatus.ok)) {
+        Ffi.deinit(term.handle);
+        term.handle = 0;
+        return null;
+    }
+    return term.handle;
 }
 
 fn copyOwnedBytes(
@@ -515,7 +618,7 @@ fn applyFfiFallbackFonts(term: *FfiHostTerm) bool {
     return true;
 }
 
-fn ffiFrame(frame: FramePixels) Ffi.FfiFramePixels {
+fn ffiFrame(frame: FramePixels) Ffi.HowlTermFramePixels {
     return .{
         .render_width = frame.render_width,
         .render_height = frame.render_height,

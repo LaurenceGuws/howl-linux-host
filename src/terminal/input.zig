@@ -4,66 +4,66 @@
 
 const Input = @import("../input/input.zig").Input;
 const howl_term = @import("howl_term");
-const TermInput = howl_term.Input;
+const TermInput = howl_term.input;
 
 pub fn key(key_event: Input.Key) ?TermInput.Key {
     return switch (key_event) {
-        .escape => TermInput.key_escape,
-        .tab => TermInput.key_tab,
-        .enter => TermInput.key_enter,
-        .backspace => TermInput.key_backspace,
-        .insert => TermInput.key_insert,
-        .delete => TermInput.key_delete,
-        .home => TermInput.key_home,
-        .end => TermInput.key_end,
-        .page_up => TermInput.key_pageup,
-        .page_down => TermInput.key_pagedown,
-        .up => TermInput.key_up,
-        .down => TermInput.key_down,
-        .left => TermInput.key_left,
-        .right => TermInput.key_right,
-        .f1 => TermInput.key_f1,
-        .f2 => TermInput.key_f2,
-        .f3 => TermInput.key_f3,
-        .f4 => TermInput.key_f4,
-        .f5 => TermInput.key_f5,
-        .f6 => TermInput.key_f6,
-        .f7 => TermInput.key_f7,
-        .f8 => TermInput.key_f8,
-        .f9 => TermInput.key_f9,
-        .f10 => TermInput.key_f10,
-        .f11 => TermInput.key_f11,
-        .f12 => TermInput.key_f12,
+        .escape => howl_term.C.keyEscape(),
+        .tab => howl_term.C.keyTab(),
+        .enter => howl_term.C.keyEnter(),
+        .backspace => howl_term.C.keyBackspace(),
+        .insert => howl_term.C.keyInsert(),
+        .delete => howl_term.C.keyDelete(),
+        .home => howl_term.C.keyHome(),
+        .end => howl_term.C.keyEnd(),
+        .page_up => howl_term.C.keyPageup(),
+        .page_down => howl_term.C.keyPagedown(),
+        .up => howl_term.C.keyUp(),
+        .down => howl_term.C.keyDown(),
+        .left => howl_term.C.keyLeft(),
+        .right => howl_term.C.keyRight(),
+        .f1 => howl_term.C.keyF1(),
+        .f2 => howl_term.C.keyF2(),
+        .f3 => howl_term.C.keyF3(),
+        .f4 => howl_term.C.keyF4(),
+        .f5 => howl_term.C.keyF5(),
+        .f6 => howl_term.C.keyF6(),
+        .f7 => howl_term.C.keyF7(),
+        .f8 => howl_term.C.keyF8(),
+        .f9 => howl_term.C.keyF9(),
+        .f10 => howl_term.C.keyF10(),
+        .f11 => howl_term.C.keyF11(),
+        .f12 => howl_term.C.keyF12(),
         else => null,
     };
 }
 
 pub fn mods(input_mods: Input.Mod) TermInput.Modifier {
     var out: TermInput.Modifier = 0;
-    if (input_mods.shift) out |= TermInput.mod_shift;
-    if (input_mods.alt) out |= TermInput.mod_alt;
-    if (input_mods.ctrl) out |= TermInput.mod_ctrl;
+    if (input_mods.shift) out |= @intCast(howl_term.C.modShift());
+    if (input_mods.alt) out |= @intCast(howl_term.C.modAlt());
+    if (input_mods.ctrl) out |= @intCast(howl_term.C.modCtrl());
     return out;
 }
 
 pub fn mouseKind(kind: Input.Mouse.Kind) TermInput.MouseEventKind {
-    return switch (kind) {
-        .move => TermInput.mouse_move,
-        .press => TermInput.mouse_press,
-        .release => TermInput.mouse_release,
-        .wheel => TermInput.mouse_wheel,
-    };
+    return @enumFromInt(switch (kind) {
+        .move => howl_term.C.mouseMove(),
+        .press => howl_term.C.mousePress(),
+        .release => howl_term.C.mouseRelease(),
+        .wheel => howl_term.C.mouseWheel(),
+    });
 }
 
 pub fn mouseButton(button: Input.Mouse.Button) TermInput.MouseButton {
-    return switch (button) {
-        .none => TermInput.mouse_button_none,
-        .left => TermInput.mouse_button_left,
-        .middle => TermInput.mouse_button_middle,
-        .right => TermInput.mouse_button_right,
-        .wheel_up => TermInput.mouse_button_wheel_up,
-        .wheel_down => TermInput.mouse_button_wheel_down,
-    };
+    return @enumFromInt(switch (button) {
+        .none => howl_term.C.mouseButtonNone(),
+        .left => howl_term.C.mouseButtonLeft(),
+        .middle => howl_term.C.mouseButtonMiddle(),
+        .right => howl_term.C.mouseButtonRight(),
+        .wheel_up => howl_term.C.mouseButtonWheelUp(),
+        .wheel_down => howl_term.C.mouseButtonWheelDown(),
+    });
 }
 
 pub fn buttons(input_buttons: Input.Buttons) u8 {

@@ -31,7 +31,6 @@ pub fn prepareNext(self: anytype) bool {
 }
 
 pub fn render(self: anytype) void {
-    defer syncBackpressure(self);
     const force_first_prepare = self.last_surface.texture_id == 0;
     if (force_first_prepare and !prepareNext(self)) return;
     if (api.needsPrepare(&self.term) and !prepareNext(self)) return;
@@ -43,8 +42,4 @@ pub fn render(self: anytype) void {
             if (surface.texture_id != 0) self.last_surface = surface;
         },
     }
-}
-
-fn syncBackpressure(self: anytype) void {
-    api.setRuntimeBackpressure(&self.term, api.hasQueuedRenderWork(&self.term));
 }

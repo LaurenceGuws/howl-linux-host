@@ -8,7 +8,7 @@ const window = @import("../window/window.zig");
 const scroll = @import("scroll.zig");
 const howl_term = @import("howl_term");
 
-pub const FramePixels = howl_term.runtime.FramePixels;
+pub const FramePixels = howl_term.frame.Pixels;
 
 pub const Mutex = struct {
     state: std.Io.Mutex = .init,
