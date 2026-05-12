@@ -96,7 +96,6 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     const before_swap_ns = c.SDL_GetTicksNS();
     if (!state.first_present_attempt_logged) {
         state.first_present_attempt_logged = true;
-        InputWindow.logStartupf("stage=term-present-attempt-first texture_id={d} rect_w={d} rect_h={d}", .{ frame.texture_id, frame.texture_rect.width, frame.texture_rect.height });
     }
     if (!state.first_present_logged and frame.texture_id != 0) {
         state.first_present_logged = true;

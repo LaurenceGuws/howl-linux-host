@@ -11,7 +11,6 @@ const effects = @import("effects.zig");
 const thread = @import("thread.zig");
 
 pub fn start(self: anytype) !void {
-    trace.logStartup("term-start-begin");
     var font_fallbacks_buf: [32][:0]const u8 = undefined;
     const font_fallbacks = self.conf.fonts.flattenFallbacks(font_fallbacks_buf[0..]);
     // api.zig is the host-owned coordination seam over session, VT, and render-core owners.
@@ -21,7 +20,6 @@ pub fn start(self: anytype) !void {
         .command = self.conf.command,
     }, 1, 1, .{ .width = 1, .height = 1 });
     self.term_ready = true;
-    trace.logStartup("term-init-pty-ok");
     errdefer {
         api.deinit(&self.term);
         self.term_ready = false;
@@ -29,26 +27,17 @@ pub fn start(self: anytype) !void {
     api.setFontSizePx(&self.term, @max(self.conf.font_size, 1));
     api.setPrimaryFontPath(&self.term, self.conf.fonts.primary);
     api.setFallbackFontPaths(&self.term, font_fallbacks);
-    trace.logStartup("term-config-ready");
-    trace.logStartup("term-render-runtime-init-ok");
-    trace.logStartup("term-renderer-init-ok");
     try api.start(&self.term);
-    trace.logStartup("term-session-start-ok");
     self.progress_stop.store(false, .release);
     const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
     setThreadName(progress_thread, "howl-term-host");
     self.progress_thread = progress_thread;
-    trace.logStartup("term-progress-thread-ok");
     const geom = self.geometrySnapshot();
-    trace.logStartupf("stage=term-geometry-sync render={d}x{d} grid={d}x{d}", .{ geom.render_px.width, geom.render_px.height, geom.grid_px.width, geom.grid_px.height });
     try api.syncRenderGeometry(&self.term, geom);
-    trace.logStartup("term-geometry-sync-ok");
     if (!api.isAlive(&self.term)) return error.TransportUnavailable;
-    trace.logStartup("term-alive-ok");
     effects.refreshTitle(self);
     effects.syncInputFocus(self);
     HostInput.wakeWindow();
-    trace.logStartup("term-start-complete");
 }
 
 pub fn stop(self: anytype) void {

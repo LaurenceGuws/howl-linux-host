@@ -14,22 +14,34 @@ const transport_limits: api.TransportLimits = .{
 
 const apply_budget: usize = 256;
 const transport_wait_timeout_ms: i32 = 16;
+const drive_round_limit: u8 = 8;
 
 pub fn progressThreadMain(self: anytype) void {
     progressThreadMainWith(self, RealOps);
 }
 
 fn progressThreadMainWith(self: anytype, comptime Ops: type) void {
+    var wait_transport = true;
     while (!self.progress_stop.load(.acquire)) {
-        log.logProgressWaitStartup();
-        log.logFramef("host-loop ts_ns={d} stage=progress-wait", .{log.nowNs()});
-        _ = Ops.waitTransport(&self.term, transport_wait_timeout_ms);
-        log.logProgressWakeStartup();
-        log.logFramef("host-loop ts_ns={d} stage=progress-wake", .{log.nowNs()});
+        if (wait_transport) waitForTransport(self, Ops);
         if (self.progress_stop.load(.acquire)) break;
-        while (driveOnceWith(self, Ops)) {}
+        wait_transport = !driveReadyWork(self, Ops);
         if (!Ops.isAlive(&self.term)) break;
     }
+}
+
+fn waitForTransport(self: anytype, comptime Ops: type) void {
+    log.logProgressWaitStartup();
+    _ = Ops.waitTransport(&self.term, transport_wait_timeout_ms);
+    log.logProgressWakeStartup();
+}
+
+fn driveReadyWork(self: anytype, comptime Ops: type) bool {
+    var round: u8 = 0;
+    while (round < drive_round_limit) : (round += 1) {
+        if (!driveOnceWith(self, Ops)) return false;
+    }
+    return true;
 }
 
 fn driveOnce(self: anytype) bool {

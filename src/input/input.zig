@@ -1,5 +1,5 @@
 //! Responsibility: own the public host input runtime for the Linux host.
-//! Ownership: SDL input watch, queue, and key binding drain.
+//! Ownership: SDL event pump, translated input queues, and key binding drain.
 //! Reason: keep Linux host on one boring input owner.
 
 const std = @import("std");
@@ -91,18 +91,6 @@ pub const Input = struct {
         self.mouse_motion_enabled = needs_motion;
     }
 
-    pub fn bind(self: *Input, win: anytype) !void {
-        _ = win;
-        if (active_input) |bound| {
-            if (bound != self) return error.InputAlreadyBound;
-        }
-        active_input = self;
-        if (!watch_registered) {
-            _ = c.SDL_AddEventWatch(eventWatch, null);
-            watch_registered = true;
-        }
-    }
-
     pub fn drainInputEvent(self: *Input) ?Event {
         if (self.input_len == 0) return null;
         const out = self.input_events[0];
@@ -145,8 +133,22 @@ pub const Input = struct {
         return focused;
     }
 
-    pub fn waitWindow(handle: *c.SDL_Window) Signal {
-        return window.waitEventSignal(handle);
+    pub fn pumpWindow(self: *Input, handle: *c.SDL_Window, wait: bool) Signal {
+        _ = handle;
+        if (window.quitRequested()) return .quit;
+
+        if (wait) {
+            window.logWindowWaitStartup();
+            const signal = self.waitAndDrainEvents();
+            window.logWindowWakeStartup(signal);
+            if (signal == .quit) return .quit;
+        } else {
+            const signal = self.drainPendingEvents();
+            if (signal == .quit) return .quit;
+        }
+
+        if (window.quitRequested()) return .quit;
+        return .none;
     }
 
     pub fn wakeWindow() void {
@@ -156,172 +158,81 @@ pub const Input = struct {
     pub fn keyFromLabel(raw: []const u8) ?Key {
         return keys.parseLabel(raw);
     }
-};
 
-var active_input: ?*Input = null;
-var watch_registered: bool = false;
-
-fn processEvent(event: *const c.SDL_Event) void {
-    const input = active_input orelse return;
-    defer if (shouldLogSdlEvent(event.type)) window.logSdlEvent("handled", event.type);
-    switch (event.type) {
-        c.SDL_EVENT_QUIT,
-        c.SDL_EVENT_TERMINATING,
-        c.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
-        c.SDL_EVENT_WINDOW_DESTROYED,
-        => {
-            window.requestQuit();
-            return;
-        },
-        c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
-            input.window_focus_changed = true;
-            return;
-        },
-        c.SDL_EVENT_WINDOW_FOCUS_LOST => {
-            input.window_focus_changed = false;
-            return;
-        },
-        c.SDL_EVENT_TEXT_INPUT => {
-            if (event.text.text != null) {
-                const p: [*:0]const u8 = @ptrCast(event.text.text);
-                appendBytesEvent(input, std.mem.span(p));
-            }
-        },
-        c.SDL_EVENT_KEY_DOWN => {
-            const ctrl = (event.key.mod & c.SDL_KMOD_CTRL) != 0;
-            const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
-            const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
-            if (event.key.key == c.SDLK_PAGEUP) {
-                if (shift and !ctrl and !alt) {
-                    input.scroll_pages += 1;
-                    return;
-                }
-            }
-            if (event.key.key == c.SDLK_PAGEDOWN) {
-                if (shift and !ctrl and !alt) {
-                    input.scroll_pages -= 1;
-                    return;
-                }
-            }
-            if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
-                if (sdlKey(event.key.key)) |key| {
-                    if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
-                        appendBindingAction(input, action);
-                        return;
-                    }
-                }
-                const code: u8 = @intCast((event.key.key - c.SDLK_A) + 1);
-                return appendByteEvent(input, code);
-            }
-            if (alt and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
-                if (sdlKey(event.key.key)) |key| {
-                    if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
-                        appendBindingAction(input, action);
-                        return;
-                    }
-                }
-                appendByteEvent(input, 0x1b);
-                const ch: u8 = @intCast((event.key.key - c.SDLK_A) + 'a');
-                return appendByteEvent(input, ch);
-            }
-            if (sdlKey(event.key.key)) |key| {
-                if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
-                    appendBindingAction(input, action);
-                    return;
-                }
-                appendKeyEvent(input, key, sdlMods(event.key.mod));
-                return;
-            }
-        },
-        c.SDL_EVENT_MOUSE_MOTION => {
-            const buttons_down = sdlButtons(event.motion.state);
-            const mods = sdlMods(c.SDL_GetModState());
-            const terminal_motion_active = modSubset(input.terminal_motion_mod, mods);
-            const button_down = buttons_down.left or buttons_down.middle or buttons_down.right;
-            // Passive motion is host UI by default. Only button drags and the
-            // explicit terminal motion modifier make motion app-visible.
-            const host_only = !button_down and !terminal_motion_active;
-            if (!button_down and !input.mouse_listen_always and !terminal_motion_active and !input.mouse_link_hover) return;
-            const pixel_x = @as(i32, @intFromFloat(@round(event.motion.x)));
-            const pixel_y = @as(i32, @intFromFloat(@round(event.motion.y)));
-            input.last_mouse_x = pixel_x;
-            input.last_mouse_y = pixel_y;
-            appendMouseEvent(input, .{
-                .kind = .move,
-                .button = .none,
-                .pixel_x = pixel_x,
-                .pixel_y = pixel_y,
-                .mods = mods,
-                .buttons_down = buttons_down,
-                .host_only = host_only,
-            });
-        },
-        c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-            input.mouse_button_down = true;
-            input.updateMouseMotionEvents();
-            const pixel_x = @as(i32, @intFromFloat(@round(event.button.x)));
-            const pixel_y = @as(i32, @intFromFloat(@round(event.button.y)));
-            input.last_mouse_x = pixel_x;
-            input.last_mouse_y = pixel_y;
-            const button = sdlMouseButton(event.button.button) orelse return;
-            appendMouseEvent(input, .{
-                .kind = .press,
-                .button = button,
-                .pixel_x = pixel_x,
-                .pixel_y = pixel_y,
-                .mods = sdlMods(c.SDL_GetModState()),
-                .buttons_down = .{},
-            });
-        },
-        c.SDL_EVENT_MOUSE_BUTTON_UP => {
-            const pixel_x = @as(i32, @intFromFloat(@round(event.button.x)));
-            const pixel_y = @as(i32, @intFromFloat(@round(event.button.y)));
-            input.last_mouse_x = pixel_x;
-            input.last_mouse_y = pixel_y;
-            const button = sdlMouseButton(event.button.button) orelse return;
-            input.mouse_button_down = false;
-            input.updateMouseMotionEvents();
-            appendMouseEvent(input, .{
-                .kind = .release,
-                .button = button,
-                .pixel_x = pixel_x,
-                .pixel_y = pixel_y,
-                .mods = sdlMods(c.SDL_GetModState()),
-                .buttons_down = .{},
-            });
-        },
-        c.SDL_EVENT_MOUSE_WHEEL => {
-            var ticks: i32 = event.wheel.integer_y;
-            if (ticks == 0) ticks = @intFromFloat(@round(event.wheel.y));
-            if (ticks == 0) return;
-            const button: mouse.Button = if (ticks > 0) .wheel_up else .wheel_down;
-            const step_count: u32 = @intCast(@abs(ticks));
-            var i: u32 = 0;
-            while (i < step_count) : (i += 1) {
-                appendMouseEvent(input, .{
-                    .kind = .wheel,
-                    .button = button,
-                    .pixel_x = input.last_mouse_x,
-                    .pixel_y = input.last_mouse_y,
-                    .mods = sdlMods(c.SDL_GetModState()),
-                    .buttons_down = .{},
-                });
-            }
-        },
-        c.SDL_EVENT_WINDOW_RESIZED,
-        c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
-        c.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
-        => input.window_geometry_changed = true,
-        else => {},
+    fn waitAndDrainEvents(self: *Input) Signal {
+        var event: c.SDL_Event = undefined;
+        if (c.SDL_WaitEventTimeout(&event, window.wait_timeout_ms)) {
+            self.processEvent(&event);
+        }
+        return self.drainPendingEvents();
     }
-}
 
-fn eventWatch(_: ?*anyopaque, event: [*c]c.SDL_Event) callconv(.c) bool {
-    if (event == null) return false;
-    if (shouldLogSdlEvent(event.*.type)) window.logSdlEvent("received", event.*.type);
-    processEvent(event);
-    return false;
-}
+    fn drainPendingEvents(self: *Input) Signal {
+        var signal: Signal = if (window.quitRequested()) .quit else .none;
+        var event: c.SDL_Event = undefined;
+        while (c.SDL_PollEvent(&event)) {
+            self.processEvent(&event);
+            if (window.quitRequested()) signal = .quit;
+        }
+        return signal;
+    }
+
+    fn processEvent(self: *Input, event: *const c.SDL_Event) void {
+        switch (event.type) {
+            c.SDL_EVENT_QUIT,
+            c.SDL_EVENT_TERMINATING,
+            c.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+            c.SDL_EVENT_WINDOW_DESTROYED,
+            => {
+                window.requestQuit();
+                return;
+            },
+            c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
+                self.window_focus_changed = true;
+                return;
+            },
+            c.SDL_EVENT_WINDOW_FOCUS_LOST => {
+                self.window_focus_changed = false;
+                return;
+            },
+            c.SDL_EVENT_TEXT_INPUT => {
+                if (event.text.text != null) {
+                    const p: [*:0]const u8 = @ptrCast(event.text.text);
+                    appendBytesEvent(self, std.mem.span(p));
+                }
+                return;
+            },
+            c.SDL_EVENT_KEY_DOWN => {
+                processKeyDown(self, event);
+                return;
+            },
+            c.SDL_EVENT_MOUSE_MOTION => {
+                processMouseMotion(self, event);
+                return;
+            },
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                processMouseButtonDown(self, event);
+                return;
+            },
+            c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                processMouseButtonUp(self, event);
+                return;
+            },
+            c.SDL_EVENT_MOUSE_WHEEL => {
+                processMouseWheel(self, event);
+                return;
+            },
+            c.SDL_EVENT_WINDOW_RESIZED,
+            c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
+            c.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
+            => {
+                self.window_geometry_changed = true;
+                return;
+            },
+            else => return,
+        }
+    }
+};
 
 fn appendBytesEvent(input: *Input, bytes: []const u8) void {
     var offset: usize = 0;
@@ -374,16 +285,125 @@ fn logQueuedInputEvent(stage: []const u8, event: Input.Event) void {
     window.logf("host-loop ts_ns={d} stage={s} kind={s}", .{ window.nowNs(), stage, kind });
 }
 
-fn isMouseEventType(event_type: u32) bool {
-    return event_type == c.SDL_EVENT_MOUSE_MOTION or
-        event_type == c.SDL_EVENT_MOUSE_BUTTON_DOWN or
-        event_type == c.SDL_EVENT_MOUSE_BUTTON_UP or
-        event_type == c.SDL_EVENT_MOUSE_WHEEL;
+fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
+    const ctrl = (event.key.mod & c.SDL_KMOD_CTRL) != 0;
+    const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
+    const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
+    if (event.key.key == c.SDLK_PAGEUP and shift and !ctrl and !alt) {
+        input.scroll_pages += 1;
+        return;
+    }
+    if (event.key.key == c.SDLK_PAGEDOWN and shift and !ctrl and !alt) {
+        input.scroll_pages -= 1;
+        return;
+    }
+    if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
+        if (sdlKey(event.key.key)) |key| {
+            if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
+                appendBindingAction(input, action);
+                return;
+            }
+        }
+        const code: u8 = @intCast((event.key.key - c.SDLK_A) + 1);
+        appendByteEvent(input, code);
+        return;
+    }
+    if (alt and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
+        if (sdlKey(event.key.key)) |key| {
+            if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
+                appendBindingAction(input, action);
+                return;
+            }
+        }
+        appendByteEvent(input, 0x1b);
+        const ch: u8 = @intCast((event.key.key - c.SDLK_A) + 'a');
+        appendByteEvent(input, ch);
+        return;
+    }
+    if (sdlKey(event.key.key)) |key| {
+        if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
+            appendBindingAction(input, action);
+            return;
+        }
+        appendKeyEvent(input, key, sdlMods(event.key.mod));
+    }
 }
 
-fn shouldLogSdlEvent(event_type: u32) bool {
-    if (isMouseEventType(event_type)) return false;
-    return event_type != c.SDL_EVENT_USER;
+fn processMouseMotion(input: *Input, event: *const c.SDL_Event) void {
+    const buttons_down = sdlButtons(event.motion.state);
+    const mods = sdlMods(c.SDL_GetModState());
+    const terminal_motion_active = modSubset(input.terminal_motion_mod, mods);
+    const button_down = buttons_down.left or buttons_down.middle or buttons_down.right;
+    const host_only = !button_down and !terminal_motion_active;
+    if (!button_down and !input.mouse_listen_always and !terminal_motion_active and !input.mouse_link_hover) return;
+    const pixel_x = @as(i32, @intFromFloat(@round(event.motion.x)));
+    const pixel_y = @as(i32, @intFromFloat(@round(event.motion.y)));
+    input.last_mouse_x = pixel_x;
+    input.last_mouse_y = pixel_y;
+    appendMouseEvent(input, .{
+        .kind = .move,
+        .button = .none,
+        .pixel_x = pixel_x,
+        .pixel_y = pixel_y,
+        .mods = mods,
+        .buttons_down = buttons_down,
+        .host_only = host_only,
+    });
+}
+
+fn processMouseButtonDown(input: *Input, event: *const c.SDL_Event) void {
+    input.mouse_button_down = true;
+    input.updateMouseMotionEvents();
+    const pixel_x = @as(i32, @intFromFloat(@round(event.button.x)));
+    const pixel_y = @as(i32, @intFromFloat(@round(event.button.y)));
+    input.last_mouse_x = pixel_x;
+    input.last_mouse_y = pixel_y;
+    const button = sdlMouseButton(event.button.button) orelse return;
+    appendMouseEvent(input, .{
+        .kind = .press,
+        .button = button,
+        .pixel_x = pixel_x,
+        .pixel_y = pixel_y,
+        .mods = sdlMods(c.SDL_GetModState()),
+        .buttons_down = .{},
+    });
+}
+
+fn processMouseButtonUp(input: *Input, event: *const c.SDL_Event) void {
+    const pixel_x = @as(i32, @intFromFloat(@round(event.button.x)));
+    const pixel_y = @as(i32, @intFromFloat(@round(event.button.y)));
+    input.last_mouse_x = pixel_x;
+    input.last_mouse_y = pixel_y;
+    const button = sdlMouseButton(event.button.button) orelse return;
+    input.mouse_button_down = false;
+    input.updateMouseMotionEvents();
+    appendMouseEvent(input, .{
+        .kind = .release,
+        .button = button,
+        .pixel_x = pixel_x,
+        .pixel_y = pixel_y,
+        .mods = sdlMods(c.SDL_GetModState()),
+        .buttons_down = .{},
+    });
+}
+
+fn processMouseWheel(input: *Input, event: *const c.SDL_Event) void {
+    var ticks: i32 = event.wheel.integer_y;
+    if (ticks == 0) ticks = @intFromFloat(@round(event.wheel.y));
+    if (ticks == 0) return;
+    const button: mouse.Button = if (ticks > 0) .wheel_up else .wheel_down;
+    const step_count: u32 = @intCast(@abs(ticks));
+    var i: u32 = 0;
+    while (i < step_count) : (i += 1) {
+        appendMouseEvent(input, .{
+            .kind = .wheel,
+            .button = button,
+            .pixel_x = input.last_mouse_x,
+            .pixel_y = input.last_mouse_y,
+            .mods = sdlMods(c.SDL_GetModState()),
+            .buttons_down = .{},
+        });
+    }
 }
 
 fn sdlKey(sdl_key: c_uint) ?keys.Key {

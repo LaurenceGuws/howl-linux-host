@@ -15,8 +15,11 @@ var progress_wake_logged = std.atomic.Value(bool).init(false);
 var progress_drive_logged = std.atomic.Value(bool).init(false);
 var window_wait_logged = std.atomic.Value(bool).init(false);
 var window_wake_logged = std.atomic.Value(bool).init(false);
+var transport_read_logged = std.atomic.Value(bool).init(false);
+var vt_apply_logged = std.atomic.Value(bool).init(false);
+var source_publish_logged = std.atomic.Value(bool).init(false);
 
-const window_wait_timeout_ms: i32 = 16;
+pub const wait_timeout_ms: i32 = 16;
 
 pub const EventSignal = enum {
     none,
@@ -65,6 +68,21 @@ pub fn logProgressDriveStartupf(comptime fmt: []const u8, args: anytype) void {
     logStartupf(fmt, args);
 }
 
+pub fn logTransportReadStartupf(comptime fmt: []const u8, args: anytype) void {
+    if (transport_read_logged.swap(true, .acq_rel)) return;
+    logStartupf(fmt, args);
+}
+
+pub fn logVtApplyStartupf(comptime fmt: []const u8, args: anytype) void {
+    if (vt_apply_logged.swap(true, .acq_rel)) return;
+    logStartupf(fmt, args);
+}
+
+pub fn logSourcePublishStartupf(comptime fmt: []const u8, args: anytype) void {
+    if (source_publish_logged.swap(true, .acq_rel)) return;
+    logStartupf(fmt, args);
+}
+
 pub fn logWindowWaitStartup() void {
     logStartupOnce(&window_wait_logged, "window-wait-enter");
 }
@@ -109,18 +127,7 @@ pub fn stopQuitTimer(timer: c_win.SDL_TimerID) void {
     _ = c_win.SDL_RemoveTimer(timer);
 }
 
-pub fn waitEventSignal(handle: *c_win.SDL_Window) EventSignal {
-    _ = handle;
-    if (quit_requested.load(.acquire)) return .quit;
-    var event: c_win.SDL_Event = undefined;
-    if (c_win.SDL_WaitEventTimeout(&event, window_wait_timeout_ms)) {
-        if (isQuitEvent(event.type)) return .quit;
-        if (quit_requested.load(.acquire)) return .quit;
-    }
-    return .none;
-}
-
-fn isQuitEvent(event_type: u32) bool {
+pub fn isQuitEventType(event_type: u32) bool {
     return event_type == c_win.SDL_EVENT_QUIT or
         event_type == c_win.SDL_EVENT_TERMINATING or
         event_type == c_win.SDL_EVENT_WINDOW_CLOSE_REQUESTED or

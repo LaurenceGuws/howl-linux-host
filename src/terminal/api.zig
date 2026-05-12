@@ -6,6 +6,7 @@ const std = @import("std");
 const howl_render = @import("howl_render");
 const howl_session = @import("howl_session");
 const vt_core = @import("vt_core");
+const trace = @import("../input/window.zig");
 
 pub const Input = vt_core.Input;
 pub const RenderGeometry = howl_render.Core.Geometry;
@@ -227,8 +228,6 @@ pub fn start(term: *Term) !void {
 }
 
 pub fn waitTransport(term: *Term, timeout_ms: i32) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
     return term.session.waitReadable(timeout_ms);
 }
 
@@ -255,6 +254,13 @@ pub fn pumpTransport(term: *Term, limits: TransportLimits) TransportProgress {
         .max_reads = limits.max_reads,
         .max_bytes = limits.max_bytes,
     });
+    if (result.reads > 0) {
+        trace.logTransportReadStartupf("stage=term-transport-read-first reads={d} read_bytes={d} queued_events={d}", .{
+            result.reads,
+            result.bytes_read,
+            term.vt.queuedEventCount(),
+        });
+    }
     return .{
         .drained_input_bytes = outbound.drained,
         .reads = result.reads,
@@ -279,6 +285,7 @@ pub fn applyPending(term: *Term, max_events: usize) ApplyProgress {
     if (result.applied == 0) {
         return .{ .applied_events = 0, .remaining_events = term.vt.queuedEventCount(), .state_changed = false };
     }
+    trace.logVtApplyStartupf("stage=term-vt-apply-first applied={d} remaining={d}", .{ result.applied, term.vt.queuedEventCount() });
 
     if (result.latest_title) |title| setCurrentTitle(term, title) catch {};
     drainTerminalReply(term);
@@ -537,51 +544,9 @@ pub fn publishSource(term: *Term) SourceReceipt {
     defer term.mutex.unlock();
 
     const visible = term.vt.visibleView(.{ .scrollback_offset = term.scrollback_offset });
-    if (term.snapshot.rows != visible.rows or term.snapshot.cols != visible.cols) {
-        term.snapshot.resize(term.allocator, visible.rows, visible.cols) catch return .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = term.snapshot_seq, .geometry_epoch = term.render_runtime.geometry_epoch };
-    }
-    term.snapshot.markFullDirty();
-    term.snapshot.scroll_row = visible.start;
-    term.snapshot.is_alternate_screen = visible.is_alternate_screen;
-    term.snapshot.cursor = .{
-        .row = visible.cursor_row,
-        .col = visible.cursor_col,
-        .visible = visible.cursor_visible,
-        .shape = switch (visible.cursor_shape) {
-            .underline => .underline,
-            .bar => .beam,
-            .block => .block,
-        },
-    };
-
-    var row: u16 = 0;
-    while (row < visible.rows) : (row += 1) {
-        var col: u16 = 0;
-        while (col < visible.cols) : (col += 1) {
-            const src = visible.cellInfoAt(row, col);
-            const idx = @as(usize, row) * @as(usize, visible.cols) + @as(usize, col);
-            term.snapshot.cells.items[idx] = .{
-                .codepoint = @intCast(src.codepoint),
-                .flags = .{ .continuation = vt_core.Grid.isCellContinuation(src) },
-                .fg_color = colorFromVt(src.attrs.fg),
-                .bg_color = colorFromVt(src.attrs.bg),
-                .underline_color = colorFromVt(src.attrs.underline_color),
-                .underline_style = underlineStyleFromVt(src.attrs.underline_style),
-                .attrs = .{
-                    .bold = src.attrs.bold,
-                    .dim = false,
-                    .italic = false,
-                    .underline = src.attrs.underline,
-                    .underline_color_set = src.attrs.underline_color.a != 0,
-                    .blink = src.attrs.blink or src.attrs.blink_fast,
-                    .inverse = src.attrs.reverse,
-                    .invisible = false,
-                    .strikethrough = false,
-                },
-                .link_id = src.attrs.link_id,
-            };
-        }
-    }
+    ensureSnapshotShape(term, visible.rows, visible.cols) catch return sourceRejected(term);
+    syncSnapshotState(term, visible);
+    copyVisibleCells(term, visible);
 
     const receipt = term.render_runtime.acceptSource(.{
         .snapshot = &term.snapshot,
@@ -600,13 +565,101 @@ pub fn publishSource(term: *Term) SourceReceipt {
         .vt_epoch = term.vt_epoch,
         .last_alt_screen = visible.is_alternate_screen,
     });
+    if (receipt.published) {
+        trace.logSourcePublishStartupf("stage=term-source-publish-first queued={d} damage={d} source_seq={d} geom_epoch={d}", .{
+            @intFromBool(receipt.queued),
+            @intFromEnum(receipt.damage_kind),
+            receipt.source_seq,
+            receipt.geometry_epoch,
+        });
+    }
     term.vt.clearDirtyRows();
     return receipt;
+}
+
+fn ensureSnapshotShape(term: *Term, rows: u16, cols: u16) !void {
+    std.debug.assert(rows > 0);
+    std.debug.assert(cols > 0);
+    if (term.snapshot.rows == rows and term.snapshot.cols == cols) return;
+    try term.snapshot.resize(term.allocator, rows, cols);
+}
+
+fn syncSnapshotState(term: *Term, visible: anytype) void {
+    std.debug.assert(visible.rows > 0);
+    std.debug.assert(visible.cols > 0);
+    term.snapshot.markFullDirty();
+    term.snapshot.scroll_row = visible.start;
+    term.snapshot.is_alternate_screen = visible.is_alternate_screen;
+    term.snapshot.cursor = .{
+        .row = visible.cursor_row,
+        .col = visible.cursor_col,
+        .visible = visible.cursor_visible,
+        .shape = switch (visible.cursor_shape) {
+            .underline => .underline,
+            .bar => .beam,
+            .block => .block,
+        },
+    };
+}
+
+fn copyVisibleCells(term: *Term, visible: anytype) void {
+    const cell_count = @as(usize, visible.rows) * @as(usize, visible.cols);
+    std.debug.assert(term.snapshot.cells.items.len == cell_count);
+
+    var row: u16 = 0;
+    while (row < visible.rows) : (row += 1) {
+        copyVisibleRow(term, visible, row);
+    }
+}
+
+fn copyVisibleRow(term: *Term, visible: anytype, row: u16) void {
+    std.debug.assert(row < visible.rows);
+    var col: u16 = 0;
+    while (col < visible.cols) : (col += 1) {
+        const src = visible.cellInfoAt(row, col);
+        const idx = @as(usize, row) * @as(usize, visible.cols) + @as(usize, col);
+        std.debug.assert(idx < term.snapshot.cells.items.len);
+        term.snapshot.cells.items[idx] = .{
+            .codepoint = @intCast(src.codepoint),
+            .flags = .{ .continuation = vt_core.Grid.isCellContinuation(src) },
+            .fg_color = colorFromVt(src.attrs.fg),
+            .bg_color = colorFromVt(src.attrs.bg),
+            .underline_color = colorFromVt(src.attrs.underline_color),
+            .underline_style = underlineStyleFromVt(src.attrs.underline_style),
+            .attrs = .{
+                .bold = src.attrs.bold,
+                .dim = false,
+                .italic = false,
+                .underline = src.attrs.underline,
+                .underline_color_set = src.attrs.underline_color.a != 0,
+                .blink = src.attrs.blink or src.attrs.blink_fast,
+                .inverse = src.attrs.reverse,
+                .invisible = false,
+                .strikethrough = false,
+            },
+            .link_id = src.attrs.link_id,
+        };
+    }
+}
+
+fn sourceRejected(term: *Term) SourceReceipt {
+    return .{
+        .published = false,
+        .queued = false,
+        .damage_kind = .none,
+        .source_seq = term.snapshot_seq,
+        .geometry_epoch = term.render_runtime.geometry_epoch,
+    };
 }
 
 pub fn renderAction(term: *const Term) RenderAction {
     const mut: *Term = @constCast(term);
     return mut.render_runtime.surface_owner.nextAction();
+}
+
+pub fn hasPendingPublication(term: *const Term) bool {
+    const mut: *Term = @constCast(term);
+    return mut.render_runtime.hasPendingPublication();
 }
 
 pub fn prepareRender(term: *Term) RenderPrepareResult {
@@ -663,7 +716,7 @@ fn publishEncodedInput(term: *Term, event: Input.Event) !bool {
 fn drainTerminalReply(term: *Term) void {
     const pending = term.vt.pendingOutput();
     if (pending.len == 0) return;
-    term.session.publishHostInput(pending) catch return;
+    _ = term.session.publishHostInputAndPump(pending) catch return;
     term.vt.clearPendingOutput();
 }
 

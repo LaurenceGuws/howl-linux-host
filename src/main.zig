@@ -50,7 +50,6 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn start(options: Options) !void {
-    InputWindow.logStartup("start");
     setCurrentThreadName("howl-main");
     try initVideo();
     defer Window.quit();
@@ -89,7 +88,6 @@ fn start(options: Options) !void {
 
 fn initVideo() !void {
     if (Window.initVideo()) {
-        InputWindow.logStartup("video-init-ok");
         return;
     }
     return error.WindowInitFailed;
@@ -99,7 +97,6 @@ fn loadConfig(options: Options) !Config.State {
     var conf = try Config.State.load(std.heap.c_allocator);
     errdefer conf.deinit(std.heap.c_allocator);
     try conf.applyProcessOverrides(options.shell, options.start_path, options.command);
-    InputWindow.logStartupf("stage=config-ready width={d} height={d}", .{ conf.window.width, conf.window.height });
     Input.Bindings.setConfigBindings(&conf);
     return conf;
 }
@@ -108,27 +105,22 @@ fn createWindow(conf: *const Config.State, options: Options) !Window.State {
     const title: [*:0]const u8 = if (options.window_title) |value| value.ptr else conf.window.title.ptr;
     var window = try Window.State.create(title, conf.window.width, conf.window.height);
     errdefer window.deinit();
-    InputWindow.logStartupf("stage=window-ready px_w={d} px_h={d} logical_w={d} logical_h={d}", .{ window.px_w, window.px_h, window.logical_w, window.logical_h });
     return window;
 }
 
 fn openInitialTab(conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
-    InputWindow.logStartup("open-tab-begin");
     try openTab(std.heap.c_allocator, conf, window, tabs, active_tab_idx);
-    InputWindow.logStartup("open-tab-ok");
 }
 
 fn initPerf(perf: *PerfLog.State, tab: *TerminalWidget) !void {
     try perf.init(&tab.term, std.c.getenv("HOWL_RUNTIME_LOG_PATH"));
-    InputWindow.logStartup("perf-log-ready");
 }
 
 fn initInput(window: *Window.State) !Input {
+    _ = window;
     var input: Input = undefined;
     input.init();
-    try input.bind(window.handle);
     Input.wakeWindow();
-    InputWindow.logStartup("input-ready");
     return input;
 }
 
@@ -144,7 +136,6 @@ fn configureInputPolicies(app: *App) void {
 }
 
 fn runLoop(app: *App) !void {
-    InputWindow.logStartup("loop-enter");
     while (true) {
         switch (try runLoopTurn(app)) {
             .continue_running => {},
@@ -161,10 +152,10 @@ fn runLoopTurn(app: *App) !LoopAction {
     const work_before_wait = collectRenderWork(tab_before_wait);
     if (work_before_wait.needs_frame) {
         assert(work_before_wait.terminal_frame or tab_before_wait.needsPresentationFrame(Window.c_win.SDL_GetTicksNS()));
-    } else {
-        const action = waitForWindow(app.window.handle);
-        if (action == .quit) return .quit;
     }
+    const wait_for_event = !work_before_wait.needs_frame;
+    const event_action = pumpWindowEvents(app, wait_for_event);
+    if (event_action == .quit) return .quit;
 
     applyFocusChange(app);
     try drainBindingActions(app);
@@ -190,10 +181,8 @@ fn quitRequested() ?LoopAction {
     return .quit;
 }
 
-fn waitForWindow(handle: *Window.c_win.SDL_Window) LoopAction {
-    InputWindow.logWindowWaitStartup();
-    const signal = Input.waitWindow(handle);
-    InputWindow.logWindowWakeStartup(signal);
+fn pumpWindowEvents(app: *App, wait: bool) LoopAction {
+    const signal = app.input.pumpWindow(app.window.handle, wait);
     return switch (signal) {
         .none => .continue_running,
         .quit => .quit,
