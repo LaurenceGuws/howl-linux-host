@@ -1,17 +1,39 @@
-//! Responsibility: own the Linux host terminal API seam.
-//! Ownership: host-facing term calls and types, pinned to the C ABI.
-//! Reason: keeps the Linux host on one public contract instead of a Zig/C split.
+//! Responsibility: own the Linux host terminal runtime seam.
+//! Ownership: host-local coordination across session, VT, render runtime, and renderer owners.
+//! Reason: keeps Linux on owner-true modules without recreating a fake `howl-term` runtime.
 
 const std = @import("std");
-const howl_term = @import("howl_term");
-const contract = howl_term.C;
+const howl_render = @import("howl_render");
+const howl_session = @import("howl_session");
+const vt_core = @import("vt_core");
 
-pub const Input = howl_term.input;
-pub const LifecycleState = howl_term.lifecycle.State;
+pub const Input = vt_core.Input;
+pub const RenderGeometry = howl_render.Core.Geometry;
+pub const RenderSurface = howl_render.Core.SurfaceHandle;
+pub const RenderAction = howl_render.Core.FrameQueue.TerminalSurface.Action;
+pub const RenderMetrics = howl_render.Core.Metrics;
+pub const RenderPrepareResult = enum { idle, prepared, failed };
+pub const RenderSubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
+pub const RenderCellSize = howl_render.Core.CellSize;
+pub const SourceReceipt = howl_render.Core.SourceReceipt;
+pub const LinkUnderlineStyle = enum {
+    straight,
+    curly,
+    dotted,
+    dashed,
+};
+pub const LifecycleState = enum(u8) {
+    stopped,
+    starting,
+    ready,
+    failed,
+};
+
 pub const TransportLimits = struct {
     max_reads: usize,
     max_bytes: usize,
 };
+
 pub const TransportProgress = struct {
     drained_input_bytes: usize,
     reads: usize,
@@ -19,27 +41,20 @@ pub const TransportProgress = struct {
     pending_input_bytes: usize,
     queued_events: usize,
 };
+
 pub const ApplyProgress = struct {
     applied_events: usize,
     remaining_events: usize,
     state_changed: bool,
 };
-pub const SourceReceipt = contract.SourceReceipt;
-pub const RenderAction = contract.RenderAction;
-pub const RenderPrepareResult = contract.RenderPrepareResult;
-pub const RenderSubmitResult = contract.RenderSubmitResult;
-pub const RenderGeometry = contract.RenderGeometry;
-pub const RenderGeometryReceipt = contract.RenderGeometryReceipt;
-pub const RenderSurfaceQuery = contract.RenderSurfaceQuery;
-pub const RenderSurface = contract.RenderSurface;
-pub const RenderMetrics = contract.RenderMetrics;
+
 pub const ScrollState = struct {
     viewport_rows: u16,
     scrollback_count: usize,
     scrollback_offset: usize,
     alternate_screen: bool,
 };
-pub const RenderCellSize = contract.FfiCellSize;
+
 pub const MouseInput = struct {
     kind: Input.MouseEventKind,
     button: Input.MouseButton,
@@ -48,28 +63,72 @@ pub const MouseInput = struct {
     mods: Input.Modifier,
     buttons_down: u8,
 };
+
 pub const PtyLaunchConfig = struct {
     shell: []const u8,
     command: ?[]const u8 = null,
     start_path: ?[]const u8 = null,
 };
+
 pub const ClipboardDrainResult = ?struct {
     text: []u8,
 };
 
-pub const Term = FfiHostTerm;
+const SelectionState = struct {
+    anchor: ?SelectionPoint = null,
+    current: ?SelectionPoint = null,
+    in_progress: bool = false,
 
-const Ffi = howl_term.C;
+    fn clear(self: *SelectionState) void {
+        self.* = .{};
+    }
+};
 
-const FfiHostTerm = struct {
-    handle: Ffi.TermHandle = 0,
+const SelectionPoint = struct {
+    depth: usize,
+    col: u16,
+};
+
+const Mutex = struct {
+    state: std.Io.Mutex = .init,
+
+    fn lock(self: *Mutex) void {
+        std.Io.Threaded.mutexLock(&self.state);
+    }
+
+    fn unlock(self: *Mutex) void {
+        std.Io.Threaded.mutexUnlock(&self.state);
+    }
+};
+
+const default_history_capacity: u16 = 4096;
+
+pub const Term = struct {
+    allocator: std.mem.Allocator,
     launch: PtyLaunchConfig,
+    session: howl_session.Session,
+    vt: vt_core.VtCore,
+    snapshot: howl_render.Core.FrameSnapshot,
+    render_runtime: howl_render.Core.RenderRuntime,
+    renderer: howl_render.Renderer,
+    prepared_frame: ?howl_render.Renderer.FrameRecord = null,
+    mutex: Mutex = .{},
     cols: u16,
     rows: u16,
     cell_px: RenderCellSize,
     font_size_px: u16,
-    primary_font_path: ?[:0]const u8 = null,
-    fallback_font_paths: []const [:0]const u8 = &.{},
+    current_title: std.ArrayListUnmanaged(u8) = .empty,
+    primary_font_path: ?[:0]u8 = null,
+    fallback_font_paths: std.ArrayListUnmanaged([:0]u8) = .empty,
+    lifecycle_state: LifecycleState = .stopped,
+    output_seen: bool = false,
+    snapshot_seq: u64 = 1,
+    vt_epoch: u64 = 1,
+    scrollback_offset: usize = 0,
+    has_input_focus: bool = true,
+    selection: SelectionState = .{},
+    hover_link_id: u32 = 0,
+    hover_underline_style: LinkUnderlineStyle = .straight,
 };
 
 pub fn initPty(
@@ -79,295 +138,627 @@ pub fn initPty(
     rows: u16,
     cell_px: RenderCellSize,
 ) !Term {
-    _ = allocator;
-    return .{
+    std.debug.assert(cols > 0);
+    std.debug.assert(rows > 0);
+    std.debug.assert(cell_px.width > 0);
+    std.debug.assert(cell_px.height > 0);
+
+    var session = try howl_session.Session.initPty(.{
+        .allocator = allocator,
+        .cols = cols,
+        .rows = rows,
+        .pending_capacity = 4096,
+        .launch = .{
+            .shell_path = launch.shell,
+            .command = launch.command,
+            .start_path = launch.start_path,
+        },
+    });
+    errdefer session.deinit();
+
+    var vt = try vt_core.VtCore.initWithCellsAndHistory(allocator, rows, cols, default_history_capacity);
+    errdefer vt.deinit();
+
+    var snapshot = try howl_render.Core.FrameSnapshot.init(allocator, rows, cols);
+    errdefer snapshot.deinit(allocator);
+
+    var render_runtime = howl_render.Core.RenderRuntime.init(allocator);
+    errdefer render_runtime.deinit();
+
+    _ = render_runtime.syncGeometry(.{
+        .render_px = .{ .width = cols * cell_px.width, .height = rows * cell_px.height },
+        .grid_px = .{ .width = cols * cell_px.width, .height = rows * cell_px.height },
+        .cell_px = cell_px,
+    });
+
+    var term = Term{
+        .allocator = allocator,
         .launch = launch,
+        .session = session,
+        .vt = vt,
+        .snapshot = snapshot,
+        .render_runtime = render_runtime,
+        .renderer = howl_render.Renderer.init(.{
+            .surface_px = .{ .width = cols * cell_px.width, .height = rows * cell_px.height },
+            .cell_px = cell_px,
+            .font_size_px = cell_px.height,
+        }),
         .cols = cols,
         .rows = rows,
         .cell_px = cell_px,
         .font_size_px = cell_px.height,
     };
+    try resetTitleFromLaunch(&term);
+    return term;
 }
 
 pub fn deinit(term: *Term) void {
-    if (term.handle != 0) Ffi.deinit(term.handle);
-    term.handle = 0;
+    stop(term);
+    if (term.prepared_frame) |*prepared| prepared.deinit();
+    term.prepared_frame = null;
+    if (term.primary_font_path) |path| term.allocator.free(path);
+    term.primary_font_path = null;
+    clearFallbackFontPaths(term);
+    term.current_title.deinit(term.allocator);
+    term.renderer.deinit();
+    term.render_runtime.deinit();
+    term.snapshot.deinit(term.allocator);
+    term.vt.deinit();
+    term.session.deinit();
 }
 
 pub fn stop(term: *Term) void {
-    if (term.handle != 0) _ = Ffi.stop(term.handle);
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    term.session.stop();
+    term.lifecycle_state = .stopped;
 }
 
 pub fn start(term: *Term) !void {
-    if (term.handle != 0) return error.AlreadyStarted;
-    term.handle = startFfiTerm(term) orelse return error.TransportUnavailable;
-    errdefer {
-        Ffi.deinit(term.handle);
-        term.handle = 0;
-    }
-    try applyFfiFontConfig(term);
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    if (term.session.isActive()) return error.AlreadyStarted;
+    term.lifecycle_state = .starting;
+    term.session.start() catch |err| {
+        term.lifecycle_state = .failed;
+        return err;
+    };
+    term.lifecycle_state = .ready;
 }
 
 pub fn waitTransport(term: *Term, timeout_ms: i32) bool {
-    return Ffi.waitTransport(term.handle, timeout_ms) != 0;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return term.session.waitReadable(timeout_ms);
 }
 
 pub fn pumpTransport(term: *Term, limits: TransportLimits) TransportProgress {
-    const progress = Ffi.pumpTransport(term.handle, .{
+    if (limits.max_reads == 0 or limits.max_bytes == 0) {
+        term.mutex.lock();
+        defer term.mutex.unlock();
+        return .{
+            .drained_input_bytes = 0,
+            .reads = 0,
+            .bytes_read = 0,
+            .pending_input_bytes = term.session.pending.items.len,
+            .queued_events = term.vt.queuedEventCount(),
+        };
+    }
+
+    var scratch: [64 * 1024]u8 = undefined;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+
+    const outbound = term.session.pumpOutboundInput(false);
+    const sink = TransportSink{ .term = term };
+    const result = term.session.pumpTransport(scratch[0..], sink, .{
         .max_reads = limits.max_reads,
         .max_bytes = limits.max_bytes,
     });
     return .{
-        .drained_input_bytes = progress.drained_input_bytes,
-        .reads = progress.reads,
-        .bytes_read = progress.bytes_read,
-        .pending_input_bytes = progress.pending_input_bytes,
-        .queued_events = progress.queued_events,
+        .drained_input_bytes = outbound.drained,
+        .reads = result.reads,
+        .bytes_read = result.bytes_read,
+        .pending_input_bytes = term.session.pending.items.len,
+        .queued_events = term.vt.queuedEventCount(),
     };
 }
 
 pub fn applyPending(term: *Term, max_events: usize) ApplyProgress {
-    const progress = Ffi.applyPending(term.handle, max_events);
+    if (max_events == 0) {
+        term.mutex.lock();
+        defer term.mutex.unlock();
+        return .{ .applied_events = 0, .remaining_events = term.vt.queuedEventCount(), .state_changed = false };
+    }
+
+    term.mutex.lock();
+    defer term.mutex.unlock();
+
+    const history_before = term.vt.historyCount();
+    const result = term.vt.applyLimit(max_events);
+    if (result.applied == 0) {
+        return .{ .applied_events = 0, .remaining_events = term.vt.queuedEventCount(), .state_changed = false };
+    }
+
+    if (result.latest_title) |title| setCurrentTitle(term, title) catch {};
+    drainTerminalReply(term);
+    repairScrollback(term, history_before, true);
+    term.vt_epoch +%= 1;
+    noteVisibleChange(term);
     return .{
-        .applied_events = progress.applied_events,
-        .remaining_events = progress.remaining_events,
-        .state_changed = progress.state_changed != 0,
+        .applied_events = result.applied,
+        .remaining_events = term.vt.queuedEventCount(),
+        .state_changed = true,
     };
 }
 
-pub fn publishSource(term: *Term) SourceReceipt {
-    return Ffi.publishSource(term.handle);
-}
-
-pub fn syncRenderGeometry(term: *Term, geometry: RenderGeometry) !void {
-    _ = Ffi.syncRenderGeometry(term.handle, geometry);
-    _ = publishSource(term);
-}
-
 pub fn lifecycleState(term: *const Term) LifecycleState {
-    return @enumFromInt(Ffi.lifecycleState(term.handle));
-}
-
-pub fn renderAction(term: *const Term) RenderAction {
-    return Ffi.renderAction(term.handle);
-}
-
-pub fn prepareRender(term: *Term) RenderPrepareResult {
-    return Ffi.prepareRender(term.handle);
-}
-
-pub fn submitRender(term: *Term) RenderSubmitResult {
-    return Ffi.submitRender(term.handle);
-}
-
-pub fn renderQuery(term: *const Term) RenderSurfaceQuery {
-    return Ffi.renderQuery(term.handle);
-}
-
-pub fn takeRenderMetrics(term: *Term) RenderMetrics {
-    return Ffi.takeRenderMetrics(term.handle);
-}
-
-pub fn resetRenderMetrics(term: *Term) void {
-    Ffi.resetRenderMetrics(term.handle);
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.lifecycle_state;
 }
 
 pub fn isAlive(term: *const Term) bool {
-    return Ffi.isSessionAlive(term.handle) != 0;
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.session.isActive();
 }
 
 pub fn hasOutboundInputBacklog(term: *const Term) bool {
-    return Ffi.hasOutboundInputBacklog(term.handle) != 0;
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.session.hasOutboundInputBacklog();
 }
 
 pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
+    std.debug.assert(font_size_px > 0);
+    term.mutex.lock();
+    defer term.mutex.unlock();
     term.font_size_px = font_size_px;
-    if (term.handle != 0) {
-        std.debug.assert(Ffi.setFontSizePx(term.handle, font_size_px) == 0);
-        _ = publishSource(term);
-    }
+    term.renderer.setFontSizePx(font_size_px);
+    term.render_runtime.setFontSizePx(font_size_px);
 }
 
 pub fn setPrimaryFontPath(term: *Term, font_path: ?[:0]const u8) void {
-    term.primary_font_path = font_path;
-    if (term.handle != 0) {
-        std.debug.assert(applyFfiPrimaryFont(term));
-        _ = publishSource(term);
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    if (term.primary_font_path) |path| {
+        term.allocator.free(path);
+        term.primary_font_path = null;
     }
+    if (font_path) |path| {
+        const owned = term.allocator.dupeZ(u8, path) catch return;
+        term.primary_font_path = owned;
+        term.renderer.setFontPath(owned);
+        return;
+    }
+    term.renderer.setFontPath(null);
 }
 
 pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) void {
-    term.fallback_font_paths = paths;
-    if (term.handle != 0) {
-        std.debug.assert(applyFfiFallbackFonts(term));
-        _ = publishSource(term);
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    clearFallbackFontPathsLocked(term);
+    var owned: [32][:0]u8 = undefined;
+    var count: usize = 0;
+    while (count < paths.len and count < owned.len) : (count += 1) {
+        owned[count] = term.allocator.dupeZ(u8, paths[count]) catch break;
     }
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        term.fallback_font_paths.append(term.allocator, owned[i]) catch break;
+    }
+    term.renderer.setFallbackFontPaths(term.fallback_font_paths.items);
+}
+
+pub fn clearFallbackFontPaths(term: *Term) void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    clearFallbackFontPathsLocked(term);
+    term.renderer.setFallbackFontPaths(&.{});
 }
 
 pub fn setInputFocus(term: *Term, focused: bool) !bool {
-    if (Ffi.setInputFocus(term.handle, boolInt(focused)) != 0) return error.TransportUnavailable;
-    _ = publishSource(term);
-    return true;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    if (term.has_input_focus == focused) return false;
+    term.has_input_focus = focused;
+    noteVisibleChange(term);
+    return publishEncodedInput(term, .{ .focus = if (focused) .in else .out });
 }
 
 pub fn drainPendingClipboardSet(term: *Term, allocator: std.mem.Allocator) !ClipboardDrainResult {
-    const text = try copyOwnedBytes(allocator, Ffi.drainPendingClipboardSet, term.handle);
-    return if (text) |buf| .{ .text = buf } else null;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    const text = (try term.vt.drainPendingClipboardSet(allocator)) orelse return null;
+    return .{ .text = text };
 }
 
 pub fn publishPaste(term: *Term, text: []const u8) !void {
-    if (Ffi.publishPaste(term.handle, text.ptr, text.len) != 0) return error.TransportUnavailable;
+    if (text.len == 0) return;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    followLiveBottomForInput(term);
+    _ = try publishEncodedInput(term, .{ .paste = text });
 }
 
 pub fn publishInputBytes(term: *Term, bytes: []const u8) !void {
-    if (Ffi.publishInputBytes(term.handle, bytes.ptr, bytes.len) != 0) return error.TransportUnavailable;
+    if (bytes.len == 0) return;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    followLiveBottomForInput(term);
+    _ = try publishEncodedInput(term, .{ .bytes = bytes });
 }
 
 pub fn publishInputKey(term: *Term, key: Input.Key, mods: Input.Modifier) !void {
-    if (Ffi.publishInputKey(term.handle, key, mods) != 0) return error.TransportUnavailable;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    followLiveBottomForInput(term);
+    _ = try publishEncodedInput(term, .{ .key = .{ .key = key, .mods = mods } });
 }
 
 pub fn publishMouseEvent(term: *Term, mouse: MouseInput) !bool {
-    const rc = Ffi.publishMouseEvent(term.handle, abiMouseKind(mouse.kind), abiMouseButton(mouse.button), mouse.pixel_x, mouse.pixel_y, mouse.mods, mouse.buttons_down);
-    if (rc < 0) return error.TransportUnavailable;
-    return rc != 0;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return publishEncodedInput(term, .{ .mouse = .{
+        .kind = mouse.kind,
+        .button = mouse.button,
+        .row = pixelToRow(term, mouse.pixel_y),
+        .col = pixelToCol(term, mouse.pixel_x),
+        .pixel_x = if (mouse.pixel_x < 0) null else @intCast(mouse.pixel_x),
+        .pixel_y = if (mouse.pixel_y < 0) null else @intCast(mouse.pixel_y),
+        .mod = mouse.mods,
+        .buttons_down = mouse.buttons_down,
+    } });
 }
 
 pub fn scrollState(term: *const Term) ScrollState {
-    const state = Ffi.scrollState(term.handle);
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
     return .{
-        .viewport_rows = state.viewport_rows,
-        .scrollback_count = state.scrollback_count,
-        .scrollback_offset = state.scrollback_offset,
-        .alternate_screen = state.alternate_screen != 0,
+        .viewport_rows = term.rows,
+        .scrollback_count = term.vt.historyCount(),
+        .scrollback_offset = term.scrollback_offset,
+        .alternate_screen = term.vt.isAlternateScreen(),
     };
 }
 
 pub fn currentScrollbackCount(term: *const Term) usize {
-    const value = Ffi.currentScrollbackCount(term.handle);
-    return if (value < 0) 0 else @intCast(value);
+    return scrollState(term).scrollback_count;
 }
 
 pub fn currentScrollbackOffset(term: *const Term) usize {
-    const value = Ffi.currentScrollbackOffset(term.handle);
-    return if (value < 0) 0 else @intCast(value);
+    return scrollState(term).scrollback_offset;
 }
 
 pub fn setScrollbackOffset(term: *Term, offset: usize) bool {
-    const changed = Ffi.setScrollbackOffset(term.handle, @intCast(@min(offset, @as(usize, std.math.maxInt(c_int))))) != 0;
-    if (changed) _ = publishSource(term);
-    return changed;
-}
-
-pub fn followLiveBottom(term: *Term) bool {
-    const changed = Ffi.followLiveBottom(term.handle) != 0;
-    if (changed) _ = publishSource(term);
-    return changed;
-}
-
-pub fn viewportRows(term: *const Term) u16 {
-    return @max(@as(u16, 1), @as(u16, @intCast(Ffi.viewportRows(term.handle))));
-}
-
-pub fn isAlternateScreen(term: *const Term) bool {
-    return Ffi.isAlternateScreen(term.handle) != 0;
-}
-
-pub fn hasOutputProof(term: *const Term) bool {
-    return Ffi.hasOutputProof(term.handle) != 0;
-}
-
-pub fn inputBytesApplied(term: *const Term) u64 {
-    return Ffi.inputBytesApplied(term.handle);
-}
-
-pub fn snapshotEventSeq(term: *const Term) u64 {
-    return Ffi.snapshotEventSeq(term.handle);
-}
-
-pub fn copyCurrentTitle(term: *const Term, out_buf: []u8) usize {
-    return Ffi.copyCurrentTitle(term.handle, out_buf.ptr, out_buf.len);
-}
-
-pub fn isSessionAlive(term: *const Term) bool {
-    return Ffi.isSessionAlive(term.handle) != 0;
-}
-
-fn startFfiTerm(term: *Term) ?Ffi.TermHandle {
-    term.handle = Ffi.init(.{
-        .shell_ptr = term.launch.shell.ptr,
-        .shell_len = term.launch.shell.len,
-        .command_ptr = if (term.launch.command) |value| value.ptr else null,
-        .command_len = if (term.launch.command) |value| value.len else 0,
-        .start_path_ptr = if (term.launch.start_path) |value| value.ptr else null,
-        .start_path_len = if (term.launch.start_path) |value| value.len else 0,
-        .cols = term.cols,
-        .rows = term.rows,
-        .cell_width = term.cell_px.width,
-        .cell_height = term.cell_px.height,
-    });
-    if (term.handle == 0) return null;
-    if (Ffi.start(term.handle) != @intFromEnum(Ffi.HowlTermLifecycleStatus.ok)) {
-        Ffi.deinit(term.handle);
-        term.handle = 0;
-        return null;
-    }
-    return term.handle;
-}
-
-fn copyOwnedBytes(
-    allocator: std.mem.Allocator,
-    comptime copier: fn (Ffi.TermHandle, [*]u8, usize) callconv(.c) usize,
-    handle: Ffi.TermHandle,
-) !?[]u8 {
-    var scratch: [1]u8 = undefined;
-    const len = copier(handle, scratch[0..].ptr, 0);
-    if (len == 0) return null;
-    const buf = try allocator.alloc(u8, len);
-    errdefer allocator.free(buf);
-    const written = copier(handle, buf.ptr, buf.len);
-    return buf[0..@min(written, buf.len)];
-}
-
-fn applyFfiFontConfig(term: *Term) !void {
-    if (Ffi.setFontSizePx(term.handle, term.font_size_px) != 0) return error.TransportUnavailable;
-    if (!applyFfiPrimaryFont(term)) return error.TransportUnavailable;
-    if (!applyFfiFallbackFonts(term)) return error.TransportUnavailable;
-}
-
-fn applyFfiPrimaryFont(term: *Term) bool {
-    const font_path = term.primary_font_path orelse return true;
-    return Ffi.setPrimaryFontPath(term.handle, font_path.ptr, font_path.len) == 0;
-}
-
-fn applyFfiFallbackFonts(term: *Term) bool {
-    if (Ffi.clearFallbackFontPaths(term.handle) != 0) return false;
-    for (term.fallback_font_paths) |path| {
-        if (Ffi.addFallbackFontPath(term.handle, path.ptr, path.len) != 0) return false;
-    }
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    const clamped = @min(offset, term.vt.historyCount());
+    if (clamped == term.scrollback_offset) return false;
+    term.scrollback_offset = clamped;
+    noteVisibleChange(term);
     return true;
 }
 
-fn abiMouseKind(kind: Input.MouseEventKind) u8 {
-    return switch (kind) {
-        .press => Ffi.mousePress(),
-        .release => Ffi.mouseRelease(),
-        .move => Ffi.mouseMove(),
-        .wheel => Ffi.mouseWheel(),
+pub fn followLiveBottom(term: *Term) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    if (term.scrollback_offset == 0) return false;
+    term.scrollback_offset = 0;
+    noteVisibleChange(term);
+    return true;
+}
+
+pub fn viewportRows(term: *const Term) u16 {
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.rows;
+}
+
+pub fn isAlternateScreen(term: *const Term) bool {
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.vt.isAlternateScreen();
+}
+
+pub fn hasOutputProof(term: *const Term) bool {
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.output_seen;
+}
+
+pub fn inputBytesApplied(term: *const Term) u64 {
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.session.ops.bytes_applied;
+}
+
+pub fn snapshotEventSeq(term: *const Term) u64 {
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.snapshot_seq;
+}
+
+pub fn copyCurrentTitle(term: *const Term, out_buf: []u8) usize {
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    const len = @min(out_buf.len, term.current_title.items.len);
+    if (len > 0) @memcpy(out_buf[0..len], term.current_title.items[0..len]);
+    return len;
+}
+
+pub fn isSessionAlive(term: *const Term) bool {
+    return isAlive(term);
+}
+
+pub fn syncRenderGeometry(term: *Term, geom: RenderGeometry) !void {
+    std.debug.assert(geom.render_px.width > 0);
+    std.debug.assert(geom.render_px.height > 0);
+    std.debug.assert(geom.grid_px.width > 0);
+    std.debug.assert(geom.grid_px.height > 0);
+
+    term.mutex.lock();
+    defer term.mutex.unlock();
+
+    const layout = try term.renderer.deriveFrameLayout(geom.render_px, geom.grid_px);
+    const grid = layout.grid;
+    const cell_px = layout.cell_px;
+    if (term.cols != grid.cols or term.rows != grid.rows or term.cell_px.width != cell_px.width or term.cell_px.height != cell_px.height) {
+        try term.session.resize(grid.cols, grid.rows);
+        try term.vt.resize(grid.rows, grid.cols);
+        try term.snapshot.resize(term.allocator, grid.rows, grid.cols);
+        term.cols = grid.cols;
+        term.rows = grid.rows;
+        term.cell_px = cell_px;
+        term.scrollback_offset = @min(term.scrollback_offset, term.vt.historyCount());
+        term.vt_epoch +%= 1;
+        noteVisibleChange(term);
+    }
+    _ = term.render_runtime.syncGeometry(.{
+        .render_px = geom.render_px,
+        .grid_px = geom.grid_px,
+        .cell_px = cell_px,
+    });
+}
+
+pub fn publishSource(term: *Term) SourceReceipt {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+
+    const visible = term.vt.visibleView(.{ .scrollback_offset = term.scrollback_offset });
+    if (term.snapshot.rows != visible.rows or term.snapshot.cols != visible.cols) {
+        term.snapshot.resize(term.allocator, visible.rows, visible.cols) catch return .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = term.snapshot_seq, .geometry_epoch = term.render_runtime.geometry_epoch };
+    }
+    term.snapshot.markFullDirty();
+    term.snapshot.scroll_row = visible.start;
+    term.snapshot.is_alternate_screen = visible.is_alternate_screen;
+    term.snapshot.cursor = .{
+        .row = visible.cursor_row,
+        .col = visible.cursor_col,
+        .visible = visible.cursor_visible,
+        .shape = switch (visible.cursor_shape) {
+            .underline => .underline,
+            .bar => .beam,
+            .block => .block,
+        },
+    };
+
+    var row: u16 = 0;
+    while (row < visible.rows) : (row += 1) {
+        var col: u16 = 0;
+        while (col < visible.cols) : (col += 1) {
+            const src = visible.cellInfoAt(row, col);
+            const idx = @as(usize, row) * @as(usize, visible.cols) + @as(usize, col);
+            term.snapshot.cells.items[idx] = .{
+                .codepoint = @intCast(src.codepoint),
+                .flags = .{ .continuation = vt_core.Grid.isCellContinuation(src) },
+                .fg_color = colorFromVt(src.attrs.fg),
+                .bg_color = colorFromVt(src.attrs.bg),
+                .underline_color = colorFromVt(src.attrs.underline_color),
+                .underline_style = underlineStyleFromVt(src.attrs.underline_style),
+                .attrs = .{
+                    .bold = src.attrs.bold,
+                    .dim = false,
+                    .italic = false,
+                    .underline = src.attrs.underline,
+                    .underline_color_set = src.attrs.underline_color.a != 0,
+                    .blink = src.attrs.blink or src.attrs.blink_fast,
+                    .inverse = src.attrs.reverse,
+                    .invisible = false,
+                    .strikethrough = false,
+                },
+                .link_id = src.attrs.link_id,
+            };
+        }
+    }
+
+    const receipt = term.render_runtime.acceptSource(.{
+        .snapshot = &term.snapshot,
+        .cols = visible.cols,
+        .rows = visible.rows,
+        .scrollback_count = visible.history_count,
+        .scrollback_offset = term.scrollback_offset,
+        .selection_anchor_depth = if (term.selection.anchor) |point| point.depth else null,
+        .selection_anchor_col = if (term.selection.anchor) |point| point.col else null,
+        .selection_current_depth = if (term.selection.current) |point| point.depth else null,
+        .selection_current_col = if (term.selection.current) |point| point.col else null,
+        .focused = term.has_input_focus,
+        .hover_link_id = term.hover_link_id,
+        .hover_underline_style = underlineStyleFromLink(term.hover_underline_style),
+        .snapshot_seq = term.snapshot_seq,
+        .vt_epoch = term.vt_epoch,
+        .last_alt_screen = visible.is_alternate_screen,
+    });
+    term.vt.clearDirtyRows();
+    return receipt;
+}
+
+pub fn renderAction(term: *const Term) RenderAction {
+    const mut: *Term = @constCast(term);
+    return mut.render_runtime.surface_owner.nextAction();
+}
+
+pub fn prepareRender(term: *Term) RenderPrepareResult {
+    const request = term.render_runtime.prepare() orelse return .idle;
+    if (term.prepared_frame) |*prepared| prepared.deinit();
+    const query = term.render_runtime.surfaceQuery();
+    const prepared = term.renderer.prepareFrame(term.allocator, term.snapshot.frameData(), query.render_px, query.cell_px) catch return .failed;
+    term.prepared_frame = .{
+        .render_seq = request.token.snapshot_seq,
+        .render_dirty_epoch = request.token.dirty_epoch,
+        .geometry_epoch = request.token.geometry_epoch,
+        .sync_us = 0,
+        .copy_us = 0,
+        .prepare_metrics = .{},
+        .resolve_before = prepared.resolve_before,
+        .prepared = prepared.frame,
+    };
+    _ = term.render_runtime.publishPrepared(term.prepared_frame.?.pipelineFrame(request));
+    return .prepared;
+}
+
+pub fn submitRender(term: *Term) RenderSubmitResult {
+    switch (term.render_runtime.submit()) {
+        .idle => return .idle,
+        .stale => return .stale,
+        .needs_full_prepare => return .needs_prepare,
+        .submit => {
+            const prepared = &(term.prepared_frame orelse return .failed);
+            const submitted = term.renderer.submitFrame(&prepared.prepared) catch return .failed;
+            term.render_runtime.acceptSubmitted(prepared.submittedFrame(submitted));
+            prepared.deinit();
+            term.prepared_frame = null;
+            return .rendered;
+        },
+    }
+}
+
+pub fn takeRenderMetrics(term: *Term) RenderMetrics {
+    return term.render_runtime.takeMetrics();
+}
+
+pub fn markRenderPresented(term: *Term) void {
+    term.render_runtime.markPresented();
+}
+
+fn publishEncodedInput(term: *Term, event: Input.Event) !bool {
+    var encoded = try term.vt.encodeInput(term.allocator, event);
+    defer encoded.deinit();
+    if (encoded.bytes.len == 0) return false;
+    _ = try term.session.publishHostInputAndPump(encoded.bytes);
+    return true;
+}
+
+fn drainTerminalReply(term: *Term) void {
+    const pending = term.vt.pendingOutput();
+    if (pending.len == 0) return;
+    term.session.publishHostInput(pending) catch return;
+    term.vt.clearPendingOutput();
+}
+
+fn repairScrollback(term: *Term, history_before: usize, any_read: bool) void {
+    const history_after = term.vt.historyCount();
+    if (history_after > history_before) {
+        if (term.scrollback_offset > 0) {
+            const delta = history_after - history_before;
+            term.scrollback_offset = @min(history_after, term.scrollback_offset + delta);
+        }
+        noteVisibleChange(term);
+        return;
+    }
+    if (history_after < history_before) {
+        if (term.scrollback_offset > history_after) term.scrollback_offset = history_after;
+        noteVisibleChange(term);
+        return;
+    }
+    if (any_read and term.scrollback_offset > 0) noteVisibleChange(term);
+}
+
+fn noteVisibleChange(term: *Term) void {
+    term.snapshot_seq +%= 1;
+}
+
+fn followLiveBottomForInput(term: *Term) void {
+    if (term.scrollback_offset == 0) return;
+    term.scrollback_offset = 0;
+    noteVisibleChange(term);
+}
+
+fn resetTitleFromLaunch(term: *Term) !void {
+    const title = if (term.launch.command) |command| blk: {
+        const trimmed = std.mem.trim(u8, command, " \t\r\n");
+        if (trimmed.len > 0) break :blk trimmed;
+        break :blk std.mem.trim(u8, std.fs.path.basename(term.launch.shell), " \t\r\n");
+    } else std.mem.trim(u8, std.fs.path.basename(term.launch.shell), " \t\r\n");
+    try setCurrentTitle(term, title);
+}
+
+fn setCurrentTitle(term: *Term, title: []const u8) !void {
+    try term.current_title.resize(term.allocator, title.len);
+    if (title.len > 0) @memcpy(term.current_title.items, title);
+}
+
+fn clearFallbackFontPathsLocked(term: *Term) void {
+    var i: usize = 0;
+    while (i < term.fallback_font_paths.items.len) : (i += 1) term.allocator.free(term.fallback_font_paths.items[i]);
+    term.fallback_font_paths.clearRetainingCapacity();
+}
+
+fn pixelToCol(term: *const Term, pixel_x: i32) u16 {
+    if (term.cols == 0 or term.cell_px.width == 0) return 0;
+    if (pixel_x <= 0) return 0;
+    const x: u32 = @intCast(pixel_x);
+    const col = x / @as(u32, term.cell_px.width);
+    return @min(@as(u16, @intCast(col)), term.cols -| 1);
+}
+
+fn pixelToRow(term: *const Term, pixel_y: i32) i32 {
+    if (term.rows == 0 or term.cell_px.height == 0) return 0;
+    if (pixel_y <= 0) return 0;
+    const y: u32 = @intCast(pixel_y);
+    const row = y / @as(u32, term.cell_px.height);
+    return @min(@as(i32, @intCast(row)), @as(i32, term.rows -| 1));
+}
+
+fn colorFromVt(color: vt_core.Grid.Color) howl_render.Core.SurfaceColor {
+    return .{ .kind = .rgb, .value = (@as(u24, color.r) << 16) | (@as(u24, color.g) << 8) | @as(u24, color.b) };
+}
+
+fn underlineStyleFromVt(style: vt_core.Grid.UnderlineStyle) howl_render.Core.UnderlineStyle {
+    return switch (style) {
+        .straight => .straight,
+        .double => .double,
+        .curly => .curly,
+        .dotted => .dotted,
+        .dashed => .dashed,
     };
 }
 
-fn abiMouseButton(button: Input.MouseButton) u8 {
-    return switch (button) {
-        .none => Ffi.mouseButtonNone(),
-        .left => Ffi.mouseButtonLeft(),
-        .middle => Ffi.mouseButtonMiddle(),
-        .right => Ffi.mouseButtonRight(),
-        .wheel_up => Ffi.mouseButtonWheelUp(),
-        .wheel_down => Ffi.mouseButtonWheelDown(),
+fn underlineStyleFromLink(style: LinkUnderlineStyle) howl_render.Core.UnderlineStyle {
+    return switch (style) {
+        .straight => .straight,
+        .curly => .curly,
+        .dotted => .dotted,
+        .dashed => .dashed,
     };
 }
 
-fn boolInt(value: bool) c_int {
-    return if (value) 1 else 0;
-}
+const TransportSink = struct {
+    term: *Term,
+
+    pub fn onTransportBytes(self: TransportSink, bytes: []const u8) void {
+        self.term.vt.feedSlice(bytes);
+        self.term.output_seen = true;
+    }
+};

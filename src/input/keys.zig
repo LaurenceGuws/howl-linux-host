@@ -291,7 +291,7 @@ pub const Bindings = struct {
     }
 
     /// Converts fixed tab-focus actions to zero-based tab indexes.
-    pub fn focusTabIndex(action: Action) ?usize {
+    pub fn focusTabIndex(action: Action) ?u8 {
         return switch (action) {
             .terminal_focus_tab_1 => 0,
             .terminal_focus_tab_2 => 1,

@@ -1,4 +1,4 @@
-//! Responsibility: own Linux host terminal geometry handoff to howl-term.
+//! Responsibility: own Linux host terminal geometry handoff to render and terminal owners.
 //! Ownership: geometry locking, resize coalescing, and frame geometry sync.
 //! Reason: keeps pixel/grid mutation and term geometry sync out of the widget core.
 

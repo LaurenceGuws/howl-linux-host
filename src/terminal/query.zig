@@ -23,4 +23,4 @@ pub fn lifecycleState(self: anytype) api.LifecycleState {
 }
 
 // The host retains the last presentable surface handle; render-core owns the
-// runtime that decides when one is ready.
+// queue state that decides when one is ready.

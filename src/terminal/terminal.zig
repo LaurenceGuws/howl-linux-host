@@ -5,10 +5,9 @@
 const std = @import("std");
 const window = @import("../window/window.zig");
 const HostInput = @import("../input/input.zig").Input;
-const howl_term = @import("howl_term");
 const api = @import("api.zig");
 const HowlTerm = api.Term;
-const LifecycleState = howl_term.lifecycle.State;
+const LifecycleState = api.LifecycleState;
 const RenderGeometry = api.RenderGeometry;
 const SurfaceHandle = api.RenderSurface;
 const Config = @import("../config/config.zig");
@@ -59,6 +58,12 @@ pub const Terminal = struct {
     widget_focused: bool,
     scrollbar: scroll.State,
     link_cursor_active: bool,
+    first_render_trace_logged: bool,
+    first_submit_trace_logged: bool,
+    first_prepare_result_logged: bool,
+    first_non_idle_action_logged: bool,
+    first_non_idle_submit_logged: bool,
+    first_rendered_surface_logged: bool,
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -112,6 +117,12 @@ pub const Terminal = struct {
             .widget_focused = true,
             .scrollbar = .{},
             .link_cursor_active = false,
+            .first_render_trace_logged = false,
+            .first_submit_trace_logged = false,
+            .first_prepare_result_logged = false,
+            .first_non_idle_action_logged = false,
+            .first_non_idle_submit_logged = false,
+            .first_rendered_surface_logged = false,
         };
     }
 

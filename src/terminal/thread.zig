@@ -1,4 +1,4 @@
-//! Responsibility: own Linux-host transport progress for howl-term.
+//! Responsibility: own Linux-host transport progress across session, VT, and render owners.
 //! Ownership: host-owned wait, bounded transport progress, bounded apply, and snapshot publication.
 //! Reason: keeps scheduler policy in the host instead of inside howl-term.
 
@@ -13,6 +13,7 @@ const transport_limits: api.TransportLimits = .{
 };
 
 const apply_budget: usize = 256;
+const transport_wait_timeout_ms: i32 = 16;
 
 pub fn progressThreadMain(self: anytype) void {
     progressThreadMainWith(self, RealOps);
@@ -20,9 +21,11 @@ pub fn progressThreadMain(self: anytype) void {
 
 fn progressThreadMainWith(self: anytype, comptime Ops: type) void {
     while (!self.progress_stop.load(.acquire)) {
-        log.logf("host-loop ts_ns={d} stage=progress-wait", .{log.nowNs()});
-        _ = Ops.waitTransport(&self.term, -1);
-        log.logf("host-loop ts_ns={d} stage=progress-wake", .{log.nowNs()});
+        log.logProgressWaitStartup();
+        log.logFramef("host-loop ts_ns={d} stage=progress-wait", .{log.nowNs()});
+        _ = Ops.waitTransport(&self.term, transport_wait_timeout_ms);
+        log.logProgressWakeStartup();
+        log.logFramef("host-loop ts_ns={d} stage=progress-wake", .{log.nowNs()});
         if (self.progress_stop.load(.acquire)) break;
         while (driveOnceWith(self, Ops)) {}
         if (!Ops.isAlive(&self.term)) break;
@@ -40,10 +43,23 @@ fn driveOnceWith(self: anytype, comptime Ops: type) bool {
         transport.reads == transport_limits.max_reads or
         transport.bytes_read == transport_limits.max_bytes or
         applied.remaining_events != 0;
-    const published: api.SourceReceipt = if (keep) .{ .published = 0, .queued = 0, .damage_kind = 0, .source_seq = 0, .geometry_epoch = 0 } else Ops.publishSource(&self.term);
-    std.debug.assert(!keep or (published.published == 0 and published.queued == 0));
-    if (!keep and published.published != 0) prepareReadyFrameWith(self, Ops);
-    log.logf(
+    const published: api.SourceReceipt = if (keep) .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 } else Ops.publishSource(&self.term);
+    std.debug.assert(!keep or (!published.published and !published.queued));
+    log.logProgressDriveStartupf(
+        "stage=progress-drive-first reads={d} read_bytes={d} applied={d} publish={d} queued={d} damage={d} keep={} alive={}",
+        .{
+            transport.reads,
+            transport.bytes_read,
+            applied.applied_events,
+            @intFromBool(published.published),
+            @intFromBool(published.queued),
+            @intFromEnum(published.damage_kind),
+            keep,
+            Ops.isAlive(&self.term),
+        },
+    );
+    if (!keep and published.published) Ops.wakeWindow();
+    log.logFramef(
         "host-loop ts_ns={d} stage=progress-drive drained={d} pending={d} reads={d} read_bytes={d} queued_events={d} applied_remaining={d} publish={d} queued={d} damage={d} keep={}",
         .{
             log.nowNs(),
@@ -53,45 +69,13 @@ fn driveOnceWith(self: anytype, comptime Ops: type) bool {
             transport.bytes_read,
             transport.queued_events,
             applied.remaining_events,
-            published.published,
-            published.queued,
-            published.damage_kind,
+            @intFromBool(published.published),
+            @intFromBool(published.queued),
+            @intFromEnum(published.damage_kind),
             keep,
         },
     );
     return keep;
-}
-
-fn prepareReadyFrame(self: anytype) void {
-    prepareReadyFrameWith(self, RealOps);
-}
-
-fn prepareReadyFrameWith(self: anytype, comptime Ops: type) void {
-    while (Ops.renderAction(&self.term) == .prepare) {
-        log.logf("host-loop ts_ns={d} stage=progress-prepare-begin", .{log.nowNs()});
-        std.debug.assert(Ops.renderAction(&self.term) == .prepare);
-        const result = Ops.prepareRender(&self.term);
-        log.logf("host-loop ts_ns={d} stage=progress-prepare-end result={s}", .{ log.nowNs(), @tagName(result) });
-        const metrics = Ops.takeRenderMetrics(&self.term);
-        log.logf(
-            "host-loop ts_ns={d} stage=progress-prepare-metrics snapshot_publishes={d} prepare_requests={d} prepare_takes={d} prepared_publishes={d} submit_takes={d} submit_valid={d} submit_rejected={d} presents={d}",
-            .{
-                log.nowNs(),
-                metrics.snapshot_publishes,
-                metrics.prepare_requests,
-                metrics.prepare_takes,
-                metrics.prepared_publishes,
-                metrics.submit_takes,
-                metrics.submit_valid,
-                metrics.submit_rejected,
-                metrics.presents,
-            },
-        );
-        switch (result) {
-            .prepared => Ops.wakeWindow(),
-            .idle, .failed => return,
-        }
-    }
 }
 
 const RealOps = struct {
@@ -115,18 +99,6 @@ const RealOps = struct {
         return api.publishSource(term);
     }
 
-    fn renderAction(term: *const api.Term) api.RenderAction {
-        return api.renderAction(term);
-    }
-
-    fn prepareRender(term: *api.Term) api.RenderPrepareResult {
-        return api.prepareRender(term);
-    }
-
-    fn takeRenderMetrics(term: *api.Term) api.RenderMetrics {
-        return api.takeRenderMetrics(term);
-    }
-
     fn isAlive(term: *const api.Term) bool {
         return api.isAlive(term);
     }
@@ -145,36 +117,29 @@ test "host loop waits when nothing is ready" {
     progressThreadMainWith(&ctx, FakeOps);
     try std.testing.expectEqual(@as(usize, 1), fake_state.wait_calls);
     try std.testing.expectEqual(@as(usize, 0), fake_state.publish_calls);
-    try std.testing.expectEqual(@as(usize, 0), fake_state.prepare_calls);
     try std.testing.expectEqual(@as(usize, 0), fake_state.wake_calls);
 }
 
 test "host loop wakes on output publication" {
     fake_state = .{};
     fake_state.publish_ready = true;
-    fake_state.publish_result = .{ .published = 1, .queued = 1, .damage_kind = 3, .source_seq = 7, .geometry_epoch = 3 };
-    fake_state.render_action = .prepare;
-    fake_state.prepare_result = .prepared;
+    fake_state.publish_result = .{ .published = true, .queued = true, .damage_kind = .full, .source_seq = 7, .geometry_epoch = 3 };
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const keep = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(!keep);
     try std.testing.expectEqual(@as(usize, 1), fake_state.publish_calls);
-    try std.testing.expectEqual(@as(usize, 1), fake_state.prepare_calls);
     try std.testing.expectEqual(@as(usize, 1), fake_state.wake_calls);
 }
 
 test "host loop wakes after input triggers publication" {
     fake_state = .{};
     fake_state.applied_events = 2;
-    fake_state.publish_result = .{ .published = 1, .queued = 1, .damage_kind = 1, .source_seq = 8, .geometry_epoch = 3 };
-    fake_state.render_action = .prepare;
-    fake_state.prepare_result = .prepared;
+    fake_state.publish_result = .{ .published = true, .queued = true, .damage_kind = .partial, .source_seq = 8, .geometry_epoch = 3 };
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const keep = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(!keep);
     try std.testing.expectEqual(@as(usize, 1), fake_state.apply_calls);
     try std.testing.expectEqual(@as(usize, 1), fake_state.publish_calls);
-    try std.testing.expectEqual(@as(usize, 1), fake_state.prepare_calls);
     try std.testing.expectEqual(@as(usize, 1), fake_state.wake_calls);
 }
 
@@ -184,7 +149,6 @@ test "host loop stays quiet when nothing changes" {
     const keep = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(!keep);
     try std.testing.expectEqual(@as(usize, 1), fake_state.publish_calls);
-    try std.testing.expectEqual(@as(usize, 0), fake_state.prepare_calls);
     try std.testing.expectEqual(@as(usize, 0), fake_state.wake_calls);
 }
 
@@ -205,7 +169,6 @@ var fake_state: struct {
     pump_calls: usize = 0,
     apply_calls: usize = 0,
     publish_calls: usize = 0,
-    prepare_calls: usize = 0,
     wake_calls: usize = 0,
     is_alive: bool = true,
     backlog: bool = false,
@@ -214,9 +177,7 @@ var fake_state: struct {
     remaining_events: usize = 0,
     applied_events: usize = 0,
     publish_ready: bool = false,
-    publish_result: api.SourceReceipt = .{ .published = 0, .queued = 0, .damage_kind = 0, .source_seq = 0, .geometry_epoch = 0 },
-    render_action: api.RenderAction = .idle,
-    prepare_result: api.RenderPrepareResult = .idle,
+    publish_result: api.SourceReceipt = .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 },
     stop_after_wait: bool = false,
     stop_ptr: ?*std.atomic.Value(bool) = null,
 } = .{};
@@ -247,22 +208,8 @@ const FakeOps = struct {
 
     fn publishSource(_: *FakeTerm) api.SourceReceipt {
         fake_state.publish_calls += 1;
-        if (!fake_state.publish_ready) return .{ .published = 0, .queued = 0, .damage_kind = 0, .source_seq = 0, .geometry_epoch = 0 };
+        if (!fake_state.publish_ready) return .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 };
         return fake_state.publish_result;
-    }
-
-    fn renderAction(_: *const FakeTerm) api.RenderAction {
-        return fake_state.render_action;
-    }
-
-    fn prepareRender(_: *FakeTerm) api.RenderPrepareResult {
-        fake_state.prepare_calls += 1;
-        if (fake_state.prepare_result == .prepared) fake_state.render_action = .idle;
-        return fake_state.prepare_result;
-    }
-
-    fn takeRenderMetrics(_: *FakeTerm) api.RenderMetrics {
-        return .{};
     }
 
     fn isAlive(_: *const FakeTerm) bool {

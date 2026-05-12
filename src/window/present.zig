@@ -5,6 +5,7 @@
 const Draw = @import("draw.zig");
 const Layout = @import("layout.zig");
 const PerfLog = @import("../perf/log.zig");
+const InputWindow = @import("../input/window.zig");
 const Texture = @import("texture.zig");
 const std = @import("std");
 
@@ -19,6 +20,8 @@ pub fn State(comptime c: type) type {
         tab_cache_w: c_int,
         tab_cache_h: c_int,
         tab_cache_hash: u64,
+        first_present_attempt_logged: bool,
+        first_present_logged: bool,
         present_frames: u64,
         fps_window_start_ns: u64,
         fps_window_start_frame: u64,
@@ -43,6 +46,8 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
             .tab_cache_w = 0,
             .tab_cache_h = 0,
             .tab_cache_hash = 0,
+            .first_present_attempt_logged = false,
+            .first_present_logged = false,
             .present_frames = 0,
             .fps_window_start_ns = c.SDL_GetTicksNS(),
             .fps_window_start_frame = 0,
@@ -89,6 +94,14 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
     Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
     const before_swap_ns = c.SDL_GetTicksNS();
+    if (!state.first_present_attempt_logged) {
+        state.first_present_attempt_logged = true;
+        InputWindow.logStartupf("stage=term-present-attempt-first texture_id={d} rect_w={d} rect_h={d}", .{ frame.texture_id, frame.texture_rect.width, frame.texture_rect.height });
+    }
+    if (!state.first_present_logged and frame.texture_id != 0) {
+        state.first_present_logged = true;
+        InputWindow.logStartupf("stage=term-present-first texture_id={d} rect_w={d} rect_h={d}", .{ frame.texture_id, frame.texture_rect.width, frame.texture_rect.height });
+    }
     Texture.swapWindow(c, handle);
     const end_ns = c.SDL_GetTicksNS();
     state.present_frames += 1;

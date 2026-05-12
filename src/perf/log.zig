@@ -2,6 +2,7 @@
 //! Ownership: central JSONL event stream for thread CPU, term metrics, and SDL present cadence.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const api = @import("../terminal/api.zig");
 const window = @import("../window/window.zig");
 
@@ -26,6 +27,7 @@ pub const State = struct {
     term: *api.Term,
 
     pub fn init(self: *State, term: *api.Term, path: ?[*:0]const u8) !void {
+        assert(path == null or path.?[0] != 0);
         const file = c.fopen(path orelse default_log_name, "w") orelse return error.PerfLogOpenFailed;
         errdefer _ = c.fclose(file);
         const sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.PerfSemaphoreUnavailable;
@@ -44,9 +46,15 @@ pub const State = struct {
         const thread = try std.Thread.spawn(.{}, threadMain, .{self});
         setThreadName(thread, "howl-perf");
         self.thread = thread;
+        assert(self.file != null);
+        assert(self.wake_sem != null);
+        assert(self.thread != null);
     }
 
     pub fn stopAndDeinit(self: *State) void {
+        assert(self.file != null);
+        assert(self.wake_sem != null);
+        assert(self.thread != null);
         self.stop.store(true, .release);
         if (self.wake_sem) |sem| window.c_win.SDL_SignalSemaphore(sem);
         if (self.thread) |thread| thread.join();
@@ -90,24 +98,39 @@ pub fn logSdlFpsWindow(frames: u64, window_frames: u64, fps: f64, avg_cache_us: 
 }
 
 fn threadMain(self: *State) void {
+    assert(self.file != null);
+    assert(self.wake_sem != null);
     var prev_threads: std.ArrayList(ThreadPrev) = .empty;
     defer prev_threads.deinit(std.heap.c_allocator);
 
     var last_sample_ns = monoNs();
     while (true) {
-        if (self.wake_sem) |sem| _ = window.c_win.SDL_WaitSemaphoreTimeout(sem, sample_interval_ms);
+        if (stopRequested(self)) return;
+        waitForWake(self);
+        if (stopRequested(self)) return;
         const now_ns = monoNs();
         sample(self, &prev_threads, &last_sample_ns, now_ns) catch return;
-        if (self.stop.load(.acquire)) return;
     }
 }
 
+fn stopRequested(self: *const State) bool {
+    return self.stop.load(.acquire);
+}
+
+fn waitForWake(self: *State) void {
+    const sem = self.wake_sem orelse unreachable;
+    _ = window.c_win.SDL_WaitSemaphoreTimeout(sem, sample_interval_ms);
+}
+
 fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns: *u64, now_ns: u64) !void {
+    assert(self.file != null);
+    assert(last_sample_ns.* <= now_ns);
     const elapsed_ns = now_ns - last_sample_ns.*;
     if (elapsed_ns == 0) return;
     const ticks_per_second_raw = c.sysconf(c._SC_CLK_TCK);
     if (ticks_per_second_raw <= 0) return;
     const ticks_per_second: u64 = @intCast(ticks_per_second_raw);
+    assert(ticks_per_second > 0);
 
     const render_metrics = api.takeRenderMetrics(self.term);
 
@@ -122,6 +145,7 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
         const tid = std.fmt.parseInt(u32, name, 10) catch continue;
         try threads.append(std.heap.c_allocator, try readThreadSample(tid));
     }
+    assert(threads.items.len > 0);
 
     const file = self.file orelse return error.PerfLogClosed;
     lockFile();
@@ -181,21 +205,26 @@ fn unlockFile() void {
 }
 
 fn readThreadSample(tid: u32) !ThreadSample {
+    assert(tid > 0);
     var comm_path_buf: [64:0]u8 = undefined;
     const comm_path = try std.fmt.bufPrintZ(&comm_path_buf, "/proc/self/task/{d}/comm", .{tid});
     var name_buf: [64]u8 = undefined;
     const name_len = try readTrimmedFile(comm_path, &name_buf);
+    assert(name_len <= name_buf.len);
 
     var stat_path_buf: [64:0]u8 = undefined;
     const stat_path = try std.fmt.bufPrintZ(&stat_path_buf, "/proc/self/task/{d}/stat", .{tid});
     var stat_buf: [512]u8 = undefined;
     const stat_len = try readFile(stat_path, &stat_buf);
+    assert(stat_len <= stat_buf.len);
     const total_ticks = try parseTotalTicks(stat_buf[0..stat_len]);
 
     return .{ .tid = tid, .name = name_buf, .name_len = name_len, .total_ticks = total_ticks };
 }
 
 fn readTrimmedFile(path: [:0]const u8, buf: []u8) !usize {
+    assert(path.len > 0);
+    assert(buf.len > 0);
     const len = try readFile(path, buf);
     var trimmed = len;
     while (trimmed > 0) {
@@ -208,14 +237,18 @@ fn readTrimmedFile(path: [:0]const u8, buf: []u8) !usize {
 }
 
 fn readFile(path: [:0]const u8, buf: []u8) !usize {
+    assert(path.len > 0);
+    assert(buf.len > 0);
     const file = c.fopen(path.ptr, "r") orelse return error.PerfReadOpenFailed;
     defer _ = c.fclose(file);
     const read = c.fread(buf.ptr, 1, buf.len, file);
     if (read == 0 and c.ferror(file) != 0) return error.PerfReadFailed;
+    assert(read <= buf.len);
     return read;
 }
 
 fn parseTotalTicks(stat_line: []const u8) !u64 {
+    assert(stat_line.len > 0);
     const close_idx = std.mem.lastIndexOfScalar(u8, stat_line, ')') orelse return error.BadThreadStat;
     if (close_idx + 2 >= stat_line.len) return error.BadThreadStat;
     var fields = std.mem.tokenizeScalar(u8, stat_line[close_idx + 2 ..], ' ');
@@ -233,6 +266,7 @@ fn parseTotalTicks(stat_line: []const u8) !u64 {
 }
 
 fn previousTicks(prev: []const ThreadPrev, tid: u32) ?u64 {
+    assert(tid > 0);
     for (prev) |entry| if (entry.tid == tid) return entry.total_ticks;
     return null;
 }
@@ -240,6 +274,8 @@ fn previousTicks(prev: []const ThreadPrev, tid: u32) ?u64 {
 fn monoNs() u64 {
     var ts: c.struct_timespec = undefined;
     if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
+    assert(ts.tv_sec >= 0);
+    assert(ts.tv_nsec >= 0);
     return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
 }
 

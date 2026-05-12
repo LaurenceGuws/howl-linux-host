@@ -3,24 +3,42 @@
 //! Reason: keep production runtime direct and unshaped by test harnesses.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const cli_args = @import("cli/args.zig");
- const Config = @import("config/config.zig");
+const Config = @import("config/config.zig");
 const Input = @import("input/input.zig").Input;
 const InputWindow = @import("input/window.zig");
 const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
+const TermApi = @import("terminal/api.zig");
 const TerminalWidget = @import("terminal/terminal.zig").Terminal;
 const Window = @import("window/window.zig");
 
 pub const Options = cli_args.Options;
 
-const max_tabs: usize = TabBar.max_tabs;
-const max_binding_actions_per_turn: usize = 8;
+const TabIndex = TabBar.TabIndex;
+const max_tabs: TabIndex = TabBar.max_tabs;
+const max_tabs_count: usize = TabBar.max_tabs_count;
+const max_binding_actions_per_turn: u8 = 8;
 const TabList = std.ArrayList(*TerminalWidget);
 
 const RenderWork = struct {
     needs_frame: bool,
     terminal_frame: bool,
+};
+
+const LoopAction = enum {
+    continue_running,
+    quit,
+};
+
+const App = struct {
+    conf: *const Config.State,
+    window: *Window.State,
+    tab_bar: *TabBar,
+    tabs: *TabList,
+    active_tab_idx: *TabIndex,
+    input: *Input,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -32,87 +50,196 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn start(options: Options) !void {
+    InputWindow.logStartup("start");
     setCurrentThreadName("howl-main");
-    if (!Window.initVideo()) return error.WindowInitFailed;
+    try initVideo();
     defer Window.quit();
 
-    var conf = try Config.State.load(std.heap.c_allocator);
+    var conf = try loadConfig(options);
     defer conf.deinit(std.heap.c_allocator);
-    try applyOverrides(&conf, options);
 
-    Input.Bindings.setConfigBindings(&conf);
-
-    const title: [*:0]const u8 = if (options.window_title) |value| value.ptr else conf.window.title.ptr;
-    var window = try Window.State.create(title, conf.window.width, conf.window.height);
+    var window = try createWindow(&conf, options);
     defer window.deinit();
 
     var tab_bar = TabBar{};
     var tabs: TabList = .empty;
     defer destroyTabs(std.heap.c_allocator, &tabs);
-    var active_tab_idx: usize = 0;
-    try openTab(std.heap.c_allocator, &conf, &window, &tabs, &active_tab_idx);
+    var active_tab_idx: TabIndex = 0;
+    try openInitialTab(&conf, &window, &tabs, &active_tab_idx);
 
     var perf: PerfLog.State = undefined;
-    try perf.init(&activeTab(tabs.items, active_tab_idx).term, std.c.getenv("HOWL_RUNTIME_LOG_PATH"));
+    try initPerf(&perf, activeTab(tabs.items, active_tab_idx));
     defer perf.stopAndDeinit();
 
+    var input = try initInput(&window);
+    const duration_timer = InputWindow.startQuitTimer(options.duration_ms);
+    defer InputWindow.stopQuitTimer(duration_timer);
+
+    var app = App{
+        .conf = &conf,
+        .window = &window,
+        .tab_bar = &tab_bar,
+        .tabs = &tabs,
+        .active_tab_idx = &active_tab_idx,
+        .input = &input,
+    };
+    configureInputPolicies(&app);
+    try runLoop(&app);
+}
+
+fn initVideo() !void {
+    if (Window.initVideo()) {
+        InputWindow.logStartup("video-init-ok");
+        return;
+    }
+    return error.WindowInitFailed;
+}
+
+fn loadConfig(options: Options) !Config.State {
+    var conf = try Config.State.load(std.heap.c_allocator);
+    errdefer conf.deinit(std.heap.c_allocator);
+    try conf.applyProcessOverrides(options.shell, options.start_path, options.command);
+    InputWindow.logStartupf("stage=config-ready width={d} height={d}", .{ conf.window.width, conf.window.height });
+    Input.Bindings.setConfigBindings(&conf);
+    return conf;
+}
+
+fn createWindow(conf: *const Config.State, options: Options) !Window.State {
+    const title: [*:0]const u8 = if (options.window_title) |value| value.ptr else conf.window.title.ptr;
+    var window = try Window.State.create(title, conf.window.width, conf.window.height);
+    errdefer window.deinit();
+    InputWindow.logStartupf("stage=window-ready px_w={d} px_h={d} logical_w={d} logical_h={d}", .{ window.px_w, window.px_h, window.logical_w, window.logical_h });
+    return window;
+}
+
+fn openInitialTab(conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
+    InputWindow.logStartup("open-tab-begin");
+    try openTab(std.heap.c_allocator, conf, window, tabs, active_tab_idx);
+    InputWindow.logStartup("open-tab-ok");
+}
+
+fn initPerf(perf: *PerfLog.State, tab: *TerminalWidget) !void {
+    try perf.init(&tab.term, std.c.getenv("HOWL_RUNTIME_LOG_PATH"));
+    InputWindow.logStartup("perf-log-ready");
+}
+
+fn initInput(window: *Window.State) !Input {
     var input: Input = undefined;
     input.init();
     try input.bind(window.handle);
     Input.wakeWindow();
+    InputWindow.logStartup("input-ready");
+    return input;
+}
 
-    var running = true;
-    var duration_timer: Window.c_win.SDL_TimerID = 0;
-    if (options.duration_ms) |duration_ms| {
-        duration_timer = Window.c_win.SDL_AddTimer(@intCast(@max(duration_ms, 1)), quitTimer, null);
-    }
-    defer {
-        if (duration_timer != 0) _ = Window.c_win.SDL_RemoveTimer(duration_timer);
-    }
-
-    input.setHostMousePolicy(.{
-        .listen_always = conf.window.mouse.listen_always,
-        .link_hover = activeTab(tabs.items, active_tab_idx).wantsLinkHover(),
+fn configureInputPolicies(app: *App) void {
+    const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
+    app.input.setHostMousePolicy(.{
+        .listen_always = app.conf.window.mouse.listen_always,
+        .link_hover = tab.wantsLinkHover(),
     });
-    input.setTerminalMousePolicy(.{
-        .bypass_mod = conf.term.mouse.bypass_mod,
+    app.input.setTerminalMousePolicy(.{
+        .bypass_mod = app.conf.term.mouse.bypass_mod,
     });
-    while (running) {
-        var work = collectRenderWork(activeTab(tabs.items, active_tab_idx));
-        if (!work.needs_frame) {
-            const signal = Input.waitWindow(window.handle);
-            if (signal == .quit) {
-                running = false;
-                continue;
-            }
-        }
-        if (input.drainWindowFocusChanged()) |focused| setWindowFocused(&window, tabs.items, active_tab_idx, focused);
+}
 
-        var drained_binding_actions: usize = 0;
-        while (drained_binding_actions < max_binding_actions_per_turn) : (drained_binding_actions += 1) {
-            const action = input.drainBindingAction() orelse break;
-            try handleBindingAction(&conf, &window, &tabs, &active_tab_idx, action);
-        }
-
-        const content_logical = window.contentLogicalSize(conf.tab_bar.height);
-        activeTab(tabs.items, active_tab_idx).drainInput(&input, 0, window.tabBarHeightLogical(conf.tab_bar.height), content_logical.width, content_logical.height);
-        activeTab(tabs.items, active_tab_idx).handleScrollInput(&input);
-        if (input.drainWindowGeometryChanged()) {
-            if (window.refreshGeometry()) resizeTerminals(&conf, &window, tabs.items);
-        }
-
-        work = collectRenderWork(activeTab(tabs.items, active_tab_idx));
-        if (!work.needs_frame) continue;
-
-        InputWindow.logf("host-loop ts_ns={d} stage=render-begin terminal_frame={}", .{ InputWindow.nowNs(), work.terminal_frame });
-        render(&conf, &window, &tab_bar, tabs.items, active_tab_idx, work);
-        InputWindow.logf("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
-        if (activeTabFailed(tabs.items, active_tab_idx)) return error.HostTabFailed;
-
-        if (activeTab(tabs.items, active_tab_idx).needsContentFrame(Window.c_win.SDL_GetTicksNS())) {
-            Input.wakeWindow();
+fn runLoop(app: *App) !void {
+    InputWindow.logStartup("loop-enter");
+    while (true) {
+        switch (try runLoopTurn(app)) {
+            .continue_running => {},
+            .quit => break,
         }
     }
+    InputWindow.logStartup("loop-exit");
+}
+
+fn runLoopTurn(app: *App) !LoopAction {
+    if (quitRequested()) |action| return action;
+
+    const tab_before_wait = activeTab(app.tabs.items, app.active_tab_idx.*);
+    const work_before_wait = collectRenderWork(tab_before_wait);
+    if (work_before_wait.needs_frame) {
+        assert(work_before_wait.terminal_frame or tab_before_wait.needsPresentationFrame(Window.c_win.SDL_GetTicksNS()));
+    } else {
+        const action = waitForWindow(app.window.handle);
+        if (action == .quit) return .quit;
+    }
+
+    applyFocusChange(app);
+    try drainBindingActions(app);
+    if (quitRequested()) |action| return action;
+
+    forwardTerminalInput(app);
+    applyWindowResize(app);
+
+    const tab_before_render = activeTab(app.tabs.items, app.active_tab_idx.*);
+    const work_before_render = collectRenderWork(tab_before_render);
+    if (!work_before_render.needs_frame) return .continue_running;
+
+    render(app, work_before_render);
+    if (quitRequested()) |action| return action;
+    try ensureActiveTabHealthy(app);
+    wakeIfMoreContent(app);
+    return .continue_running;
+}
+
+fn quitRequested() ?LoopAction {
+    if (!InputWindow.quitRequested()) return null;
+    InputWindow.logStartup("loop-quit-requested");
+    return .quit;
+}
+
+fn waitForWindow(handle: *Window.c_win.SDL_Window) LoopAction {
+    InputWindow.logWindowWaitStartup();
+    const signal = Input.waitWindow(handle);
+    InputWindow.logWindowWakeStartup(signal);
+    return switch (signal) {
+        .none => .continue_running,
+        .quit => .quit,
+    };
+}
+
+fn applyFocusChange(app: *App) void {
+    if (app.input.drainWindowFocusChanged()) |focused| {
+        setWindowFocused(app.window, app.tabs.items, app.active_tab_idx.*, focused);
+    }
+}
+
+fn drainBindingActions(app: *App) !void {
+    var drained: u8 = 0;
+    while (drained < max_binding_actions_per_turn) : (drained += 1) {
+        const action = app.input.drainBindingAction() orelse return;
+        try handleBindingAction(app.conf, app.window, app.tabs, app.active_tab_idx, action);
+    }
+}
+
+fn forwardTerminalInput(app: *App) void {
+    const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
+    const content_logical = app.window.contentLogicalSize(app.conf.tab_bar.height);
+    const origin_y = app.window.tabBarHeightLogical(app.conf.tab_bar.height);
+    tab.drainInput(app.input, 0, origin_y, content_logical.width, content_logical.height);
+    tab.handleScrollInput(app.input);
+}
+
+fn applyWindowResize(app: *App) void {
+    if (!app.input.drainWindowGeometryChanged()) return;
+    if (!app.window.refreshGeometry()) return;
+    resizeTerminals(app.conf, app.window, app.tabs.items);
+}
+
+fn ensureActiveTabHealthy(app: *App) !void {
+    if (!activeTabFailed(app.tabs.items, app.active_tab_idx.*)) return;
+    const state = activeTab(app.tabs.items, app.active_tab_idx.*).lifecycleState();
+    InputWindow.logStartupf("stage=active-tab-failed lifecycle={s}", .{@tagName(state)});
+    return error.HostTabFailed;
+}
+
+fn wakeIfMoreContent(app: *App) void {
+    const now_ns = Window.c_win.SDL_GetTicksNS();
+    const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
+    if (!tab.needsContentFrame(now_ns)) return;
+    Input.wakeWindow();
 }
 
 fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
@@ -124,23 +251,25 @@ fn collectRenderWork(tab: *TerminalWidget) RenderWork {
     tab.maybeCommitGridResize();
     const now_ns = Window.c_win.SDL_GetTicksNS();
     const terminal_frame = tab.needsContentFrame(now_ns);
+    const presentation_frame = tab.needsPresentationFrame(now_ns);
     return .{
-        .needs_frame = terminal_frame or tab.needsPresentationFrame(now_ns),
+        .needs_frame = terminal_frame or presentation_frame,
         .terminal_frame = terminal_frame,
     };
 }
 
-fn render(conf: *const Config.State, window: *Window.State, tab_bar: *TabBar, tabs: []*TerminalWidget, active_tab_idx: usize, work: RenderWork) void {
-    const tab = activeTab(tabs, active_tab_idx);
+fn render(app: *App, work: RenderWork) void {
+    const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
+    InputWindow.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame={}", .{ InputWindow.nowNs(), work.terminal_frame });
     if (work.terminal_frame) tab.render();
 
-    const texture_rect = window.contentRect(conf.tab_bar.height);
+    const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
     const surface = tab.surfaceSnapshot();
     const overlay = tab.overlaySnapshot(texture_rect);
-    var title_buf: [max_tabs][]const u8 = undefined;
-    const tab_bar_snapshot = tab_bar.snapshot(active_tab_idx, tabTitles(tabs, title_buf[0..]));
+    var title_buf: [max_tabs_count][]const u8 = undefined;
+    const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items, title_buf[0..]));
 
-    window.present(.{
+    app.window.present(.{
         .texture_id = surface.surface.texture_id,
         .texture_rect = texture_rect,
         .scrollbar = overlay.scrollbar,
@@ -148,6 +277,8 @@ fn render(conf: *const Config.State, window: *Window.State, tab_bar: *TabBar, ta
         .active_tab = tab_bar_snapshot.active_idx,
         .tab_labels = tab_bar_snapshot.labels,
     });
+    TermApi.markRenderPresented(&tab.term);
+    InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
 }
 
 fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*TerminalWidget) void {
@@ -156,20 +287,24 @@ fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*Te
     for (tabs) |tab| tab.resize(px.width, px.height, logical.width, logical.height);
 }
 
-fn setWindowFocused(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: usize, focused: bool) void {
+fn setWindowFocused(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: TabIndex, focused: bool) void {
+    assert(@as(usize, active_tab_idx) < tabs.len);
     _ = window.setFocused(focused);
     syncTerminalFocus(window, tabs, active_tab_idx);
 }
 
-fn activeTabFailed(tabs: []*TerminalWidget, active_tab_idx: usize) bool {
-    return tabs.len == 0 or activeTab(tabs, active_tab_idx).lifecycleState() == .failed;
+fn activeTabFailed(tabs: []*TerminalWidget, active_tab_idx: TabIndex) bool {
+    if (tabs.len == 0) return true;
+    return activeTab(tabs, active_tab_idx).lifecycleState() == .failed;
 }
 
-fn activeTab(tabs: []*TerminalWidget, active_tab_idx: usize) *TerminalWidget {
-    return tabs[active_tab_idx];
+fn activeTab(tabs: []*TerminalWidget, active_tab_idx: TabIndex) *TerminalWidget {
+    assert(tabs.len > 0);
+    assert(@as(usize, active_tab_idx) < tabs.len);
+    return tabs[@intCast(active_tab_idx)];
 }
 
-fn handleBindingAction(conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *usize, action: Input.Bindings.Action) !void {
+fn handleBindingAction(conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex, action: Input.Bindings.Action) !void {
     switch (action) {
         .zoom_in => _ = activeTab(tabs.items, active_tab_idx.*).adjustFontSize(1),
         .zoom_out => _ = activeTab(tabs.items, active_tab_idx.*).adjustFontSize(-1),
@@ -184,29 +319,30 @@ fn handleBindingAction(conf: *const Config.State, window: *Window.State, tabs: *
     }
 }
 
-fn openTab(alloc: std.mem.Allocator, conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *usize) !void {
-    if (tabs.items.len >= max_tabs) return;
+fn openTab(alloc: std.mem.Allocator, conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
+    assert(tabs.items.len <= max_tabs_count);
+    if (tabs.items.len >= max_tabs_count) return;
 
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
     const tab = try TerminalWidget.create(alloc, &conf.term, px.width, px.height, logical.width, logical.height);
     errdefer tab.destroy(alloc);
     try tabs.append(alloc, tab);
-    active_tab_idx.* = tabs.items.len - 1;
+    active_tab_idx.* = @intCast(tabs.items.len - 1);
     syncTerminalFocus(window, tabs.items, active_tab_idx.*);
 }
 
-fn closeActiveTab(alloc: std.mem.Allocator, window: *Window.State, tabs: *TabList, active_tab_idx: *usize) void {
+fn closeActiveTab(alloc: std.mem.Allocator, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) void {
     if (tabs.items.len <= 1) return;
-    const idx = active_tab_idx.*;
+    const idx: usize = active_tab_idx.*;
     const tab = tabs.items[idx];
     _ = tabs.orderedRemove(idx);
     tab.destroy(alloc);
-    if (active_tab_idx.* >= tabs.items.len) active_tab_idx.* = tabs.items.len - 1;
+    if (@as(usize, active_tab_idx.*) >= tabs.items.len) active_tab_idx.* = @intCast(tabs.items.len - 1);
     syncTerminalFocus(window, tabs.items, active_tab_idx.*);
 }
 
-fn selectRelative(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: *usize, delta: i32) void {
+fn selectRelative(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: *TabIndex, delta: i32) void {
     if (tabs.len <= 1) return;
     const len_i: i32 = @intCast(tabs.len);
     var idx: i32 = @intCast(active_tab_idx.*);
@@ -214,21 +350,23 @@ fn selectRelative(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx
     selectTab(window, tabs, active_tab_idx, @intCast(idx));
 }
 
-fn selectTab(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: *usize, idx: usize) void {
-    if (idx >= tabs.len or idx == active_tab_idx.*) return;
+fn selectTab(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: *TabIndex, idx: TabIndex) void {
+    if (@as(usize, idx) >= tabs.len) return;
+    if (idx == active_tab_idx.*) return;
     active_tab_idx.* = idx;
     syncTerminalFocus(window, tabs, active_tab_idx.*);
 }
 
-fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: usize) void {
+fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: TabIndex) void {
+    assert(@as(usize, active_tab_idx) < tabs.len);
     for (tabs, 0..) |tab, i| {
         tab.setWindowFocused(window.focused);
-        tab.setWidgetFocused(i == active_tab_idx);
+        tab.setWidgetFocused(i == @as(usize, active_tab_idx));
     }
 }
 
 fn tabTitles(tabs: []*TerminalWidget, buf: [][]const u8) []const []const u8 {
-    std.debug.assert(buf.len >= tabs.len);
+    assert(buf.len >= tabs.len);
     for (tabs, 0..) |tab, i| buf[i] = tab.titleSlice();
     return buf[0..tabs.len];
 }
@@ -242,29 +380,4 @@ fn pasteIntoActiveTab(tab: *TerminalWidget) void {
 
 fn setCurrentThreadName(name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(std.c.pthread_self(), name.ptr);
-}
-
-fn quitTimer(_: ?*anyopaque, _: Window.c_win.SDL_TimerID, _: u32) callconv(.c) u32 {
-    var event: Window.c_win.SDL_Event = std.mem.zeroes(Window.c_win.SDL_Event);
-    event.type = Window.c_win.SDL_EVENT_QUIT;
-    _ = Window.c_win.SDL_PushEvent(&event);
-    return 0;
-}
-
-fn applyOverrides(conf: *Config.State, options: Options) !void {
-    if (options.shell) |shell| try overrideConfig(&conf.term.shell, shell);
-    if (options.start_path) |start_path| try overrideOptionalConfig(&conf.term.start_path, start_path);
-    if (options.command) |command| try overrideOptionalConfig(&conf.term.command, command);
-}
-
-fn overrideConfig(slot: *[]u8, value: []const u8) !void {
-    const duped = try std.heap.c_allocator.dupe(u8, value);
-    std.heap.c_allocator.free(slot.*);
-    slot.* = duped;
-}
-
-fn overrideOptionalConfig(slot: *?[]u8, value: []const u8) !void {
-    const duped = try std.heap.c_allocator.dupe(u8, value);
-    if (slot.*) |old| std.heap.c_allocator.free(old);
-    slot.* = duped;
 }

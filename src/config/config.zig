@@ -6,6 +6,7 @@ const howl_lua = @import("howl_lua");
 const term_config = @import("terminal.zig");
 const window_config = @import("window.zig");
 const tab_bar_config = @import("tab_bar.zig");
+const assert = std.debug.assert;
 
 const Lua = howl_lua;
 
@@ -53,4 +54,24 @@ pub const State = struct {
         self.window.deinit(alloc);
         self.tab_bar.deinit(alloc);
     }
+
+    pub fn applyProcessOverrides(self: *State, shell: ?[]const u8, start_path: ?[]const u8, command: ?[]const u8) !void {
+        if (shell) |value| try overrideOwned(&self.term.shell, value);
+        if (start_path) |value| try overrideOptionalOwned(&self.term.start_path, value);
+        if (command) |value| try overrideOptionalOwned(&self.term.command, value);
+    }
 };
+
+fn overrideOwned(slot: *[]u8, value: []const u8) !void {
+    assert(value.len > 0);
+    const duped = try std.heap.c_allocator.dupe(u8, value);
+    std.heap.c_allocator.free(slot.*);
+    slot.* = duped;
+}
+
+fn overrideOptionalOwned(slot: *?[]u8, value: []const u8) !void {
+    assert(value.len > 0);
+    const duped = try std.heap.c_allocator.dupe(u8, value);
+    if (slot.*) |old| std.heap.c_allocator.free(old);
+    slot.* = duped;
+}

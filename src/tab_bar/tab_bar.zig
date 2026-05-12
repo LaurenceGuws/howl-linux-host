@@ -5,19 +5,21 @@
 const std = @import("std");
 
 pub const TabBar = struct {
-    pub const max_tabs: usize = 9;
+    pub const TabIndex = u8;
+    pub const max_tabs: TabIndex = 9;
+    pub const max_tabs_count: usize = max_tabs;
 
     pub const Snapshot = struct {
-        active_idx: usize,
+        active_idx: TabIndex,
         labels: []const []const u8,
     };
 
-    label_bufs: [max_tabs][128]u8 = undefined,
-    label_slices: [max_tabs][]const u8 = undefined,
+    label_bufs: [max_tabs_count][128]u8 = undefined,
+    label_slices: [max_tabs_count][]const u8 = undefined,
 
-    pub fn snapshot(self: *TabBar, active_idx: usize, titles: []const []const u8) Snapshot {
-        if (titles.len > max_tabs) @panic("too many tabs");
-        if (active_idx >= titles.len) @panic("active tab out of range");
+    pub fn snapshot(self: *TabBar, active_idx: TabIndex, titles: []const []const u8) Snapshot {
+        if (titles.len > max_tabs_count) @panic("too many tabs");
+        if (@as(usize, active_idx) >= titles.len) @panic("active tab out of range");
         for (titles, 0..) |title, i| {
             self.label_slices[i] = label(title, self.label_bufs[i][0..]);
         }
