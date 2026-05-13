@@ -2,13 +2,14 @@
 
 Owner: `howl-linux-host`
 
-Purpose: command surfaces for host stress, automation, and trace capture.
+Purpose: host stress, automation, and trace commands.
 
 ## Rules
 
 - Use `tools/benchmark_terminals.py` before adding ad hoc host profiling code.
 - Run host stress in `ReleaseFast`, not debug.
-- Prove lower-module behavior in `howl-pty`, `howl-vt`, or `howl-render` first. Use this file for host-side proof only.
+- Prove lower-module behavior in `howl-pty`, `howl-vt`, or `howl-render` first.
+- Use this file for host-side proof only.
 
 ## Large Scrollback Payload
 
@@ -18,7 +19,7 @@ Use `bat` to exercise long highlighted lines, SGR churn, wrapping, scrollback, a
 bat --paging=never --style=full --color=always /path/to/huge.log
 ```
 
-Good payloads are multi-megabyte logs with long unwrapped lines, JSON, stack traces, and timestamps.
+Good payloads are multi-megabyte logs with long lines, JSON, stack traces, and timestamps.
 
 ## Hostile Rain Generator
 
@@ -28,13 +29,13 @@ Build the host tools:
 zig build
 ```
 
-Run the stress emitter inside the host:
+Run one stress workload:
 
 ```sh
 zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --mixed
 ```
 
-Pure ASCII mode isolates parser, cursor movement, SGR, erases, wrapping, and scroll behavior without fallback glyph pressure:
+Pure ASCII mode isolates parser, cursor movement, SGR, erases, wrapping, and scroll behavior:
 
 ```sh
 zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --ascii
@@ -47,13 +48,13 @@ zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --seed 0xC0F
 zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --seed 0xC0FFEE --mixed --metrics --metrics-every 100 --flush-every 1 2>mixed.metrics.log
 ```
 
-The CLI metrics report generator-side throughput and backpressure (`fps`, `p50_us`, `p95_us`, `p99_us`, `max_us`). They do not measure renderer FPS directly.
+The CLI metrics report generator-side throughput and backpressure (`fps`, `p50_us`, `p95_us`, `p99_us`, `max_us`).
 
 For resize stress, hold the configured zoom stress binding while the generator is running. The default binding is `ctrl+shift+equal` or `ctrl+shift+kp_add`, and it toggles between very small and very large font sizes.
 
 ## Scripted Terminal Baselines
 
-The host accepts CLI overrides for deterministic automation:
+Use CLI overrides for deterministic automation:
 
 ```sh
 zig-out/bin/howl_term --duration-ms 12000 --command 'zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000000 --duration-ms 10000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.ndjson'

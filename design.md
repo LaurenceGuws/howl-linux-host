@@ -10,7 +10,7 @@ It owns app/window/input/chrome orchestration. It does not own terminal semantic
 
 ## Doc Set
 
-- `design.md`: owner boundary, host flow, and public surface.
+- `design.md`: owner boundary, control spine, and public surface.
 - `stress.md`: operational stress and automation commands.
 
 ## Public Surface
@@ -19,7 +19,7 @@ It owns app/window/input/chrome orchestration. It does not own terminal semantic
 - `Input`: owns the SDL input queue and exposes typed input/window/key binding events.
 - `Window`: owns SDL window lifecycle, clipboard/URL helpers, and frame presentation.
 - `Terminal`: owns one host terminal widget/tab.
-- `howl-term/Runtime`: owns the host handoff to the imported `howl-term` package.
+- `howl-term/Runtime`: owns the handoff to the imported `howl-term` package.
 
 ```mermaid
 classDiagram
