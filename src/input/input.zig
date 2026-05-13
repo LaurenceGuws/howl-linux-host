@@ -8,7 +8,7 @@ const mouse = @import("mouse.zig");
 const window = @import("window.zig");
 
 const c = window.c_win;
-const max_input_events: usize = 256;
+const max_input_events = 256;
 
 pub const Input = struct {
     pub const Signal = window.EventSignal;
@@ -35,10 +35,10 @@ pub const Input = struct {
     };
 
     input_events: [max_input_events]Event,
-    input_len: usize,
+    input_len: u16,
     scroll_pages: i32,
     binding_buf: [64]Bindings.Action,
-    binding_len: usize,
+    binding_len: u8,
     window_geometry_changed: bool,
     window_focus_changed: ?bool,
     last_mouse_x: i32,
@@ -97,7 +97,9 @@ pub const Input = struct {
         logQueuedInputEvent("dequeue-input", out);
         self.input_len -= 1;
         if (self.input_len > 0) {
-            std.mem.copyForwards(Event, self.input_events[0..self.input_len], self.input_events[1 .. self.input_len + 1]);
+            const live_len: usize = @intCast(self.input_len);
+            std.debug.assert(live_len < self.input_events.len);
+            std.mem.copyForwards(Event, self.input_events[0..live_len], self.input_events[1 .. live_len + 1]);
         }
         return out;
     }
@@ -114,7 +116,9 @@ pub const Input = struct {
         window.logf("host-loop ts_ns={d} stage=dequeue-binding action={s}", .{ window.nowNs(), @tagName(out) });
         self.binding_len -= 1;
         if (self.binding_len > 0) {
-            std.mem.copyForwards(Bindings.Action, self.binding_buf[0..self.binding_len], self.binding_buf[1 .. self.binding_len + 1]);
+            const live_len: usize = @intCast(self.binding_len);
+            std.debug.assert(live_len < self.binding_buf.len);
+            std.mem.copyForwards(Bindings.Action, self.binding_buf[0..live_len], self.binding_buf[1 .. live_len + 1]);
         }
         return out;
     }
@@ -235,14 +239,15 @@ pub const Input = struct {
 };
 
 fn appendBytesEvent(input: *Input, bytes: []const u8) void {
-    var offset: usize = 0;
-    while (offset < bytes.len) {
-        const remaining = bytes.len - offset;
-        const chunk_len: u8 = @intCast(@min(remaining, keys.max_event_bytes));
+    var remaining = bytes;
+    while (remaining.len > 0) {
+        const chunk_len: u8 = @intCast(@min(remaining.len, keys.max_event_bytes));
         var chunk = keys.ByteInput{ .len = chunk_len, .buf = undefined };
-        @memcpy(chunk.buf[0..chunk_len], bytes[offset .. offset + chunk_len]);
+        std.debug.assert(chunk_len > 0);
+        std.debug.assert(chunk_len <= keys.max_event_bytes);
+        @memcpy(chunk.buf[0..chunk_len], remaining[0..chunk_len]);
         if (!appendInputEvent(input, .{ .bytes = chunk })) return;
-        offset += chunk_len;
+        remaining = remaining[chunk_len..];
     }
 }
 
@@ -262,16 +267,22 @@ fn appendMouseEvent(input: *Input, event: mouse.Event) void {
 
 fn appendInputEvent(input: *Input, event: Input.Event) bool {
     if (input.input_len >= input.input_events.len) return false;
-    input.input_events[input.input_len] = event;
+    const idx: usize = @intCast(input.input_len);
+    std.debug.assert(idx < input.input_events.len);
+    input.input_events[idx] = event;
     input.input_len += 1;
+    std.debug.assert(input.input_len <= input.input_events.len);
     logQueuedInputEvent("queue-input", event);
     return true;
 }
 
 fn appendBindingAction(input: *Input, action: Input.Bindings.Action) void {
     if (input.binding_len >= input.binding_buf.len) return;
-    input.binding_buf[input.binding_len] = action;
+    const idx: usize = @intCast(input.binding_len);
+    std.debug.assert(idx < input.binding_buf.len);
+    input.binding_buf[idx] = action;
     input.binding_len += 1;
+    std.debug.assert(input.binding_len <= input.binding_buf.len);
     window.logf("host-loop ts_ns={d} stage=queue-binding action={s}", .{ window.nowNs(), @tagName(action) });
 }
 
@@ -407,6 +418,15 @@ fn processMouseWheel(input: *Input, event: *const c.SDL_Event) void {
 }
 
 fn sdlKey(sdl_key: c_uint) ?keys.Key {
+    if (sdlLetterKey(sdl_key)) |key| return key;
+    if (sdlDigitKey(sdl_key)) |key| return key;
+    if (sdlFunctionKey(sdl_key)) |key| return key;
+    if (sdlNamedKey(sdl_key)) |key| return key;
+    if (sdlKeypadKey(sdl_key)) |key| return key;
+    return null;
+}
+
+fn sdlLetterKey(sdl_key: c_uint) ?keys.Key {
     return switch (sdl_key) {
         c.SDLK_A => .a,
         c.SDLK_B => .b,
@@ -434,6 +454,12 @@ fn sdlKey(sdl_key: c_uint) ?keys.Key {
         c.SDLK_X => .x,
         c.SDLK_Y => .y,
         c.SDLK_Z => .z,
+        else => null,
+    };
+}
+
+fn sdlDigitKey(sdl_key: c_uint) ?keys.Key {
+    return switch (sdl_key) {
         c.SDLK_0 => .zero,
         c.SDLK_1 => .one,
         c.SDLK_2 => .two,
@@ -444,6 +470,12 @@ fn sdlKey(sdl_key: c_uint) ?keys.Key {
         c.SDLK_7 => .seven,
         c.SDLK_8 => .eight,
         c.SDLK_9 => .nine,
+        else => null,
+    };
+}
+
+fn sdlFunctionKey(sdl_key: c_uint) ?keys.Key {
+    return switch (sdl_key) {
         c.SDLK_F1 => .f1,
         c.SDLK_F2 => .f2,
         c.SDLK_F3 => .f3,
@@ -456,6 +488,12 @@ fn sdlKey(sdl_key: c_uint) ?keys.Key {
         c.SDLK_F10 => .f10,
         c.SDLK_F11 => .f11,
         c.SDLK_F12 => .f12,
+        else => null,
+    };
+}
+
+fn sdlNamedKey(sdl_key: c_uint) ?keys.Key {
+    return switch (sdl_key) {
         c.SDLK_ESCAPE => .escape,
         c.SDLK_TAB => .tab,
         c.SDLK_CAPSLOCK => .caps_lock,
@@ -496,6 +534,12 @@ fn sdlKey(sdl_key: c_uint) ?keys.Key {
         c.SDLK_RGUI => .right_super,
         c.SDLK_MENU => .menu,
         c.SDLK_NUMLOCKCLEAR => .num_lock,
+        else => null,
+    };
+}
+
+fn sdlKeypadKey(sdl_key: c_uint) ?keys.Key {
+    return switch (sdl_key) {
         c.SDLK_KP_DIVIDE => .kp_divide,
         c.SDLK_KP_MULTIPLY => .kp_multiply,
         c.SDLK_KP_MINUS => .kp_subtract,
