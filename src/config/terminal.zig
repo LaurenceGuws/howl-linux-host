@@ -8,6 +8,7 @@ const env = @import("env.zig");
 const Input = @import("../input/input.zig").Input;
 
 const Lua = howl_lua;
+const max_fallback_fonts = 32;
 
 pub const FontStack = struct {
     primary: ?[:0]u8,
@@ -22,8 +23,8 @@ pub const FontStack = struct {
         freeZSlice(alloc, self.emoji);
     }
 
-    pub fn flattenFallbacks(self: FontStack, buf: [][:0]const u8) []const [:0]const u8 {
-        var n: usize = 0;
+    pub fn flattenFallbacks(self: FontStack, buf: *[max_fallback_fonts][:0]const u8) []const [:0]const u8 {
+        var n: u8 = 0;
         for (self.mono) |p| {
             if (n >= buf.len) return buf[0..n];
             buf[n] = p;
@@ -109,49 +110,15 @@ pub const Config = struct {
         try reader.optionalStringOwned("command", &command);
         errdefer if (command) |cmd| alloc.free(cmd);
 
-        var font_primary: ?[:0]u8 = null;
-        if (reader.fieldString("font_primary")) |primary_raw| {
-            const expanded = try env.expand(alloc, primary_raw);
-            defer alloc.free(expanded);
-            font_primary = try alloc.dupeZ(u8, expanded);
+        const fonts = try loadFonts(alloc, reader);
+        errdefer {
+            var fonts_mut = fonts;
+            fonts_mut.deinit(alloc);
         }
-        errdefer if (font_primary) |p| alloc.free(p);
 
-        const fallback_mono = try loadStringArrayField(alloc, reader, "fallback_mono");
-        errdefer freeZSlice(alloc, fallback_mono);
-        const fallback_symbols = try loadStringArrayField(alloc, reader, "fallback_symbols");
-        errdefer freeZSlice(alloc, fallback_symbols);
-        const fallback_emoji = try loadStringArrayField(alloc, reader, "fallback_emoji");
-        errdefer freeZSlice(alloc, fallback_emoji);
-
-        const clipboard_reader = reader.child("clipboard");
-        defer if (clipboard_reader) |child| child.finish();
-        const clipboard_policy = if (clipboard_reader) |child|
-            parseClipboardOsc52Policy(child.fieldString("osc_52") orelse "deny")
-        else
-            .deny;
-
-        const links_reader = reader.child("links");
-        defer if (links_reader) |child| child.finish();
-        const links_open_policy = if (links_reader) |child|
-            parseLinkOpenPolicy(child.fieldString("open") orelse "disabled")
-        else
-            .disabled;
-        const links_hover_policy = if (links_reader) |child|
-            parseLinkHoverPolicy(child.fieldString("hover") orelse "underline+cursor")
-        else
-            .underline_and_cursor;
-        const links_underline_style = if (links_reader) |child|
-            parseLinkUnderlineStyle(child.fieldString("underline") orelse "straight")
-        else
-            .straight;
-
-        const mouse_reader = reader.child("mouse");
-        defer if (mouse_reader) |child| child.finish();
-        const mouse_bypass_mod = if (mouse_reader) |child| blk: {
-            if (child.fieldString("bypass_mod")) |raw| break :blk try parseMouseBypassMod(raw);
-            break :blk Input.Mod{};
-        } else Input.Mod{};
+        const clipboard_policy = loadClipboardPolicy(reader);
+        const links = loadLinkPolicies(reader);
+        const mouse = try loadMousePolicy(reader);
 
         const bindings = try loadBindings(alloc, reader.child("bindings"));
         errdefer {
@@ -164,15 +131,10 @@ pub const Config = struct {
             .start_path = start_path,
             .command = command,
             .font_size = @intCast(reader.intField("font_size") orelse 16),
-            .fonts = .{
-                .primary = font_primary,
-                .mono = fallback_mono,
-                .symbols = fallback_symbols,
-                .emoji = fallback_emoji,
-            },
+            .fonts = fonts,
             .clipboard = .{ .osc_52 = clipboard_policy },
-            .links = .{ .open = links_open_policy, .hover = links_hover_policy, .underline = links_underline_style },
-            .mouse = .{ .bypass_mod = mouse_bypass_mod },
+            .links = links,
+            .mouse = mouse,
             .bindings = bindings,
         };
     }
@@ -246,6 +208,62 @@ fn loadBindings(alloc: std.mem.Allocator, bindings_reader_opt: ?Lua.Reader) !Inp
     return .{ .bindings = try out.toOwnedSlice(alloc) };
 }
 
+fn loadFonts(alloc: std.mem.Allocator, reader: Lua.Reader) !FontStack {
+    var primary: ?[:0]u8 = null;
+    if (reader.fieldString("font_primary")) |primary_raw| {
+        const expanded = try env.expand(alloc, primary_raw);
+        defer alloc.free(expanded);
+        primary = try alloc.dupeZ(u8, expanded);
+    }
+    errdefer if (primary) |p| alloc.free(p);
+
+    const mono = try loadStringArrayField(alloc, reader, "fallback_mono");
+    errdefer freeZSlice(alloc, mono);
+    const symbols = try loadStringArrayField(alloc, reader, "fallback_symbols");
+    errdefer freeZSlice(alloc, symbols);
+    const emoji = try loadStringArrayField(alloc, reader, "fallback_emoji");
+    errdefer freeZSlice(alloc, emoji);
+
+    return .{ .primary = primary, .mono = mono, .symbols = symbols, .emoji = emoji };
+}
+
+fn loadClipboardPolicy(reader: Lua.Reader) ClipboardOsc52Policy {
+    const clipboard_reader = reader.child("clipboard");
+    defer if (clipboard_reader) |child| child.finish();
+    return if (clipboard_reader) |child|
+        parseClipboardOsc52Policy(child.fieldString("osc_52") orelse "deny")
+    else
+        .deny;
+}
+
+fn loadLinkPolicies(reader: Lua.Reader) Links {
+    const links_reader = reader.child("links");
+    defer if (links_reader) |child| child.finish();
+    return .{
+        .open = if (links_reader) |child|
+            parseLinkOpenPolicy(child.fieldString("open") orelse "disabled")
+        else
+            .disabled,
+        .hover = if (links_reader) |child|
+            parseLinkHoverPolicy(child.fieldString("hover") orelse "underline+cursor")
+        else
+            .underline_and_cursor,
+        .underline = if (links_reader) |child|
+            parseLinkUnderlineStyle(child.fieldString("underline") orelse "straight")
+        else
+            .straight,
+    };
+}
+
+fn loadMousePolicy(reader: Lua.Reader) !MousePolicy {
+    const mouse_reader = reader.child("mouse");
+    defer if (mouse_reader) |child| child.finish();
+    return .{ .bypass_mod = if (mouse_reader) |child| blk: {
+        if (child.fieldString("bypass_mod")) |raw| break :blk try parseMouseBypassMod(raw);
+        break :blk Input.Mod{};
+    } else Input.Mod{} };
+}
+
 fn loadPlainStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []const u8) ![]const []u8 {
     const arr_reader = parent.child(field) orelse return try alloc.alloc([]u8, 0);
     defer arr_reader.finish();
@@ -254,20 +272,20 @@ fn loadPlainStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field
     if (n == 0) return try alloc.alloc([]u8, 0);
 
     const out = try alloc.alloc([]u8, n);
-    var written: usize = 0;
+    var written: u32 = 0;
     errdefer {
         for (out[0..written]) |s| alloc.free(s);
         alloc.free(out);
     }
-    var i: usize = 1;
-    while (i <= n) : (i += 1) {
+    for (out, 1..) |*slot, i| {
+        std.debug.assert(i <= n);
         arr_reader.state.rawGetIndex(arr_reader.index, i);
         defer arr_reader.state.pop(1);
         const raw = arr_reader.state.readString(-1) orelse return error.InvalidConfig;
-        out[written] = try alloc.dupe(u8, raw);
+        slot.* = try alloc.dupe(u8, raw);
         written += 1;
     }
-    return out[0..written];
+    return out;
 }
 
 fn freePlainSlice(alloc: std.mem.Allocator, items: []const []u8) void {
@@ -287,22 +305,22 @@ fn loadStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []c
     if (n == 0) return try alloc.alloc([:0]u8, 0);
 
     const out = try alloc.alloc([:0]u8, n);
-    var written: usize = 0;
+    var written: u32 = 0;
     errdefer {
         for (out[0..written]) |s| alloc.free(s);
         alloc.free(out);
     }
-    var i: usize = 1;
-    while (i <= n) : (i += 1) {
+    for (out, 1..) |*slot, i| {
+        std.debug.assert(i <= n);
         arr_reader.state.rawGetIndex(arr_reader.index, i);
         defer arr_reader.state.pop(1);
         const raw = arr_reader.state.readString(-1) orelse return error.InvalidConfig;
         const expanded = try env.expand(alloc, raw);
         defer alloc.free(expanded);
-        out[written] = try alloc.dupeZ(u8, expanded);
+        slot.* = try alloc.dupeZ(u8, expanded);
         written += 1;
     }
-    return out[0..written];
+    return out;
 }
 
 fn freeZSlice(alloc: std.mem.Allocator, items: []const [:0]u8) void {

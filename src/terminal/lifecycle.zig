@@ -12,7 +12,7 @@ const thread = @import("thread.zig");
 
 pub fn start(self: anytype) !void {
     var font_fallbacks_buf: [32][:0]const u8 = undefined;
-    const font_fallbacks = self.conf.fonts.flattenFallbacks(font_fallbacks_buf[0..]);
+    const font_fallbacks = self.conf.fonts.flattenFallbacks(&font_fallbacks_buf);
     // api.zig is the host-owned coordination seam over session, VT, and render-core owners.
     self.term = try api.initPty(std.heap.c_allocator, .{
         .shell = self.conf.shell,
