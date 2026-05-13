@@ -151,6 +151,7 @@ fn runLoopTurn(app: *App) !LoopAction {
     const tab_before_wait = activeTab(app.tabs.items, app.active_tab_idx.*);
     const work_before_wait = collectRenderWork(tab_before_wait);
     if (work_before_wait.needs_frame) {
+        assert(app.tabs.items.len > 0);
         assert(work_before_wait.terminal_frame or tab_before_wait.needsPresentationFrame(Window.c_win.SDL_GetTicksNS()));
     }
     const wait_for_event = !work_before_wait.needs_frame;
@@ -277,7 +278,7 @@ fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*Te
 }
 
 fn setWindowFocused(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: TabIndex, focused: bool) void {
-    assert(@as(usize, active_tab_idx) < tabs.len);
+    assert(tabIndexInRange(tabs, active_tab_idx));
     _ = window.setFocused(focused);
     syncTerminalFocus(window, tabs, active_tab_idx);
 }
@@ -289,7 +290,7 @@ fn activeTabFailed(tabs: []*TerminalWidget, active_tab_idx: TabIndex) bool {
 
 fn activeTab(tabs: []*TerminalWidget, active_tab_idx: TabIndex) *TerminalWidget {
     assert(tabs.len > 0);
-    assert(@as(usize, active_tab_idx) < tabs.len);
+    assert(tabIndexInRange(tabs, active_tab_idx));
     return tabs[@intCast(active_tab_idx)];
 }
 
@@ -309,7 +310,7 @@ fn handleBindingAction(conf: *const Config.State, window: *Window.State, tabs: *
 }
 
 fn openTab(alloc: std.mem.Allocator, conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
-    assert(tabs.items.len <= max_tabs_count);
+    assert(tabs.items.len <= max_tabs);
     if (tabs.items.len >= max_tabs_count) return;
 
     const px = window.contentPixelSize(conf.tab_bar.height);
@@ -317,17 +318,22 @@ fn openTab(alloc: std.mem.Allocator, conf: *const Config.State, window: *Window.
     const tab = try TerminalWidget.create(alloc, &conf.term, px.width, px.height, logical.width, logical.height);
     errdefer tab.destroy(alloc);
     try tabs.append(alloc, tab);
+    assert(tabs.items.len > 0);
+    assert(tabs.items.len <= max_tabs);
     active_tab_idx.* = @intCast(tabs.items.len - 1);
+    assert(tabIndexInRange(tabs.items, active_tab_idx.*));
     syncTerminalFocus(window, tabs.items, active_tab_idx.*);
 }
 
 fn closeActiveTab(alloc: std.mem.Allocator, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) void {
     if (tabs.items.len <= 1) return;
-    const idx: usize = active_tab_idx.*;
+    assert(tabIndexInRange(tabs.items, active_tab_idx.*));
+    const idx: TabIndex = active_tab_idx.*;
     const tab = tabs.items[idx];
     _ = tabs.orderedRemove(idx);
     tab.destroy(alloc);
-    if (@as(usize, active_tab_idx.*) >= tabs.items.len) active_tab_idx.* = @intCast(tabs.items.len - 1);
+    if (!tabIndexInRange(tabs.items, active_tab_idx.*)) active_tab_idx.* = @intCast(tabs.items.len - 1);
+    assert(tabIndexInRange(tabs.items, active_tab_idx.*));
     syncTerminalFocus(window, tabs.items, active_tab_idx.*);
 }
 
@@ -340,17 +346,18 @@ fn selectRelative(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx
 }
 
 fn selectTab(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: *TabIndex, idx: TabIndex) void {
-    if (@as(usize, idx) >= tabs.len) return;
+    if (!tabIndexInRange(tabs, idx)) return;
     if (idx == active_tab_idx.*) return;
     active_tab_idx.* = idx;
+    assert(tabIndexInRange(tabs, active_tab_idx.*));
     syncTerminalFocus(window, tabs, active_tab_idx.*);
 }
 
 fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: TabIndex) void {
-    assert(@as(usize, active_tab_idx) < tabs.len);
+    assert(tabIndexInRange(tabs, active_tab_idx));
     for (tabs, 0..) |tab, i| {
         tab.setWindowFocused(window.focused);
-        tab.setWidgetFocused(i == @as(usize, active_tab_idx));
+        tab.setWidgetFocused(i == active_tab_idx);
     }
 }
 
@@ -369,4 +376,8 @@ fn pasteIntoActiveTab(tab: *TerminalWidget) void {
 
 fn setCurrentThreadName(name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(std.c.pthread_self(), name.ptr);
+}
+
+fn tabIndexInRange(tabs: []*TerminalWidget, idx: TabIndex) bool {
+    return idx < tabs.len;
 }
