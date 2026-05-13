@@ -11,8 +11,8 @@ const HostDeps = struct {
     optimize: std.builtin.OptimizeMode,
     howl_lua_mod: *Module,
     howl_render_mod: *Module,
-    howl_session_mod: *Module,
-    vt_core_mod: *Module,
+    howl_pty_mod: *Module,
+    howl_vt_mod: *Module,
     sdl_include: Build.LazyPath,
     sdl_lib: *Compile,
     stb_image: Build.LazyPath,
@@ -24,8 +24,8 @@ const HostDeps = struct {
             .optimize = self.optimize,
             .howl_lua_mod = self.howl_lua_mod,
             .howl_render_mod = self.howl_render_mod,
-            .howl_session_mod = self.howl_session_mod,
-            .vt_core_mod = self.vt_core_mod,
+            .howl_pty_mod = self.howl_pty_mod,
+            .howl_vt_mod = self.howl_vt_mod,
         };
     }
 };
@@ -74,12 +74,12 @@ fn createSteps(b: *Build) Steps {
 }
 
 fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) HostDeps {
-    const howl_session_dep = b.dependency("howl_session", .{
+    const howl_pty_dep = b.dependency("howl_pty", .{
         .target = target,
         .optimize = optimize,
         .@"pty-variant" = "unix_pty",
     });
-    const vt_core_dep = b.dependency("vt_core", .{
+    const howl_vt_dep = b.dependency("howl_vt", .{
         .target = target,
         .optimize = optimize,
     });
@@ -102,8 +102,8 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .optimize = optimize,
         .howl_lua_mod = howl_lua_dep.module("howl_lua"),
         .howl_render_mod = howl_render_dep.module("howl_render"),
-        .howl_session_mod = howl_session_dep.module("howl_session"),
-        .vt_core_mod = vt_core_dep.module("vt_core"),
+        .howl_pty_mod = howl_pty_dep.module("howl_pty"),
+        .howl_vt_mod = howl_vt_dep.module("howl_vt"),
         .sdl_include = sdl_dep.path("include"),
         .sdl_lib = sdl_dep.artifact("SDL3"),
         .stb_image = b.path("src/window/stb_image.c"),
@@ -130,8 +130,8 @@ fn createHostModule(b: *Build, deps: HostDeps, path: []const u8) *Module {
         .imports = &.{
             .{ .name = "howl_lua", .module = deps.howl_lua_mod },
             .{ .name = "howl_render", .module = deps.howl_render_mod },
-            .{ .name = "howl_session", .module = deps.howl_session_mod },
-            .{ .name = "vt_core", .module = deps.vt_core_mod },
+            .{ .name = "howl_pty", .module = deps.howl_pty_mod },
+            .{ .name = "howl_vt", .module = deps.howl_vt_mod },
         },
     });
 }
@@ -217,8 +217,8 @@ fn wireTestSteps(
             .{ .name = "host", .module = host_test_mod },
             .{ .name = "howl_lua", .module = deps.howl_lua_mod },
             .{ .name = "howl_render", .module = deps.howl_render_mod },
-            .{ .name = "howl_session", .module = deps.howl_session_mod },
-            .{ .name = "vt_core", .module = deps.vt_core_mod },
+            .{ .name = "howl_pty", .module = deps.howl_pty_mod },
+            .{ .name = "howl_vt", .module = deps.howl_vt_mod },
         },
     });
 

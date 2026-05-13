@@ -4,19 +4,21 @@
 
 const std = @import("std");
 const howl_render = @import("howl_render");
-const howl_session = @import("howl_session");
-const vt_core = @import("vt_core");
+const howl_pty = @import("howl_pty");
+const howl_vt = @import("howl_vt");
 const trace = @import("../input/window.zig");
+const pty_ffi = howl_pty.Ffi;
+const vt_ffi = howl_vt.Ffi;
 
-pub const Input = vt_core.Input;
-pub const RenderGeometry = howl_render.Core.Geometry;
-pub const RenderSurface = howl_render.Core.SurfaceHandle;
-pub const RenderAction = howl_render.Core.FrameQueue.TerminalSurface.Action;
-pub const RenderMetrics = howl_render.Core.Metrics;
+pub const Input = howl_vt.Input;
+pub const RenderGeometry = howl_render.Render.Geometry;
+pub const RenderSurface = howl_render.Render.SurfaceHandle;
+pub const RenderAction = howl_render.Render.FrameQueue.TerminalSurface.Action;
+pub const RenderMetrics = howl_render.Render.Metrics;
 pub const RenderPrepareResult = enum { idle, prepared, failed };
 pub const RenderSubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
-pub const RenderCellSize = howl_render.Core.CellSize;
-pub const SourceReceipt = howl_render.Core.SourceReceipt;
+pub const RenderCellSize = howl_render.Render.CellSize;
+pub const SourceReceipt = howl_render.Render.SourceReceipt;
 pub const LinkUnderlineStyle = enum {
     straight,
     curly,
@@ -103,15 +105,19 @@ const Mutex = struct {
 };
 
 const default_history_capacity: u16 = 4096;
+const default_pending_capacity: usize = 4096;
+const default_title_capacity: usize = 4096;
 
 pub const Term = struct {
     allocator: std.mem.Allocator,
     launch: PtyLaunchConfig,
-    session: howl_session.Session,
-    vt: vt_core.VtCore,
-    snapshot: howl_render.Core.FrameSnapshot,
-    render_runtime: howl_render.Core.RenderRuntime,
+    session: pty_ffi.SessionHandle,
+    vt: vt_ffi.VtHandle,
+    snapshot: howl_render.Render.FrameSnapshot,
+    render_runtime: howl_render.Render.RenderRuntime,
     renderer: howl_render.Renderer,
+    vt_cells: std.ArrayListUnmanaged(vt_ffi.FfiCell) = .empty,
+    vt_bytes: std.ArrayListUnmanaged(u8) = .empty,
     prepared_frame: ?howl_render.Renderer.FrameRecord = null,
     mutex: Mutex = .{},
     cols: u16,
@@ -144,26 +150,28 @@ pub fn initPty(
     std.debug.assert(cell_px.width > 0);
     std.debug.assert(cell_px.height > 0);
 
-    var session = try howl_session.Session.initPty(.{
-        .allocator = allocator,
-        .cols = cols,
-        .rows = rows,
-        .pending_capacity = 4096,
-        .launch = .{
-            .shell_path = launch.shell,
-            .command = launch.command,
-            .start_path = launch.start_path,
-        },
-    });
-    errdefer session.deinit();
+    const session = pty_ffi.sessionInit(
+        launch.shell.ptr,
+        launch.shell.len,
+        optBytesPtr(launch.command),
+        optBytesLen(launch.command),
+        optBytesPtr(launch.start_path),
+        optBytesLen(launch.start_path),
+        cols,
+        rows,
+        default_pending_capacity,
+    );
+    if (session == 0) return error.PtyInitFailed;
+    errdefer pty_ffi.sessionDeinit(session);
 
-    var vt = try vt_core.VtCore.initWithCellsAndHistory(allocator, rows, cols, default_history_capacity);
-    errdefer vt.deinit();
+    const vt = vt_ffi.terminalInit(rows, cols, default_history_capacity);
+    if (vt == 0) return error.VtInitFailed;
+    errdefer vt_ffi.terminalDeinit(vt);
 
-    var snapshot = try howl_render.Core.FrameSnapshot.init(allocator, rows, cols);
+    var snapshot = try howl_render.Render.FrameSnapshot.init(allocator, rows, cols);
     errdefer snapshot.deinit(allocator);
 
-    var render_runtime = howl_render.Core.RenderRuntime.init(allocator);
+    var render_runtime = howl_render.Render.RenderRuntime.init(allocator);
     errdefer render_runtime.deinit();
 
     _ = render_runtime.syncGeometry(.{
@@ -201,26 +209,28 @@ pub fn deinit(term: *Term) void {
     term.primary_font_path = null;
     clearFallbackFontPaths(term);
     term.current_title.deinit(term.allocator);
+    term.vt_bytes.deinit(term.allocator);
+    term.vt_cells.deinit(term.allocator);
     term.renderer.deinit();
     term.render_runtime.deinit();
     term.snapshot.deinit(term.allocator);
-    term.vt.deinit();
-    term.session.deinit();
+    vt_ffi.terminalDeinit(term.vt);
+    pty_ffi.sessionDeinit(term.session);
 }
 
 pub fn stop(term: *Term) void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    term.session.stop();
+    pty_ffi.sessionStop(term.session);
     term.lifecycle_state = .stopped;
 }
 
 pub fn start(term: *Term) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    if (term.session.isActive()) return error.AlreadyStarted;
+    if (ptySessionIsActive(term.session)) return error.AlreadyStarted;
     term.lifecycle_state = .starting;
-    term.session.start() catch |err| {
+    ptyRequireOk(pty_ffi.sessionStart(term.session)) catch |err| {
         term.lifecycle_state = .failed;
         return err;
     };
@@ -228,7 +238,7 @@ pub fn start(term: *Term) !void {
 }
 
 pub fn waitTransport(term: *Term, timeout_ms: i32) bool {
-    return term.session.waitReadable(timeout_ms);
+    return pty_ffi.sessionWaitReadable(term.session, timeout_ms) != 0;
 }
 
 pub fn pumpTransport(term: *Term, limits: TransportLimits) TransportProgress {
@@ -239,8 +249,8 @@ pub fn pumpTransport(term: *Term, limits: TransportLimits) TransportProgress {
             .drained_input_bytes = 0,
             .reads = 0,
             .bytes_read = 0,
-            .pending_input_bytes = term.session.pending.items.len,
-            .queued_events = term.vt.queuedEventCount(),
+            .pending_input_bytes = ptySessionPendingBytes(term.session),
+            .queued_events = vtQueuedEventCount(term.vt),
         };
     }
 
@@ -248,25 +258,36 @@ pub fn pumpTransport(term: *Term, limits: TransportLimits) TransportProgress {
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const outbound = term.session.pumpOutboundInput(false);
-    const sink = TransportSink{ .term = term };
-    const result = term.session.pumpTransport(scratch[0..], sink, .{
-        .max_reads = limits.max_reads,
-        .max_bytes = limits.max_bytes,
-    });
-    if (result.reads > 0) {
+    const outbound = pty_ffi.sessionPumpOutbound(term.session, 0);
+    ptyRequireStructOk(outbound.status);
+
+    var reads: usize = 0;
+    var bytes_read: usize = 0;
+    while (reads < limits.max_reads and bytes_read < limits.max_bytes) {
+        const remaining = @min(scratch.len, limits.max_bytes - bytes_read);
+        const read = pty_ffi.sessionRead(term.session, scratch[0..remaining].ptr, remaining);
+        ptyRequireStructOk(read.status);
+        if (read.bytes_read == 0) break;
+        const chunk_len: usize = @intCast(read.bytes_read);
+        vtRequireStructOk(vt_ffi.terminalFeed(term.vt, scratch[0..chunk_len].ptr, chunk_len));
+        term.output_seen = true;
+        reads += 1;
+        bytes_read += chunk_len;
+    }
+
+    if (reads > 0) {
         trace.logTransportReadStartupf("stage=term-transport-read-first reads={d} read_bytes={d} queued_events={d}", .{
-            result.reads,
-            result.bytes_read,
-            term.vt.queuedEventCount(),
+            reads,
+            bytes_read,
+            vtQueuedEventCount(term.vt),
         });
     }
     return .{
         .drained_input_bytes = outbound.drained,
-        .reads = result.reads,
-        .bytes_read = result.bytes_read,
-        .pending_input_bytes = term.session.pending.items.len,
-        .queued_events = term.vt.queuedEventCount(),
+        .reads = reads,
+        .bytes_read = bytes_read,
+        .pending_input_bytes = ptySessionPendingBytes(term.session),
+        .queued_events = vtQueuedEventCount(term.vt),
     };
 }
 
@@ -274,27 +295,29 @@ pub fn applyPending(term: *Term, max_events: usize) ApplyProgress {
     if (max_events == 0) {
         term.mutex.lock();
         defer term.mutex.unlock();
-        return .{ .applied_events = 0, .remaining_events = term.vt.queuedEventCount(), .state_changed = false };
+        return .{ .applied_events = 0, .remaining_events = vtQueuedEventCount(term.vt), .state_changed = false };
     }
 
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const history_before = term.vt.historyCount();
-    const result = term.vt.applyLimit(max_events);
+    const history_before = vtHistoryCount(term.vt);
+    var title_buf: [default_title_capacity]u8 = undefined;
+    const result = vt_ffi.terminalApply(term.vt, max_events, title_buf[0..].ptr, title_buf.len);
+    vtRequireStructOk(result.status);
     if (result.applied == 0) {
-        return .{ .applied_events = 0, .remaining_events = term.vt.queuedEventCount(), .state_changed = false };
+        return .{ .applied_events = 0, .remaining_events = @intCast(result.remaining_events), .state_changed = false };
     }
-    trace.logVtApplyStartupf("stage=term-vt-apply-first applied={d} remaining={d}", .{ result.applied, term.vt.queuedEventCount() });
+    trace.logVtApplyStartupf("stage=term-vt-apply-first applied={d} remaining={d}", .{ result.applied, result.remaining_events });
 
-    if (result.latest_title) |title| setCurrentTitle(term, title) catch {};
+    if (result.title_written != 0) setCurrentTitle(term, title_buf[0..@intCast(result.title_written)]) catch {};
     drainTerminalReply(term);
     repairScrollback(term, history_before, true);
     term.vt_epoch +%= 1;
     noteVisibleChange(term);
     return .{
-        .applied_events = result.applied,
-        .remaining_events = term.vt.queuedEventCount(),
+        .applied_events = @intCast(result.applied),
+        .remaining_events = @intCast(result.remaining_events),
         .state_changed = true,
     };
 }
@@ -310,14 +333,14 @@ pub fn isAlive(term: *const Term) bool {
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return term.session.isActive();
+    return ptySessionIsActive(term.session);
 }
 
 pub fn hasOutboundInputBacklog(term: *const Term) bool {
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return term.session.hasOutboundInputBacklog();
+    return pty_ffi.sessionHasBacklog(term.session) != 0;
 }
 
 pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
@@ -380,8 +403,8 @@ pub fn setInputFocus(term: *Term, focused: bool) !bool {
 pub fn drainPendingClipboardSet(term: *Term, allocator: std.mem.Allocator) !ClipboardDrainResult {
     term.mutex.lock();
     defer term.mutex.unlock();
-    const text = (try term.vt.drainPendingClipboardSet(allocator)) orelse return null;
-    return .{ .text = text };
+    const bytes = try vtDrainClipboard(term, allocator);
+    return if (bytes) |text| .{ .text = text } else null;
 }
 
 pub fn publishPaste(term: *Term, text: []const u8) !void {
@@ -428,9 +451,9 @@ pub fn scrollState(term: *const Term) ScrollState {
     defer mut.mutex.unlock();
     return .{
         .viewport_rows = term.rows,
-        .scrollback_count = term.vt.historyCount(),
+        .scrollback_count = vtHistoryCount(term.vt),
         .scrollback_offset = term.scrollback_offset,
-        .alternate_screen = term.vt.isAlternateScreen(),
+        .alternate_screen = vt_ffi.terminalIsAlternateScreen(term.vt) != 0,
     };
 }
 
@@ -445,7 +468,7 @@ pub fn currentScrollbackOffset(term: *const Term) usize {
 pub fn setScrollbackOffset(term: *Term, offset: usize) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    const clamped = @min(offset, term.vt.historyCount());
+    const clamped = @min(offset, vtHistoryCount(term.vt));
     if (clamped == term.scrollback_offset) return false;
     term.scrollback_offset = clamped;
     noteVisibleChange(term);
@@ -472,7 +495,7 @@ pub fn isAlternateScreen(term: *const Term) bool {
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return term.vt.isAlternateScreen();
+    return vt_ffi.terminalIsAlternateScreen(term.vt) != 0;
 }
 
 pub fn hasOutputProof(term: *const Term) bool {
@@ -486,7 +509,7 @@ pub fn inputBytesApplied(term: *const Term) u64 {
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return term.session.ops.bytes_applied;
+    return pty_ffi.sessionBytesApplied(term.session);
 }
 
 pub fn snapshotEventSeq(term: *const Term) u64 {
@@ -522,13 +545,13 @@ pub fn syncRenderGeometry(term: *Term, geom: RenderGeometry) !void {
     const grid = layout.grid;
     const cell_px = layout.cell_px;
     if (term.cols != grid.cols or term.rows != grid.rows or term.cell_px.width != cell_px.width or term.cell_px.height != cell_px.height) {
-        try term.session.resize(grid.cols, grid.rows);
-        try term.vt.resize(grid.rows, grid.cols);
+        try ptyRequireResizeOk(pty_ffi.sessionResize(term.session, grid.cols, grid.rows));
+        try vtRequireResizeOk(vt_ffi.terminalResize(term.vt, grid.rows, grid.cols));
         try term.snapshot.resize(term.allocator, grid.rows, grid.cols);
         term.cols = grid.cols;
         term.rows = grid.rows;
         term.cell_px = cell_px;
-        term.scrollback_offset = @min(term.scrollback_offset, term.vt.historyCount());
+        term.scrollback_offset = @min(term.scrollback_offset, vtHistoryCount(term.vt));
         term.vt_epoch +%= 1;
         noteVisibleChange(term);
     }
@@ -543,7 +566,7 @@ pub fn publishSource(term: *Term) SourceReceipt {
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const visible = term.vt.visibleView(.{ .scrollback_offset = term.scrollback_offset });
+    const visible = vtCopyVisible(term) catch return sourceRejected(term);
     ensureSnapshotShape(term, visible.rows, visible.cols) catch return sourceRejected(term);
     syncSnapshotState(term, visible);
     copyVisibleCells(term, visible);
@@ -573,7 +596,7 @@ pub fn publishSource(term: *Term) SourceReceipt {
             receipt.geometry_epoch,
         });
     }
-    term.vt.clearDirtyRows();
+    vt_ffi.terminalClearDirtyRows(term.vt);
     return receipt;
 }
 
@@ -584,7 +607,19 @@ fn ensureSnapshotShape(term: *Term, rows: u16, cols: u16) !void {
     try term.snapshot.resize(term.allocator, rows, cols);
 }
 
-fn syncSnapshotState(term: *Term, visible: anytype) void {
+const VisibleCopy = struct {
+    rows: u16,
+    cols: u16,
+    cursor_row: u16,
+    cursor_col: u16,
+    cursor_visible: bool,
+    cursor_shape: u8,
+    is_alternate_screen: bool,
+    history_count: usize,
+    start: usize,
+};
+
+fn syncSnapshotState(term: *Term, visible: VisibleCopy) void {
     std.debug.assert(visible.rows > 0);
     std.debug.assert(visible.cols > 0);
     term.snapshot.markFullDirty();
@@ -595,49 +630,40 @@ fn syncSnapshotState(term: *Term, visible: anytype) void {
         .col = visible.cursor_col,
         .visible = visible.cursor_visible,
         .shape = switch (visible.cursor_shape) {
-            .underline => .underline,
-            .bar => .beam,
-            .block => .block,
+            1 => .underline,
+            2 => .beam,
+            else => .block,
         },
     };
 }
 
-fn copyVisibleCells(term: *Term, visible: anytype) void {
+fn copyVisibleCells(term: *Term, visible: VisibleCopy) void {
     const cell_count = @as(usize, visible.rows) * @as(usize, visible.cols);
     std.debug.assert(term.snapshot.cells.items.len == cell_count);
 
-    var row: u16 = 0;
-    while (row < visible.rows) : (row += 1) {
-        copyVisibleRow(term, visible, row);
-    }
-}
-
-fn copyVisibleRow(term: *Term, visible: anytype, row: u16) void {
-    std.debug.assert(row < visible.rows);
-    var col: u16 = 0;
-    while (col < visible.cols) : (col += 1) {
-        const src = visible.cellInfoAt(row, col);
-        const idx = @as(usize, row) * @as(usize, visible.cols) + @as(usize, col);
+    var idx: usize = 0;
+    while (idx < cell_count) : (idx += 1) {
+        const src = term.vt_cells.items[idx];
         std.debug.assert(idx < term.snapshot.cells.items.len);
         term.snapshot.cells.items[idx] = .{
             .codepoint = @intCast(src.codepoint),
-            .flags = .{ .continuation = vt_core.Grid.isCellContinuation(src) },
-            .fg_color = colorFromVt(src.attrs.fg),
-            .bg_color = colorFromVt(src.attrs.bg),
-            .underline_color = colorFromVt(src.attrs.underline_color),
-            .underline_style = underlineStyleFromVt(src.attrs.underline_style),
+            .flags = .{ .continuation = src.continuation != 0 },
+            .fg_color = colorFromVt(src.fg),
+            .bg_color = colorFromVt(src.bg),
+            .underline_color = colorFromVt(src.underline_color),
+            .underline_style = underlineStyleFromVt(src.underline_style),
             .attrs = .{
-                .bold = src.attrs.bold,
+                .bold = src.bold != 0,
                 .dim = false,
                 .italic = false,
-                .underline = src.attrs.underline,
-                .underline_color_set = src.attrs.underline_color.a != 0,
-                .blink = src.attrs.blink or src.attrs.blink_fast,
-                .inverse = src.attrs.reverse,
+                .underline = src.underline != 0,
+                .underline_color_set = src.underline_color.a != 0,
+                .blink = src.blink != 0 or src.blink_fast != 0,
+                .inverse = src.reverse != 0,
                 .invisible = false,
                 .strikethrough = false,
             },
-            .link_id = src.attrs.link_id,
+            .link_id = src.link_id,
         };
     }
 }
@@ -706,22 +732,21 @@ pub fn markRenderPresented(term: *Term) void {
 }
 
 fn publishEncodedInput(term: *Term, event: Input.Event) !bool {
-    var encoded = try term.vt.encodeInput(term.allocator, event);
-    defer encoded.deinit();
-    if (encoded.bytes.len == 0) return false;
-    _ = try term.session.publishHostInputAndPump(encoded.bytes);
+    const encoded = try vtEncodeInput(term, event);
+    if (encoded.len == 0) return false;
+    try ptyPublishInputAndPump(term.session, encoded);
     return true;
 }
 
 fn drainTerminalReply(term: *Term) void {
-    const pending = term.vt.pendingOutput();
+    const pending = vtPendingOutput(term) catch return;
     if (pending.len == 0) return;
-    _ = term.session.publishHostInputAndPump(pending) catch return;
-    term.vt.clearPendingOutput();
+    ptyPublishInputAndPump(term.session, pending) catch return;
+    vt_ffi.terminalClearPendingOutput(term.vt);
 }
 
 fn repairScrollback(term: *Term, history_before: usize, any_read: bool) void {
-    const history_after = term.vt.historyCount();
+    const history_after = vtHistoryCount(term.vt);
     if (history_after > history_before) {
         if (term.scrollback_offset > 0) {
             const delta = history_after - history_before;
@@ -784,34 +809,226 @@ fn pixelToRow(term: *const Term, pixel_y: i32) i32 {
     return @min(@as(i32, @intCast(row)), @as(i32, term.rows -| 1));
 }
 
-fn colorFromVt(color: vt_core.Grid.Color) howl_render.Core.SurfaceColor {
+fn colorFromVt(color: vt_ffi.FfiColor) howl_render.Render.SurfaceColor {
     return .{ .kind = .rgb, .value = (@as(u24, color.r) << 16) | (@as(u24, color.g) << 8) | @as(u24, color.b) };
 }
 
-fn underlineStyleFromVt(style: vt_core.Grid.UnderlineStyle) howl_render.Core.UnderlineStyle {
+fn underlineStyleFromVt(style: u8) howl_render.Render.UnderlineStyle {
+    return switch (style) {
+        1 => .double,
+        2 => .curly,
+        3 => .dotted,
+        4 => .dashed,
+        else => .straight,
+    };
+}
+
+fn underlineStyleFromLink(style: LinkUnderlineStyle) howl_render.Render.UnderlineStyle {
     return switch (style) {
         .straight => .straight,
-        .double => .double,
         .curly => .curly,
         .dotted => .dotted,
         .dashed => .dashed,
     };
 }
 
-fn underlineStyleFromLink(style: LinkUnderlineStyle) howl_render.Core.UnderlineStyle {
-    return switch (style) {
-        .straight => .straight,
-        .curly => .curly,
-        .dotted => .dotted,
-        .dashed => .dashed,
-    };
+fn optBytesPtr(bytes: ?[]const u8) ?[*]const u8 {
+    const value = bytes orelse return null;
+    if (value.len == 0) return null;
+    return value.ptr;
 }
 
-const TransportSink = struct {
-    term: *Term,
+fn optBytesLen(bytes: ?[]const u8) usize {
+    return if (bytes) |value| value.len else 0;
+}
 
-    pub fn onTransportBytes(self: TransportSink, bytes: []const u8) void {
-        self.term.vt.feedSlice(bytes);
-        self.term.output_seen = true;
+fn vtCallOk() i32 {
+    return @intFromEnum(vt_ffi.HowlVtCallStatus.ok);
+}
+
+fn vtCallShortBuffer() i32 {
+    return @intFromEnum(vt_ffi.HowlVtCallStatus.short_buffer);
+}
+
+fn vtRequireOk(status: i32) !void {
+    if (status == vtCallOk()) return;
+    return error.VtCallFailed;
+}
+
+fn vtRequireStructOk(status: i32) void {
+    std.debug.assert(status == vtCallOk());
+}
+
+fn vtRequireResizeOk(status: i32) !void {
+    if (status == vtCallOk()) return;
+    if (status == @intFromEnum(vt_ffi.HowlVtCallStatus.invalid_argument)) return error.InvalidDimensions;
+    return error.VtCallFailed;
+}
+
+fn vtQueuedEventCount(handle: vt_ffi.VtHandle) usize {
+    std.debug.assert(handle != 0);
+    return @intCast(vt_ffi.terminalQueuedEventCount(handle));
+}
+
+fn vtHistoryCount(handle: vt_ffi.VtHandle) usize {
+    std.debug.assert(handle != 0);
+    return @intCast(vt_ffi.terminalHistoryCount(handle));
+}
+
+fn vtEnsureBytes(term: *Term, needed: usize) ![]u8 {
+    try term.vt_bytes.resize(term.allocator, needed);
+    return term.vt_bytes.items;
+}
+
+fn vtEnsureCells(term: *Term, needed: usize) ![]vt_ffi.FfiCell {
+    try term.vt_cells.resize(term.allocator, needed);
+    return term.vt_cells.items;
+}
+
+fn vtPendingOutput(term: *Term) ![]const u8 {
+    var out = try vtEnsureBytes(term, 0);
+    var result = vt_ffi.terminalCopyPendingOutput(term.vt, out.ptr, out.len);
+    if (result.status == vtCallShortBuffer()) {
+        out = try vtEnsureBytes(term, @intCast(result.needed));
+        result = vt_ffi.terminalCopyPendingOutput(term.vt, out.ptr, out.len);
     }
-};
+    try vtRequireOk(result.status);
+    return term.vt_bytes.items[0..@intCast(result.written)];
+}
+
+fn vtDrainClipboard(term: *Term, allocator: std.mem.Allocator) !?[]u8 {
+    var out = try vtEnsureBytes(term, 0);
+    var result = vt_ffi.terminalDrainPendingClipboard(term.vt, out.ptr, out.len);
+    if (result.status == vtCallShortBuffer()) {
+        out = try vtEnsureBytes(term, @intCast(result.needed));
+        result = vt_ffi.terminalDrainPendingClipboard(term.vt, out.ptr, out.len);
+    }
+    try vtRequireOk(result.status);
+    if (result.written == 0) return null;
+    return try allocator.dupe(u8, term.vt_bytes.items[0..@intCast(result.written)]);
+}
+
+fn vtCopyVisible(term: *Term) !VisibleCopy {
+    var cells = try vtEnsureCells(term, 0);
+    var view = vt_ffi.terminalCopyVisible(term.vt, term.scrollback_offset, cells.ptr, cells.len);
+    if (view.status == vtCallShortBuffer()) {
+        cells = try vtEnsureCells(term, @intCast(view.cell_count));
+        view = vt_ffi.terminalCopyVisible(term.vt, term.scrollback_offset, cells.ptr, cells.len);
+    }
+    try vtRequireOk(view.status);
+    return .{
+        .rows = view.rows,
+        .cols = view.cols,
+        .cursor_row = view.cursor_row,
+        .cursor_col = view.cursor_col,
+        .cursor_visible = view.cursor_visible != 0,
+        .cursor_shape = view.cursor_shape,
+        .is_alternate_screen = view.is_alternate_screen != 0,
+        .history_count = @intCast(view.history_count),
+        .start = @intCast(view.start),
+    };
+}
+
+fn vtEncodeInput(term: *Term, event: Input.Event) ![]const u8 {
+    switch (event) {
+        .bytes => |bytes| return bytes,
+        .key => |key| {
+            while (true) {
+                const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+                const result = vt_ffi.terminalEncodeKey(term.vt, key.key, key.mods, out.ptr, out.len);
+                if (result.status == vtCallShortBuffer()) {
+                    _ = try vtEnsureBytes(term, @intCast(result.needed));
+                    continue;
+                }
+                try vtRequireOk(result.status);
+                return term.vt_bytes.items[0..@intCast(result.written)];
+            }
+        },
+        .focus => |focus| {
+            while (true) {
+                const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+                const result = vt_ffi.terminalEncodeFocus(term.vt, if (focus == .in) 1 else 0, out.ptr, out.len);
+                if (result.status == vtCallShortBuffer()) {
+                    _ = try vtEnsureBytes(term, @intCast(result.needed));
+                    continue;
+                }
+                try vtRequireOk(result.status);
+                return term.vt_bytes.items[0..@intCast(result.written)];
+            }
+        },
+        .mouse => |mouse| {
+            while (true) {
+                const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+                const result = vt_ffi.terminalEncodeMouse(
+                    term.vt,
+                    @intFromEnum(mouse.kind),
+                    @intFromEnum(mouse.button),
+                    mouse.row,
+                    mouse.col,
+                    if (mouse.pixel_x != null) 1 else 0,
+                    if (mouse.pixel_x) |value| value else 0,
+                    if (mouse.pixel_y != null) 1 else 0,
+                    if (mouse.pixel_y) |value| value else 0,
+                    mouse.mod,
+                    mouse.buttons_down,
+                    out.ptr,
+                    out.len,
+                );
+                if (result.status == vtCallShortBuffer()) {
+                    _ = try vtEnsureBytes(term, @intCast(result.needed));
+                    continue;
+                }
+                try vtRequireOk(result.status);
+                return term.vt_bytes.items[0..@intCast(result.written)];
+            }
+        },
+        .paste => |text| {
+            while (true) {
+                const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+                const result = vt_ffi.terminalEncodePaste(term.vt, text.ptr, text.len, out.ptr, out.len);
+                if (result.status == vtCallShortBuffer()) {
+                    _ = try vtEnsureBytes(term, @intCast(result.needed));
+                    continue;
+                }
+                try vtRequireOk(result.status);
+                return term.vt_bytes.items[0..@intCast(result.written)];
+            }
+        },
+    }
+}
+
+fn ptyCallOk() i32 {
+    return @intFromEnum(pty_ffi.HowlPtyCallStatus.ok);
+}
+
+fn ptyRequireOk(status: i32) !void {
+    if (status == ptyCallOk()) return;
+    return error.PtyCallFailed;
+}
+
+fn ptyRequireStructOk(status: i32) void {
+    std.debug.assert(status == ptyCallOk());
+}
+
+fn ptyRequireResizeOk(status: i32) !void {
+    if (status == ptyCallOk()) return;
+    if (status == @intFromEnum(pty_ffi.HowlPtyCallStatus.invalid_argument)) return error.InvalidDimensions;
+    return error.PtyCallFailed;
+}
+
+fn ptySessionIsActive(handle: pty_ffi.SessionHandle) bool {
+    std.debug.assert(handle != 0);
+    return pty_ffi.sessionIsActive(handle) != 0;
+}
+
+fn ptySessionPendingBytes(handle: pty_ffi.SessionHandle) usize {
+    std.debug.assert(handle != 0);
+    return @intCast(pty_ffi.sessionPendingBytes(handle));
+}
+
+fn ptyPublishInputAndPump(handle: pty_ffi.SessionHandle, bytes: []const u8) !void {
+    std.debug.assert(handle != 0);
+    std.debug.assert(bytes.len > 0);
+    const result = pty_ffi.sessionPublishInputAndPump(handle, bytes.ptr, bytes.len);
+    try ptyRequireOk(result.status);
+}

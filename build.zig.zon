@@ -4,14 +4,14 @@
     .fingerprint = 0x6088c40ac445cee2,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
-        .howl_session = .{
-            .path = "../../howl-session",
+        .howl_pty = .{
+            .path = "../../howl-pty",
         },
-        .vt_core = .{
-            .path = "../../howl-vt-core",
+        .howl_vt = .{
+            .path = "../../howl-vt",
         },
         .howl_render = .{
-            .path = "../../howl-render-core",
+            .path = "../../howl-render",
         },
         .sdl = .{
             .url = "git+https://github.com/LaurenceGuws/howl-sdl#release-3.2.x",

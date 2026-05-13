@@ -1,11 +1,11 @@
 # VT Core Integration Plan
 
 ## Goal
-Integrate the new `howl-vt-core` protocol surface through `howl-term` into `howl-linux-host`, with small tester-friendly validation steps after each landed feature set.
+Integrate the new `howl-vt` protocol surface through `howl-term` into `howl-linux-host`, with small tester-friendly validation steps after each landed feature set.
 
-This file is the host-side companion to `../../howl-vt-core/protocol_matrix.md`.
+This file is the host-side companion to `../../howl-vt/protocol_matrix.md`.
 
-`howl-vt-core/protocol_matrix.md` remains the source of truth for protocol maturity.
+`howl-vt/protocol_matrix.md` remains the source of truth for protocol maturity.
 This file tracks how Linux-host should expose, test, and optionally configure those capabilities.
 
 ## Principles
