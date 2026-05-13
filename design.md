@@ -4,7 +4,7 @@ Shared rules: [`../../design/design-rules.md`](../../design/design-rules.md)
 
 ## Purpose
 
-`howl-linux-host` is the reference desktop host shell for Howl.
+`howl-linux-host` is the reference desktop host shell for `howl-term`.
 
 It owns app/window/input/chrome orchestration. It does not own terminal semantics, scrollback state, dirty state, PTY behavior, VT parsing, or rendering internals.
 
@@ -24,7 +24,7 @@ classDiagram
     class Window
     class TerminalWidget
     class Runtime
-    class HowlTermCore
+    class HowlTerm
 
     Main --> Config
     Main --> Input
@@ -33,7 +33,7 @@ classDiagram
     TerminalWidget --> Input
     TerminalWidget --> Window
     TerminalWidget --> Runtime
-    Runtime --> HowlTermCore
+    Runtime --> HowlTerm
 ```
 
 ## Ownership Rules
