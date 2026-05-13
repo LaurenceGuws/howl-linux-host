@@ -38,10 +38,10 @@ pub const TransportLimits = struct {
 };
 
 pub const TransportProgress = struct {
-    drained_input_bytes: u32,
+    drained_input_bytes: u64,
     reads: u16,
     bytes_read: u32,
-    pending_input_bytes: u32,
+    pending_input_bytes: u64,
     queued_events: u32,
 };
 
@@ -1050,7 +1050,7 @@ fn ptySessionIsActive(handle: pty_ffi.SessionHandle) bool {
     return pty_ffi.sessionIsActive(handle) != 0;
 }
 
-fn ptySessionPendingBytes(handle: pty_ffi.SessionHandle) u32 {
+fn ptySessionPendingBytes(handle: pty_ffi.SessionHandle) u64 {
     std.debug.assert(handle != 0);
     return @intCast(pty_ffi.sessionPendingBytes(handle));
 }
