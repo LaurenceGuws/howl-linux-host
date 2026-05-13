@@ -57,7 +57,7 @@ pub fn layout(self: anytype, texture_rect: window.Rect) window.ScrollbarLayout {
     return self.scrollbar.layout(texture_rect, scrollbarView(api.scrollState(&self.term)), self.logical_w, self.logical_h, self.window_focused, window.c_win.SDL_GetTicksNS());
 }
 
-fn setOffset(self: anytype, offset: usize) bool {
+fn setOffset(self: anytype, offset: u32) bool {
     const changed = if (offset == 0)
         api.followLiveBottom(&self.term)
     else
@@ -75,7 +75,7 @@ fn scrollbarView(term_view: api.ScrollState) scrollbar.View {
     };
 }
 
-fn cappedI32(value: usize) i32 {
-    if (value > @as(usize, std.math.maxInt(i32))) return std.math.maxInt(i32);
+fn cappedI32(value: u32) i32 {
+    if (value > @as(u32, @intCast(std.math.maxInt(i32)))) return std.math.maxInt(i32);
     return @intCast(value);
 }

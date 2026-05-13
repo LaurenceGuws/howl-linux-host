@@ -12,7 +12,7 @@ const transport_limits: api.TransportLimits = .{
     .max_bytes = 64 * 1024,
 };
 
-const apply_budget: usize = 256;
+const apply_budget: u32 = 256;
 const transport_wait_timeout_ms: i32 = 16;
 const drive_round_limit: u8 = 8;
 
@@ -99,7 +99,7 @@ const RealOps = struct {
         return api.pumpTransport(term, limits);
     }
 
-    fn applyPending(term: *api.Term, max_events: usize) api.ApplyProgress {
+    fn applyPending(term: *api.Term, max_events: u32) api.ApplyProgress {
         return api.applyPending(term, max_events);
     }
 
@@ -184,10 +184,10 @@ var fake_state: struct {
     wake_calls: usize = 0,
     is_alive: bool = true,
     backlog: bool = false,
-    read_bytes: usize = 0,
-    reads: usize = 0,
-    remaining_events: usize = 0,
-    applied_events: usize = 0,
+    read_bytes: u32 = 0,
+    reads: u16 = 0,
+    remaining_events: u32 = 0,
+    applied_events: u32 = 0,
     publish_ready: bool = false,
     publish_result: api.SourceReceipt = .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 },
     stop_after_wait: bool = false,
@@ -208,7 +208,7 @@ const FakeOps = struct {
         return .{ .drained_input_bytes = 0, .reads = fake_state.reads, .bytes_read = fake_state.read_bytes, .pending_input_bytes = 0, .queued_events = 0 };
     }
 
-    fn applyPending(_: *FakeTerm, _: usize) api.ApplyProgress {
+    fn applyPending(_: *FakeTerm, _: u32) api.ApplyProgress {
         fake_state.apply_calls += 1;
         if (fake_state.applied_events != 0) fake_state.publish_ready = true;
         return .{ .applied_events = fake_state.applied_events, .remaining_events = fake_state.remaining_events, .state_changed = fake_state.applied_events != 0 };

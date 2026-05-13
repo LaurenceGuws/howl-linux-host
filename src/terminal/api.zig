@@ -33,28 +33,28 @@ pub const LifecycleState = enum(u8) {
 };
 
 pub const TransportLimits = struct {
-    max_reads: usize,
-    max_bytes: usize,
+    max_reads: u16,
+    max_bytes: u32,
 };
 
 pub const TransportProgress = struct {
-    drained_input_bytes: usize,
-    reads: usize,
-    bytes_read: usize,
-    pending_input_bytes: usize,
-    queued_events: usize,
+    drained_input_bytes: u32,
+    reads: u16,
+    bytes_read: u32,
+    pending_input_bytes: u32,
+    queued_events: u32,
 };
 
 pub const ApplyProgress = struct {
-    applied_events: usize,
-    remaining_events: usize,
+    applied_events: u32,
+    remaining_events: u32,
     state_changed: bool,
 };
 
 pub const ScrollState = struct {
     viewport_rows: u16,
-    scrollback_count: usize,
-    scrollback_offset: usize,
+    scrollback_count: u32,
+    scrollback_offset: u32,
     alternate_screen: bool,
 };
 
@@ -88,7 +88,7 @@ const SelectionState = struct {
 };
 
 const SelectionPoint = struct {
-    depth: usize,
+    depth: u32,
     col: u16,
 };
 
@@ -105,8 +105,8 @@ const Mutex = struct {
 };
 
 const default_history_capacity: u16 = 4096;
-const default_pending_capacity: usize = 4096;
-const default_title_capacity: usize = 4096;
+const default_pending_capacity: u32 = 4096;
+const default_title_capacity: u32 = 4096;
 
 pub const Term = struct {
     allocator: std.mem.Allocator,
@@ -131,7 +131,7 @@ pub const Term = struct {
     output_seen: bool = false,
     snapshot_seq: u64 = 1,
     vt_epoch: u64 = 1,
-    scrollback_offset: usize = 0,
+    scrollback_offset: u32 = 0,
     has_input_focus: bool = true,
     selection: SelectionState = .{},
     hover_link_id: u32 = 0,
@@ -261,19 +261,24 @@ pub fn pumpTransport(term: *Term, limits: TransportLimits) TransportProgress {
     const outbound = pty_ffi.sessionPumpOutbound(term.session, 0);
     ptyRequireStructOk(outbound.status);
 
-    var reads: usize = 0;
-    var bytes_read: usize = 0;
+    var reads: u16 = 0;
+    var bytes_read: u32 = 0;
     while (reads < limits.max_reads and bytes_read < limits.max_bytes) {
-        const remaining = @min(scratch.len, limits.max_bytes - bytes_read);
+        const remaining: usize = @intCast(@min(@as(u32, @intCast(scratch.len)), limits.max_bytes - bytes_read));
         const read = pty_ffi.sessionRead(term.session, scratch[0..remaining].ptr, remaining);
         ptyRequireStructOk(read.status);
         if (read.bytes_read == 0) break;
-        const chunk_len: usize = @intCast(read.bytes_read);
+        const chunk_len: u32 = @intCast(read.bytes_read);
+        std.debug.assert(chunk_len <= remaining);
+        std.debug.assert(bytes_read + chunk_len <= limits.max_bytes);
         vtRequireStructOk(vt_ffi.terminalFeed(term.vt, scratch[0..chunk_len].ptr, chunk_len));
         term.output_seen = true;
         reads += 1;
         bytes_read += chunk_len;
     }
+
+    std.debug.assert(reads <= limits.max_reads);
+    std.debug.assert(bytes_read <= limits.max_bytes);
 
     if (reads > 0) {
         trace.logTransportReadStartupf("stage=term-transport-read-first reads={d} read_bytes={d} queued_events={d}", .{
@@ -291,7 +296,7 @@ pub fn pumpTransport(term: *Term, limits: TransportLimits) TransportProgress {
     };
 }
 
-pub fn applyPending(term: *Term, max_events: usize) ApplyProgress {
+pub fn applyPending(term: *Term, max_events: u32) ApplyProgress {
     if (max_events == 0) {
         term.mutex.lock();
         defer term.mutex.unlock();
@@ -308,6 +313,8 @@ pub fn applyPending(term: *Term, max_events: usize) ApplyProgress {
     if (result.applied == 0) {
         return .{ .applied_events = 0, .remaining_events = @intCast(result.remaining_events), .state_changed = false };
     }
+    std.debug.assert(result.applied <= max_events);
+    std.debug.assert(result.title_written <= title_buf.len);
     trace.logVtApplyStartupf("stage=term-vt-apply-first applied={d} remaining={d}", .{ result.applied, result.remaining_events });
 
     if (result.title_written != 0) setCurrentTitle(term, title_buf[0..@intCast(result.title_written)]) catch {};
@@ -373,11 +380,11 @@ pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) void {
     defer term.mutex.unlock();
     clearFallbackFontPathsLocked(term);
     var owned: [32][:0]u8 = undefined;
-    var count: usize = 0;
+    var count: u8 = 0;
     while (count < paths.len and count < owned.len) : (count += 1) {
         owned[count] = term.allocator.dupeZ(u8, paths[count]) catch break;
     }
-    var i: usize = 0;
+    var i: u8 = 0;
     while (i < count) : (i += 1) {
         term.fallback_font_paths.append(term.allocator, owned[i]) catch break;
     }
@@ -457,20 +464,22 @@ pub fn scrollState(term: *const Term) ScrollState {
     };
 }
 
-pub fn currentScrollbackCount(term: *const Term) usize {
+pub fn currentScrollbackCount(term: *const Term) u32 {
     return scrollState(term).scrollback_count;
 }
 
-pub fn currentScrollbackOffset(term: *const Term) usize {
+pub fn currentScrollbackOffset(term: *const Term) u32 {
     return scrollState(term).scrollback_offset;
 }
 
-pub fn setScrollbackOffset(term: *Term, offset: usize) bool {
+pub fn setScrollbackOffset(term: *Term, offset: u32) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
     const clamped = @min(offset, vtHistoryCount(term.vt));
+    std.debug.assert(clamped <= vtHistoryCount(term.vt));
     if (clamped == term.scrollback_offset) return false;
     term.scrollback_offset = clamped;
+    std.debug.assert(term.scrollback_offset <= vtHistoryCount(term.vt));
     noteVisibleChange(term);
     return true;
 }
@@ -552,6 +561,7 @@ pub fn syncRenderGeometry(term: *Term, geom: RenderGeometry) !void {
         term.rows = grid.rows;
         term.cell_px = cell_px;
         term.scrollback_offset = @min(term.scrollback_offset, vtHistoryCount(term.vt));
+        std.debug.assert(term.scrollback_offset <= vtHistoryCount(term.vt));
         term.vt_epoch +%= 1;
         noteVisibleChange(term);
     }
@@ -570,6 +580,9 @@ pub fn publishSource(term: *Term) SourceReceipt {
     ensureSnapshotShape(term, visible.rows, visible.cols) catch return sourceRejected(term);
     syncSnapshotState(term, visible);
     copyVisibleCells(term, visible);
+
+    std.debug.assert(term.scrollback_offset <= visible.history_count);
+    std.debug.assert(visible.start <= visible.history_count + visible.rows);
 
     const receipt = term.render_runtime.acceptSource(.{
         .snapshot = &term.snapshot,
@@ -615,14 +628,15 @@ const VisibleCopy = struct {
     cursor_visible: bool,
     cursor_shape: u8,
     is_alternate_screen: bool,
-    history_count: usize,
-    start: usize,
+    history_count: u32,
+    start: u32,
 };
 
 fn syncSnapshotState(term: *Term, visible: VisibleCopy) void {
     std.debug.assert(visible.rows > 0);
     std.debug.assert(visible.cols > 0);
     term.snapshot.markFullDirty();
+    std.debug.assert(visible.start <= visible.history_count + visible.rows);
     term.snapshot.scroll_row = visible.start;
     term.snapshot.is_alternate_screen = visible.is_alternate_screen;
     term.snapshot.cursor = .{
@@ -638,14 +652,12 @@ fn syncSnapshotState(term: *Term, visible: VisibleCopy) void {
 }
 
 fn copyVisibleCells(term: *Term, visible: VisibleCopy) void {
-    const cell_count = @as(usize, visible.rows) * @as(usize, visible.cols);
-    std.debug.assert(term.snapshot.cells.items.len == cell_count);
+    const cell_count: u32 = @as(u32, visible.rows) * @as(u32, visible.cols);
+    std.debug.assert(term.snapshot.cells.items.len == countLen(cell_count));
+    std.debug.assert(term.vt_cells.items.len >= term.snapshot.cells.items.len);
 
-    var idx: usize = 0;
-    while (idx < cell_count) : (idx += 1) {
-        const src = term.vt_cells.items[idx];
-        std.debug.assert(idx < term.snapshot.cells.items.len);
-        term.snapshot.cells.items[idx] = .{
+    for (term.snapshot.cells.items, term.vt_cells.items[0..term.snapshot.cells.items.len]) |*dst, src| {
+        dst.* = .{
             .codepoint = @intCast(src.codepoint),
             .flags = .{ .continuation = src.continuation != 0 },
             .fg_color = colorFromVt(src.fg),
@@ -745,18 +757,20 @@ fn drainTerminalReply(term: *Term) void {
     vt_ffi.terminalClearPendingOutput(term.vt);
 }
 
-fn repairScrollback(term: *Term, history_before: usize, any_read: bool) void {
+fn repairScrollback(term: *Term, history_before: u32, any_read: bool) void {
     const history_after = vtHistoryCount(term.vt);
     if (history_after > history_before) {
         if (term.scrollback_offset > 0) {
             const delta = history_after - history_before;
             term.scrollback_offset = @min(history_after, term.scrollback_offset + delta);
+            std.debug.assert(term.scrollback_offset <= history_after);
         }
         noteVisibleChange(term);
         return;
     }
     if (history_after < history_before) {
         if (term.scrollback_offset > history_after) term.scrollback_offset = history_after;
+        std.debug.assert(term.scrollback_offset <= history_after);
         noteVisibleChange(term);
         return;
     }
@@ -788,8 +802,7 @@ fn setCurrentTitle(term: *Term, title: []const u8) !void {
 }
 
 fn clearFallbackFontPathsLocked(term: *Term) void {
-    var i: usize = 0;
-    while (i < term.fallback_font_paths.items.len) : (i += 1) term.allocator.free(term.fallback_font_paths.items[i]);
+    for (term.fallback_font_paths.items) |path| term.allocator.free(path);
     term.fallback_font_paths.clearRetainingCapacity();
 }
 
@@ -865,12 +878,12 @@ fn vtRequireResizeOk(status: i32) !void {
     return error.VtCallFailed;
 }
 
-fn vtQueuedEventCount(handle: vt_ffi.VtHandle) usize {
+fn vtQueuedEventCount(handle: vt_ffi.VtHandle) u32 {
     std.debug.assert(handle != 0);
     return @intCast(vt_ffi.terminalQueuedEventCount(handle));
 }
 
-fn vtHistoryCount(handle: vt_ffi.VtHandle) usize {
+fn vtHistoryCount(handle: vt_ffi.VtHandle) u32 {
     std.debug.assert(handle != 0);
     return @intCast(vt_ffi.terminalHistoryCount(handle));
 }
@@ -893,6 +906,7 @@ fn vtPendingOutput(term: *Term) ![]const u8 {
         result = vt_ffi.terminalCopyPendingOutput(term.vt, out.ptr, out.len);
     }
     try vtRequireOk(result.status);
+    std.debug.assert(result.written <= term.vt_bytes.items.len);
     return term.vt_bytes.items[0..@intCast(result.written)];
 }
 
@@ -905,6 +919,7 @@ fn vtDrainClipboard(term: *Term, allocator: std.mem.Allocator) !?[]u8 {
     }
     try vtRequireOk(result.status);
     if (result.written == 0) return null;
+    std.debug.assert(result.written <= term.vt_bytes.items.len);
     return try allocator.dupe(u8, term.vt_bytes.items[0..@intCast(result.written)]);
 }
 
@@ -916,6 +931,8 @@ fn vtCopyVisible(term: *Term) !VisibleCopy {
         view = vt_ffi.terminalCopyVisible(term.vt, term.scrollback_offset, cells.ptr, cells.len);
     }
     try vtRequireOk(view.status);
+    std.debug.assert(view.start <= view.history_count + view.rows);
+    std.debug.assert(term.scrollback_offset <= view.history_count);
     return .{
         .rows = view.rows,
         .cols = view.cols,
@@ -932,68 +949,80 @@ fn vtCopyVisible(term: *Term) !VisibleCopy {
 fn vtEncodeInput(term: *Term, event: Input.Event) ![]const u8 {
     switch (event) {
         .bytes => |bytes| return bytes,
-        .key => |key| {
-            while (true) {
-                const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
-                const result = vt_ffi.terminalEncodeKey(term.vt, key.key, key.mods, out.ptr, out.len);
-                if (result.status == vtCallShortBuffer()) {
-                    _ = try vtEnsureBytes(term, @intCast(result.needed));
-                    continue;
-                }
-                try vtRequireOk(result.status);
-                return term.vt_bytes.items[0..@intCast(result.written)];
-            }
-        },
-        .focus => |focus| {
-            while (true) {
-                const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
-                const result = vt_ffi.terminalEncodeFocus(term.vt, if (focus == .in) 1 else 0, out.ptr, out.len);
-                if (result.status == vtCallShortBuffer()) {
-                    _ = try vtEnsureBytes(term, @intCast(result.needed));
-                    continue;
-                }
-                try vtRequireOk(result.status);
-                return term.vt_bytes.items[0..@intCast(result.written)];
-            }
-        },
-        .mouse => |mouse| {
-            while (true) {
-                const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
-                const result = vt_ffi.terminalEncodeMouse(
-                    term.vt,
-                    @intFromEnum(mouse.kind),
-                    @intFromEnum(mouse.button),
-                    mouse.row,
-                    mouse.col,
-                    if (mouse.pixel_x != null) 1 else 0,
-                    if (mouse.pixel_x) |value| value else 0,
-                    if (mouse.pixel_y != null) 1 else 0,
-                    if (mouse.pixel_y) |value| value else 0,
-                    mouse.mod,
-                    mouse.buttons_down,
-                    out.ptr,
-                    out.len,
-                );
-                if (result.status == vtCallShortBuffer()) {
-                    _ = try vtEnsureBytes(term, @intCast(result.needed));
-                    continue;
-                }
-                try vtRequireOk(result.status);
-                return term.vt_bytes.items[0..@intCast(result.written)];
-            }
-        },
-        .paste => |text| {
-            while (true) {
-                const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
-                const result = vt_ffi.terminalEncodePaste(term.vt, text.ptr, text.len, out.ptr, out.len);
-                if (result.status == vtCallShortBuffer()) {
-                    _ = try vtEnsureBytes(term, @intCast(result.needed));
-                    continue;
-                }
-                try vtRequireOk(result.status);
-                return term.vt_bytes.items[0..@intCast(result.written)];
-            }
-        },
+        .key => |key| return vtEncodeKeyInput(term, key),
+        .focus => |focus| return vtEncodeFocusInput(term, focus),
+        .mouse => |mouse| return vtEncodeMouseInput(term, mouse),
+        .paste => |text| return vtEncodePasteInput(term, text),
+    }
+}
+
+fn vtEncodeKeyInput(term: *Term, key: Input.KeyEvent) ![]const u8 {
+    while (true) {
+        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+        const result = vt_ffi.terminalEncodeKey(term.vt, key.key, key.mods, out.ptr, out.len);
+        if (result.status == vtCallShortBuffer()) {
+            _ = try vtEnsureBytes(term, @intCast(result.needed));
+            continue;
+        }
+        try vtRequireOk(result.status);
+        std.debug.assert(result.written <= term.vt_bytes.items.len);
+        return term.vt_bytes.items[0..@intCast(result.written)];
+    }
+}
+
+fn vtEncodeFocusInput(term: *Term, focus: Input.FocusEvent) ![]const u8 {
+    while (true) {
+        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+        const result = vt_ffi.terminalEncodeFocus(term.vt, if (focus == .in) 1 else 0, out.ptr, out.len);
+        if (result.status == vtCallShortBuffer()) {
+            _ = try vtEnsureBytes(term, @intCast(result.needed));
+            continue;
+        }
+        try vtRequireOk(result.status);
+        std.debug.assert(result.written <= term.vt_bytes.items.len);
+        return term.vt_bytes.items[0..@intCast(result.written)];
+    }
+}
+
+fn vtEncodeMouseInput(term: *Term, mouse: Input.MouseEvent) ![]const u8 {
+    while (true) {
+        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+        const result = vt_ffi.terminalEncodeMouse(
+            term.vt,
+            @intFromEnum(mouse.kind),
+            @intFromEnum(mouse.button),
+            mouse.row,
+            mouse.col,
+            if (mouse.pixel_x != null) 1 else 0,
+            if (mouse.pixel_x) |value| value else 0,
+            if (mouse.pixel_y != null) 1 else 0,
+            if (mouse.pixel_y) |value| value else 0,
+            mouse.mod,
+            mouse.buttons_down,
+            out.ptr,
+            out.len,
+        );
+        if (result.status == vtCallShortBuffer()) {
+            _ = try vtEnsureBytes(term, @intCast(result.needed));
+            continue;
+        }
+        try vtRequireOk(result.status);
+        std.debug.assert(result.written <= term.vt_bytes.items.len);
+        return term.vt_bytes.items[0..@intCast(result.written)];
+    }
+}
+
+fn vtEncodePasteInput(term: *Term, text: []const u8) ![]const u8 {
+    while (true) {
+        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+        const result = vt_ffi.terminalEncodePaste(term.vt, text.ptr, text.len, out.ptr, out.len);
+        if (result.status == vtCallShortBuffer()) {
+            _ = try vtEnsureBytes(term, @intCast(result.needed));
+            continue;
+        }
+        try vtRequireOk(result.status);
+        std.debug.assert(result.written <= term.vt_bytes.items.len);
+        return term.vt_bytes.items[0..@intCast(result.written)];
     }
 }
 
@@ -1021,9 +1050,13 @@ fn ptySessionIsActive(handle: pty_ffi.SessionHandle) bool {
     return pty_ffi.sessionIsActive(handle) != 0;
 }
 
-fn ptySessionPendingBytes(handle: pty_ffi.SessionHandle) usize {
+fn ptySessionPendingBytes(handle: pty_ffi.SessionHandle) u32 {
     std.debug.assert(handle != 0);
     return @intCast(pty_ffi.sessionPendingBytes(handle));
+}
+
+fn countLen(count: u32) usize {
+    return @intCast(count);
 }
 
 fn ptyPublishInputAndPump(handle: pty_ffi.SessionHandle, bytes: []const u8) !void {

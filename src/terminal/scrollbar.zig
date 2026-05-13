@@ -16,21 +16,21 @@ const min_thumb_h_logical: c_int = 18;
 
 pub const Model = struct {
     visible: bool,
-    rows: usize,
-    total_lines: usize,
-    scrollback_offset: usize,
+    rows: u32,
+    total_lines: u32,
+    scrollback_offset: u32,
 };
 
 pub const View = struct {
     viewport_rows: u16,
-    scrollback_count: usize,
-    scrollback_offset: usize,
+    scrollback_count: u32,
+    scrollback_offset: u32,
     alternate_screen: bool,
 };
 
 pub const MouseResult = struct {
     consumed: bool = false,
-    target_offset: ?usize = null,
+    target_offset: ?u32 = null,
 };
 
 pub const State = struct {
@@ -142,7 +142,7 @@ pub const State = struct {
         return false;
     }
 
-    fn offsetFromMouse(self: *State, mouse_y: i32, geometry: Geometry, model: Model) usize {
+    fn offsetFromMouse(self: *State, mouse_y: i32, geometry: Geometry, model: Model) u32 {
         const available = geometry.thumbAvailable(model);
         const clamped_mouse = std.math.clamp(
             @as(f32, @floatFromInt(mouse_y)) - self.grab_offset,
@@ -154,7 +154,7 @@ pub const State = struct {
         return if (max_offset == 0)
             0
         else
-            @as(usize, @intFromFloat(@round((1.0 - ratio_from_top) * @as(f32, @floatFromInt(max_offset)))));
+            @as(u32, @intFromFloat(@round((1.0 - ratio_from_top) * @as(f32, @floatFromInt(max_offset)))));
     }
 
     fn focusT(self: *const State, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, window_focused: bool) f32 {
@@ -197,7 +197,7 @@ pub fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height:
     };
 }
 
-pub fn thumb(y: c_int, height: c_int, rows: usize, total_lines: usize, scrollback_offset: usize) struct { y: c_int, height: c_int } {
+pub fn thumb(y: c_int, height: c_int, rows: u32, total_lines: u32, scrollback_offset: u32) struct { y: c_int, height: c_int } {
     const geometry = Geometry{ .x = 0, .y = y, .width = max_width_logical, .height = height };
     const model = Model{ .visible = true, .rows = rows, .total_lines = total_lines, .scrollback_offset = scrollback_offset };
     return .{ .y = geometry.thumbY(model), .height = geometry.thumbHeight(model) };
@@ -234,7 +234,7 @@ fn smoothstep01(t: f32) f32 {
 }
 
 fn modelFromView(view: View) Model {
-    const rows: usize = @intCast(@max(view.viewport_rows, 1));
+    const rows: u32 = @intCast(@max(view.viewport_rows, 1));
     const history_count = view.scrollback_count;
     const alt = view.alternate_screen;
     const visible = !alt and history_count > 0 and rows > 0;
