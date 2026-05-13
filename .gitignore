@@ -6,6 +6,7 @@ artifacts/
 __pycache__/
 *.pyc
 /ascii-howl.ndjson
+/howl-runtime.jsonl
 /howl-trace.ndjson
 /howl-thread-cpu.jsonl
 /src/fuzz/ascii-rain.c
