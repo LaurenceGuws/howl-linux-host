@@ -5,13 +5,13 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .howl_pty = .{
-            .path = "../../howl-pty",
+            .path = "../howl-pty",
         },
         .howl_vt = .{
-            .path = "../../howl-vt",
+            .path = "../howl-vt",
         },
         .howl_render = .{
-            .path = "../../howl-render",
+            .path = "../howl-render",
         },
         .sdl = .{
             .url = "git+https://github.com/LaurenceGuws/howl-sdl#release-3.2.x",

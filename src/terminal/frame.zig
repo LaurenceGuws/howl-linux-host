@@ -71,7 +71,7 @@ pub fn render(self: anytype) void {
     switch (result) {
         .idle, .stale, .failed, .needs_prepare => return,
         .rendered => {
-            self.last_surface = self.term.renderer.surfaceHandle();
+            self.last_surface = self.term.render_surface;
             if (!self.first_rendered_surface_logged) {
                 self.first_rendered_surface_logged = true;
                 window.logStartupf("stage=term-rendered-surface-first texture_id={d} epoch={d}", .{ self.last_surface.texture_id, self.last_surface.epoch });

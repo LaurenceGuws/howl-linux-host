@@ -10,9 +10,12 @@ const HostDeps = struct {
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     howl_lua_mod: *Module,
-    howl_render_mod: *Module,
-    howl_pty_mod: *Module,
-    howl_vt_mod: *Module,
+    howl_render_lib: *Compile,
+    howl_pty_lib: *Compile,
+    howl_vt_lib: *Compile,
+    howl_render_include: Build.LazyPath,
+    howl_pty_include: Build.LazyPath,
+    howl_vt_include: Build.LazyPath,
     sdl_include: Build.LazyPath,
     sdl_lib: *Compile,
     stb_image: Build.LazyPath,
@@ -23,9 +26,12 @@ const HostDeps = struct {
             .target = self.target,
             .optimize = self.optimize,
             .howl_lua_mod = self.howl_lua_mod,
-            .howl_render_mod = self.howl_render_mod,
-            .howl_pty_mod = self.howl_pty_mod,
-            .howl_vt_mod = self.howl_vt_mod,
+            .howl_render_lib = self.howl_render_lib,
+            .howl_pty_lib = self.howl_pty_lib,
+            .howl_vt_lib = self.howl_vt_lib,
+            .howl_render_include = self.howl_render_include,
+            .howl_pty_include = self.howl_pty_include,
+            .howl_vt_include = self.howl_vt_include,
         };
     }
 };
@@ -101,9 +107,12 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .target = target,
         .optimize = optimize,
         .howl_lua_mod = howl_lua_dep.module("howl_lua"),
-        .howl_render_mod = howl_render_dep.module("howl_render"),
-        .howl_pty_mod = howl_pty_dep.module("howl_pty"),
-        .howl_vt_mod = howl_vt_dep.module("howl_vt"),
+        .howl_render_lib = howl_render_dep.artifact("howl_render"),
+        .howl_pty_lib = howl_pty_dep.artifact("howl_pty"),
+        .howl_vt_lib = howl_vt_dep.artifact("howl_vt"),
+        .howl_render_include = howl_render_dep.path("include"),
+        .howl_pty_include = howl_pty_dep.path("include"),
+        .howl_vt_include = howl_vt_dep.path("include"),
         .sdl_include = sdl_dep.path("include"),
         .sdl_lib = sdl_dep.artifact("SDL3"),
         .stb_image = b.path("src/window/stb_image.c"),
@@ -129,9 +138,6 @@ fn createHostModule(b: *Build, deps: HostDeps, path: []const u8) *Module {
         .optimize = deps.optimize,
         .imports = &.{
             .{ .name = "howl_lua", .module = deps.howl_lua_mod },
-            .{ .name = "howl_render", .module = deps.howl_render_mod },
-            .{ .name = "howl_pty", .module = deps.howl_pty_mod },
-            .{ .name = "howl_vt", .module = deps.howl_vt_mod },
         },
     });
 }
@@ -139,8 +145,14 @@ fn createHostModule(b: *Build, deps: HostDeps, path: []const u8) *Module {
 fn linkHostWindow(module: *Module, deps: HostDeps) void {
     module.addIncludePath(deps.sdl_include);
     module.addIncludePath(deps.vendor_include);
+    module.addIncludePath(deps.howl_render_include);
+    module.addIncludePath(deps.howl_pty_include);
+    module.addIncludePath(deps.howl_vt_include);
     module.addCSourceFile(.{ .file = deps.stb_image });
     module.linkLibrary(deps.sdl_lib);
+    module.linkLibrary(deps.howl_render_lib);
+    module.linkLibrary(deps.howl_pty_lib);
+    module.linkLibrary(deps.howl_vt_lib);
     module.linkSystemLibrary("GL", .{});
     module.link_libc = true;
 }
@@ -216,9 +228,6 @@ fn wireTestSteps(
         .imports = &.{
             .{ .name = "host", .module = host_test_mod },
             .{ .name = "howl_lua", .module = deps.howl_lua_mod },
-            .{ .name = "howl_render", .module = deps.howl_render_mod },
-            .{ .name = "howl_pty", .module = deps.howl_pty_mod },
-            .{ .name = "howl_vt", .module = deps.howl_vt_mod },
         },
     });
 
