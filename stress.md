@@ -8,7 +8,7 @@ Purpose: command surfaces for host stress, automation, and trace capture.
 
 - Use `tools/benchmark_terminals.py` before adding ad hoc host profiling code.
 - Run host stress in `ReleaseFast`, not debug.
-- Prove lower-module behavior in `howl-vt`, `howl-render`, or `howl-term` first. Use this file for host-side proof only.
+- Prove lower-module behavior in `howl-pty`, `howl-vt`, or `howl-render` first. Use this file for host-side proof only.
 
 ## Large Scrollback Payload
 
@@ -28,7 +28,7 @@ Build the host tools:
 zig build
 ```
 
-Run the stress emitter inside `howl-term`:
+Run the stress emitter inside the host:
 
 ```sh
 zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --mixed
@@ -65,7 +65,7 @@ For `howl-linux-host` render/present telemetry, set `HOWL_TRACE_PATH`:
 HOWL_TRACE_PATH=howl.trace.ndjson zig-out/bin/howl_term --duration-ms 12000 --command 'zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000000 --duration-ms 10000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.ndjson'
 ```
 
-Use the Python launcher to run the same payload against `howl-term`, kitty, and ghostty for a fixed duration:
+Use the Python launcher to run the same payload against Howl, kitty, and ghostty for a fixed duration:
 
 ```sh
 tools/benchmark_terminals.py --build --duration 10 --mode ascii --terminals howl kitty ghostty
@@ -74,7 +74,7 @@ tools/benchmark_terminals.py --duration 10 --mode mixed --terminals howl kitty g
 
 The launcher writes one run directory under `artifacts/stress/` with generator metrics, process logs, and `summary.json`.
 
-Enable `howl-term` telemetry only for diagnostic runs because tracing writes structured events to disk and changes the timing profile:
+Enable Howl telemetry only for diagnostic runs because tracing writes structured events to disk and changes the timing profile:
 
 ```sh
 tools/benchmark_terminals.py --duration 10 --mode ascii --terminals howl --trace-howl
