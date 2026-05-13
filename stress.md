@@ -1,35 +1,14 @@
-# Linux Host Stress
+# Stress
 
-## Tooling Checklist
+Owner: `howl-linux-host`
 
-Current host-side status on this machine:
+Purpose: command surfaces for host stress, automation, and trace capture.
 
-- `strace`: available
-- `nvidia-smi`: available
-- `nvtop`: available
-- `glxinfo`: available
-- `nsys`: available
-- `ncu`: available
-- `nvcc`: available
+## Rules
 
-Installed NVIDIA-side tooling:
-
-- `nsight-systems` for CPU/thread/GPU timelines
-- `nsight-compute` for deeper kernel/GPU analysis if we ever need it
-- `cuda` for broader NVIDIA userspace tooling availability
-
-Important working rule:
-
-- Do not forget to use the existing GPU/resource hooks in `tools/benchmark_terminals.py` before adding new ad hoc host profiling code.
-- The Python harness already samples `nvidia-smi` when available.
-- Performance-facing benchmark and stress surfaces should run as `ReleaseFast`, not debug.
-- The Python launcher now builds with `zig build -Doptimize=ReleaseFast` when `--build` is used.
-- When we return to host-side performance work, prefer this order:
-  - first: `tools/benchmark_terminals.py` resource and GPU sampling
-  - second: `strace` for syscall and PTY/event-loop suspicion
-  - third: `nsys` for CPU/thread/GPU timeline correlation
-  - fourth: `ncu` only if we are deep enough in GL/GPU behavior that a shader or driver-side question is real
-- Keep these tools as host-validation aids. Do not let them drive changes that should be proven first in `howl-vt`, `howl-render`, or `howl-term` proof and benchmark surfaces.
+- Use `tools/benchmark_terminals.py` before adding ad hoc host profiling code.
+- Run host stress in `ReleaseFast`, not debug.
+- Prove lower-module behavior in `howl-vt`, `howl-render`, or `howl-term` first. Use this file for host-side proof only.
 
 ## Large Scrollback Payload
 
@@ -39,7 +18,7 @@ Use `bat` to exercise long highlighted lines, SGR churn, wrapping, scrollback, a
 bat --paging=never --style=full --color=always /path/to/huge.log
 ```
 
-Good payloads are multi-megabyte logs with long unwrapped lines, mixed punctuation, JSON, stack traces, and timestamps.
+Good payloads are multi-megabyte logs with long unwrapped lines, JSON, stack traces, and timestamps.
 
 ## Hostile Rain Generator
 
@@ -68,9 +47,7 @@ zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --seed 0xC0F
 zig-out/bin/ascii_rain_stress --cols 320 --rows 120 --frames 100000 --seed 0xC0FFEE --mixed --metrics --metrics-every 100 --flush-every 1 2>mixed.metrics.log
 ```
 
-The CLI metrics report generator-side throughput and backpressure (`fps`, `p50_us`, `p95_us`, `p99_us`, `max_us`). They do not measure renderer FPS directly; use host telemetry for `howl-linux-host` render/present timings.
-
-The generator intentionally emits dense cursor movement, SGR changes, erases, scroll operations, long lines, ASCII, box drawing, symbols, and fallback glyph candidates. It is not meant to look good. It is meant to attack terminal hot paths.
+The CLI metrics report generator-side throughput and backpressure (`fps`, `p50_us`, `p95_us`, `p99_us`, `max_us`). They do not measure renderer FPS directly.
 
 For resize stress, hold the configured zoom stress binding while the generator is running. The default binding is `ctrl+shift+equal` or `ctrl+shift+kp_add`, and it toggles between very small and very large font sizes.
 
@@ -95,7 +72,7 @@ tools/benchmark_terminals.py --build --duration 10 --mode ascii --terminals howl
 tools/benchmark_terminals.py --duration 10 --mode mixed --terminals howl kitty ghostty
 ```
 
-The launcher writes one run directory under `artifacts/stress/` containing per-terminal generator metrics, process logs, and `summary.json`. Peer terminals may need their binaries on `PATH`; unavailable terminals are skipped.
+The launcher writes one run directory under `artifacts/stress/` with generator metrics, process logs, and `summary.json`.
 
 Enable `howl-term` telemetry only for diagnostic runs because tracing writes structured events to disk and changes the timing profile:
 

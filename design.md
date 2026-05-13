@@ -8,6 +8,11 @@ Shared rules: [`../../design/design-rules.md`](../../design/design-rules.md)
 
 It owns app/window/input/chrome orchestration. It does not own terminal semantics, scrollback state, dirty state, PTY behavior, VT parsing, or rendering internals.
 
+## Doc Set
+
+- `design.md`: owner boundary, host flow, and public surface.
+- `stress.md`: operational stress and automation commands.
+
 ## Public Surface
 
 - `Config`: loads typed host config.
