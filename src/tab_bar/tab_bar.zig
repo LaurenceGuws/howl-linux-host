@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host tab bar widget state.
-//! Ownership: tab label storage and active-tab presentation snapshot.
-//! Reason: keep tab bar runtime behavior separate from config data.
 
 const std = @import("std");
 

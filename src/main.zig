@@ -1,6 +1,3 @@
-//! Responsibility: own interactive Linux host process execution and runtime loop.
-//! Ownership: process entrypoint, config startup, tabs, event dispatch, and frame scheduling.
-//! Reason: keep production runtime direct and unshaped by test harnesses.
 
 const std = @import("std");
 const assert = std.debug.assert;

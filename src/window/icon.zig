@@ -1,5 +1,3 @@
-//! Responsibility: own Linux host window icon loading.
-//! Ownership: read, decode, and apply the bundled SDL window icon.
 
 const std = @import("std");
 

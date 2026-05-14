@@ -1,5 +1,3 @@
-//! Responsibility: own temporary Linux host runtime instrumentation.
-//! Ownership: central JSONL event stream for thread CPU, term metrics, and SDL present cadence.
 
 const std = @import("std");
 const assert = std.debug.assert;

@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host unit-test aggregation.
-//! Ownership: host module imports required by the build test targets.
-//! Reason: keep test discovery under the test tree and out of production entry paths.
 
 pub const Config = @import("../config/config.zig");
 pub const Input = @import("../input/input.zig");

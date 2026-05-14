@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host terminal font-size policy.
-//! Ownership: zoom, reset, stress-toggle bounds, and term font-size publication.
-//! Reason: keeps host font policy out of the widget core.
 
 const std = @import("std");
 const api = @import("api.zig");

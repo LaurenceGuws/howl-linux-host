@@ -1,6 +1,3 @@
-//! Responsibility: own the Linux host terminal runtime seam.
-//! Ownership: host-local coordination across session, VT, render runtime, and renderer owners.
-//! Reason: keeps Linux on owner-true modules without recreating a fake `howl-term` runtime.
 
 const std = @import("std");
 const trace = @import("../input/window.zig");

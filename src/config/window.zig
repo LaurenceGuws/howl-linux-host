@@ -1,6 +1,3 @@
-//! Responsibility: define Linux host window config vocabulary.
-//! Ownership: window dimensions, host mouse policy, and key binding config types.
-//! Reason: keep window configuration separate from SDL calls.
 
 const std = @import("std");
 const howl_lua = @import("howl_lua");

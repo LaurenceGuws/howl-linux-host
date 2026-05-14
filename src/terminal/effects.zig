@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host terminal focus, title, and host effects.
-//! Ownership: title cache, focus publication, and clipboard side effects.
-//! Reason: keeps host-visible effects out of the widget core.
 
 const std = @import("std");
 const api = @import("api.zig");

@@ -1,6 +1,3 @@
-//! Responsibility: compute host scrollbar model and geometry.
-//! Ownership: Linux host owns scrollbar UX around howl-term scroll state.
-//! Reason: keeps platform presentation math outside terminal core rendering.
 
 const std = @import("std");
 const window = @import("../window/window.zig");

@@ -1,6 +1,3 @@
-//! Responsibility: generate ASCII rain stress output for Linux host testing.
-//! Ownership: host fuzz tooling owns terminal workload scenarios.
-//! Reason: exercises high-throughput terminal output separately from runtime code.
 
 const std = @import("std");
 const c = @cImport({

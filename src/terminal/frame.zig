@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host frame handoff to owner-true render owners.
-//! Ownership: frame preparation and ready-frame rendering.
-//! Reason: keeps term frame API choreography out of the terminal widget and thread loops.
 
 const HostInput = @import("../input/input.zig").Input;
 const api = @import("api.zig");

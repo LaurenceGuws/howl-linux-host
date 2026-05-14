@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host scroll handoff to howl-term.
-//! Ownership: scroll input, scrollbar state, and term scroll API sequencing.
-//! Reason: keeps scroll-specific terminal API choreography out of the widget core.
 
 const std = @import("std");
 const api = @import("api.zig");

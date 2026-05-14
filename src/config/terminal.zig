@@ -1,6 +1,3 @@
-//! Responsibility: define host-owned howl-term startup configuration.
-//! Ownership: Linux host owns user-facing policy before handing config to howl-term.
-//! Reason: separates platform config loading from terminal runtime ownership.
 
 const std = @import("std");
 const howl_lua = @import("howl_lua");

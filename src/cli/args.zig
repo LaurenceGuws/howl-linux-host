@@ -1,6 +1,3 @@
-//! Responsibility: own interactive Linux host CLI arguments.
-//! Ownership: process argument parsing for normal host runs.
-//! Reason: keep process startup thin and leave runtime policy in main.zig.
 
 const std = @import("std");
 

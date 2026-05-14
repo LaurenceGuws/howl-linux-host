@@ -1,6 +1,3 @@
-//! Responsibility: expand environment-backed config paths.
-//! Ownership: shell-style environment substitution used during config load.
-//! Reason: keep host config loading deterministic and testable.
 
 const std = @import("std");
 

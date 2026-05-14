@@ -1,6 +1,3 @@
-//! Responsibility: map Linux host input into VT-owned input events.
-//! Ownership: key, modifier, mouse, and byte translation for terminal widgets.
-//! Reason: keep host event vocabulary separate from terminal runtime input.
 
 const Input = @import("../input/input.zig").Input;
 const api = @import("api.zig");

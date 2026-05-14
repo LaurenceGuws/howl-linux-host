@@ -1,6 +1,3 @@
-//! Responsibility: draw Linux host window presentation primitives.
-//! Ownership: tab bar and scrollbar visual output.
-//! Reason: keep drawing policy out of window state.
 
 const Font = @import("../config/tab_bar.zig");
 const Layout = @import("layout.zig");

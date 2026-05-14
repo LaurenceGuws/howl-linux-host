@@ -1,6 +1,3 @@
-//! Responsibility: own the public host input runtime for the Linux host.
-//! Ownership: SDL event pump, translated input queues, and key binding drain.
-//! Reason: keep Linux host on one boring input owner.
 
 const std = @import("std");
 const keys = @import("keys.zig");

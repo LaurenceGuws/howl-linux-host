@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host terminal read/query facade.
-//! Ownership: surface snapshots, overlay snapshots, lifecycle state, and text queries.
-//! Reason: keeps host-facing terminal reads out of the widget core.
 
 const window = @import("../window/window.zig");
 const scroll = @import("scroll.zig");

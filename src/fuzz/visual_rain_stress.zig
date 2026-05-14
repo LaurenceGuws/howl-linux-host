@@ -1,6 +1,3 @@
-//! Responsibility: generate visual rain stress output for Linux host testing.
-//! Ownership: host fuzz tooling owns terminal workload scenarios.
-//! Reason: exercises user-visible rendering paths without embedding tests in runtime code.
 
 const std = @import("std");
 const c = @cImport({

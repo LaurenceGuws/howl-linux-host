@@ -1,5 +1,3 @@
-//! Responsibility: own the Linux host window entity.
-//! Ownership: SDL window, GL presentation, geometry, clipboard, URL opening, and cursor state.
 
 const std = @import("std");
 const icon = @import("icon.zig");

@@ -1,6 +1,3 @@
-//! Responsibility: own host mouse event vocabulary.
-//! Ownership: pointer position, button, wheel, and host-only motion state.
-//! Reason: keep mouse policy independent from terminal widgets.
 
 /// Keyboard modifier state attached to pointer events.
 pub const Mod = packed struct(u3) {

@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host selection mouse UX.
-//! Ownership: host mouse selection sequencing around howl-term selection APIs.
-//! Reason: keeps selection-specific platform behavior out of the terminal widget core.
 
 const Layout = @import("../window/layout.zig");
 const HostInput = @import("../input/input.zig").Input;

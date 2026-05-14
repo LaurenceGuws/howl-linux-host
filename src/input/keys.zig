@@ -1,6 +1,3 @@
-//! Responsibility: define Linux host key input vocabulary and bindings.
-//! Ownership: host input layer owns physical key naming, modifier payloads, and action bindings.
-//! Reason: gives SDL input translation and key binding resolution one shared type set.
 
 const std = @import("std");
 const mouse = @import("mouse.zig");

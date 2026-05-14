@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host terminal lifecycle handoff to owner-true modules.
-//! Ownership: term creation/configuration/start, child threads, and teardown sequencing.
-//! Reason: keeps startup/shutdown choreography out of the widget core.
 
 const std = @import("std");
 const window = @import("../window/window.zig");

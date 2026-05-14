@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host window presentation.
-//! Ownership: GL context, tab cache, texture blits, and frame composition.
-//! Reason: keep platform presentation behind the window entity.
 
 const Draw = @import("draw.zig");
 const Layout = @import("layout.zig");

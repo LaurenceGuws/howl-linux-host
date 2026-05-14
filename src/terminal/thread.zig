@@ -1,6 +1,3 @@
-//! Responsibility: own Linux-host transport progress across session, VT, and render owners.
-//! Ownership: host-owned wait, bounded transport progress, bounded apply, and snapshot publication.
-//! Reason: keeps scheduler policy in the host instead of inside howl-term.
 
 const api = @import("api.zig");
 const HostInput = @import("../input/input.zig").Input;

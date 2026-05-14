@@ -1,6 +1,3 @@
-//! Responsibility: root the host test module inside the full source tree.
-//! Ownership: gives test files under `src/test/` access to the whole `src/` module path.
-//! Reason: Zig module roots cannot import parent files outside their module path.
 
 const Host = @import("test/host.zig");
 

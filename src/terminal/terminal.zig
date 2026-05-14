@@ -1,6 +1,3 @@
-//! Responsibility: own the Linux host terminal widget.
-//! Ownership: host widget layer coordinates surfaces, window presentation, input, and tab state.
-//! Reason: keeps platform UX orchestration outside howl-term core behavior.
 
 const std = @import("std");
 const window = @import("../window/window.zig");

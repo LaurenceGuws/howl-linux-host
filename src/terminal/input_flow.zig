@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host input handoff to howl-term.
-//! Ownership: input event drain order and terminal input publication.
-//! Reason: keeps input-specific term API choreography out of the widget core.
 
 const Layout = @import("../window/layout.zig");
 const HostInput = @import("../input/input.zig").Input;

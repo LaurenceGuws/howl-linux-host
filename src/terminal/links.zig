@@ -1,6 +1,3 @@
-//! Responsibility: own Linux host hyperlink mouse UX.
-//! Ownership: host link hover/click presentation around howl-term link queries.
-//! Reason: keeps link-specific platform behavior out of the terminal widget core.
 
 const std = @import("std");
 const api = @import("api.zig");
