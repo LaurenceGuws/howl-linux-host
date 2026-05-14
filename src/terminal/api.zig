@@ -217,7 +217,7 @@ pub fn initPty(
     errdefer c.howl_pty_session_deinit(session);
 
     const vt = c.howl_vt_terminal_init(rows, cols, default_history_capacity);
-    if (vt == 0) return error.VtInitFailed;
+    if (vt == null) return error.VtInitFailed;
     errdefer c.howl_vt_terminal_deinit(vt);
 
     const snapshot = c.howl_render_snapshot_init(rows, cols);
@@ -363,7 +363,7 @@ pub fn applyPending(term: *Term, max_events: u32) ApplyProgress {
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const history_before = vtHistoryCount(term.vt);
+    const history_before = vtVisibleInfo(term.vt, term.scrollback_offset).history_count;
     var title_buf: [default_title_capacity]u8 = undefined;
     const result = c.howl_vt_terminal_apply(term.vt, max_events, title_buf[0..].ptr, title_buf.len);
     vtRequireStructOk(result.status);
@@ -518,9 +518,9 @@ pub fn scrollState(term: *const Term) ScrollState {
     defer mut.mutex.unlock();
     return .{
         .viewport_rows = term.rows,
-        .scrollback_count = vtHistoryCount(term.vt),
+        .scrollback_count = vtVisibleInfo(term.vt, term.scrollback_offset).history_count,
         .scrollback_offset = term.scrollback_offset,
-        .alternate_screen = c.howl_vt_terminal_is_alternate_screen(term.vt) != 0,
+        .alternate_screen = vtVisibleInfo(term.vt, term.scrollback_offset).is_alternate_screen,
     };
 }
 
@@ -535,11 +535,12 @@ pub fn currentScrollbackOffset(term: *const Term) u32 {
 pub fn setScrollbackOffset(term: *Term, offset: u32) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    const clamped = @min(offset, vtHistoryCount(term.vt));
-    std.debug.assert(clamped <= vtHistoryCount(term.vt));
+    const history_count = vtVisibleInfo(term.vt, term.scrollback_offset).history_count;
+    const clamped = @min(offset, history_count);
+    std.debug.assert(clamped <= history_count);
     if (clamped == term.scrollback_offset) return false;
     term.scrollback_offset = clamped;
-    std.debug.assert(term.scrollback_offset <= vtHistoryCount(term.vt));
+    std.debug.assert(term.scrollback_offset <= history_count);
     noteVisibleChange(term);
     return true;
 }
@@ -564,7 +565,7 @@ pub fn isAlternateScreen(term: *const Term) bool {
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return c.howl_vt_terminal_is_alternate_screen(term.vt) != 0;
+    return vtVisibleInfo(term.vt, term.scrollback_offset).is_alternate_screen;
 }
 
 pub fn hasOutputProof(term: *const Term) bool {
@@ -621,8 +622,9 @@ pub fn syncRenderGeometry(term: *Term, geom: RenderGeometry) !void {
         term.cols = grid.cols;
         term.rows = grid.rows;
         term.cell_px = cell_px;
-        term.scrollback_offset = @min(term.scrollback_offset, vtHistoryCount(term.vt));
-        std.debug.assert(term.scrollback_offset <= vtHistoryCount(term.vt));
+        const history_count = vtVisibleInfo(term.vt, term.scrollback_offset).history_count;
+        term.scrollback_offset = @min(term.scrollback_offset, history_count);
+        std.debug.assert(term.scrollback_offset <= history_count);
         term.vt_epoch +%= 1;
         noteVisibleChange(term);
     }
@@ -810,7 +812,7 @@ fn drainTerminalReply(term: *Term) void {
 }
 
 fn repairScrollback(term: *Term, history_before: u32, any_read: bool) void {
-    const history_after = vtHistoryCount(term.vt);
+    const history_after = vtVisibleInfo(term.vt, term.scrollback_offset).history_count;
     if (history_after > history_before) {
         if (term.scrollback_offset > 0) {
             const delta = history_after - history_before;
@@ -931,13 +933,26 @@ fn vtRequireResizeOk(status: i32) !void {
 }
 
 fn vtQueuedEventCount(handle: c.HowlVtHandle) u32 {
-    std.debug.assert(handle != 0);
-    return @intCast(c.howl_vt_terminal_queued_event_count(handle));
+    std.debug.assert(handle != null);
+    const result = c.howl_vt_terminal_apply(handle, 0, null, 0);
+    vtRequireStructOk(result.status);
+    return @intCast(result.remaining_events);
 }
 
-fn vtHistoryCount(handle: c.HowlVtHandle) u32 {
-    std.debug.assert(handle != 0);
-    return @intCast(c.howl_vt_terminal_history_count(handle));
+const VisibleInfo = struct {
+    history_count: u32,
+    is_alternate_screen: bool,
+};
+
+fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
+    std.debug.assert(handle != null);
+    const view = c.howl_vt_terminal_copy_visible(handle, scrollback_offset, null, 0);
+    if (view.status != vtCallShortBuffer()) vtRequireStructOk(view.status);
+    std.debug.assert(scrollback_offset <= view.history_count);
+    return .{
+        .history_count = @intCast(view.history_count),
+        .is_alternate_screen = view.is_alternate_screen != 0,
+    };
 }
 
 fn vtEnsureBytes(term: *Term, needed: usize) ![]u8 {

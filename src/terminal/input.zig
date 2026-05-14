@@ -12,61 +12,61 @@ const TermInput = api.Input;
 
 pub fn key(key_event: Input.Key) ?TermInput.Key {
     return switch (key_event) {
-        .escape => c.howl_vt_key_escape(),
-        .tab => c.howl_vt_key_tab(),
-        .enter => c.howl_vt_key_enter(),
-        .backspace => c.howl_vt_key_backspace(),
-        .insert => c.howl_vt_key_insert(),
-        .delete => c.howl_vt_key_delete(),
-        .home => c.howl_vt_key_home(),
-        .end => c.howl_vt_key_end(),
-        .page_up => c.howl_vt_key_pageup(),
-        .page_down => c.howl_vt_key_pagedown(),
-        .up => c.howl_vt_key_up(),
-        .down => c.howl_vt_key_down(),
-        .left => c.howl_vt_key_left(),
-        .right => c.howl_vt_key_right(),
-        .f1 => c.howl_vt_key_f1(),
-        .f2 => c.howl_vt_key_f2(),
-        .f3 => c.howl_vt_key_f3(),
-        .f4 => c.howl_vt_key_f4(),
-        .f5 => c.howl_vt_key_f5(),
-        .f6 => c.howl_vt_key_f6(),
-        .f7 => c.howl_vt_key_f7(),
-        .f8 => c.howl_vt_key_f8(),
-        .f9 => c.howl_vt_key_f9(),
-        .f10 => c.howl_vt_key_f10(),
-        .f11 => c.howl_vt_key_f11(),
-        .f12 => c.howl_vt_key_f12(),
+        .escape => c.HOWL_VT_KEY_ESCAPE,
+        .tab => c.HOWL_VT_KEY_TAB,
+        .enter => c.HOWL_VT_KEY_ENTER,
+        .backspace => c.HOWL_VT_KEY_BACKSPACE,
+        .insert => c.HOWL_VT_KEY_INSERT,
+        .delete => c.HOWL_VT_KEY_DELETE,
+        .home => c.HOWL_VT_KEY_HOME,
+        .end => c.HOWL_VT_KEY_END,
+        .page_up => c.HOWL_VT_KEY_PAGEUP,
+        .page_down => c.HOWL_VT_KEY_PAGEDOWN,
+        .up => c.HOWL_VT_KEY_UP,
+        .down => c.HOWL_VT_KEY_DOWN,
+        .left => c.HOWL_VT_KEY_LEFT,
+        .right => c.HOWL_VT_KEY_RIGHT,
+        .f1 => c.HOWL_VT_KEY_F1,
+        .f2 => c.HOWL_VT_KEY_F2,
+        .f3 => c.HOWL_VT_KEY_F3,
+        .f4 => c.HOWL_VT_KEY_F4,
+        .f5 => c.HOWL_VT_KEY_F5,
+        .f6 => c.HOWL_VT_KEY_F6,
+        .f7 => c.HOWL_VT_KEY_F7,
+        .f8 => c.HOWL_VT_KEY_F8,
+        .f9 => c.HOWL_VT_KEY_F9,
+        .f10 => c.HOWL_VT_KEY_F10,
+        .f11 => c.HOWL_VT_KEY_F11,
+        .f12 => c.HOWL_VT_KEY_F12,
         else => null,
     };
 }
 
 pub fn mods(input_mods: Input.Mod) TermInput.Modifier {
     var out: TermInput.Modifier = 0;
-    if (input_mods.shift) out |= c.howl_vt_mod_shift();
-    if (input_mods.alt) out |= c.howl_vt_mod_alt();
-    if (input_mods.ctrl) out |= c.howl_vt_mod_ctrl();
+    if (input_mods.shift) out |= c.HOWL_VT_MOD_SHIFT;
+    if (input_mods.alt) out |= c.HOWL_VT_MOD_ALT;
+    if (input_mods.ctrl) out |= c.HOWL_VT_MOD_CTRL;
     return out;
 }
 
 pub fn mouseKind(kind: Input.Mouse.Kind) TermInput.MouseEventKind {
     return switch (kind) {
-        .move => c.howl_vt_mouse_move(),
-        .press => c.howl_vt_mouse_press(),
-        .release => c.howl_vt_mouse_release(),
-        .wheel => c.howl_vt_mouse_wheel(),
+        .move => c.HOWL_VT_MOUSE_MOVE,
+        .press => c.HOWL_VT_MOUSE_PRESS,
+        .release => c.HOWL_VT_MOUSE_RELEASE,
+        .wheel => c.HOWL_VT_MOUSE_WHEEL,
     };
 }
 
 pub fn mouseButton(button: Input.Mouse.Button) TermInput.MouseButton {
     return switch (button) {
-        .none => c.howl_vt_mouse_button_none(),
-        .left => c.howl_vt_mouse_button_left(),
-        .middle => c.howl_vt_mouse_button_middle(),
-        .right => c.howl_vt_mouse_button_right(),
-        .wheel_up => c.howl_vt_mouse_button_wheel_up(),
-        .wheel_down => c.howl_vt_mouse_button_wheel_down(),
+        .none => c.HOWL_VT_MOUSE_BUTTON_NONE,
+        .left => c.HOWL_VT_MOUSE_BUTTON_LEFT,
+        .middle => c.HOWL_VT_MOUSE_BUTTON_MIDDLE,
+        .right => c.HOWL_VT_MOUSE_BUTTON_RIGHT,
+        .wheel_up => c.HOWL_VT_MOUSE_BUTTON_WHEEL_UP,
+        .wheel_down => c.HOWL_VT_MOUSE_BUTTON_WHEEL_DOWN,
     };
 }
 
