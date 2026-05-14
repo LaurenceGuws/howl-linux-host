@@ -48,12 +48,6 @@ pub const Input = struct {
 
 pub const RenderGeometry = c.HowlRenderGeometry;
 pub const RenderSurface = c.HowlRenderSurfaceHandle;
-pub const RenderAction = enum(u8) {
-    idle = c.HOWL_RENDER_ACTION_IDLE,
-    prepare = c.HOWL_RENDER_ACTION_PREPARE,
-    submit = c.HOWL_RENDER_ACTION_SUBMIT,
-    present = c.HOWL_RENDER_ACTION_PRESENT,
-};
 pub const RenderMetrics = c.HowlRenderRuntimeMetrics;
 pub const RenderPrepareResult = enum { idle, prepared, failed };
 pub const RenderSubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
@@ -188,6 +182,9 @@ pub const Term = struct {
     selection: SelectionState = .{},
     hover_link_id: u32 = 0,
     hover_underline_style: LinkUnderlineStyle = .straight,
+    prepare_pending: bool = false,
+    submit_pending: bool = false,
+    present_pending: bool = false,
 };
 
 pub fn initPty(
@@ -221,11 +218,11 @@ pub fn initPty(
     errdefer c.howl_vt_terminal_deinit(vt);
 
     const snapshot = c.howl_render_snapshot_init(rows, cols);
-    if (snapshot == 0) return error.RenderSnapshotInitFailed;
+    if (snapshot == null) return error.RenderSnapshotInitFailed;
     errdefer c.howl_render_snapshot_deinit(snapshot);
 
     const render_runtime = c.howl_render_runtime_init();
-    if (render_runtime == 0) return error.RenderRuntimeInitFailed;
+    if (render_runtime == null) return error.RenderRuntimeInitFailed;
     errdefer c.howl_render_runtime_deinit(render_runtime);
 
     _ = c.howl_render_runtime_sync_geometry(render_runtime, .{
@@ -240,7 +237,7 @@ pub fn initPty(
         .font_size_px = cell_px.height,
         .target_texture = 0,
     });
-    if (renderer == 0) return error.RendererInitFailed;
+    if (renderer == null) return error.RendererInitFailed;
     errdefer c.howl_render_renderer_deinit(renderer);
 
     var term = Term{
@@ -674,6 +671,8 @@ pub fn publishSource(term: *Term) SourceReceipt {
         .geometry_epoch = receipt.geometry_epoch,
     };
     if (typed_receipt.published) {
+        term.prepare_pending = typed_receipt.queued;
+        if (typed_receipt.queued) term.submit_pending = false;
         trace.logSourcePublishStartupf("stage=term-source-publish-first queued={d} damage={d} source_seq={d} geom_epoch={d}", .{
             @intFromBool(typed_receipt.queued),
             @intFromEnum(typed_receipt.damage_kind),
@@ -758,19 +757,26 @@ fn sourceRejected(term: *Term) SourceReceipt {
     };
 }
 
-pub fn renderAction(term: *const Term) RenderAction {
-    return @enumFromInt(c.howl_render_runtime_action(term.render_runtime));
-}
-
-pub fn hasPendingPublication(term: *const Term) bool {
-    return c.howl_render_runtime_has_pending_publication(term.render_runtime) != 0;
+pub fn hasPendingRenderWork(term: *const Term) bool {
+    return term.prepare_pending or term.submit_pending or term.present_pending;
 }
 
 pub fn prepareRender(term: *Term) RenderPrepareResult {
     return switch (c.howl_render_renderer_prepare(term.renderer, term.render_runtime, term.snapshot)) {
-        c.HOWL_RENDER_PREPARE_IDLE => .idle,
-        c.HOWL_RENDER_PREPARE_READY => .prepared,
-        else => .failed,
+        c.HOWL_RENDER_PREPARE_IDLE => blk: {
+            term.prepare_pending = false;
+            break :blk .idle;
+        },
+        c.HOWL_RENDER_PREPARE_READY => blk: {
+            term.prepare_pending = false;
+            term.submit_pending = true;
+            break :blk .prepared;
+        },
+        else => blk: {
+            term.prepare_pending = false;
+            term.submit_pending = false;
+            break :blk .failed;
+        },
     };
 }
 
@@ -778,14 +784,29 @@ pub fn submitRender(term: *Term) RenderSubmitResult {
     var surface: c.HowlRenderSurfaceHandle = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 };
     var metrics: c.HowlRenderBackendMetrics = .{ .sync_us = 0, .copy_us = 0, .render_us = 0, .glyphs = 0, .fills = 0, .clear_fills = 0, .background_fills = 0, .decoration_fills = 0, .cursor_fills = 0, .uploads = 0, .face_checks = 0, .face_cache_hits = 0, .shape_requests = 0, .shape_cache_hits = 0, .fallback_hits = 0, .fallback_misses = 0, .missing_glyphs = 0 };
     return switch (c.howl_render_renderer_submit(term.renderer, term.render_runtime, &surface, &metrics)) {
-        c.HOWL_RENDER_SUBMIT_IDLE => .idle,
-        c.HOWL_RENDER_SUBMIT_STALE => .stale,
-        c.HOWL_RENDER_SUBMIT_NEEDS_PREPARE => .needs_prepare,
+        c.HOWL_RENDER_SUBMIT_IDLE => blk: {
+            term.submit_pending = false;
+            break :blk .idle;
+        },
+        c.HOWL_RENDER_SUBMIT_STALE => blk: {
+            term.submit_pending = false;
+            break :blk .stale;
+        },
+        c.HOWL_RENDER_SUBMIT_NEEDS_PREPARE => blk: {
+            term.submit_pending = false;
+            term.prepare_pending = true;
+            break :blk .needs_prepare;
+        },
         c.HOWL_RENDER_SUBMIT_RENDERED => blk: {
+            term.submit_pending = false;
+            term.present_pending = true;
             term.render_surface = surface;
             break :blk .rendered;
         },
-        else => .failed,
+        else => blk: {
+            term.submit_pending = false;
+            break :blk .failed;
+        },
     };
 }
 
@@ -795,6 +816,7 @@ pub fn takeRenderMetrics(term: *Term) RenderMetrics {
 
 pub fn markRenderPresented(term: *Term) void {
     c.howl_render_runtime_mark_presented(term.render_runtime);
+    term.present_pending = false;
 }
 
 fn publishEncodedInput(term: *Term, event: Input.Event) !bool {

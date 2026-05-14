@@ -14,9 +14,7 @@ pub fn needsPresentationFrame(self: anytype, now_ns: u64) bool {
 
 pub fn needsContentFrame(self: anytype, now_ns: u64) bool {
     _ = now_ns;
-    return self.last_surface.texture_id == 0 or
-        api.hasPendingPublication(&self.term) or
-        api.renderAction(&self.term) != .idle;
+    return self.last_surface.texture_id == 0 or api.hasPendingRenderWork(&self.term);
 }
 
 pub fn prepareNext(self: anytype) bool {
@@ -32,33 +30,25 @@ pub fn prepareNext(self: anytype) bool {
 }
 
 pub fn render(self: anytype) void {
-    const action = api.renderAction(&self.term);
     const bootstrap_surface = self.last_surface.texture_id == 0;
-    const pending_publication = api.hasPendingPublication(&self.term);
     self.first_render_trace_logged = true;
-    if (action != .idle) self.first_non_idle_action_logged = true;
-    switch (action) {
-        .idle => {
-            if (!bootstrap_surface and !pending_publication) return;
-            const prepared = prepareNext(self);
-            if (!self.first_prepare_result_logged) {
-                self.first_prepare_result_logged = true;
-                window.logStartupf("stage=term-prepare-first prepared={}", .{prepared});
-            }
-            return;
-        },
-        .prepare => {
-            const prepared = prepareNext(self);
-            if (!self.first_prepare_result_logged) {
-                self.first_prepare_result_logged = true;
-                window.logStartupf("stage=term-prepare-first prepared={}", .{prepared});
-            }
-            return;
-        },
-        .present => return,
-        .submit => {},
+    if (api.hasPendingRenderWork(&self.term)) self.first_non_idle_action_logged = true;
+    if (self.term.submit_pending) {
+        submitPrepared(self);
+        return;
     }
+    if (self.term.prepare_pending or bootstrap_surface) {
+        const prepared = prepareNext(self);
+        if (!self.first_prepare_result_logged) {
+            self.first_prepare_result_logged = true;
+            window.logStartupf("stage=term-prepare-first prepared={}", .{prepared});
+        }
+        return;
+    }
+    if (self.term.present_pending) return;
+}
 
+fn submitPrepared(self: anytype) void {
     const result = api.submitRender(&self.term);
     if (!self.first_submit_trace_logged) {
         self.first_submit_trace_logged = true;
