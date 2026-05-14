@@ -213,7 +213,7 @@ pub fn initPty(
         rows,
         default_pending_capacity,
     );
-    if (session == 0) return error.PtyInitFailed;
+    if (session == null) return error.PtyInitFailed;
     errdefer c.howl_pty_session_deinit(session);
 
     const vt = c.howl_vt_terminal_init(rows, cols, default_history_capacity);
@@ -285,7 +285,7 @@ pub fn stop(term: *Term) void {
 pub fn start(term: *Term) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    if (ptySessionIsActive(term.session)) return error.AlreadyStarted;
+    if (ptySessionStatus(term.session) == c.HOWL_PTY_SESSION_ACTIVE) return error.AlreadyStarted;
     term.lifecycle_state = .starting;
     ptyRequireOk(c.howl_pty_session_start(term.session)) catch |err| {
         term.lifecycle_state = .failed;
@@ -397,14 +397,14 @@ pub fn isAlive(term: *const Term) bool {
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return ptySessionIsActive(term.session);
+    return ptySessionStatus(term.session) == c.HOWL_PTY_SESSION_ACTIVE;
 }
 
 pub fn hasOutboundInputBacklog(term: *const Term) bool {
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return c.howl_pty_session_has_backlog(term.session) != 0;
+    return ptySessionPendingBytes(term.session) != 0;
 }
 
 pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
@@ -798,14 +798,14 @@ pub fn markRenderPresented(term: *Term) void {
 fn publishEncodedInput(term: *Term, event: Input.Event) !bool {
     const encoded = try vtEncodeInput(term, event);
     if (encoded.len == 0) return false;
-    try ptyPublishInputAndPump(term.session, encoded);
+    try ptyPublishInput(term.session, encoded);
     return true;
 }
 
 fn drainTerminalReply(term: *Term) void {
     const pending = vtPendingOutput(term) catch return;
     if (pending.len == 0) return;
-    ptyPublishInputAndPump(term.session, pending) catch return;
+    ptyPublishInput(term.session, pending) catch return;
     c.howl_vt_terminal_clear_pending_output(term.vt);
 }
 
@@ -1097,13 +1097,13 @@ fn ptyRequireResizeOk(status: i32) !void {
     return error.PtyCallFailed;
 }
 
-fn ptySessionIsActive(handle: c.HowlPtySessionHandle) bool {
-    std.debug.assert(handle != 0);
-    return c.howl_pty_session_is_active(handle) != 0;
+fn ptySessionStatus(handle: c.HowlPtySessionHandle) u8 {
+    std.debug.assert(handle != null);
+    return c.howl_pty_session_snapshot(handle).session_status;
 }
 
 fn ptySessionPendingBytes(handle: c.HowlPtySessionHandle) u64 {
-    std.debug.assert(handle != 0);
+    std.debug.assert(handle != null);
     return @intCast(c.howl_pty_session_pending_bytes(handle));
 }
 
@@ -1111,11 +1111,11 @@ fn countLen(count: u32) usize {
     return @intCast(count);
 }
 
-fn ptyPublishInputAndPump(handle: c.HowlPtySessionHandle, bytes: []const u8) !void {
-    std.debug.assert(handle != 0);
+fn ptyPublishInput(handle: c.HowlPtySessionHandle, bytes: []const u8) !void {
+    std.debug.assert(handle != null);
     std.debug.assert(bytes.len > 0);
-    const result = c.howl_pty_session_publish_input_and_pump(handle, bytes.ptr, bytes.len);
-    try ptyRequireOk(result.status);
+    try ptyRequireOk(c.howl_pty_session_publish_input(handle, bytes.ptr, bytes.len));
+    ptyRequireStructOk(c.howl_pty_session_pump_outbound(handle, 0).status);
 }
 
 fn renderRequireOk(status: i32) !void {
