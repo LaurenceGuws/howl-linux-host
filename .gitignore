@@ -10,3 +10,4 @@ __pycache__/
 /howl-trace.ndjson
 /howl-thread-cpu.jsonl
 /src/fuzz/ascii-rain.c
+/vendor/

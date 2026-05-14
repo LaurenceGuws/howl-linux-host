@@ -116,7 +116,7 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .sdl_include = sdl_dep.path("include"),
         .sdl_lib = sdl_dep.artifact("SDL3"),
         .stb_image = b.path("src/window/stb_image.c"),
-        .vendor_include = b.path("../vendor"),
+        .vendor_include = b.path("vendor"),
     };
 }
 
