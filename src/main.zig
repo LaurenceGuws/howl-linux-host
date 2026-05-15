@@ -259,6 +259,8 @@ fn render(app: *App, work: RenderWork) void {
     app.window.present(.{
         .texture_id = surface.surface.texture_id,
         .texture_rect = texture_rect,
+        .texture_full_redraw = surface.full_redraw,
+        .texture_damage_rects = surface.damage_rects,
         .scrollbar = overlay.scrollbar,
         .tab_count = tab_bar_snapshot.labels.len,
         .active_tab = tab_bar_snapshot.active_idx,

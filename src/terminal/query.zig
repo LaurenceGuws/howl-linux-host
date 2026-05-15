@@ -6,6 +6,8 @@ const api = @import("api.zig");
 pub fn surfaceSnapshot(self: anytype) @TypeOf(self.*).SurfaceSnapshot {
     return .{
         .surface = self.last_surface,
+        .full_redraw = self.term.surface_full_redraw,
+        .damage_rects = self.term.surface_damage_rects.items,
     };
 }
 

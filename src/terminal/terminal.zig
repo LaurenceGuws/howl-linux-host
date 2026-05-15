@@ -25,6 +25,8 @@ pub const Terminal = struct {
 
     pub const SurfaceSnapshot = struct {
         surface: SurfaceHandle,
+        full_redraw: bool,
+        damage_rects: []const window.Rect,
     };
 
     pub const OverlaySnapshot = struct {

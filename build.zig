@@ -1,7 +1,7 @@
 // This host is an ABI harness first.
 // Internal terminal modules are consumed through shipped C headers and exported C symbols only.
 // Do not reopen a privileged Zig-shaped integration path here for build convenience.
-// Until further notice, this host exists to pressure-test embedding assumptions early rather than grant host constraints special treatment.
+// Until further notice, this host exists to validate embedding assumptions early rather than grant host constraints special treatment.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -97,7 +97,6 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
     const howl_render_dep = b.dependency("howl_render", .{
         .target = target,
         .optimize = optimize,
-        .@"render-backend" = "gl",
     });
     const howl_lua_dep = b.dependency("howl_lua", .{
         .target = target,

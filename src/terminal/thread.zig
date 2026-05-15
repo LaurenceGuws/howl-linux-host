@@ -52,7 +52,7 @@ fn driveOnceWith(self: anytype, comptime Ops: type) bool {
         transport.reads == transport_limits.max_reads or
         transport.bytes_read == transport_limits.max_bytes or
         applied.remaining_events != 0;
-    const published: api.SourceReceipt = if (keep) .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 } else Ops.publishSource(&self.term);
+    const published: api.SourceResponse = if (keep) .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 } else Ops.publishSource(&self.term);
     std.debug.assert(!keep or (!published.published and !published.queued));
     log.logProgressDriveStartupf(
         "stage=progress-drive-first reads={d} read_bytes={d} applied={d} publish={d} queued={d} damage={d} keep={} alive={}",
@@ -104,7 +104,7 @@ const RealOps = struct {
         return api.hasOutboundInputBacklog(term);
     }
 
-    fn publishSource(term: *api.Term) api.SourceReceipt {
+    fn publishSource(term: *api.Term) api.SourceResponse {
         return api.publishSource(term);
     }
 
@@ -186,7 +186,7 @@ var fake_state: struct {
     remaining_events: u32 = 0,
     applied_events: u32 = 0,
     publish_ready: bool = false,
-    publish_result: api.SourceReceipt = .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 },
+    publish_result: api.SourceResponse = .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 },
     stop_after_wait: bool = false,
     stop_ptr: ?*std.atomic.Value(bool) = null,
 } = .{};
@@ -215,7 +215,7 @@ const FakeOps = struct {
         return fake_state.backlog;
     }
 
-    fn publishSource(_: *FakeTerm) api.SourceReceipt {
+    fn publishSource(_: *FakeTerm) api.SourceResponse {
         fake_state.publish_calls += 1;
         if (!fake_state.publish_ready) return .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 };
         return fake_state.publish_result;

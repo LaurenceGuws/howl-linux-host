@@ -17,6 +17,7 @@ pub fn State(comptime c: type) type {
         tab_cache_w: c_int,
         tab_cache_h: c_int,
         tab_cache_hash: u64,
+        last_scrollbar: Layout.Rect,
         first_present_attempt_logged: bool,
         first_present_logged: bool,
         present_frames: u64,
@@ -43,6 +44,7 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
             .tab_cache_w = 0,
             .tab_cache_h = 0,
             .tab_cache_hash = 0,
+            .last_scrollbar = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
             .first_present_attempt_logged = false,
             .first_present_logged = false,
             .present_frames = 0,
@@ -85,11 +87,16 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     updateTabCacheIfNeeded(c, state, @max(fb_w, 1), @max(fb_h, 1), frame);
     const after_cache_ns = c.SDL_GetTicksNS();
     c.glViewport(0, 0, @max(fb_w, 1), @max(fb_h, 1));
-    c.glClearColor(0.06, 0.09, 0.14, 1.0);
-    c.glClear(c.GL_COLOR_BUFFER_BIT);
-    drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.texture_rect.y);
-    Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
-    Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
+    if (frame.texture_full_redraw or frame.texture_damage_rects.len == 0) {
+        c.glClearColor(0.06, 0.09, 0.14, 1.0);
+        c.glClear(c.GL_COLOR_BUFFER_BIT);
+        drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.texture_rect.y);
+        Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
+        Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
+    } else {
+        presentTerminalDamage(c, state, @max(fb_w, 1), @max(fb_h, 1), frame);
+    }
+    state.last_scrollbar = scrollbarRect(frame.scrollbar);
     const before_swap_ns = c.SDL_GetTicksNS();
     if (!state.first_present_attempt_logged) {
         state.first_present_attempt_logged = true;
@@ -106,6 +113,104 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     state.swap_window_ns +%= end_ns -| before_swap_ns;
     state.total_window_ns +%= end_ns -| start_ns;
     logSdlFps(c, state, false);
+}
+
+fn presentTerminalDamage(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {
+    const clear = struct {
+        fn apply(comptime c_inner: type, rect: Layout.Rect, fb_height: c_int) void {
+            c_inner.glScissor(rect.x, fb_height - rect.y - rect.height, rect.width, rect.height);
+            c_inner.glClearColor(0.06, 0.09, 0.14, 1.0);
+            c_inner.glClear(c_inner.GL_COLOR_BUFFER_BIT);
+        }
+    }.apply;
+
+    c.glEnable(c.GL_SCISSOR_TEST);
+    defer c.glDisable(c.GL_SCISSOR_TEST);
+
+    for (frame.texture_damage_rects) |rect| {
+        const clipped = clipRectToBounds(rect, frame.texture_rect.width, frame.texture_rect.height) orelse continue;
+        const window_rect = translateRect(clipped, frame.texture_rect.x, frame.texture_rect.y);
+        clear(c, window_rect, fb_h);
+        Texture.drawSubRect(
+            c,
+            fb_w,
+            fb_h,
+            frame.texture_id,
+            window_rect.x,
+            window_rect.y,
+            window_rect.width,
+            window_rect.height,
+            clipped.x,
+            clipped.y,
+            clipped.width,
+            clipped.height,
+            frame.texture_rect.width,
+            frame.texture_rect.height,
+        );
+    }
+
+    const scrollbar_damage = unionRects(scrollbarRect(frame.scrollbar), state.last_scrollbar) orelse return;
+    const clipped_scrollbar = intersectRects(scrollbar_damage, frame.texture_rect) orelse {
+        clear(c, scrollbar_damage, fb_h);
+        Draw.scrollbar(c, fb_w, fb_h, frame.scrollbar);
+        return;
+    };
+    clear(c, scrollbar_damage, fb_h);
+    Texture.drawSubRect(
+        c,
+        fb_w,
+        fb_h,
+        frame.texture_id,
+        clipped_scrollbar.x,
+        clipped_scrollbar.y,
+        clipped_scrollbar.width,
+        clipped_scrollbar.height,
+        clipped_scrollbar.x - frame.texture_rect.x,
+        clipped_scrollbar.y - frame.texture_rect.y,
+        clipped_scrollbar.width,
+        clipped_scrollbar.height,
+        frame.texture_rect.width,
+        frame.texture_rect.height,
+    );
+    Draw.scrollbar(c, fb_w, fb_h, frame.scrollbar);
+}
+
+fn scrollbarRect(value: Layout.ScrollbarLayout) Layout.Rect {
+    if (!value.visible or value.width <= 0 or value.height <= 0) {
+        return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+    }
+    return .{ .x = value.x, .y = value.y, .width = value.width, .height = value.height };
+}
+
+fn clipRectToBounds(rect: Layout.Rect, width: c_int, height: c_int) ?Layout.Rect {
+    return intersectRects(rect, .{ .x = 0, .y = 0, .width = width, .height = height });
+}
+
+fn translateRect(rect: Layout.Rect, dx: c_int, dy: c_int) Layout.Rect {
+    return .{ .x = rect.x + dx, .y = rect.y + dy, .width = rect.width, .height = rect.height };
+}
+
+fn intersectRects(a: Layout.Rect, b: Layout.Rect) ?Layout.Rect {
+    if (a.width <= 0 or a.height <= 0 or b.width <= 0 or b.height <= 0) return null;
+    const left = @max(a.x, b.x);
+    const top = @max(a.y, b.y);
+    const right = @min(a.x + a.width, b.x + b.width);
+    const bottom = @min(a.y + a.height, b.y + b.height);
+    if (right <= left or bottom <= top) return null;
+    return .{ .x = left, .y = top, .width = right - left, .height = bottom - top };
+}
+
+fn unionRects(a: Layout.Rect, b: Layout.Rect) ?Layout.Rect {
+    if (a.width <= 0 or a.height <= 0) {
+        if (b.width <= 0 or b.height <= 0) return null;
+        return b;
+    }
+    if (b.width <= 0 or b.height <= 0) return a;
+    const left = @min(a.x, b.x);
+    const top = @min(a.y, b.y);
+    const right = @max(a.x + a.width, b.x + b.width);
+    const bottom = @max(a.y + a.height, b.y + b.height);
+    return .{ .x = left, .y = top, .width = right - left, .height = bottom - top };
 }
 
 fn logSdlFps(comptime c: type, state: *State(c), force: bool) void {
