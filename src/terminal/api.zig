@@ -283,7 +283,7 @@ pub const Term = struct {
     upload_scratch: std.ArrayListUnmanaged(u8) = .empty,
     surface_damage_rects: std.ArrayListUnmanaged(WindowRect) = .empty,
     atlas_slots: std.ArrayListUnmanaged(AtlasSlot) = .empty,
-    visible_cells: std.ArrayListUnmanaged(c.HowlRenderCell) = .empty,
+    render_cells: std.ArrayListUnmanaged(c.HowlRenderCell) = .empty,
     visible_damage: VisibleDamage = .{},
     vt_cells: std.ArrayListUnmanaged(c.HowlVtCell) = .empty,
     vt_bytes: std.ArrayListUnmanaged(u8) = .empty,
@@ -385,7 +385,7 @@ pub fn deinit(term: *Term) void {
     term.current_title.deinit(term.allocator);
     for (term.atlas_slots.items) |*slot| slot.deinit(term.allocator);
     term.atlas_slots.deinit(term.allocator);
-    term.visible_cells.deinit(term.allocator);
+    term.render_cells.deinit(term.allocator);
     term.visible_damage.deinit(term.allocator);
     term.surface_pixels.deinit(term.allocator);
     term.upload_scratch.deinit(term.allocator);
@@ -773,9 +773,6 @@ pub fn publishSource(term: *Term) SourceResponse {
 
     const visible = vtCopyVisible(term) catch return sourceRejected(term);
     const prior_surface = term.visible_surface;
-    const cell_count = @as(usize, visible.rows) * @as(usize, visible.cols);
-    term.visible_cells.resize(term.allocator, cell_count) catch return sourceRejected(term);
-    for (term.visible_cells.items, 0..) |*dst, idx| dst.* = cellOut(term.vt_cells.items[idx]);
     term.visible_surface = .{
         .cols = visible.cols,
         .rows = visible.rows,
@@ -881,9 +878,11 @@ fn cellOut(value: c.HowlVtCell) c.HowlRenderCell {
 
 fn surfaceSourceOut(term: *Term) !c.HowlRenderSurfaceSource {
     const cell_count = @as(usize, term.visible_surface.rows) * @as(usize, term.visible_surface.cols);
-    if (term.visible_cells.items.len < cell_count) return error.InvalidVisibleSnapshot;
+    if (term.vt_cells.items.len < cell_count) return error.InvalidVisibleSnapshot;
+    try term.render_cells.resize(term.allocator, cell_count);
+    for (term.render_cells.items, 0..) |*dst, idx| dst.* = cellOut(term.vt_cells.items[idx]);
     return .{
-        .cells = .{ .ptr = term.visible_cells.items.ptr, .len = cell_count },
+        .cells = .{ .ptr = term.render_cells.items.ptr, .len = cell_count },
         .cols = term.visible_surface.cols,
         .rows = term.visible_surface.rows,
         .scroll_row = term.visible_surface.scroll_row,
