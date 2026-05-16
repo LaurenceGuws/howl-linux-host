@@ -856,22 +856,12 @@ fn prepareRequestOut(value: render_flow.PrepareRequest) c.HowlRenderPrepareReque
 fn cellOut(value: c.HowlVtCell) c.HowlRenderCell {
     return .{
         .codepoint = value.codepoint,
-        .flags = .{ .continuation = value.continuation },
-        .fg_color = colorFromVt(value.fg),
-        .bg_color = colorFromVt(value.bg),
+        .flags = value.flags,
+        .fg_color = value.fg_color,
+        .bg_color = value.bg_color,
         .underline_color = colorFromVt(value.underline_color),
-        .underline_style = underlineStyleFromVt(value.underline_style),
-        .attrs = .{
-            .bold = value.bold,
-            .dim = 0,
-            .italic = 0,
-            .underline = value.underline,
-            .underline_color_set = if (value.underline_color.a != 0) 1 else 0,
-            .blink = if (value.blink != 0 or value.blink_fast != 0) 1 else 0,
-            .inverse = value.reverse,
-            .invisible = 0,
-            .strikethrough = 0,
-        },
+        .underline_style = value.underline_style,
+        .attrs = value.attrs,
         .link_id = value.link_id,
     };
 }
