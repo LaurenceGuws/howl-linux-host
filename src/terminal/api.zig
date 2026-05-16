@@ -257,6 +257,19 @@ const VisibleSurface = struct {
     scroll_up_rows: u16 = 0,
 };
 
+const VisibleDamage = struct {
+    dirty_rows: std.ArrayListUnmanaged(u8) = .empty,
+    dirty_cols_start: std.ArrayListUnmanaged(u16) = .empty,
+    dirty_cols_end: std.ArrayListUnmanaged(u16) = .empty,
+
+    fn deinit(self: *VisibleDamage, allocator: std.mem.Allocator) void {
+        self.dirty_rows.deinit(allocator);
+        self.dirty_cols_start.deinit(allocator);
+        self.dirty_cols_end.deinit(allocator);
+        self.* = .{};
+    }
+};
+
 pub const Term = struct {
     allocator: std.mem.Allocator,
     launch: PtyLaunchConfig,
@@ -271,6 +284,7 @@ pub const Term = struct {
     surface_damage_rects: std.ArrayListUnmanaged(WindowRect) = .empty,
     atlas_slots: std.ArrayListUnmanaged(AtlasSlot) = .empty,
     visible_cells: std.ArrayListUnmanaged(c.HowlRenderCell) = .empty,
+    visible_damage: VisibleDamage = .{},
     vt_cells: std.ArrayListUnmanaged(c.HowlVtCell) = .empty,
     vt_bytes: std.ArrayListUnmanaged(u8) = .empty,
     visible_surface: VisibleSurface = .{},
@@ -372,6 +386,7 @@ pub fn deinit(term: *Term) void {
     for (term.atlas_slots.items) |*slot| slot.deinit(term.allocator);
     term.atlas_slots.deinit(term.allocator);
     term.visible_cells.deinit(term.allocator);
+    term.visible_damage.deinit(term.allocator);
     term.surface_pixels.deinit(term.allocator);
     term.upload_scratch.deinit(term.allocator);
     term.surface_damage_rects.deinit(term.allocator);
@@ -761,6 +776,7 @@ pub fn publishSource(term: *Term) SourceResponse {
     const cell_count = @as(usize, visible.rows) * @as(usize, visible.cols);
     term.visible_cells.resize(term.allocator, cell_count) catch return sourceRejected(term);
     for (term.visible_cells.items, 0..) |*dst, idx| dst.* = cellOut(term.vt_cells.items[idx]);
+    freezeVisibleDamage(term, visible.rows) catch return sourceRejected(term);
     term.visible_surface = .{
         .cols = visible.cols,
         .rows = visible.rows,
@@ -803,6 +819,7 @@ pub fn publishSource(term: *Term) SourceResponse {
             typed_response.geometry_epoch,
         });
     }
+    c.howl_vt_terminal_clear_dirty_rows(term.vt);
     return typed_response;
 }
 
@@ -874,6 +891,9 @@ fn surfaceSourceOut(term: *Term) !c.HowlRenderSurfaceSource {
         .is_alternate_screen = @intFromBool(term.visible_surface.is_alternate_screen),
         .full_damage = @intFromBool(term.visible_surface.damage_kind == .full),
         .scroll_up_rows = if (term.visible_surface.damage_kind == .scroll) term.visible_surface.scroll_up_rows else 0,
+        .dirty_rows = .{ .ptr = if (term.visible_damage.dirty_rows.items.len == 0) null else term.visible_damage.dirty_rows.items.ptr, .len = term.visible_damage.dirty_rows.items.len },
+        .dirty_cols_start = .{ .ptr = if (term.visible_damage.dirty_cols_start.items.len == 0) null else term.visible_damage.dirty_cols_start.items.ptr, .len = term.visible_damage.dirty_cols_start.items.len },
+        .dirty_cols_end = .{ .ptr = if (term.visible_damage.dirty_cols_end.items.len == 0) null else term.visible_damage.dirty_cols_end.items.ptr, .len = term.visible_damage.dirty_cols_end.items.len },
         .cursor = .{
             .row = term.visible_surface.cursor_row,
             .col = term.visible_surface.cursor_col,
@@ -883,9 +903,50 @@ fn surfaceSourceOut(term: *Term) !c.HowlRenderSurfaceSource {
     };
 }
 
+fn freezeVisibleDamage(term: *Term, rows: u16) !void {
+    try term.visible_damage.dirty_rows.resize(term.allocator, rows);
+    try term.visible_damage.dirty_cols_start.resize(term.allocator, rows);
+    try term.visible_damage.dirty_cols_end.resize(term.allocator, rows);
+    @memset(term.visible_damage.dirty_rows.items, 0);
+    @memset(term.visible_damage.dirty_cols_start.items, 0);
+    @memset(term.visible_damage.dirty_cols_end.items, 0);
+
+    var dirty = c.howl_vt_terminal_copy_dirty(
+        term.vt,
+        term.visible_damage.dirty_cols_start.items.ptr,
+        term.visible_damage.dirty_cols_start.items.len,
+        term.visible_damage.dirty_cols_end.items.ptr,
+        term.visible_damage.dirty_cols_end.items.len,
+    );
+    if (dirty.status == vtCallShortBuffer()) {
+        const needed: usize = @intCast(dirty.needed);
+        try term.visible_damage.dirty_cols_start.resize(term.allocator, needed);
+        try term.visible_damage.dirty_cols_end.resize(term.allocator, needed);
+        dirty = c.howl_vt_terminal_copy_dirty(
+            term.vt,
+            term.visible_damage.dirty_cols_start.items.ptr,
+            term.visible_damage.dirty_cols_start.items.len,
+            term.visible_damage.dirty_cols_end.items.ptr,
+            term.visible_damage.dirty_cols_end.items.len,
+        );
+    }
+    try vtRequireOk(dirty.status);
+    if (dirty.needed == 0) return;
+    var row: usize = dirty.start_row;
+    const end_row: usize = dirty.end_row + 1;
+    while (row < end_row and row < term.visible_damage.dirty_rows.items.len) : (row += 1) {
+        term.visible_damage.dirty_rows.items[row] = 1;
+    }
+    if (term.visible_damage.dirty_cols_start.items.len > term.visible_damage.dirty_rows.items.len) {
+        term.visible_damage.dirty_cols_start.shrinkRetainingCapacity(term.visible_damage.dirty_rows.items.len);
+        term.visible_damage.dirty_cols_end.shrinkRetainingCapacity(term.visible_damage.dirty_rows.items.len);
+    }
+}
+
 fn scrollRowsFromVisible(prior: VisibleSurface, current: VisibleSurface) u16 {
     if (current.damage_kind != .scroll) return 0;
     if (prior.cols != current.cols or prior.rows != current.rows) return 0;
+    if (current.scroll_row < prior.scroll_row) return 0;
     if (current.scroll_row <= prior.scroll_row) return 0;
     const delta = current.scroll_row - prior.scroll_row;
     return @intCast(@min(delta, current.rows));

@@ -240,7 +240,8 @@ const PublicationState = struct {
         if (source.snapshot_seq == prior.snapshot_seq) return .none;
         if (source.cols != prior.cols or source.rows != prior.rows) return .full;
         if (source.last_alt_screen != prior.last_alt_screen) return .full;
-        if (source.scrollback_count != prior.scrollback_count or source.scrollback_offset != prior.scrollback_offset) return .scroll;
+        if (source.scrollback_offset != prior.scrollback_offset) return .full;
+        if (source.scrollback_count != prior.scrollback_count) return .scroll;
         return .full;
     }
 };
