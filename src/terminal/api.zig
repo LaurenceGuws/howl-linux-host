@@ -776,7 +776,6 @@ pub fn publishSource(term: *Term) SourceResponse {
     const cell_count = @as(usize, visible.rows) * @as(usize, visible.cols);
     term.visible_cells.resize(term.allocator, cell_count) catch return sourceRejected(term);
     for (term.visible_cells.items, 0..) |*dst, idx| dst.* = cellOut(term.vt_cells.items[idx]);
-    freezeVisibleDamage(term, visible.rows) catch return sourceRejected(term);
     term.visible_surface = .{
         .cols = visible.cols,
         .rows = visible.rows,
@@ -901,46 +900,6 @@ fn surfaceSourceOut(term: *Term) !c.HowlRenderSurfaceSource {
             .shape = term.visible_surface.cursor_shape,
         },
     };
-}
-
-fn freezeVisibleDamage(term: *Term, rows: u16) !void {
-    try term.visible_damage.dirty_rows.resize(term.allocator, rows);
-    try term.visible_damage.dirty_cols_start.resize(term.allocator, rows);
-    try term.visible_damage.dirty_cols_end.resize(term.allocator, rows);
-    @memset(term.visible_damage.dirty_rows.items, 0);
-    @memset(term.visible_damage.dirty_cols_start.items, 0);
-    @memset(term.visible_damage.dirty_cols_end.items, 0);
-
-    var dirty = c.howl_vt_terminal_copy_dirty(
-        term.vt,
-        term.visible_damage.dirty_cols_start.items.ptr,
-        term.visible_damage.dirty_cols_start.items.len,
-        term.visible_damage.dirty_cols_end.items.ptr,
-        term.visible_damage.dirty_cols_end.items.len,
-    );
-    if (dirty.status == vtCallShortBuffer()) {
-        const needed: usize = @intCast(dirty.needed);
-        try term.visible_damage.dirty_cols_start.resize(term.allocator, needed);
-        try term.visible_damage.dirty_cols_end.resize(term.allocator, needed);
-        dirty = c.howl_vt_terminal_copy_dirty(
-            term.vt,
-            term.visible_damage.dirty_cols_start.items.ptr,
-            term.visible_damage.dirty_cols_start.items.len,
-            term.visible_damage.dirty_cols_end.items.ptr,
-            term.visible_damage.dirty_cols_end.items.len,
-        );
-    }
-    try vtRequireOk(dirty.status);
-    if (dirty.needed == 0) return;
-    var row: usize = dirty.start_row;
-    const end_row: usize = dirty.end_row + 1;
-    while (row < end_row and row < term.visible_damage.dirty_rows.items.len) : (row += 1) {
-        term.visible_damage.dirty_rows.items[row] = 1;
-    }
-    if (term.visible_damage.dirty_cols_start.items.len > term.visible_damage.dirty_rows.items.len) {
-        term.visible_damage.dirty_cols_start.shrinkRetainingCapacity(term.visible_damage.dirty_rows.items.len);
-        term.visible_damage.dirty_cols_end.shrinkRetainingCapacity(term.visible_damage.dirty_rows.items.len);
-    }
 }
 
 fn scrollRowsFromVisible(prior: VisibleSurface, current: VisibleSurface) u16 {
@@ -1593,7 +1552,7 @@ const VisibleInfo = struct {
 
 fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
     std.debug.assert(handle != null);
-    const view = c.howl_vt_terminal_copy_visible(handle, scrollback_offset, null, 0);
+    const view = c.howl_vt_terminal_copy_surface(handle, scrollback_offset, null, 0, null, 0, null, 0);
     if (view.status != vtCallShortBuffer()) vtRequireStructOk(view.status);
     std.debug.assert(scrollback_offset <= view.history_count);
     return .{
@@ -1639,14 +1598,37 @@ fn vtDrainClipboard(term: *Term, allocator: std.mem.Allocator) !?[]u8 {
 
 fn vtCopyVisible(term: *Term) !VisibleCopy {
     var cells = try vtEnsureCells(term, 0);
-    var view = c.howl_vt_terminal_copy_visible(term.vt, term.scrollback_offset, cells.ptr, cells.len);
+    term.visible_damage.dirty_rows.clearRetainingCapacity();
+    term.visible_damage.dirty_cols_start.clearRetainingCapacity();
+    term.visible_damage.dirty_cols_end.clearRetainingCapacity();
+    var view = c.howl_vt_terminal_copy_surface(term.vt, term.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0);
     if (view.status == vtCallShortBuffer()) {
         cells = try vtEnsureCells(term, @intCast(view.cell_count));
-        view = c.howl_vt_terminal_copy_visible(term.vt, term.scrollback_offset, cells.ptr, cells.len);
+        try term.visible_damage.dirty_rows.resize(term.allocator, view.rows);
+        try term.visible_damage.dirty_cols_start.resize(term.allocator, @intCast(view.dirty_needed));
+        try term.visible_damage.dirty_cols_end.resize(term.allocator, @intCast(view.dirty_needed));
+        @memset(term.visible_damage.dirty_rows.items, 0);
+        @memset(term.visible_damage.dirty_cols_start.items, 0);
+        @memset(term.visible_damage.dirty_cols_end.items, 0);
+        view = c.howl_vt_terminal_copy_surface(
+            term.vt,
+            term.scrollback_offset,
+            cells.ptr,
+            cells.len,
+            if (term.visible_damage.dirty_cols_start.items.len == 0) null else term.visible_damage.dirty_cols_start.items.ptr,
+            term.visible_damage.dirty_cols_start.items.len,
+            if (term.visible_damage.dirty_cols_end.items.len == 0) null else term.visible_damage.dirty_cols_end.items.ptr,
+            term.visible_damage.dirty_cols_end.items.len,
+        );
     }
     try vtRequireOk(view.status);
     std.debug.assert(view.start <= view.history_count + view.rows);
     std.debug.assert(term.scrollback_offset <= view.history_count);
+    var row: usize = view.dirty_start_row;
+    const end_row: usize = view.dirty_end_row + 1;
+    while (row < end_row and row < term.visible_damage.dirty_rows.items.len) : (row += 1) {
+        term.visible_damage.dirty_rows.items[row] = 1;
+    }
     return .{
         .rows = view.rows,
         .cols = view.cols,
