@@ -25,15 +25,15 @@ pub fn start(self: anytype) !void {
     api.setPrimaryFontPath(&self.term, self.conf.fonts.primary);
     api.setFallbackFontPaths(&self.term, font_fallbacks);
     try api.start(&self.term);
-    self.progress_stop.store(false, .release);
-    const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
-    setThreadName(progress_thread, "howl-term-host");
-    self.progress_thread = progress_thread;
     const geom = self.geometrySnapshot();
     try api.syncRenderGeometry(&self.term, geom);
     if (!api.isAlive(&self.term)) return error.TransportUnavailable;
     effects.refreshTitle(self);
     effects.syncInputFocus(self);
+    self.progress_stop.store(false, .release);
+    const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
+    setThreadName(progress_thread, "howl-term-host");
+    self.progress_thread = progress_thread;
     HostInput.wakeWindow();
 }
 

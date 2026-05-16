@@ -239,17 +239,9 @@ const PublicationState = struct {
         const prior = self.publication orelse return .full;
         if (source.snapshot_seq == prior.snapshot_seq) return .none;
         if (source.cols != prior.cols or source.rows != prior.rows) return .full;
-        if (source.vt_epoch != prior.vt_epoch) return .full;
         if (source.last_alt_screen != prior.last_alt_screen) return .full;
         if (source.scrollback_count != prior.scrollback_count or source.scrollback_offset != prior.scrollback_offset) return .scroll;
-        if (source.selectionActive() != prior.selectionActive() or
-            source.focused != prior.focused or
-            source.hover_link_id != prior.hover_link_id or
-            source.hover_underline_style != prior.hover_underline_style)
-        {
-            return .partial;
-        }
-        return .none;
+        return .full;
     }
 };
 

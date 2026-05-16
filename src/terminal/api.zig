@@ -253,6 +253,8 @@ const VisibleSurface = struct {
     cursor_shape: u8 = 0,
     is_alternate_screen: bool = false,
     scroll_row: u32 = 0,
+    damage_kind: DamageKind = .full,
+    scroll_up_rows: u16 = 0,
 };
 
 pub const Term = struct {
@@ -268,6 +270,7 @@ pub const Term = struct {
     upload_scratch: std.ArrayListUnmanaged(u8) = .empty,
     surface_damage_rects: std.ArrayListUnmanaged(WindowRect) = .empty,
     atlas_slots: std.ArrayListUnmanaged(AtlasSlot) = .empty,
+    visible_cells: std.ArrayListUnmanaged(c.HowlRenderCell) = .empty,
     vt_cells: std.ArrayListUnmanaged(c.HowlVtCell) = .empty,
     vt_bytes: std.ArrayListUnmanaged(u8) = .empty,
     visible_surface: VisibleSurface = .{},
@@ -306,6 +309,21 @@ pub fn initPty(
     std.debug.assert(cell_px.width > 0);
     std.debug.assert(cell_px.height > 0);
 
+    const initial_surface_px = c.HowlRenderPixelSize{ .width = cols * cell_px.width, .height = rows * cell_px.height };
+    const initial_flow_surface_px = render_flow.PixelSize{ .width = initial_surface_px.width, .height = initial_surface_px.height };
+    const surface_text = c.howl_render_surface_text_init(.{
+        .surface_px = initial_surface_px,
+        .font_size_px = cell_px.height,
+    });
+    if (surface_text == null) return error.RendererInitFailed;
+    errdefer c.howl_render_surface_text_deinit(surface_text);
+
+    const initial_layout = c.howl_render_surface_text_derive_frame_layout(surface_text, initial_surface_px, initial_surface_px);
+    if (initial_layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
+
+    const initial_grid = initial_layout.grid;
+    const initial_cell_px = RenderCellSize{ .width = initial_layout.cell_px.width, .height = initial_layout.cell_px.height };
+
     const session = c.howl_pty_session_init(
         launch.shell.ptr,
         launch.shell.len,
@@ -313,24 +331,16 @@ pub fn initPty(
         optBytesLen(launch.command),
         optBytesPtr(launch.start_path),
         optBytesLen(launch.start_path),
-        cols,
-        rows,
+        initial_grid.cols,
+        initial_grid.rows,
         default_pending_capacity,
     );
     if (session == null) return error.PtyInitFailed;
     errdefer c.howl_pty_session_deinit(session);
 
-    const vt = c.howl_vt_terminal_init(rows, cols, default_history_capacity);
+    const vt = c.howl_vt_terminal_init(initial_grid.rows, initial_grid.cols, default_history_capacity);
     if (vt == null) return error.VtInitFailed;
     errdefer c.howl_vt_terminal_deinit(vt);
-
-    const surface_text = c.howl_render_surface_text_init(.{
-        .surface_px = .{ .width = cols * cell_px.width, .height = rows * cell_px.height },
-        .cell_px = .{ .width = cell_px.width, .height = cell_px.height },
-        .font_size_px = cell_px.height,
-    });
-    if (surface_text == null) return error.RendererInitFailed;
-    errdefer c.howl_render_surface_text_deinit(surface_text);
 
     var term = Term{
         .allocator = allocator,
@@ -338,15 +348,15 @@ pub fn initPty(
         .session = session,
         .vt = vt,
         .surface_text = surface_text,
-        .cols = cols,
-        .rows = rows,
-        .cell_px = cell_px,
+        .cols = initial_grid.cols,
+        .rows = initial_grid.rows,
+        .cell_px = initial_cell_px,
         .font_size_px = cell_px.height,
     };
     _ = term.render_flow.syncGeometry(.{
-        .render_px = .{ .width = cols * cell_px.width, .height = rows * cell_px.height },
-        .grid_px = .{ .width = cols * cell_px.width, .height = rows * cell_px.height },
-        .cell_px = cell_px,
+        .render_px = initial_flow_surface_px,
+        .grid_px = initial_flow_surface_px,
+        .cell_px = initial_cell_px,
     });
     try resetTitleFromLaunch(&term);
     return term;
@@ -361,6 +371,7 @@ pub fn deinit(term: *Term) void {
     term.current_title.deinit(term.allocator);
     for (term.atlas_slots.items) |*slot| slot.deinit(term.allocator);
     term.atlas_slots.deinit(term.allocator);
+    term.visible_cells.deinit(term.allocator);
     term.surface_pixels.deinit(term.allocator);
     term.upload_scratch.deinit(term.allocator);
     term.surface_damage_rects.deinit(term.allocator);
@@ -746,6 +757,10 @@ pub fn publishSource(term: *Term) SourceResponse {
     defer term.mutex.unlock();
 
     const visible = vtCopyVisible(term) catch return sourceRejected(term);
+    const prior_surface = term.visible_surface;
+    const cell_count = @as(usize, visible.rows) * @as(usize, visible.cols);
+    term.visible_cells.resize(term.allocator, cell_count) catch return sourceRejected(term);
+    for (term.visible_cells.items, 0..) |*dst, idx| dst.* = cellOut(term.vt_cells.items[idx]);
     term.visible_surface = .{
         .cols = visible.cols,
         .rows = visible.rows,
@@ -776,6 +791,8 @@ pub fn publishSource(term: *Term) SourceResponse {
         .vt_epoch = term.vt_epoch,
         .last_alt_screen = visible.is_alternate_screen,
     });
+    term.visible_surface.damage_kind = typed_response.damage_kind;
+    term.visible_surface.scroll_up_rows = scrollRowsFromVisible(prior_surface, term.visible_surface);
     if (typed_response.published) {
         term.prepare_pending = typed_response.queued;
         if (typed_response.queued) term.submit_pending = false;
@@ -846,32 +863,32 @@ fn cellOut(value: c.HowlVtCell) c.HowlRenderCell {
     };
 }
 
-fn surfaceSourceOut(term: *Term) !struct {
-    cells: []c.HowlRenderCell,
-    source: c.HowlRenderSurfaceSource,
-} {
+fn surfaceSourceOut(term: *Term) !c.HowlRenderSurfaceSource {
     const cell_count = @as(usize, term.visible_surface.rows) * @as(usize, term.visible_surface.cols);
-    const cells = try term.allocator.alloc(c.HowlRenderCell, cell_count);
-    errdefer term.allocator.free(cells);
-    for (cells, 0..) |*dst, idx| dst.* = cellOut(term.vt_cells.items[idx]);
+    if (term.visible_cells.items.len < cell_count) return error.InvalidVisibleSnapshot;
     return .{
-        .cells = cells,
-        .source = .{
-            .cells = .{ .ptr = cells.ptr, .len = cells.len },
-            .cols = term.visible_surface.cols,
-            .rows = term.visible_surface.rows,
-            .scroll_row = term.visible_surface.scroll_row,
-            .is_alternate_screen = @intFromBool(term.visible_surface.is_alternate_screen),
-            .full_damage = 1,
-            .scroll_up_rows = 0,
-            .cursor = .{
-                .row = term.visible_surface.cursor_row,
-                .col = term.visible_surface.cursor_col,
-                .visible = @intFromBool(term.visible_surface.cursor_visible),
-                .shape = term.visible_surface.cursor_shape,
-            },
+        .cells = .{ .ptr = term.visible_cells.items.ptr, .len = cell_count },
+        .cols = term.visible_surface.cols,
+        .rows = term.visible_surface.rows,
+        .scroll_row = term.visible_surface.scroll_row,
+        .is_alternate_screen = @intFromBool(term.visible_surface.is_alternate_screen),
+        .full_damage = @intFromBool(term.visible_surface.damage_kind == .full),
+        .scroll_up_rows = if (term.visible_surface.damage_kind == .scroll) term.visible_surface.scroll_up_rows else 0,
+        .cursor = .{
+            .row = term.visible_surface.cursor_row,
+            .col = term.visible_surface.cursor_col,
+            .visible = @intFromBool(term.visible_surface.cursor_visible),
+            .shape = term.visible_surface.cursor_shape,
         },
     };
+}
+
+fn scrollRowsFromVisible(prior: VisibleSurface, current: VisibleSurface) u16 {
+    if (current.damage_kind != .scroll) return 0;
+    if (prior.cols != current.cols or prior.rows != current.rows) return 0;
+    if (current.scroll_row <= prior.scroll_row) return 0;
+    const delta = current.scroll_row - prior.scroll_row;
+    return @intCast(@min(delta, current.rows));
 }
 
 fn surfaceQueryOut(value: render_flow.SurfaceQuery) c.HowlRenderSurfaceQuery {
@@ -922,6 +939,8 @@ pub fn hasPendingRenderWork(term: *const Term) bool {
 }
 
 pub fn prepareRender(term: *Term) RenderPrepareResult {
+    term.mutex.lock();
+    defer term.mutex.unlock();
     const request = term.render_flow.prepare() orelse {
         releasePreparedSurface(term);
         term.prepare_pending = false;
@@ -931,8 +950,7 @@ pub fn prepareRender(term: *Term) RenderPrepareResult {
     var prepare_request = prepareRequestOut(request);
     prepare_request.target_valid = @intFromBool(term.render_flow.targetValid());
     var surface_source = surfaceSourceOut(term) catch return .failed;
-    defer term.allocator.free(surface_source.cells);
-    return switch (c.howl_render_surface_text_prepare_handle(term.surface_text, &surface_source.source, prepare_request, surfaceQueryOut(term.render_flow.surfaceQuery()), &prepared)) {
+    return switch (c.howl_render_surface_text_prepare_handle(term.surface_text, &surface_source, prepare_request, surfaceQueryOut(term.render_flow.surfaceQuery()), &prepared)) {
         c.HOWL_RENDER_PREPARE_IDLE => blk: {
             releasePreparedSurface(term);
             term.prepare_pending = false;
@@ -948,7 +966,7 @@ pub fn prepareRender(term: *Term) RenderPrepareResult {
             }
             term.render_flow.publishPrepared(preparedFrameFromInfo(info));
             releasePreparedSurface(term);
-            consumePreparedSurfaceHandle(prepared);
+            consumePreparedSurfaceHandle(term, prepared);
             term.prepared_surface = prepared;
             term.prepare_pending = false;
             term.submit_pending = true;
@@ -964,6 +982,8 @@ pub fn prepareRender(term: *Term) RenderPrepareResult {
 }
 
 pub fn submitRender(term: *Term) RenderSubmitResult {
+    term.mutex.lock();
+    defer term.mutex.unlock();
     const prepared_frame = switch (term.render_flow.submit()) {
         .idle => {
             term.submit_pending = false;
@@ -1191,17 +1211,23 @@ fn drawSpriteInstances(term: *Term, pixels: []u8, width: u16, height: u16, span:
 }
 
 fn drawSpriteInstance(pixels: []u8, width: u16, height: u16, instance: c.HowlRenderSpriteInstance, slot: AtlasSlot) void {
-    const max_w = @min(@as(u16, @intCast(instance.dst_width_px)), instance.src_width_px);
-    const max_h = @min(@as(u16, @intCast(instance.dst_height_px)), instance.src_height_px);
+    const bounds = if (slot.visual_bounds.width_px != 0 and slot.visual_bounds.height_px != 0)
+        slot.visual_bounds
+    else
+        c.HowlRenderRasterBounds{ .x_px = instance.src_x_px, .y_px = instance.src_y_px, .width_px = instance.src_width_px, .height_px = instance.src_height_px };
+    const dst_origin_x = instance.dst_x_px + bounds.x_px;
+    const dst_origin_y = instance.dst_y_px + bounds.y_px;
+    const max_w = @min(@as(u16, @intCast(instance.dst_width_px)), bounds.width_px);
+    const max_h = @min(@as(u16, @intCast(instance.dst_height_px)), bounds.height_px);
     var yy: u16 = 0;
     while (yy < max_h) : (yy += 1) {
         var xx: u16 = 0;
         while (xx < max_w) : (xx += 1) {
-            const dst_x = instance.dst_x_px + @as(i32, xx);
-            const dst_y = instance.dst_y_px + @as(i32, yy);
+            const dst_x = dst_origin_x + @as(i32, xx);
+            const dst_y = dst_origin_y + @as(i32, yy);
         if (dst_x < 0 or dst_y < 0 or dst_x >= @as(i32, width) or dst_y >= @as(i32, height)) continue;
-            const src_x = instance.src_x_px + xx;
-            const src_y = instance.src_y_px + yy;
+            const src_x = bounds.x_px + xx;
+            const src_y = bounds.y_px + yy;
             const src_index = @as(usize, src_y) * @as(usize, slot.stride) + if (slot.color_mode == 0) @as(usize, src_x) else @as(usize, src_x) * 4;
             const dst_index = (@as(usize, @intCast(dst_y)) * @as(usize, width) + @as(usize, @intCast(dst_x))) * 4;
             if (slot.color_mode == 0) {
@@ -1309,7 +1335,7 @@ fn clipDamageRect(width: u16, height: u16, rect: c.HowlRenderRect) ?c.HowlRender
     return .{ .x = x, .y = y, .width = w, .height = h };
 }
 
-fn consumePreparedSurfaceHandle(prepared: PreparedSurfaceHandle) void {
+fn consumePreparedSurfaceHandle(_: *Term, prepared: PreparedSurfaceHandle) void {
     if (prepared == null) return;
     var info = std.mem.zeroes(PreparedSurfaceInfo);
     std.debug.assert(c.howl_render_prepared_surface_describe(prepared, &info) == c.HOWL_RENDER_CALL_OK);
