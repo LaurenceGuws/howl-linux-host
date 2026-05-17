@@ -244,19 +244,6 @@ const AtlasSlot = struct {
 
 const WindowRect = @import("../window/window.zig").Rect;
 
-const VisibleSurface = struct {
-    cols: u16 = 0,
-    rows: u16 = 0,
-    cursor_row: u16 = 0,
-    cursor_col: u16 = 0,
-    cursor_visible: bool = true,
-    cursor_shape: u8 = 0,
-    is_alternate_screen: bool = false,
-    scroll_row: u32 = 0,
-    damage_kind: DamageKind = .full,
-    scroll_up_rows: u16 = 0,
-};
-
 const VisibleDamage = struct {
     dirty_rows: std.ArrayListUnmanaged(u8) = .empty,
     dirty_cols_start: std.ArrayListUnmanaged(u16) = .empty,
@@ -287,7 +274,19 @@ pub const Term = struct {
     visible_damage: VisibleDamage = .{},
     vt_cells: std.ArrayListUnmanaged(c.HowlVtCell) = .empty,
     vt_bytes: std.ArrayListUnmanaged(u8) = .empty,
-    visible_surface: VisibleSurface = .{},
+    vt_surface: c.HowlVtSurfaceSource = .{
+        .cells = .{ .ptr = null, .len = 0 },
+        .cols = 0,
+        .rows = 0,
+        .scroll_row = 0,
+        .is_alternate_screen = 0,
+        .full_damage = 1,
+        .scroll_up_rows = 0,
+        .dirty_rows = .{ .ptr = null, .len = 0 },
+        .dirty_cols_start = .{ .ptr = null, .len = 0 },
+        .dirty_cols_end = .{ .ptr = null, .len = 0 },
+        .cursor = .{ .row = 0, .col = 0, .visible = 1, .shape = 0 },
+    },
     mutex: Mutex = .{},
     cols: u16,
     rows: u16,
@@ -772,17 +771,7 @@ pub fn publishSource(term: *Term) SourceResponse {
     defer term.mutex.unlock();
 
     const visible = vtCopyVisible(term) catch return sourceRejected(term);
-    const prior_surface = term.visible_surface;
-    term.visible_surface = .{
-        .cols = visible.cols,
-        .rows = visible.rows,
-        .cursor_row = visible.cursor_row,
-        .cursor_col = visible.cursor_col,
-        .cursor_visible = visible.cursor_visible,
-        .cursor_shape = visible.cursor_shape,
-        .is_alternate_screen = visible.is_alternate_screen,
-        .scroll_row = visible.start,
-    };
+    const prior_surface = term.vt_surface;
 
     std.debug.assert(term.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.start <= visible.history_count + visible.rows);
@@ -803,8 +792,8 @@ pub fn publishSource(term: *Term) SourceResponse {
         .vt_epoch = term.vt_epoch,
         .last_alt_screen = visible.is_alternate_screen,
     });
-    term.visible_surface.damage_kind = typed_response.damage_kind;
-    term.visible_surface.scroll_up_rows = scrollRowsFromVisible(prior_surface, term.visible_surface);
+    term.vt_surface.full_damage = @intFromBool(typed_response.damage_kind == .full);
+    term.vt_surface.scroll_up_rows = if (typed_response.damage_kind == .scroll) scrollRowsFromSurface(prior_surface, term.vt_surface) else 0;
     if (typed_response.published) {
         term.prepare_pending = typed_response.queued;
         if (typed_response.queued) term.submit_pending = false;
@@ -867,32 +856,31 @@ fn cellOut(value: c.HowlVtCell) c.HowlRenderCell {
 }
 
 fn surfaceSourceOut(term: *Term) !c.HowlRenderSurfaceSource {
-    const cell_count = @as(usize, term.visible_surface.rows) * @as(usize, term.visible_surface.cols);
+    const cell_count = @as(usize, term.vt_surface.rows) * @as(usize, term.vt_surface.cols);
     if (term.vt_cells.items.len < cell_count) return error.InvalidVisibleSnapshot;
     try term.render_cells.resize(term.allocator, cell_count);
     for (term.render_cells.items, 0..) |*dst, idx| dst.* = cellOut(term.vt_cells.items[idx]);
     return .{
         .cells = .{ .ptr = term.render_cells.items.ptr, .len = cell_count },
-        .cols = term.visible_surface.cols,
-        .rows = term.visible_surface.rows,
-        .scroll_row = term.visible_surface.scroll_row,
-        .is_alternate_screen = @intFromBool(term.visible_surface.is_alternate_screen),
-        .full_damage = @intFromBool(term.visible_surface.damage_kind == .full),
-        .scroll_up_rows = if (term.visible_surface.damage_kind == .scroll) term.visible_surface.scroll_up_rows else 0,
+        .cols = term.vt_surface.cols,
+        .rows = term.vt_surface.rows,
+        .scroll_row = term.vt_surface.scroll_row,
+        .is_alternate_screen = term.vt_surface.is_alternate_screen,
+        .full_damage = term.vt_surface.full_damage,
+        .scroll_up_rows = term.vt_surface.scroll_up_rows,
         .dirty_rows = .{ .ptr = if (term.visible_damage.dirty_rows.items.len == 0) null else term.visible_damage.dirty_rows.items.ptr, .len = term.visible_damage.dirty_rows.items.len },
         .dirty_cols_start = .{ .ptr = if (term.visible_damage.dirty_cols_start.items.len == 0) null else term.visible_damage.dirty_cols_start.items.ptr, .len = term.visible_damage.dirty_cols_start.items.len },
         .dirty_cols_end = .{ .ptr = if (term.visible_damage.dirty_cols_end.items.len == 0) null else term.visible_damage.dirty_cols_end.items.ptr, .len = term.visible_damage.dirty_cols_end.items.len },
         .cursor = .{
-            .row = term.visible_surface.cursor_row,
-            .col = term.visible_surface.cursor_col,
-            .visible = @intFromBool(term.visible_surface.cursor_visible),
-            .shape = term.visible_surface.cursor_shape,
+            .row = term.vt_surface.cursor.row,
+            .col = term.vt_surface.cursor.col,
+            .visible = term.vt_surface.cursor.visible,
+            .shape = term.vt_surface.cursor.shape,
         },
     };
 }
 
-fn scrollRowsFromVisible(prior: VisibleSurface, current: VisibleSurface) u16 {
-    if (current.damage_kind != .scroll) return 0;
+fn scrollRowsFromSurface(prior: c.HowlVtSurfaceSource, current: c.HowlVtSurfaceSource) u16 {
     if (prior.cols != current.cols or prior.rows != current.rows) return 0;
     if (current.scroll_row < prior.scroll_row) return 0;
     if (current.scroll_row <= prior.scroll_row) return 0;
@@ -1472,17 +1460,7 @@ fn pixelToRow(term: *const Term, pixel_y: i32) i32 {
 }
 
 fn colorFromVt(color: c.HowlVtColor) c.HowlRenderColor {
-    return .{ .kind = 2, .value = (@as(u32, color.r) << 16) | (@as(u32, color.g) << 8) | @as(u32, color.b) };
-}
-
-fn underlineStyleFromVt(style: u8) u8 {
-    return switch (style) {
-        1 => 1,
-        2 => 2,
-        3 => 3,
-        4 => 4,
-        else => 0,
-    };
+    return .{ .kind = color.kind, .value = color.value };
 }
 
 fn underlineStyleFromLink(style: LinkUnderlineStyle) u8 {
@@ -1590,44 +1568,44 @@ fn vtCopyVisible(term: *Term) !VisibleCopy {
     term.visible_damage.dirty_rows.clearRetainingCapacity();
     term.visible_damage.dirty_cols_start.clearRetainingCapacity();
     term.visible_damage.dirty_cols_end.clearRetainingCapacity();
-    var view = c.howl_vt_terminal_copy_surface(term.vt, term.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0);
-    if (view.status == vtCallShortBuffer()) {
-        cells = try vtEnsureCells(term, @intCast(view.cell_count));
-        try term.visible_damage.dirty_rows.resize(term.allocator, view.rows);
-        try term.visible_damage.dirty_cols_start.resize(term.allocator, @intCast(view.dirty_needed));
-        try term.visible_damage.dirty_cols_end.resize(term.allocator, @intCast(view.dirty_needed));
+    var source = c.howl_vt_terminal_copy_surface_source(term.vt, term.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0, null, 0, 0, 0);
+    if (source.status == vtCallShortBuffer()) {
+        cells = try vtEnsureCells(term, @intCast(source.source.cells.len));
+        try term.visible_damage.dirty_rows.resize(term.allocator, source.source.rows);
+        try term.visible_damage.dirty_cols_start.resize(term.allocator, @intCast(source.dirty_needed));
+        try term.visible_damage.dirty_cols_end.resize(term.allocator, @intCast(source.dirty_needed));
         @memset(term.visible_damage.dirty_rows.items, 0);
         @memset(term.visible_damage.dirty_cols_start.items, 0);
         @memset(term.visible_damage.dirty_cols_end.items, 0);
-        view = c.howl_vt_terminal_copy_surface(
+        source = c.howl_vt_terminal_copy_surface_source(
             term.vt,
             term.scrollback_offset,
             cells.ptr,
             cells.len,
+            if (term.visible_damage.dirty_rows.items.len == 0) null else term.visible_damage.dirty_rows.items.ptr,
+            term.visible_damage.dirty_rows.items.len,
             if (term.visible_damage.dirty_cols_start.items.len == 0) null else term.visible_damage.dirty_cols_start.items.ptr,
             term.visible_damage.dirty_cols_start.items.len,
             if (term.visible_damage.dirty_cols_end.items.len == 0) null else term.visible_damage.dirty_cols_end.items.ptr,
             term.visible_damage.dirty_cols_end.items.len,
+            0,
+            0,
         );
     }
-    try vtRequireOk(view.status);
-    std.debug.assert(view.start <= view.history_count + view.rows);
-    std.debug.assert(term.scrollback_offset <= view.history_count);
-    var row: usize = view.dirty_start_row;
-    const end_row: usize = view.dirty_end_row + 1;
-    while (row < end_row and row < term.visible_damage.dirty_rows.items.len) : (row += 1) {
-        term.visible_damage.dirty_rows.items[row] = 1;
-    }
+    try vtRequireOk(source.status);
+    term.vt_surface = source.source;
+    std.debug.assert(term.vt_surface.scroll_row <= source.history_count + term.vt_surface.rows);
+    std.debug.assert(term.scrollback_offset <= source.history_count);
     return .{
-        .rows = view.rows,
-        .cols = view.cols,
-        .cursor_row = view.cursor_row,
-        .cursor_col = view.cursor_col,
-        .cursor_visible = view.cursor_visible != 0,
-        .cursor_shape = view.cursor_shape,
-        .is_alternate_screen = view.is_alternate_screen != 0,
-        .history_count = @intCast(view.history_count),
-        .start = @intCast(view.start),
+        .rows = source.source.rows,
+        .cols = source.source.cols,
+        .cursor_row = source.source.cursor.row,
+        .cursor_col = source.source.cursor.col,
+        .cursor_visible = source.source.cursor.visible != 0,
+        .cursor_shape = source.source.cursor.shape,
+        .is_alternate_screen = source.source.is_alternate_screen != 0,
+        .history_count = @intCast(source.history_count),
+        .start = @intCast(source.source.scroll_row),
     };
 }
 
