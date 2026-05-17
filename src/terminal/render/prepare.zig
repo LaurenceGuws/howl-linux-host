@@ -227,7 +227,6 @@ fn submitPreparedSurface(term: *api.Term, prepared_frame: render_flow.PreparedFr
         },
         .uploads_committed = buffer.uploads_committed,
         .render_us = render_us,
-        .scroll_reuse_applied = 0,
         .content_valid = 1,
     };
     const result = c.howl_render_surface_text_submit(term.render.surface_text, prepared, preparedFrameOut(prepared_frame), &execution, feedback);
