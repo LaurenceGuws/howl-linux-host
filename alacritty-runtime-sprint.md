@@ -51,14 +51,15 @@ What is already true:
 
 - `howl-render` already consumes a surface source plus damage-oriented contract.
 - `howl-linux-host` already has explicit prepare/submit/present flow under `src/terminal/`.
-- `howl-vt` now exposes `howl_vt_terminal_copy_surface(...)` so the host no longer stitches `copy_visible` and `copy_dirty` through two separate ABI calls.
+- `howl-vt` publishes one surface snapshot contract, so the host no longer stitches visible and dirty state through separate ABI pulls.
+- `howl-render` now publishes one prepared RGBA buffer plus damage truth.
+- the host no longer reconstructs render cells or render composition rules from VT-visible cells.
 
 What is still wrong-shaped:
 
-- the host still holds both VT cells and render cells
-- the host still translates `HowlVtCell -> HowlRenderCell`
 - VT surface ABI vocabulary still reflects cell-copy posture instead of renderer-facing surface posture
 - host wake/render flow still needs to be reviewed checkpoint by checkpoint against Alacritty’s event-loop discipline
+- the host still owns backend-specific texture upload and present execution, which is acceptable only while that path stays explicit and minimal
 
 ## Alacritty Reference Model
 
@@ -94,10 +95,12 @@ Howl must copy that outer-loop split, while preserving its explicit C ABI bounda
 Primary host files:
 
 - `howl-linux-host/src/main.zig`
-- `howl-linux-host/src/terminal/api.zig`
-- `howl-linux-host/src/terminal/frame.zig`
-- `howl-linux-host/src/terminal/render_flow.zig`
-- `howl-linux-host/src/terminal/terminal.zig`
+- `howl-linux-host/src/terminal/terminal_panel.zig`
+- `howl-linux-host/src/terminal/runtime/runtime.zig`
+- `howl-linux-host/src/terminal/runtime/thread.zig`
+- `howl-linux-host/src/terminal/vt/surface.zig`
+- `howl-linux-host/src/terminal/render/prepare.zig`
+- `howl-linux-host/src/terminal/render/flow.zig`
 
 Primary VT files:
 
@@ -111,6 +114,8 @@ Primary render files:
 
 - `howl-render/src/ffi.zig`
 - `howl-render/src/frame/surface.zig`
+- `howl-render/src/frame/prepared_surface_ffi.zig`
+- `howl-render/src/frame/surface_buffer.zig`
 - `howl-render/src/howl_render.zig`
 
 PTY files only if seam movement requires it:
