@@ -305,15 +305,26 @@ fn ensureSurfaceStorage(term: *api.Term, width: u16, height: u16) bool {
 fn storeSurfaceDamage(term: *api.Term, plan: c.HowlRenderPreparedSurfaceDamagePlan) bool {
     term.render.full_redraw = plan.full_redraw != 0;
     term.render.damage_rects.resize(term.allocator, plan.surface_damage_rects.len) catch return false;
+    var kept: usize = 0;
     for (0..plan.surface_damage_rects.len) |i| {
         const rect = plan.surface_damage_rects.ptr[i];
-        term.render.damage_rects.items[i] = .{
+        if (!validPresentRect(rect)) continue;
+        term.render.damage_rects.items[kept] = .{
             .x = rect.x,
             .y = rect.y,
             .width = rect.width,
             .height = rect.height,
         };
+        kept += 1;
     }
+    term.render.damage_rects.shrinkRetainingCapacity(kept);
+    return true;
+}
+
+fn validPresentRect(rect: c.HowlRenderRect) bool {
+    if (rect.width <= 0 or rect.height <= 0) return false;
+    if (rect.x > std.math.maxInt(c_int) - rect.width) return false;
+    if (rect.y > std.math.maxInt(c_int) - rect.height) return false;
     return true;
 }
 
