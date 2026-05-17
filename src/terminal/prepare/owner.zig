@@ -110,6 +110,10 @@ pub fn markRenderPresented(term: *api.Term) void {
     term.present_pending = false;
 }
 
+pub fn releasePrepared(term: *api.Term) void {
+    releasePreparedSurface(term);
+}
+
 fn prepareRequestOut(value: render_flow.PrepareRequest) c.HowlRenderPrepareRequest {
     return .{
         .snapshot_seq = value.snapshot_seq,
