@@ -38,6 +38,12 @@ pub const VisibleCopy = struct {
     dirty_generation: u64,
 };
 
+const PublishAckOps = struct {
+    fn ack(handle: c.HowlVtHandle, dirty_generation: u64) i32 {
+        return c.howl_vt_terminal_ack_surface_source(handle, dirty_generation);
+    }
+};
+
 pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
     term.mutex.lock();
     defer term.mutex.unlock();
@@ -58,13 +64,7 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
         .vt_epoch = term.vt_state.epoch,
         .last_alt_screen = visible.is_alternate_screen,
     });
-    if (typed_response.published) {
-        std.debug.assert(typed_response.queued);
-        std.debug.assert(typed_response.damage_kind != .none);
-        term.vt_state.pending_dirty_generation = visible.dirty_generation;
-    } else {
-        term.vt_state.pending_dirty_generation = 0;
-    }
+    recordPendingDirtyGeneration(term, visible, typed_response);
     term.vt_state.surface.full_damage = @intFromBool(typed_response.damage_kind == .full);
     term.vt_state.surface.scroll_up_rows = if (typed_response.damage_kind == .scroll) scrollRowsFromSurface(prior_surface, term.vt_state.surface) else 0;
     if (typed_response.published) {
@@ -94,11 +94,15 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
 }
 
 pub fn ackPublishedSource(term: *api.Term) void {
+    ackPublishedSourceWith(term, PublishAckOps);
+}
+
+fn ackPublishedSourceWith(term: anytype, comptime Ops: type) void {
     term.mutex.lock();
     defer term.mutex.unlock();
     const dirty_generation = term.vt_state.pending_dirty_generation;
     if (dirty_generation == 0) return;
-    vt_abi.requireStructOk(c.howl_vt_terminal_ack_surface_source(term.vt, dirty_generation));
+    vt_abi.requireStructOk(Ops.ack(term.vt, dirty_generation));
     term.vt_state.pending_dirty_generation = 0;
 }
 
@@ -231,10 +235,116 @@ fn widenScrollDirtyRows(dirty_rows: []const u8, cols_start: []u16, cols_end: []u
     }
 }
 
+fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_response: render_flow.SourceResponse) void {
+    if (typed_response.published) {
+        std.debug.assert(typed_response.queued);
+        std.debug.assert(typed_response.damage_kind != .none);
+        term.vt_state.pending_dirty_generation = visible.dirty_generation;
+        return;
+    }
+    term.vt_state.pending_dirty_generation = 0;
+}
+
 pub fn scrollRowsFromSurface(prior: c.HowlVtSurfaceSource, current: c.HowlVtSurfaceSource) u16 {
     if (prior.cols != current.cols or prior.rows != current.rows) return 0;
     if (current.scroll_row < prior.scroll_row) return 0;
     if (current.scroll_row <= prior.scroll_row) return 0;
     const delta = current.scroll_row - prior.scroll_row;
     return @intCast(@min(delta, current.rows));
+}
+
+test "publish records dirty generation only for published source" {
+    const FakeTerm = struct {
+        vt_state: struct { pending_dirty_generation: u64 = 0 } = .{},
+    };
+    var term = FakeTerm{};
+    recordPendingDirtyGeneration(&term, .{
+        .rows = 2,
+        .cols = 4,
+        .cursor_row = 0,
+        .cursor_col = 0,
+        .cursor_visible = true,
+        .cursor_shape = 0,
+        .is_alternate_screen = false,
+        .history_count = 0,
+        .start = 0,
+        .dirty_generation = 9,
+    }, .{
+        .published = true,
+        .queued = true,
+        .damage_kind = .partial,
+        .source_seq = 1,
+        .geometry_epoch = 1,
+    });
+    try std.testing.expectEqual(@as(u64, 9), term.vt_state.pending_dirty_generation);
+
+    recordPendingDirtyGeneration(&term, .{
+        .rows = 2,
+        .cols = 4,
+        .cursor_row = 0,
+        .cursor_col = 0,
+        .cursor_visible = true,
+        .cursor_shape = 0,
+        .is_alternate_screen = false,
+        .history_count = 0,
+        .start = 0,
+        .dirty_generation = 11,
+    }, .{
+        .published = false,
+        .queued = false,
+        .damage_kind = .none,
+        .source_seq = 2,
+        .geometry_epoch = 1,
+    });
+    try std.testing.expectEqual(@as(u64, 0), term.vt_state.pending_dirty_generation);
+}
+
+test "ack clears pending dirty generation only after ack call" {
+    const FakeTerm = struct {
+        vt: c.HowlVtHandle = @ptrFromInt(1),
+        vt_state: struct { pending_dirty_generation: u64 = 7 } = .{},
+        mutex: struct {
+            fn lock(_: *@This()) void {}
+            fn unlock(_: *@This()) void {}
+        } = .{},
+    };
+    const FakeOps = struct {
+        var ack_calls: u8 = 0;
+        var last_generation: u64 = 0;
+
+        fn ack(_: c.HowlVtHandle, dirty_generation: u64) i32 {
+            ack_calls += 1;
+            last_generation = dirty_generation;
+            return c.HOWL_VT_CALL_OK;
+        }
+    };
+
+    var term = FakeTerm{};
+    ackPublishedSourceWith(&term, FakeOps);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
+    try std.testing.expectEqual(@as(u64, 7), FakeOps.last_generation);
+    try std.testing.expectEqual(@as(u64, 0), term.vt_state.pending_dirty_generation);
+}
+
+test "no pending dirty generation means no ack call" {
+    const FakeTerm = struct {
+        vt: c.HowlVtHandle = @ptrFromInt(1),
+        vt_state: struct { pending_dirty_generation: u64 = 0 } = .{},
+        mutex: struct {
+            fn lock(_: *@This()) void {}
+            fn unlock(_: *@This()) void {}
+        } = .{},
+    };
+    const FakeOps = struct {
+        var ack_calls: u8 = 0;
+
+        fn ack(_: c.HowlVtHandle, _: u64) i32 {
+            ack_calls += 1;
+            return c.HOWL_VT_CALL_OK;
+        }
+    };
+
+    var term = FakeTerm{};
+    ackPublishedSourceWith(&term, FakeOps);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
 }

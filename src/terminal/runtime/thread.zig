@@ -143,7 +143,7 @@ test "host loop wakes on applied vt work" {
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const keep = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(!keep);
-    try std.testing.expectEqual(@as(usize, 1), fake_state.wake_calls);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
 }
 
 test "host loop keeps driving while vt work remains" {
@@ -153,8 +153,8 @@ test "host loop keeps driving while vt work remains" {
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const keep = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(keep);
-    try std.testing.expectEqual(@as(usize, 1), fake_state.apply_calls);
-    try std.testing.expectEqual(@as(usize, 1), fake_state.wake_calls);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.apply_calls);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
 }
 
 test "host loop stays quiet when nothing changes" {
@@ -162,11 +162,33 @@ test "host loop stays quiet when nothing changes" {
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const keep = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(!keep);
-    try std.testing.expectEqual(@as(usize, 0), fake_state.wake_calls);
+    try std.testing.expectEqual(@as(u8, 0), fake_state.wake_calls);
+}
+
+test "host loop wake count tracks bounded rounds under backlog" {
+    fake_state = .{};
+    fake_state.applied_events = 1;
+    fake_state.remaining_events = 1;
+    var ctx = FakeCtx{ .term = FakeTerm.init() };
+    const keep = driveReadyWork(&ctx, FakeOps);
+    try std.testing.expect(keep);
+    try std.testing.expectEqual(drive_round_limit, fake_state.apply_calls);
+    try std.testing.expectEqual(drive_round_limit, fake_state.wake_calls);
+}
+
+test "host loop wake path does not publish render work" {
+    fake_state = .{};
+    fake_state.reads = 1;
+    fake_state.read_bytes = 8;
+    var ctx = FakeCtx{ .term = FakeTerm.init() };
+    const keep = driveOnceWith(&ctx, FakeOps);
+    try std.testing.expect(!keep);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
+    try std.testing.expectEqual(@as(u8, 0), ctx.term.render_calls);
 }
 
 const FakeTerm = struct {
-    render_calls: usize = 0,
+    render_calls: u8 = 0,
     pub fn init() FakeTerm {
         return .{};
     }
@@ -178,10 +200,10 @@ const FakeCtx = struct {
 };
 
 var fake_state: struct {
-    wait_calls: usize = 0,
-    pump_calls: usize = 0,
-    apply_calls: usize = 0,
-    wake_calls: usize = 0,
+    wait_calls: u8 = 0,
+    pump_calls: u8 = 0,
+    apply_calls: u8 = 0,
+    wake_calls: u8 = 0,
     is_alive: bool = true,
     backlog: bool = false,
     read_bytes: u32 = 0,
