@@ -57,6 +57,10 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
         .vt_epoch = term.vt_state.epoch,
         .last_alt_screen = visible.is_alternate_screen,
     });
+    if (typed_response.published) {
+        std.debug.assert(typed_response.queued);
+        std.debug.assert(typed_response.damage_kind != .none);
+    }
     term.vt_state.surface.full_damage = @intFromBool(typed_response.damage_kind == .full);
     term.vt_state.surface.scroll_up_rows = if (typed_response.damage_kind == .scroll) scrollRowsFromSurface(prior_surface, term.vt_state.surface) else 0;
     if (typed_response.published) {

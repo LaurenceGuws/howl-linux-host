@@ -273,6 +273,7 @@ fn collectContentFrame(tab: *TerminalPanel, now_ns: u64) RenderApi.RenderWorkSta
 fn render(app: *App) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
+    const texture_before = tab.last_surface.texture_id;
     var step: u8 = 0;
     while (step < max_render_steps_per_turn) : (step += 1) {
         if (tab.renderStep() != .prepared) break;
@@ -283,6 +284,7 @@ fn render(app: *App) void {
     const overlay = tab.overlaySnapshot(texture_rect);
     var title_buf: [max_tabs_count][]const u8 = undefined;
     const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items, title_buf[0..]));
+    std.debug.assert(surface.surface.texture_id != 0 or texture_before == 0);
 
     app.window.present(.{
         .texture_id = surface.surface.texture_id,

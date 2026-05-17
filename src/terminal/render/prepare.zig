@@ -48,6 +48,7 @@ comptime {
 pub fn prepareRender(term: *api.Term) retained.PrepareResult {
     term.mutex.lock();
     defer term.mutex.unlock();
+    std.debug.assert(term.render.phase == .prepare or term.render.phase == .idle);
     const request = term.render.flow.prepare() orelse {
         releasePreparedSurface(term);
         term.render.phase = .idle;
@@ -70,6 +71,9 @@ pub fn prepareRender(term: *api.Term) retained.PrepareResult {
                 term.render.phase = .idle;
                 break :blk .failed;
             }
+            std.debug.assert(info.snapshot_seq == request.snapshot_seq);
+            std.debug.assert(info.dirty_epoch == request.dirty_epoch);
+            std.debug.assert(info.geometry_epoch == request.geometry_epoch);
             term.render.flow.publishPrepared(preparedFrameFromInfo(info));
             releasePreparedSurface(term);
             consumePreparedSurfaceHandle(prepared);
@@ -88,6 +92,7 @@ pub fn prepareRender(term: *api.Term) retained.PrepareResult {
 pub fn submitRender(term: *api.Term) retained.SubmitResult {
     term.mutex.lock();
     defer term.mutex.unlock();
+    std.debug.assert(term.render.phase == .submit);
     const prepared_frame = switch (term.render.flow.submit()) {
         .idle => {
             term.render.phase = .idle;
@@ -123,6 +128,9 @@ pub fn submitRender(term: *api.Term) retained.SubmitResult {
             break :blk .needs_prepare;
         },
         c.HOWL_RENDER_SUBMIT_RENDERED => blk: {
+            std.debug.assert(feedback.surface.texture_id != 0);
+            std.debug.assert(feedback.surface.width > 0);
+            std.debug.assert(feedback.surface.height > 0);
             term.render.phase = .present;
             term.render.surface = feedback.surface;
             releasePreparedSurface(term);
@@ -139,6 +147,8 @@ pub fn submitRender(term: *api.Term) retained.SubmitResult {
 pub fn markRenderPresented(term: *api.Term) void {
     term.mutex.lock();
     defer term.mutex.unlock();
+    std.debug.assert(term.render.phase == .present);
+    std.debug.assert(term.render.surface.texture_id != 0);
     term.render.flow.markPresented();
     if (term.render.phase == .present) term.render.phase = .idle;
 }
