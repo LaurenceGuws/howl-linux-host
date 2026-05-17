@@ -400,8 +400,8 @@ const TerminalSurface = struct {
         defer mut.mutex.unlock();
         return .{
             .source_pending = false,
-            .prepare_pending = self.prepare_mailbox.hasPending(),
-            .submit_pending = self.submit_mailbox.hasPending(),
+            .prepare_pending = mut.prepare_mailbox.hasPending(),
+            .submit_pending = mut.submit_mailbox.hasPending(),
         };
     }
 
