@@ -12,7 +12,7 @@ This sprint drives `howl-linux-host` toward Alacritty-style runtime parity for t
 - PTY owns transport I/O and child lifecycle
 - VT owns terminal state mutation plus host-neutral protocol consequences
 - render owns surface preparation, damage shaping, and submission planning
-- the host presents and schedules the next wake
+- the host owns backend-specific upload/present execution and schedules the next wake
 
 Parser parity in `howl-vt` is frozen unless an ABI move forces a touch.
 
@@ -28,7 +28,7 @@ Target pipeline:
 4. host publishes one VT surface snapshot plus host events
 5. render prepares from VT surface plus damage
 6. render submits presentation-ready work
-7. host presents and decides the next wake
+7. host uploads backend surfaces, presents, and decides the next wake
 
 The host must not reconstruct terminal meaning from random VT internals.
 
@@ -39,7 +39,7 @@ The host may translate contracts, but it must not become the real owner of VT su
 1. `howl-linux-host` owns runtime cadence, not `howl-vt` and not `howl-render`.
 2. `howl-pty` owns PTY transport state, child lifecycle, resize delivery, and control signals.
 3. `howl-vt` owns visible terminal surface truth, dirtiness truth, and host-facing protocol output.
-4. `howl-render` owns prepare/submit state, retained render state, and renderer damage planning.
+4. `howl-render` owns prepare/submit state, retained render state, renderer damage planning, and backend-agnostic prepared output. It does not own host GL execution.
 5. The host must not stitch VT-visible cells and VT-dirty metadata through unrelated ABI calls if VT can expose one true surface snapshot contract.
 6. The host must not become the long-term owner of `HowlVtCell -> HowlRenderCell` semantic reconstruction.
 7. Wake decisions must be driven by explicit runtime state: pending PTY bytes, pending VT work, pending render prepare, pending render submit, or pending presentation.
@@ -68,6 +68,7 @@ The Alacritty reference says:
 - the terminal emits host events only for consequences it cannot own itself
 - display/render pulls renderable terminal content and damage
 - the window loop wakes and redraws on explicit content availability
+- the display/window layer keeps graphics-context execution ownership
 
 Howl must copy that outer-loop split, while preserving its explicit C ABI boundaries.
 
@@ -178,6 +179,7 @@ Close signal:
 
 - render prepare consumes VT surface truth without extra host-owned guessing
 - retained-base and damage sequencing remain explicit
+- backend-specific upload and present execution remain explicit host ownership unless `howl-render` becomes a true backend owner
 
 ### Checkpoint 5
 

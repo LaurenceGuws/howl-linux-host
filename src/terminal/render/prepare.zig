@@ -212,8 +212,8 @@ fn submitPreparedSurface(term: *api.Term, prepared_frame: render_flow.PreparedFr
     if (c.howl_render_prepared_surface_damage_plan(prepared, &damage) != c.HOWL_RENDER_CALL_OK) return c.HOWL_RENDER_SUBMIT_FAILED;
     var buffer = std.mem.zeroes(c.HowlRenderPreparedSurfaceBuffer);
     if (c.howl_render_prepared_surface_buffer(prepared, &buffer) != c.HOWL_RENDER_CALL_OK) return c.HOWL_RENDER_SUBMIT_FAILED;
-    if (!ensureSurfaceStorage(term, info.render_px.width, info.render_px.height)) return c.HOWL_RENDER_SUBMIT_FAILED;
     if (!storePreparedBuffer(term, info, buffer)) return c.HOWL_RENDER_SUBMIT_FAILED;
+    if (!ensureSurfaceTexture(term, info.render_px.width, info.render_px.height)) return c.HOWL_RENDER_SUBMIT_FAILED;
     if (!uploadSurfaceTexture(term, damage)) return c.HOWL_RENDER_SUBMIT_FAILED;
 
     const query = term.render.flow.surfaceQuery();
@@ -239,11 +239,9 @@ fn submitPreparedSurface(term: *api.Term, prepared_frame: render_flow.PreparedFr
     return result;
 }
 
-fn ensureSurfaceStorage(term: *api.Term, width: u16, height: u16) bool {
-    const pixels_len = @as(usize, width) * @as(usize, height) * 4;
-    if (term.render.pixels.items.len != pixels_len) {
-        term.render.pixels.resize(term.allocator, pixels_len) catch return false;
-    }
+fn ensureSurfaceTexture(term: *api.Term, width: u16, height: u16) bool {
+    std.debug.assert(width > 0);
+    std.debug.assert(height > 0);
     if (term.render.surface.texture_id == 0) {
         c.glGenTextures(1, &term.render.surface.texture_id);
         if (term.render.surface.texture_id == 0) return false;
@@ -286,6 +284,7 @@ fn storePreparedBuffer(term: *api.Term, info: c.HowlRenderPreparedSurfaceInfo, b
     if (buffer.rgba_pixels.len != expected_len) return false;
     if (expected_len > 0 and buffer.rgba_pixels.ptr == null) return false;
     term.render.pixels.resize(term.allocator, expected_len) catch return false;
+    std.debug.assert(term.render.pixels.items.len == expected_len);
     if (expected_len == 0) return true;
     @memcpy(term.render.pixels.items, buffer.rgba_pixels.ptr[0..expected_len]);
     return true;
@@ -300,6 +299,8 @@ fn validPresentRect(rect: c.HowlRenderRect) bool {
 
 fn uploadSurfaceTexture(term: *api.Term, damage: c.HowlRenderPreparedSurfaceDamagePlan) bool {
     if (term.render.surface.texture_id == 0) return false;
+    std.debug.assert(term.render.surface.width > 0);
+    std.debug.assert(term.render.surface.height > 0);
     c.glBindTexture(c.GL_TEXTURE_2D, term.render.surface.texture_id);
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
     c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
