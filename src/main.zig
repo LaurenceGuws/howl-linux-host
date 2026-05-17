@@ -145,11 +145,12 @@ fn runLoop(app: *App) !void {
 fn runLoopTurn(app: *App) !LoopAction {
     if (quitRequested()) |action| return action;
 
-    const tab_before_wait = activeTab(app.tabs.items, app.active_tab_idx.*);
-    const work_before_wait = collectRenderWork(tab_before_wait);
+    const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
+    const now_before_wait = Window.c_win.SDL_GetTicksNS();
+    const work_before_wait = collectRenderWork(tab, now_before_wait);
     if (work_before_wait.needs_frame) {
         assert(app.tabs.items.len > 0);
-        assert(work_before_wait.terminal_frame or tab_before_wait.needsPresentationFrame(Window.c_win.SDL_GetTicksNS()));
+        assert(work_before_wait.terminal_frame or tab.needsPresentationFrame(now_before_wait));
     }
     const wait_for_event = !work_before_wait.needs_frame;
     const event_action = pumpWindowEvents(app, wait_for_event);
@@ -162,14 +163,15 @@ fn runLoopTurn(app: *App) !LoopAction {
     forwardTerminalInput(app);
     applyWindowResize(app);
 
-    const tab_before_render = activeTab(app.tabs.items, app.active_tab_idx.*);
-    const work_before_render = collectRenderWork(tab_before_render);
+    const tab_after_input = activeTab(app.tabs.items, app.active_tab_idx.*);
+    const now_before_render = Window.c_win.SDL_GetTicksNS();
+    const work_before_render = collectRenderWork(tab_after_input, now_before_render);
     if (!work_before_render.needs_frame) return .continue_running;
 
     render(app, work_before_render);
     if (quitRequested()) |action| return action;
     try ensureActiveTabHealthy(app);
-    wakeIfMoreContent(app);
+    wakeIfMoreContent(tab_after_input, Window.c_win.SDL_GetTicksNS());
     return .continue_running;
 }
 
@@ -222,9 +224,7 @@ fn ensureActiveTabHealthy(app: *App) !void {
     return error.HostTabFailed;
 }
 
-fn wakeIfMoreContent(app: *App) void {
-    const now_ns = Window.c_win.SDL_GetTicksNS();
-    const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
+fn wakeIfMoreContent(tab: *TerminalWidget, now_ns: u64) void {
     if (!tab.needsContentFrame(now_ns)) return;
     Input.wakeWindow();
 }
@@ -234,9 +234,8 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
     tabs.deinit(alloc);
 }
 
-fn collectRenderWork(tab: *TerminalWidget) RenderWork {
+fn collectRenderWork(tab: *TerminalWidget, now_ns: u64) RenderWork {
     tab.maybeCommitGridResize();
-    const now_ns = Window.c_win.SDL_GetTicksNS();
     const terminal_frame = tab.needsContentFrame(now_ns);
     const presentation_frame = tab.needsPresentationFrame(now_ns);
     return .{
