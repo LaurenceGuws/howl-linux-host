@@ -139,13 +139,13 @@ pub const Terminal = struct {
 
     pub fn needsContentFrame(self: *Terminal, now_ns: u64) bool {
         _ = now_ns;
-        return self.last_surface.texture_id == 0 or api.hasPendingRenderWork(&self.term);
+        return api.needsContentFrame(&self.term, self.last_surface.texture_id == 0);
     }
 
     pub fn render(self: *Terminal) void {
         const bootstrap_surface = self.last_surface.texture_id == 0;
         self.first_render_trace_logged = true;
-        if (api.hasPendingRenderWork(&self.term)) self.first_non_idle_action_logged = true;
+        if (api.needsContentFrame(&self.term, false)) self.first_non_idle_action_logged = true;
         switch (api.advanceRender(&self.term, bootstrap_surface)) {
             .idle, .blocked_present, .failed => return,
             .prepared => {

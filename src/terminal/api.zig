@@ -650,6 +650,10 @@ pub fn hasPendingRenderWork(term: *const Term) bool {
     return term.render_phase != .idle;
 }
 
+pub fn needsContentFrame(term: *const Term, bootstrap_surface: bool) bool {
+    return bootstrap_surface or hasPendingRenderWork(term);
+}
+
 pub fn advanceRender(term: *Term, bootstrap_surface: bool) RenderAdvanceResult {
     if (term.render_phase == .submit) {
         return switch (submitRender(term)) {
