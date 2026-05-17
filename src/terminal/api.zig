@@ -543,14 +543,6 @@ pub fn scrollState(term: *const Term) ScrollState {
     };
 }
 
-pub fn currentScrollbackCount(term: *const Term) u32 {
-    return scrollState(term).scrollback_count;
-}
-
-pub fn currentScrollbackOffset(term: *const Term) u32 {
-    return scrollState(term).scrollback_offset;
-}
-
 pub fn setScrollbackOffset(term: *Term, offset: u32) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
@@ -587,13 +579,6 @@ pub fn isAlternateScreen(term: *const Term) bool {
     return vtVisibleInfo(term.vt, term.scrollback_offset).is_alternate_screen;
 }
 
-pub fn hasOutputProof(term: *const Term) bool {
-    const mut: *Term = @constCast(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    return term.output_seen;
-}
-
 pub fn inputBytesApplied(term: *const Term) u64 {
     return transport_owner.inputBytesApplied(term);
 }
@@ -612,10 +597,6 @@ pub fn copyCurrentTitle(term: *const Term, out_buf: []u8) usize {
     const len = @min(out_buf.len, term.current_title.items.len);
     if (len > 0) @memcpy(out_buf[0..len], term.current_title.items[0..len]);
     return len;
-}
-
-pub fn isSessionAlive(term: *const Term) bool {
-    return isAlive(term);
 }
 
 pub fn syncRenderGeometry(term: *Term, geom: RenderGeometry) !void {
@@ -658,22 +639,6 @@ pub fn syncRenderGeometry(term: *Term, geom: RenderGeometry) !void {
 
 pub fn publishSource(term: *Term) SourceResponse {
     return surface_owner.publishSource(term);
-}
-
-const VisibleCopy = struct {
-    rows: u16,
-    cols: u16,
-    cursor_row: u16,
-    cursor_col: u16,
-    cursor_visible: bool,
-    cursor_shape: u8,
-    is_alternate_screen: bool,
-    history_count: u32,
-    start: u32,
-};
-
-fn sourceRejected(term: *Term) SourceResponse {
-    return surface_owner.sourceRejected(term);
 }
 
 
