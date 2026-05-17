@@ -137,10 +137,6 @@ pub const Terminal = struct {
         geometry.maybeCommitGridResize(self);
     }
 
-    pub fn needsPresentationFrame(self: *Terminal, now_ns: u64) bool {
-        return frame.needsPresentationFrame(self, now_ns);
-    }
-
     pub fn needsContentFrame(self: *Terminal, now_ns: u64) bool {
         return frame.needsContentFrame(self, now_ns);
     }

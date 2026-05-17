@@ -19,11 +19,6 @@ const max_tabs_count: usize = TabBar.max_tabs_count;
 const max_binding_actions_per_turn: u8 = 8;
 const TabList = std.ArrayList(*TerminalWidget);
 
-const RenderWork = struct {
-    needs_frame: bool,
-    terminal_frame: bool,
-};
-
 const LoopAction = enum {
     continue_running,
     quit,
@@ -147,12 +142,8 @@ fn runLoopTurn(app: *App) !LoopAction {
 
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
     const now_before_wait = Window.c_win.SDL_GetTicksNS();
-    const work_before_wait = collectRenderWork(tab, now_before_wait);
-    if (work_before_wait.needs_frame) {
-        assert(app.tabs.items.len > 0);
-        assert(work_before_wait.terminal_frame or tab.needsPresentationFrame(now_before_wait));
-    }
-    const wait_for_event = !work_before_wait.needs_frame;
+    const content_before_wait = collectContentFrame(tab, now_before_wait);
+    const wait_for_event = !content_before_wait;
     const event_action = pumpWindowEvents(app, wait_for_event);
     if (event_action == .quit) return .quit;
 
@@ -165,10 +156,10 @@ fn runLoopTurn(app: *App) !LoopAction {
 
     const tab_after_input = activeTab(app.tabs.items, app.active_tab_idx.*);
     const now_before_render = Window.c_win.SDL_GetTicksNS();
-    const work_before_render = collectRenderWork(tab_after_input, now_before_render);
-    if (!work_before_render.needs_frame) return .continue_running;
+    const content_before_render = collectContentFrame(tab_after_input, now_before_render);
+    if (!content_before_render) return .continue_running;
 
-    render(app, work_before_render);
+    render(app);
     if (quitRequested()) |action| return action;
     try ensureActiveTabHealthy(app);
     wakeIfMoreContent(tab_after_input, Window.c_win.SDL_GetTicksNS());
@@ -234,20 +225,15 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
     tabs.deinit(alloc);
 }
 
-fn collectRenderWork(tab: *TerminalWidget, now_ns: u64) RenderWork {
+fn collectContentFrame(tab: *TerminalWidget, now_ns: u64) bool {
     tab.maybeCommitGridResize();
-    const terminal_frame = tab.needsContentFrame(now_ns);
-    const presentation_frame = tab.needsPresentationFrame(now_ns);
-    return .{
-        .needs_frame = terminal_frame or presentation_frame,
-        .terminal_frame = terminal_frame,
-    };
+    return tab.needsContentFrame(now_ns);
 }
 
-fn render(app: *App, work: RenderWork) void {
+fn render(app: *App) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
-    InputWindow.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame={}", .{ InputWindow.nowNs(), work.terminal_frame });
-    if (work.terminal_frame) tab.render();
+    InputWindow.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
+    tab.render();
 
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
     const surface = tab.surfaceSnapshot();

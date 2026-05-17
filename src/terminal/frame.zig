@@ -1,13 +1,6 @@
 
-const HostInput = @import("../input/input.zig").Input;
 const api = @import("api.zig");
 const window = @import("../input/window.zig");
-
-pub fn needsPresentationFrame(self: anytype, now_ns: u64) bool {
-    _ = self;
-    _ = now_ns;
-    return false;
-}
 
 pub fn needsContentFrame(self: anytype, now_ns: u64) bool {
     _ = now_ns;
@@ -25,7 +18,6 @@ pub fn render(self: anytype) void {
                 self.first_prepare_result_logged = true;
                 window.logStartupf("stage=term-prepare-first prepared=true", .{});
             }
-            HostInput.wakeWindow();
             return;
         },
         .rendered => {
