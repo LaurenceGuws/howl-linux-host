@@ -122,12 +122,12 @@ pub fn surfaceSourceOut(term: *api.Term) !c.HowlRenderSurfaceSource {
 
 pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
     std.debug.assert(handle != null);
-    const view = c.howl_vt_terminal_copy_surface(handle, scrollback_offset, null, 0, null, 0, null, 0);
+    const view = c.howl_vt_terminal_copy_surface_source(handle, scrollback_offset, null, 0, null, 0, null, 0, null, 0, 0, 0);
     if (view.status != vt_abi.callShortBuffer()) vt_abi.requireStructOk(view.status);
     std.debug.assert(scrollback_offset <= view.history_count);
     return .{
         .history_count = @intCast(view.history_count),
-        .is_alternate_screen = view.is_alternate_screen != 0,
+        .is_alternate_screen = view.source.is_alternate_screen != 0,
     };
 }
 
