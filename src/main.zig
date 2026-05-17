@@ -9,6 +9,7 @@ const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const PtyApi = @import("terminal/pty/abi.zig");
 const RenderApi = @import("terminal/render/abi.zig");
+const VtApi = @import("terminal/vt/abi.zig");
 const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
 const Window = @import("window/window.zig");
 
@@ -250,6 +251,7 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
 
 fn collectContentFrame(tab: *TerminalPanel, now_ns: u64) bool {
     tab.maybeCommitGridResize();
+    _ = VtApi.publishSource(&tab.term);
     return tab.needsContentFrame(now_ns);
 }
 

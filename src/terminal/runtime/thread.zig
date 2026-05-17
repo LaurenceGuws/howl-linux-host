@@ -1,7 +1,6 @@
 
 const pty_api = @import("../pty/abi.zig");
 const vt_api = @import("../vt/abi.zig");
-const render_api = @import("../render/abi.zig");
 const HostInput = @import("../../input/input.zig").Input;
 const log = @import("../../input/window.zig");
 const std = @import("std");
@@ -46,33 +45,30 @@ fn driveReadyWork(self: anytype, comptime Ops: type) bool {
 fn driveOnceWith(self: anytype, comptime Ops: type) bool {
     const transport = Ops.pumpTransport(&self.term, transport_limits);
     const applied = Ops.applyPending(&self.term, apply_budget);
-    const render_was_pending = render_api.hasPendingRenderWork(&self.term);
     const keep = Ops.hasOutboundInputBacklog(&self.term) or
         transport.reads == transport_limits.max_reads or
         transport.bytes_read == transport_limits.max_bytes or
         applied.remaining_events != 0;
-    const should_publish = applied.state_changed or !keep;
-    const published: vt_api.SourceResponse = if (should_publish)
-        Ops.publishSource(&self.term)
-    else
-        .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 };
+    const should_wake = transport.reads != 0 or
+        transport.bytes_read != 0 or
+        applied.applied_events != 0 or
+        applied.remaining_events != 0 or
+        Ops.hasOutboundInputBacklog(&self.term);
     log.logProgressDriveStartupf(
-        "stage=progress-drive-first reads={d} read_bytes={d} applied={d} publish={d} queued={d} damage={d} keep={} alive={}",
+        "stage=progress-drive-first reads={d} read_bytes={d} applied={d} wake={d} keep={} alive={}",
         .{
             transport.reads,
             transport.bytes_read,
             applied.applied_events,
-            @intFromBool(published.published),
-            @intFromBool(published.queued),
-            @intFromEnum(published.damage_kind),
+            @intFromBool(should_wake),
             keep,
             Ops.isAlive(&self.term),
         },
     );
-    if (published.published and !render_was_pending) Ops.wakeWindow();
-    if (transport.reads != 0 or transport.bytes_read != 0 or applied.applied_events != 0 or applied.remaining_events != 0 or published.published or Ops.hasOutboundInputBacklog(&self.term)) {
+    if (should_wake) Ops.wakeWindow();
+    if (should_wake) {
         log.logf(
-            "host-loop ts_ns={d} stage=progress-drive-live drained={d} pending={d} reads={d} read_bytes={d} queued_events={d} applied={d} remaining={d} changed={} publish={} queued={} damage={d} keep={} phase={s}",
+            "host-loop ts_ns={d} stage=progress-drive-live drained={d} pending={d} reads={d} read_bytes={d} queued_events={d} applied={d} remaining={d} changed={} wake={} keep={}",
             .{
                 log.nowNs(),
                 transport.drained_input_bytes,
@@ -83,16 +79,13 @@ fn driveOnceWith(self: anytype, comptime Ops: type) bool {
                 applied.applied_events,
                 applied.remaining_events,
                 applied.state_changed,
-                published.published,
-                published.queued,
-                @intFromEnum(published.damage_kind),
+                should_wake,
                 keep,
-                @tagName(render_api.renderPhase(&self.term)),
             },
         );
     }
     log.logFramef(
-        "host-loop ts_ns={d} stage=progress-drive drained={d} pending={d} reads={d} read_bytes={d} queued_events={d} applied_remaining={d} publish={d} queued={d} damage={d} keep={}",
+        "host-loop ts_ns={d} stage=progress-drive drained={d} pending={d} reads={d} read_bytes={d} queued_events={d} applied_remaining={d} wake={d} keep={}",
         .{
             log.nowNs(),
             transport.drained_input_bytes,
@@ -101,9 +94,7 @@ fn driveOnceWith(self: anytype, comptime Ops: type) bool {
             transport.bytes_read,
             transport.queued_events,
             applied.remaining_events,
-            @intFromBool(published.published),
-            @intFromBool(published.queued),
-            @intFromEnum(published.damage_kind),
+            @intFromBool(should_wake),
             keep,
         },
     );
@@ -126,11 +117,6 @@ const RealOps = struct {
     fn hasOutboundInputBacklog(term: *const pty_api.Term) bool {
         return pty_api.hasOutboundInputBacklog(term);
     }
-
-    fn publishSource(term: *vt_api.Term) vt_api.SourceResponse {
-        return vt_api.publishSource(term);
-    }
-
     fn isAlive(term: *const pty_api.Term) bool {
         return pty_api.isAlive(term);
     }
@@ -148,30 +134,26 @@ test "host loop waits when nothing is ready" {
     fake_state.stop_after_wait = true;
     progressThreadMainWith(&ctx, FakeOps);
     try std.testing.expectEqual(@as(usize, 1), fake_state.wait_calls);
-    try std.testing.expectEqual(@as(usize, 0), fake_state.publish_calls);
     try std.testing.expectEqual(@as(usize, 0), fake_state.wake_calls);
 }
 
-test "host loop wakes on output publication" {
+test "host loop wakes on applied vt work" {
     fake_state = .{};
-    fake_state.publish_ready = true;
-    fake_state.publish_result = .{ .published = true, .queued = true, .damage_kind = .full, .source_seq = 7, .geometry_epoch = 3 };
+    fake_state.applied_events = 1;
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const keep = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(!keep);
-    try std.testing.expectEqual(@as(usize, 1), fake_state.publish_calls);
     try std.testing.expectEqual(@as(usize, 1), fake_state.wake_calls);
 }
 
-test "host loop wakes after input triggers publication" {
+test "host loop keeps driving while vt work remains" {
     fake_state = .{};
     fake_state.applied_events = 2;
-    fake_state.publish_result = .{ .published = true, .queued = true, .damage_kind = .partial, .source_seq = 8, .geometry_epoch = 3 };
+    fake_state.remaining_events = 1;
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const keep = driveOnceWith(&ctx, FakeOps);
-    try std.testing.expect(!keep);
+    try std.testing.expect(keep);
     try std.testing.expectEqual(@as(usize, 1), fake_state.apply_calls);
-    try std.testing.expectEqual(@as(usize, 1), fake_state.publish_calls);
     try std.testing.expectEqual(@as(usize, 1), fake_state.wake_calls);
 }
 
@@ -180,7 +162,6 @@ test "host loop stays quiet when nothing changes" {
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const keep = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(!keep);
-    try std.testing.expectEqual(@as(usize, 1), fake_state.publish_calls);
     try std.testing.expectEqual(@as(usize, 0), fake_state.wake_calls);
 }
 
@@ -200,7 +181,6 @@ var fake_state: struct {
     wait_calls: usize = 0,
     pump_calls: usize = 0,
     apply_calls: usize = 0,
-    publish_calls: usize = 0,
     wake_calls: usize = 0,
     is_alive: bool = true,
     backlog: bool = false,
@@ -208,8 +188,6 @@ var fake_state: struct {
     reads: u16 = 0,
     remaining_events: u32 = 0,
     applied_events: u32 = 0,
-    publish_ready: bool = false,
-    publish_result: vt_api.SourceResponse = .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 },
     stop_after_wait: bool = false,
     stop_ptr: ?*std.atomic.Value(bool) = null,
 } = .{};
@@ -230,22 +208,15 @@ const FakeOps = struct {
 
     fn applyPending(_: *FakeTerm, _: u32) pty_api.ApplyProgress {
         fake_state.apply_calls += 1;
-        if (fake_state.applied_events != 0) fake_state.publish_ready = true;
         return .{ .applied_events = fake_state.applied_events, .remaining_events = fake_state.remaining_events, .state_changed = fake_state.applied_events != 0 };
-    }
-
-    fn hasOutboundInputBacklog(_: *const FakeTerm) bool {
-        return fake_state.backlog;
-    }
-
-    fn publishSource(_: *FakeTerm) vt_api.SourceResponse {
-        fake_state.publish_calls += 1;
-        if (!fake_state.publish_ready) return .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 };
-        return fake_state.publish_result;
     }
 
     fn isAlive(_: *const FakeTerm) bool {
         return fake_state.is_alive;
+    }
+
+    fn hasOutboundInputBacklog(_: *const FakeTerm) bool {
+        return fake_state.backlog;
     }
 
     fn wakeWindow() void {
