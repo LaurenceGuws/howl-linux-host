@@ -10,13 +10,13 @@ const SurfaceHandle = api.RenderSurface;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const effects = @import("effects.zig");
-const frame = @import("frame.zig");
 const font_size = @import("font_size.zig");
 const geometry = @import("geometry.zig");
 const input_flow = @import("input_flow.zig");
 const lifecycle = @import("lifecycle.zig");
 const query = @import("query.zig");
 const scroll = @import("scroll.zig");
+const window_log = @import("../input/window.zig");
 
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
@@ -138,11 +138,40 @@ pub const Terminal = struct {
     }
 
     pub fn needsContentFrame(self: *Terminal, now_ns: u64) bool {
-        return frame.needsContentFrame(self, now_ns);
+        _ = now_ns;
+        return self.last_surface.texture_id == 0 or api.hasPendingRenderWork(&self.term);
     }
 
     pub fn render(self: *Terminal) void {
-        frame.render(self);
+        const bootstrap_surface = self.last_surface.texture_id == 0;
+        self.first_render_trace_logged = true;
+        if (api.hasPendingRenderWork(&self.term)) self.first_non_idle_action_logged = true;
+        switch (api.advanceRender(&self.term, bootstrap_surface)) {
+            .idle, .blocked_present, .failed => return,
+            .prepared => {
+                if (!self.first_prepare_result_logged) {
+                    self.first_prepare_result_logged = true;
+                    window_log.logStartupf("stage=term-prepare-first prepared=true", .{});
+                }
+                return;
+            },
+            .rendered => {
+                if (!self.first_submit_trace_logged) {
+                    self.first_submit_trace_logged = true;
+                    window_log.logStartupf("stage=term-submit-first result=rendered", .{});
+                }
+                if (!self.first_non_idle_submit_logged) {
+                    self.first_non_idle_submit_logged = true;
+                    window_log.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
+                }
+                self.last_surface = self.term.render_surface;
+                if (!self.first_rendered_surface_logged) {
+                    self.first_rendered_surface_logged = true;
+                    window_log.logStartupf("stage=term-rendered-surface-first texture_id={d} epoch={d}", .{ self.last_surface.texture_id, self.last_surface.epoch });
+                }
+                return;
+            },
+        }
     }
 
     pub fn geometrySnapshot(self: *Terminal) RenderGeometry {
