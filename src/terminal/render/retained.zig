@@ -5,26 +5,18 @@ const c = @import("../c.zig").c;
 
 pub const Phase = enum(u8) { idle, prepare, submit, present };
 
+pub const PrepareResult = enum { idle, prepared, failed };
+
+pub const SubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
+
+pub const AdvanceResult = enum { idle, prepared, rendered, blocked_present, failed };
+
 pub const FrameLayout = struct {
     render_px: flow.PixelSize,
     grid_px: flow.PixelSize,
     cols: u16,
     rows: u16,
     cell_px: flow.CellSize,
-};
-
-pub const AtlasSlot = struct {
-    pixels: []u8 = &.{},
-    width_px: u16 = 0,
-    height_px: u16 = 0,
-    stride: u16 = 0,
-    color_mode: u8 = 0,
-    visual_bounds: c.HowlRenderRasterBounds = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
-
-    pub fn deinit(self: *AtlasSlot, allocator: std.mem.Allocator) void {
-        if (self.pixels.len > 0) allocator.free(self.pixels);
-        self.* = .{};
-    }
 };
 
 pub const State = struct {
@@ -36,7 +28,6 @@ pub const State = struct {
     pixels: std.ArrayListUnmanaged(u8) = .empty,
     upload_scratch: std.ArrayListUnmanaged(u8) = .empty,
     damage_rects: std.ArrayListUnmanaged(window.Rect) = .empty,
-    atlas_slots: std.ArrayListUnmanaged(AtlasSlot) = .empty,
     font_size_px: u16,
     primary_font_path: ?[:0]u8 = null,
     fallback_font_paths: std.ArrayListUnmanaged([:0]u8) = .empty,
@@ -49,8 +40,6 @@ pub const State = struct {
         for (self.fallback_font_paths.items) |path| allocator.free(path);
         self.fallback_font_paths.clearRetainingCapacity();
         self.fallback_font_paths.deinit(allocator);
-        for (self.atlas_slots.items) |*slot| slot.deinit(allocator);
-        self.atlas_slots.deinit(allocator);
         self.pixels.deinit(allocator);
         self.upload_scratch.deinit(allocator);
         self.damage_rects.deinit(allocator);
