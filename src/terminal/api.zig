@@ -839,13 +839,6 @@ fn vtRequireResizeOk(status: i32) !void {
     return error.VtCallFailed;
 }
 
-fn vtQueuedEventCount(handle: c.HowlVtHandle) u32 {
-    std.debug.assert(handle != null);
-    const result = c.howl_vt_terminal_apply(handle, 0, null, 0);
-    vtRequireStructOk(result.status);
-    return @intCast(result.remaining_events);
-}
-
 pub const VisibleInfo = struct {
     history_count: u32,
     is_alternate_screen: bool,
@@ -855,162 +848,14 @@ fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
     return surface_owner.vtVisibleInfo(handle, scrollback_offset);
 }
 
-fn vtEnsureBytes(term: *Term, needed: usize) ![]u8 {
-    try term.vt_bytes.resize(term.allocator, needed);
-    return term.vt_bytes.items;
-}
-
 fn vtEnsureCells(term: *Term, needed: usize) ![]c.HowlVtCell {
     return surface_owner.vtEnsureCells(term, needed);
 }
-
-fn vtPendingOutput(term: *Term) ![]const u8 {
-    var out = try vtEnsureBytes(term, 0);
-    var result = c.howl_vt_terminal_copy_pending_output(term.vt, out.ptr, out.len);
-    if (result.status == vtCallShortBuffer()) {
-        out = try vtEnsureBytes(term, @intCast(result.needed));
-        result = c.howl_vt_terminal_copy_pending_output(term.vt, out.ptr, out.len);
-    }
-    try vtRequireOk(result.status);
-    std.debug.assert(result.written <= term.vt_bytes.items.len);
-    return term.vt_bytes.items[0..@intCast(result.written)];
-}
-
-fn vtDrainClipboard(term: *Term, allocator: std.mem.Allocator) !?[]u8 {
-    var out = try vtEnsureBytes(term, 0);
-    var result = c.howl_vt_terminal_drain_pending_clipboard(term.vt, out.ptr, out.len);
-    if (result.status == vtCallShortBuffer()) {
-        out = try vtEnsureBytes(term, @intCast(result.needed));
-        result = c.howl_vt_terminal_drain_pending_clipboard(term.vt, out.ptr, out.len);
-    }
-    try vtRequireOk(result.status);
-    if (result.written == 0) return null;
-    std.debug.assert(result.written <= term.vt_bytes.items.len);
-    return try allocator.dupe(u8, term.vt_bytes.items[0..@intCast(result.written)]);
-}
-
 fn vtCopyVisible(term: *Term) !surface_owner.VisibleCopy {
     return surface_owner.vtCopyVisible(term);
 }
-
-fn vtEncodeInput(term: *Term, event: Input.Event) ![]const u8 {
-    switch (event) {
-        .bytes => |bytes| return bytes,
-        .key => |key| return vtEncodeKeyInput(term, key),
-        .focus => |focus| return vtEncodeFocusInput(term, focus),
-        .mouse => |mouse| return vtEncodeMouseInput(term, mouse),
-        .paste => |text| return vtEncodePasteInput(term, text),
-    }
-}
-
-fn vtEncodeKeyInput(term: *Term, key: Input.KeyEvent) ![]const u8 {
-    while (true) {
-        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
-        const result = c.howl_vt_terminal_encode_key(term.vt, key.key, @intCast(key.mods), out.ptr, out.len);
-        if (result.status == vtCallShortBuffer()) {
-            _ = try vtEnsureBytes(term, @intCast(result.needed));
-            continue;
-        }
-        try vtRequireOk(result.status);
-        std.debug.assert(result.written <= term.vt_bytes.items.len);
-        return term.vt_bytes.items[0..@intCast(result.written)];
-    }
-}
-
-fn vtEncodeFocusInput(term: *Term, focus: Input.FocusEvent) ![]const u8 {
-    while (true) {
-        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
-        const result = c.howl_vt_terminal_encode_focus(term.vt, if (focus == .in) 1 else 0, out.ptr, out.len);
-        if (result.status == vtCallShortBuffer()) {
-            _ = try vtEnsureBytes(term, @intCast(result.needed));
-            continue;
-        }
-        try vtRequireOk(result.status);
-        std.debug.assert(result.written <= term.vt_bytes.items.len);
-        return term.vt_bytes.items[0..@intCast(result.written)];
-    }
-}
-
-fn vtEncodeMouseInput(term: *Term, mouse: Input.MouseEvent) ![]const u8 {
-    while (true) {
-        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
-        const result = c.howl_vt_terminal_encode_mouse(
-            term.vt,
-            mouse.kind,
-            mouse.button,
-            mouse.row,
-            mouse.col,
-            if (mouse.pixel_x != null) 1 else 0,
-            if (mouse.pixel_x) |value| value else 0,
-            if (mouse.pixel_y != null) 1 else 0,
-            if (mouse.pixel_y) |value| value else 0,
-            @intCast(mouse.mods),
-            mouse.buttons_down,
-            out.ptr,
-            out.len,
-        );
-        if (result.status == vtCallShortBuffer()) {
-            _ = try vtEnsureBytes(term, @intCast(result.needed));
-            continue;
-        }
-        try vtRequireOk(result.status);
-        std.debug.assert(result.written <= term.vt_bytes.items.len);
-        return term.vt_bytes.items[0..@intCast(result.written)];
-    }
-}
-
-fn vtEncodePasteInput(term: *Term, text: []const u8) ![]const u8 {
-    while (true) {
-        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
-        const result = c.howl_vt_terminal_encode_paste(term.vt, text.ptr, text.len, out.ptr, out.len);
-        if (result.status == vtCallShortBuffer()) {
-            _ = try vtEnsureBytes(term, @intCast(result.needed));
-            continue;
-        }
-        try vtRequireOk(result.status);
-        std.debug.assert(result.written <= term.vt_bytes.items.len);
-        return term.vt_bytes.items[0..@intCast(result.written)];
-    }
-}
-
-fn ptyCallOk() i32 {
-    return c.HOWL_PTY_CALL_OK;
-}
-
-fn ptyRequireOk(status: i32) !void {
-    if (status == ptyCallOk()) return;
-    return error.PtyCallFailed;
-}
-
-fn ptyRequireStructOk(status: i32) void {
-    std.debug.assert(status == ptyCallOk());
-}
-
-fn ptyRequireResizeOk(status: i32) !void {
-    if (status == ptyCallOk()) return;
-    if (status == c.HOWL_PTY_CALL_INVALID_ARGUMENT) return error.InvalidDimensions;
-    return error.PtyCallFailed;
-}
-
-fn ptySessionStatus(handle: c.HowlPtySessionHandle) u8 {
-    std.debug.assert(handle != null);
-    return c.howl_pty_session_snapshot(handle).session_status;
-}
-
-fn ptySessionPendingBytes(handle: c.HowlPtySessionHandle) u64 {
-    std.debug.assert(handle != null);
-    return @intCast(c.howl_pty_session_pending_bytes(handle));
-}
-
 fn countLen(count: u32) usize {
     return @intCast(count);
-}
-
-fn ptyPublishInput(handle: c.HowlPtySessionHandle, bytes: []const u8) !void {
-    std.debug.assert(handle != null);
-    std.debug.assert(bytes.len > 0);
-    try ptyRequireOk(c.howl_pty_session_publish_input(handle, bytes.ptr, bytes.len));
-    ptyRequireStructOk(c.howl_pty_session_pump_outbound(handle, 0).status);
 }
 
 fn renderRequireOk(status: i32) !void {
