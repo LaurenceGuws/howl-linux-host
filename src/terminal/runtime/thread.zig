@@ -43,10 +43,6 @@ fn driveReadyWork(self: anytype, comptime Ops: type) bool {
     return true;
 }
 
-fn driveOnce(self: anytype) bool {
-    return driveOnceWith(self, RealOps);
-}
-
 fn driveOnceWith(self: anytype, comptime Ops: type) bool {
     const transport = Ops.pumpTransport(&self.term, transport_limits);
     const applied = Ops.applyPending(&self.term, apply_budget);

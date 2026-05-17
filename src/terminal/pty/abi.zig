@@ -12,10 +12,10 @@ pub const Term = runtime.Term;
 pub const Input = vt_abi.Input;
 pub const MouseInput = vt_abi.MouseInput;
 pub const LifecycleState = retained.LifecycleState;
-pub const TransportLimits = runtime.TransportLimits;
-pub const TransportProgress = runtime.TransportProgress;
-pub const ApplyProgress = runtime.ApplyProgress;
-pub const ClipboardDrainResult = runtime.ClipboardDrainResult;
+pub const TransportLimits = session.TransportLimits;
+pub const TransportProgress = session.TransportProgress;
+pub const ApplyProgress = session.ApplyProgress;
+pub const ClipboardDrainResult = session.ClipboardDrainResult;
 pub const PtyLaunchConfig = retained.LaunchConfig;
 
 pub fn initPty(
@@ -23,7 +23,7 @@ pub fn initPty(
     launch: PtyLaunchConfig,
     cols: u16,
     rows: u16,
-    cell_px: runtime.RenderCellSize,
+    cell_px: render_flow.CellSize,
 ) !Term {
     std.debug.assert(cols > 0);
     std.debug.assert(rows > 0);
@@ -49,7 +49,7 @@ pub fn initPty(
     if (initial_layout.status != runtime.c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
 
     const initial_grid = initial_layout.grid;
-    const initial_cell_px = runtime.RenderCellSize{
+    const initial_cell_px = render_flow.CellSize{
         .width = initial_layout.cell_px.width,
         .height = initial_layout.cell_px.height,
     };

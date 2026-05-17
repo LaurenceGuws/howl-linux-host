@@ -9,8 +9,7 @@ const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const PtyApi = @import("terminal/pty/abi.zig");
 const RenderApi = @import("terminal/render/abi.zig");
-const TermPresentation = @import("terminal/host/presentation.zig");
-const TerminalWidget = @import("terminal/terminal.zig").Terminal;
+const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
 const Window = @import("window/window.zig");
 
 pub const Options = cli_args.Options;
@@ -19,7 +18,7 @@ const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
 const max_tabs_count: usize = TabBar.max_tabs_count;
 const max_binding_actions_per_turn: u8 = 8;
-const TabList = std.ArrayList(*TerminalWidget);
+const TabList = std.ArrayList(*TerminalPanel);
 
 const LoopAction = enum {
     continue_running,
@@ -61,7 +60,7 @@ fn start(options: Options) !void {
     var tabs: TabList = .empty;
     defer destroyTabs(std.heap.c_allocator, &tabs);
     var active_tab_idx: TabIndex = 0;
-    try openInitialTab(&conf, &window, &tabs, &active_tab_idx);
+    try openTab(std.heap.c_allocator, &conf, &window, &tabs, &active_tab_idx);
     InputWindow.logStartup("initial-tab-opened");
 
     var perf: PerfLog.State = undefined;
@@ -69,7 +68,7 @@ fn start(options: Options) !void {
     defer perf.stopAndDeinit();
     InputWindow.logStartup("perf-ready");
 
-    var input = try initInput(&window);
+    var input = try initInput();
     InputWindow.logStartup("input-ready");
     const duration_timer = InputWindow.startQuitTimer(options.duration_ms);
     defer InputWindow.stopQuitTimer(duration_timer);
@@ -110,16 +109,11 @@ fn createWindow(conf: *const Config.State, options: Options) !Window.State {
     return window;
 }
 
-fn openInitialTab(conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
-    try openTab(std.heap.c_allocator, conf, window, tabs, active_tab_idx);
-}
-
-fn initPerf(perf: *PerfLog.State, tab: *TerminalWidget) !void {
+fn initPerf(perf: *PerfLog.State, tab: *TerminalPanel) !void {
     try perf.init(&tab.term, std.c.getenv("HOWL_RUNTIME_LOG_PATH"));
 }
 
-fn initInput(window: *Window.State) !Input {
-    _ = window;
+fn initInput() !Input {
     var input: Input = undefined;
     input.init();
     Input.wakeWindow();
@@ -194,7 +188,7 @@ fn quitRequested() ?LoopAction {
 }
 
 fn pumpWindowEvents(app: *App, wait: bool) LoopAction {
-    const signal = app.input.pumpWindow(app.window.handle, wait);
+    const signal = app.input.pumpWindow(wait);
     return switch (signal) {
         .none => .continue_running,
         .quit => .quit,
@@ -236,7 +230,7 @@ fn ensureActiveTabHealthy(app: *App) !void {
     return error.HostTabFailed;
 }
 
-fn wakeIfMoreContent(tab: *TerminalWidget, now_ns: u64) void {
+fn wakeIfMoreContent(tab: *TerminalPanel, now_ns: u64) void {
     if (!tab.needsContentFrame(now_ns)) return;
     if (!tab.first_wake_after_prepare_logged) {
         tab.first_wake_after_prepare_logged = true;
@@ -253,7 +247,7 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
     tabs.deinit(alloc);
 }
 
-fn collectContentFrame(tab: *TerminalWidget, now_ns: u64) bool {
+fn collectContentFrame(tab: *TerminalPanel, now_ns: u64) bool {
     tab.maybeCommitGridResize();
     return tab.needsContentFrame(now_ns);
 }
@@ -279,28 +273,28 @@ fn render(app: *App) void {
         .active_tab = tab_bar_snapshot.active_idx,
         .tab_labels = tab_bar_snapshot.labels,
     });
-    TermPresentation.markPresented(&tab.term);
+    RenderApi.markRenderPresented(&tab.term);
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
 }
 
-fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*TerminalWidget) void {
+fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*TerminalPanel) void {
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
     for (tabs) |tab| tab.resize(px.width, px.height, logical.width, logical.height);
 }
 
-fn setWindowFocused(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: TabIndex, focused: bool) void {
+fn setWindowFocused(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: TabIndex, focused: bool) void {
     assert(tabIndexInRange(tabs, active_tab_idx));
     _ = window.setFocused(focused);
     syncTerminalFocus(window, tabs, active_tab_idx);
 }
 
-fn activeTabFailed(tabs: []*TerminalWidget, active_tab_idx: TabIndex) bool {
+fn activeTabFailed(tabs: []*TerminalPanel, active_tab_idx: TabIndex) bool {
     if (tabs.len == 0) return true;
     return activeTab(tabs, active_tab_idx).lifecycleState() == .failed;
 }
 
-fn activeTab(tabs: []*TerminalWidget, active_tab_idx: TabIndex) *TerminalWidget {
+fn activeTab(tabs: []*TerminalPanel, active_tab_idx: TabIndex) *TerminalPanel {
     assert(tabs.len > 0);
     assert(tabIndexInRange(tabs, active_tab_idx));
     return tabs[@intCast(active_tab_idx)];
@@ -327,7 +321,7 @@ fn openTab(alloc: std.mem.Allocator, conf: *const Config.State, window: *Window.
 
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
-    const tab = try TerminalWidget.create(alloc, &conf.term, px.width, px.height, logical.width, logical.height);
+    const tab = try TerminalPanel.create(alloc, &conf.term, px.width, px.height, logical.width, logical.height);
     errdefer tab.destroy(alloc);
     try tabs.append(alloc, tab);
     assert(tabs.items.len > 0);
@@ -349,7 +343,7 @@ fn closeActiveTab(alloc: std.mem.Allocator, window: *Window.State, tabs: *TabLis
     syncTerminalFocus(window, tabs.items, active_tab_idx.*);
 }
 
-fn selectRelative(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: *TabIndex, delta: i32) void {
+fn selectRelative(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: *TabIndex, delta: i32) void {
     if (tabs.len <= 1) return;
     const len_i: i32 = @intCast(tabs.len);
     var idx: i32 = @intCast(active_tab_idx.*);
@@ -357,7 +351,7 @@ fn selectRelative(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx
     selectTab(window, tabs, active_tab_idx, @intCast(idx));
 }
 
-fn selectTab(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: *TabIndex, idx: TabIndex) void {
+fn selectTab(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: *TabIndex, idx: TabIndex) void {
     if (!tabIndexInRange(tabs, idx)) return;
     if (idx == active_tab_idx.*) return;
     active_tab_idx.* = idx;
@@ -365,7 +359,7 @@ fn selectTab(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: *Ta
     syncTerminalFocus(window, tabs, active_tab_idx.*);
 }
 
-fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalWidget, active_tab_idx: TabIndex) void {
+fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: TabIndex) void {
     assert(tabIndexInRange(tabs, active_tab_idx));
     for (tabs, 0..) |tab, i| {
         tab.setWindowFocused(window.focused);
@@ -373,13 +367,13 @@ fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalWidget, active_tab_
     }
 }
 
-fn tabTitles(tabs: []*TerminalWidget, buf: [][]const u8) []const []const u8 {
+fn tabTitles(tabs: []*TerminalPanel, buf: [][]const u8) []const []const u8 {
     assert(buf.len >= tabs.len);
     for (tabs, 0..) |tab, i| buf[i] = tab.titleSlice();
     return buf[0..tabs.len];
 }
 
-fn pasteIntoActiveTab(tab: *TerminalWidget) void {
+fn pasteIntoActiveTab(tab: *TerminalPanel) void {
     const text = Window.getClipboardText(std.heap.c_allocator) catch return;
     defer if (text) |buf| std.heap.c_allocator.free(buf);
     const payload = text orelse return;
@@ -390,6 +384,6 @@ fn setCurrentThreadName(name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(std.c.pthread_self(), name.ptr);
 }
 
-fn tabIndexInRange(tabs: []*TerminalWidget, idx: TabIndex) bool {
+fn tabIndexInRange(tabs: []*TerminalPanel, idx: TabIndex) bool {
     return idx < tabs.len;
 }

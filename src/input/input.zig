@@ -134,8 +134,7 @@ pub const Input = struct {
         return focused;
     }
 
-    pub fn pumpWindow(self: *Input, handle: *c.SDL_Window, wait: bool) Signal {
-        _ = handle;
+    pub fn pumpWindow(self: *Input, wait: bool) Signal {
         if (window.quitRequested()) return .quit;
 
         if (wait) {

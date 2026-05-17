@@ -15,12 +15,10 @@ const font_size = @import("host/font_size.zig");
 const geometry = @import("vt/geometry.zig");
 const input_flow = @import("pty/flow.zig");
 const lifecycle = @import("runtime/lifecycle.zig");
-const presentation = @import("host/presentation.zig");
-const query = @import("pty/query.zig");
 const scroll = @import("host/scroll.zig");
 const window_log = @import("../input/window.zig");
 
-pub const Terminal = struct {
+pub const TerminalPanel = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
     const max_render_steps_per_turn: u8 = 3;
 
@@ -40,7 +38,7 @@ pub const Terminal = struct {
     term_ready: bool,
     conf: *const TerminalConfig,
     title_buf: [128]u8,
-    title_len: usize,
+    title_len: u8,
     render_px_w: c_int,
     render_px_h: c_int,
     logical_w: c_int,
@@ -78,8 +76,8 @@ pub const Terminal = struct {
         render_height: c_int,
         logical_width: c_int,
         logical_height: c_int,
-    ) !*Terminal {
-        const self = try allocator.create(Terminal);
+    ) !*TerminalPanel {
+        const self = try allocator.create(TerminalPanel);
         errdefer allocator.destroy(self);
         self.* = initial(conf, render_width, render_height, logical_width, logical_height);
         errdefer self.deinit();
@@ -87,12 +85,12 @@ pub const Terminal = struct {
         return self;
     }
 
-    pub fn destroy(self: *Terminal, allocator: std.mem.Allocator) void {
+    pub fn destroy(self: *TerminalPanel, allocator: std.mem.Allocator) void {
         self.deinit();
         allocator.destroy(self);
     }
 
-    fn initial(conf: *const TerminalConfig, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) Terminal {
+    fn initial(conf: *const TerminalConfig, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) TerminalPanel {
         const render_w = @max(render_width, 1);
         const render_h = @max(render_height, 1);
         const logical_w = @max(logical_width, 1);
@@ -136,25 +134,25 @@ pub const Terminal = struct {
         };
     }
 
-    pub fn deinit(self: *Terminal) void {
+    pub fn deinit(self: *TerminalPanel) void {
         lifecycle.stop(self);
     }
 
-    pub fn resize(self: *Terminal, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
+    pub fn resize(self: *TerminalPanel, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
         geometry.resize(self, render_width, render_height, logical_width, logical_height);
     }
 
-    pub fn maybeCommitGridResize(self: *Terminal) void {
+    pub fn maybeCommitGridResize(self: *TerminalPanel) void {
         geometry.maybeCommitGridResize(self);
     }
 
-    pub fn needsContentFrame(self: *Terminal, now_ns: u64) bool {
+    pub fn needsContentFrame(self: *TerminalPanel, now_ns: u64) bool {
         _ = now_ns;
-        return render_api.needsContentFrame(&self.term, presentation.bootstrapSurface(self));
+        return render_api.needsContentFrame(&self.term, self.last_surface.texture_id == 0);
     }
 
-    pub fn render(self: *Terminal) void {
-        const bootstrap_surface = presentation.bootstrapSurface(self);
+    pub fn render(self: *TerminalPanel) void {
+        const bootstrap_surface = self.last_surface.texture_id == 0;
         self.first_render_trace_logged = true;
         if (render_api.needsContentFrame(&self.term, false)) self.first_non_idle_action_logged = true;
         var step: u8 = 0;
@@ -206,7 +204,7 @@ pub const Terminal = struct {
                         self.first_non_idle_submit_logged = true;
                         window_log.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
                     }
-                    presentation.acceptRendered(self);
+                    self.last_surface = self.term.render.surface;
                     if (!self.first_rendered_surface_logged) {
                         self.first_rendered_surface_logged = true;
                         window_log.logStartupf("stage=term-rendered-surface-first texture_id={d} epoch={d}", .{ self.last_surface.texture_id, self.last_surface.epoch });
@@ -217,64 +215,70 @@ pub const Terminal = struct {
         }
     }
 
-    pub fn frameLayoutSnapshot(self: *Terminal) FrameLayout {
+    pub fn frameLayoutSnapshot(self: *TerminalPanel) FrameLayout {
         return geometry.snapshot(self);
     }
 
-    pub fn paste(self: *Terminal, payload: []const u8) void {
+    pub fn paste(self: *TerminalPanel, payload: []const u8) void {
         input_flow.paste(self, payload);
     }
 
-    pub fn drainInput(self: *Terminal, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
+    pub fn drainInput(self: *TerminalPanel, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
         input_flow.drain(self, input_events, origin_x, origin_y, logical_width, logical_height);
     }
 
-    pub fn handleScrollInput(self: *Terminal, input_events: *HostInput) void {
+    pub fn handleScrollInput(self: *TerminalPanel, input_events: *HostInput) void {
         scroll.handlePages(self, input_events);
     }
 
-    pub fn wantsPassiveHoverWake(self: *const Terminal, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    pub fn wantsPassiveHoverWake(self: *const TerminalPanel, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         return scroll.wantsPassiveHoverWake(self, origin_x, origin_y, logical_width, logical_height);
     }
 
     /// Report whether this terminal needs unpressed mouse motion for link hover.
-    pub fn wantsLinkHover(self: *const Terminal) bool {
+    pub fn wantsLinkHover(self: *const TerminalPanel) bool {
         return self.conf.links.hover != .off;
     }
 
-    pub fn surfaceSnapshot(self: *const Terminal) SurfaceSnapshot {
-        return presentation.surfaceSnapshot(self);
+    pub fn surfaceSnapshot(self: *const TerminalPanel) SurfaceSnapshot {
+        return .{
+            .surface = self.last_surface,
+            .full_redraw = self.term.render.full_redraw,
+            .damage_rects = self.term.render.damage_rects.items,
+        };
     }
 
-    pub fn overlaySnapshot(self: *const Terminal, texture_rect: window.Rect) OverlaySnapshot {
-        return query.overlaySnapshot(@constCast(self), texture_rect);
+    pub fn overlaySnapshot(self: *const TerminalPanel, texture_rect: window.Rect) OverlaySnapshot {
+        return .{
+            .scrollbar = scroll.layout(@constCast(self), texture_rect),
+        };
     }
 
-    pub fn lifecycleState(self: *const Terminal) LifecycleState {
-        return query.lifecycleState(self);
+    pub fn lifecycleState(self: *const TerminalPanel) LifecycleState {
+        return pty_api.lifecycleState(&self.term);
     }
 
-    pub fn titleSlice(self: *const Terminal) []const u8 {
+    pub fn titleSlice(self: *const TerminalPanel) []const u8 {
         return effects.titleSlice(self);
     }
 
-    pub fn setWindowFocused(self: *Terminal, focused: bool) void {
+    pub fn setWindowFocused(self: *TerminalPanel, focused: bool) void {
         effects.setWindowFocused(self, focused);
     }
 
-    pub fn setWidgetFocused(self: *Terminal, focused: bool) void {
+    pub fn setWidgetFocused(self: *TerminalPanel, focused: bool) void {
         effects.setWidgetFocused(self, focused);
     }
 
-    pub fn adjustFontSize(self: *Terminal, delta: i16) bool {
+    pub fn adjustFontSize(self: *TerminalPanel, delta: i16) bool {
         return font_size.adjust(self, delta);
     }
 
-    pub fn toggleStressFontSize(self: *Terminal) bool {
+    pub fn toggleStressFontSize(self: *TerminalPanel) bool {
         return font_size.toggleStress(self);
     }
 
-    pub fn resetFontSize(self: *Terminal) bool {
+    pub fn resetFontSize(self: *TerminalPanel) bool {
         return font_size.reset(self);
     }
 

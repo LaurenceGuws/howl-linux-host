@@ -1,6 +1,14 @@
 const std = @import("std");
 const api = @import("../runtime/runtime.zig");
 const c = api.c;
+const vt_abi = @import("abi.zig");
+const log = @import("../../input/window.zig");
+const render_flow = @import("../render/flow.zig");
+
+pub const VisibleInfo = struct {
+    history_count: u32,
+    is_alternate_screen: bool,
+};
 
 comptime {
     std.debug.assert(@sizeOf(c.HowlVtCellFlags) == @sizeOf(c.HowlRenderCellFlags));
@@ -29,7 +37,7 @@ pub const VisibleCopy = struct {
     start: u32,
 };
 
-pub fn publishSource(term: *api.Term) api.SourceResponse {
+pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
     term.mutex.lock();
     defer term.mutex.unlock();
 
@@ -53,10 +61,10 @@ pub fn publishSource(term: *api.Term) api.SourceResponse {
     term.vt_state.surface.scroll_up_rows = if (typed_response.damage_kind == .scroll) scrollRowsFromSurface(prior_surface, term.vt_state.surface) else 0;
     if (typed_response.published) {
         term.render.phase = if (typed_response.queued) .prepare else .idle;
-        api.trace.logf(
+        log.logf(
             "host-loop ts_ns={d} stage=surface-publish snapshot_seq={d} vt_epoch={d} queued={} damage={d} render_phase={s} rows={d} cols={d} scroll={d}",
             .{
-                api.trace.nowNs(),
+                log.nowNs(),
                 typed_response.source_seq,
                 term.vt_state.epoch,
                 typed_response.queued,
@@ -67,7 +75,7 @@ pub fn publishSource(term: *api.Term) api.SourceResponse {
                 visible.start,
             },
         );
-        api.trace.logSourcePublishStartupf("stage=term-source-publish-first queued={d} damage={d} source_seq={d} geom_epoch={d}", .{
+        log.logSourcePublishStartupf("stage=term-source-publish-first queued={d} damage={d} source_seq={d} geom_epoch={d}", .{
             @intFromBool(typed_response.queued),
             @intFromEnum(typed_response.damage_kind),
             typed_response.source_seq,
@@ -78,8 +86,8 @@ pub fn publishSource(term: *api.Term) api.SourceResponse {
     return typed_response;
 }
 
-pub fn sourceRejected(term: *api.Term) api.SourceResponse {
-    api.trace.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d} render_phase={s}", .{ api.trace.nowNs(), term.vt_state.snapshot_seq, @tagName(term.render.phase) });
+pub fn sourceRejected(term: *api.Term) render_flow.SourceResponse {
+    log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d} render_phase={s}", .{ log.nowNs(), term.vt_state.snapshot_seq, @tagName(term.render.phase) });
     return .{
         .published = false,
         .queued = false,
@@ -112,10 +120,10 @@ pub fn surfaceSourceOut(term: *api.Term) !c.HowlRenderSurfaceSource {
     };
 }
 
-pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) api.VisibleInfo {
+pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
     std.debug.assert(handle != null);
     const view = c.howl_vt_terminal_copy_surface(handle, scrollback_offset, null, 0, null, 0, null, 0);
-    if (view.status != api.vtCallShortBuffer()) api.vtRequireStructOk(view.status);
+    if (view.status != vt_abi.callShortBuffer()) vt_abi.requireStructOk(view.status);
     std.debug.assert(scrollback_offset <= view.history_count);
     return .{
         .history_count = @intCast(view.history_count),
@@ -134,7 +142,7 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
     term.vt_state.visible_damage.dirty_cols_start.clearRetainingCapacity();
     term.vt_state.visible_damage.dirty_cols_end.clearRetainingCapacity();
     var source = c.howl_vt_terminal_copy_surface_source(term.vt, term.vt_state.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0, null, 0, 0, 0);
-    if (source.status == api.vtCallShortBuffer()) {
+    if (source.status == vt_abi.callShortBuffer()) {
         cells = try vtEnsureCells(term, @intCast(source.source.cells.len));
         try term.vt_state.visible_damage.dirty_rows.resize(term.allocator, source.source.rows);
         try term.vt_state.visible_damage.dirty_cols_start.resize(term.allocator, @intCast(source.source.rows));
@@ -168,7 +176,7 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
             if (source.source.scroll_up_rows != 0) widenScrollDirtyRows(term.vt_state.visible_damage.dirty_rows.items, term.vt_state.visible_damage.dirty_cols_start.items, term.vt_state.visible_damage.dirty_cols_end.items, source.source.cols);
         }
     }
-    try api.vtRequireOk(source.status);
+    try vt_abi.requireOk(source.status);
     term.vt_state.surface = source.source;
     std.debug.assert(term.vt_state.surface.scroll_row <= source.history_count + term.vt_state.surface.rows);
     std.debug.assert(term.vt_state.scrollback_offset <= source.history_count);

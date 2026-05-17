@@ -162,10 +162,6 @@ pub fn deinitPresent(state: *PresentState) void {
     Present.deinit(c, state);
 }
 
-pub fn present(state: *PresentState, frame: Frame) void {
-    Present.present(c, state, frame);
-}
-
 pub fn windowSize(handle: Ptr) Size {
     var width: c_int = 0;
     var height: c_int = 0;

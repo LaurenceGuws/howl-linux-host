@@ -43,9 +43,26 @@ pub const ScrollState = struct {
     scrollback_offset: u32,
     alternate_screen: bool,
 };
-pub const VisibleInfo = runtime.VisibleInfo;
+pub const VisibleInfo = surface.VisibleInfo;
 pub const SourceResponse = render_flow.SourceResponse;
 pub const DamageKind = render_flow.DamageKind;
+
+fn callOk() i32 {
+    return runtime.c.HOWL_VT_CALL_OK;
+}
+
+pub fn callShortBuffer() i32 {
+    return runtime.c.HOWL_VT_CALL_SHORT_BUFFER;
+}
+
+pub fn requireOk(status: i32) !void {
+    if (status == callOk()) return;
+    return error.VtCallFailed;
+}
+
+pub fn requireStructOk(status: i32) void {
+    std.debug.assert(status == callOk());
+}
 
 pub fn scrollState(term: *const Term) ScrollState {
     const mut: *Term = @constCast(term);

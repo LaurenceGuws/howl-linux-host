@@ -18,8 +18,8 @@ It owns app/window/input/chrome orchestration. It does not own terminal semantic
 - `Config`: loads typed host config.
 - `Input`: owns the SDL input queue and exposes typed input/window/key binding events.
 - `Window`: owns SDL window lifecycle, clipboard/URL helpers, and frame presentation.
-- `Terminal`: owns one host terminal widget/tab.
-- `howl-term/Runtime`: owns the handoff to the imported `howl-term` package.
+- `TerminalPanel`: owns one host terminal panel/tab boundary.
+- `src/terminal/`: owns the PTY, VT, render, and runtime seam owners used by the panel.
 
 ```mermaid
 classDiagram
@@ -27,28 +27,29 @@ classDiagram
     class Config
     class Input
     class Window
-    class TerminalWidget
-    class Runtime
-    class HowlTerm
+    class TerminalPanel
+    class TerminalSeams
 
     Main --> Config
     Main --> Input
     Main --> Window
-    Main --> TerminalWidget
-    TerminalWidget --> Input
-    TerminalWidget --> Window
-    TerminalWidget --> Runtime
-    Runtime --> HowlTerm
+    Main --> TerminalPanel
+    TerminalPanel --> Input
+    TerminalPanel --> Window
+    TerminalPanel --> TerminalSeams
 ```
 
 ## Ownership Rules
 
 - `main.zig` owns app entry, app-owned config, tab lifecycle, and event-loop orchestration.
-- `src/widget/terminal.zig` owns one terminal widget boundary: input translation, widget focus, scrollbar interaction, tab label snapshot, and terminal runtime lifetime.
-- `src/howl-term/howl_term.zig` owns the host-local runtime facade over the imported `howl-term` package.
+- `src/terminal/terminal_panel.zig` owns one terminal panel boundary: input translation, focus, scrollbar interaction, tab label snapshot, and terminal runtime lifetime.
+- `src/terminal/pty/` owns PTY transport calls and child/session lifecycle at the host seam.
+- `src/terminal/vt/` owns VT ABI calls, retained visible state, and host-side VT contract translation.
+- `src/terminal/render/` owns render ABI calls, frame layout sync, prepared-surface drive, and host-side presentation contract translation.
+- `src/terminal/runtime/` owns the shared runtime aggregate state and the bounded host control spine that drives PTY, VT, and render work.
 - `Window` owns the OS window and host chrome presentation. It receives a texture handle; it does not infer terminal state.
 - `Input` owns input collection and queueing. Input payload types live under `src/input/`.
-- Hosts send events, await snapshot events, render the latest snapshot, and present returned surfaces. They do not mutate scrollback or render dirty state.
+- Hosts send events to PTY-facing owners, publish one VT surface snapshot, upload the render-owned prepared surface, and present returned surfaces. They do not mutate scrollback, VT dirty state, or render composition rules.
 
 ## Lifecycle
 
@@ -68,20 +69,20 @@ sequenceDiagram
     participant Main
     participant W as Window
     participant I as Input
-    participant T as Terminal
-    participant R as Runtime
-    participant C as howl-term
+    participant T as TerminalPanel
+    participant P as PTY
+    participant V as VT
+    participant R as Render
 
     Main->>W: initVideo/createWindow/initPresent
     Main->>I: init/bind
     Main->>T: create(...)
-    T->>R: init(...)
-    R->>C: initPty/start
     loop event loop
         Main->>I: poll/wait/drain
         Main->>T: drainInput/resize/render
-        T->>R: publish input / awaitSnapshotEvent
-        T->>R: renderLatestSnapshot
+        T->>P: publish host input
+        T->>V: publish VT surface snapshot
+        T->>R: prepare / submit prepared surface
         T-->>Main: snapshot(surface + metadata)
         Main->>W: present(frame)
     end
@@ -89,10 +90,10 @@ sequenceDiagram
 
 ## API Contracts
 
-- `Terminal.create` starts one terminal widget and hides runtime field construction from `main.zig`.
-- `Terminal.destroy` is the matching lifetime close; app code must not manually deinit widget internals.
-- `Terminal.snapshot` returns host chrome metadata and the current backend surface handle.
-- `Runtime` is failure-aware. Recoverable backend failures return `false` and move lifecycle state to `failed`; host code should not panic from normal render/wake failure paths.
+- `TerminalPanel.create` starts one terminal panel and hides seam-owner field construction from `main.zig`.
+- `TerminalPanel.destroy` is the matching lifetime close; app code must not manually deinit seam internals.
+- `TerminalPanel.snapshot` returns host chrome metadata and the current backend surface handle.
+- PTY, VT, and render seam owners are failure-aware. Recoverable backend failures return `false` or error unions and move lifecycle state to `failed`; host code should not panic from normal render or wake failure paths.
 - `Window.present` draws static host chrome and places the active terminal surface. It does not own terminal logic.
 
 ## Non-Goals
