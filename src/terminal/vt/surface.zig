@@ -269,7 +269,7 @@ fn sourceDamageKind(prior: c.HowlVtSurfaceSource, current: c.HowlVtSurfaceSource
     if (!any_dirty) return .none;
     if (scroll_rows != 0) return .scroll;
     if (all_rows_dirty) return .full;
-    return .none;
+    return .partial;
 }
 
 pub fn scrollRowsFromSurface(prior: c.HowlVtSurfaceSource, current: c.HowlVtSurfaceSource) u16 {
