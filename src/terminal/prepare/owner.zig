@@ -13,7 +13,7 @@ pub fn prepareRender(term: *api.Term) api.RenderPrepareResult {
     defer term.mutex.unlock();
     const request = term.render_flow.prepare() orelse {
         releasePreparedSurface(term);
-        term.prepare_pending = false;
+        term.render_phase = .idle;
         return .idle;
     };
     var prepared: api.PreparedSurfaceHandle = null;
@@ -23,29 +23,26 @@ pub fn prepareRender(term: *api.Term) api.RenderPrepareResult {
     return switch (c.howl_render_surface_text_prepare_handle(term.surface_text, &surface_source, prepare_request, surfaceQueryOut(term.render_flow.surfaceQuery()), &prepared)) {
         c.HOWL_RENDER_PREPARE_IDLE => blk: {
             releasePreparedSurface(term);
-            term.prepare_pending = false;
+            term.render_phase = .idle;
             break :blk .idle;
         },
         c.HOWL_RENDER_PREPARE_READY => blk: {
             var info = std.mem.zeroes(api.PreparedSurfaceInfo);
             if (c.howl_render_prepared_surface_describe(prepared, &info) != c.HOWL_RENDER_CALL_OK) {
                 releasePreparedSurface(term);
-                term.prepare_pending = false;
-                term.submit_pending = false;
+                term.render_phase = .idle;
                 break :blk .failed;
             }
             term.render_flow.publishPrepared(preparedFrameFromInfo(info));
             releasePreparedSurface(term);
             consumePreparedSurfaceHandle(prepared);
             term.prepared_surface = prepared;
-            term.prepare_pending = false;
-            term.submit_pending = true;
+            term.render_phase = .submit;
             break :blk .prepared;
         },
         else => blk: {
             releasePreparedSurface(term);
-            term.prepare_pending = false;
-            term.submit_pending = false;
+            term.render_phase = .idle;
             break :blk .failed;
         },
     };
@@ -56,18 +53,17 @@ pub fn submitRender(term: *api.Term) api.RenderSubmitResult {
     defer term.mutex.unlock();
     const prepared_frame = switch (term.render_flow.submit()) {
         .idle => {
-            term.submit_pending = false;
+            term.render_phase = .idle;
             return .idle;
         },
         .stale => {
             releasePreparedSurface(term);
-            term.submit_pending = false;
+            term.render_phase = .idle;
             return .stale;
         },
         .needs_full_prepare => {
             releasePreparedSurface(term);
-            term.submit_pending = false;
-            term.prepare_pending = true;
+            term.render_phase = .prepare;
             return .needs_prepare;
         },
         .submit => |prepared| prepared,
@@ -76,30 +72,28 @@ pub fn submitRender(term: *api.Term) api.RenderSubmitResult {
     feedback.status = c.HOWL_RENDER_CALL_FAILED;
     return switch (submitPreparedSurface(term, prepared_frame, &feedback)) {
         c.HOWL_RENDER_SUBMIT_IDLE => blk: {
-            term.submit_pending = false;
+            term.render_phase = .idle;
             break :blk .idle;
         },
         c.HOWL_RENDER_SUBMIT_STALE => blk: {
             releasePreparedSurface(term);
-            term.submit_pending = false;
+            term.render_phase = .idle;
             break :blk .stale;
         },
         c.HOWL_RENDER_SUBMIT_NEEDS_PREPARE => blk: {
             releasePreparedSurface(term);
-            term.submit_pending = false;
-            term.prepare_pending = true;
+            term.render_phase = .prepare;
             break :blk .needs_prepare;
         },
         c.HOWL_RENDER_SUBMIT_RENDERED => blk: {
-            term.submit_pending = false;
-            term.present_pending = true;
+            term.render_phase = .present;
             term.render_surface = feedback.surface;
             releasePreparedSurface(term);
             break :blk .rendered;
         },
         else => blk: {
             releasePreparedSurface(term);
-            term.submit_pending = false;
+            term.render_phase = .idle;
             break :blk .failed;
         },
     };
@@ -107,7 +101,7 @@ pub fn submitRender(term: *api.Term) api.RenderSubmitResult {
 
 pub fn markRenderPresented(term: *api.Term) void {
     term.render_flow.markPresented();
-    term.present_pending = false;
+    term.render_phase = .idle;
 }
 
 pub fn releasePrepared(term: *api.Term) void {

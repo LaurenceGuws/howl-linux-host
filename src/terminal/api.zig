@@ -140,6 +140,12 @@ pub const SurfaceExecutionInput = c.HowlRenderSurfaceExecutionInput;
 pub const RenderPrepareResult = enum { idle, prepared, failed };
 pub const RenderSubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
 pub const RenderAdvanceResult = enum { idle, prepared, rendered, blocked_present, failed };
+pub const RenderPhase = enum(u8) {
+    idle,
+    prepare,
+    submit,
+    present,
+};
 pub const RenderCellSize = render_flow.CellSize;
 pub const SourceResponse = render_flow.SourceResponse;
 pub const DamageKind = render_flow.DamageKind;
@@ -308,9 +314,7 @@ pub const Term = struct {
     selection: SelectionState = .{},
     hover_link_id: u32 = 0,
     hover_underline_style: LinkUnderlineStyle = .straight,
-    prepare_pending: bool = false,
-    submit_pending: bool = false,
-    present_pending: bool = false,
+    render_phase: RenderPhase = .idle,
     surface_full_redraw: bool = true,
 };
 
@@ -643,11 +647,11 @@ pub fn publishSource(term: *Term) SourceResponse {
 
 
 pub fn hasPendingRenderWork(term: *const Term) bool {
-    return term.prepare_pending or term.submit_pending or term.present_pending;
+    return term.render_phase != .idle;
 }
 
 pub fn advanceRender(term: *Term, bootstrap_surface: bool) RenderAdvanceResult {
-    if (term.submit_pending) {
+    if (term.render_phase == .submit) {
         return switch (submitRender(term)) {
             .rendered => .rendered,
             .failed => .failed,
@@ -655,7 +659,7 @@ pub fn advanceRender(term: *Term, bootstrap_surface: bool) RenderAdvanceResult {
         };
     }
 
-    if (term.prepare_pending or bootstrap_surface) {
+    if (term.render_phase == .prepare or bootstrap_surface) {
         return switch (prepareRender(term)) {
             .prepared => .prepared,
             .failed => .failed,
@@ -663,7 +667,7 @@ pub fn advanceRender(term: *Term, bootstrap_surface: bool) RenderAdvanceResult {
         };
     }
 
-    if (term.present_pending) return .blocked_present;
+    if (term.render_phase == .present) return .blocked_present;
     return .idle;
 }
 

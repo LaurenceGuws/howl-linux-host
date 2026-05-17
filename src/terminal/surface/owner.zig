@@ -46,8 +46,7 @@ pub fn publishSource(term: *api.Term) api.SourceResponse {
     term.vt_surface.full_damage = @intFromBool(typed_response.damage_kind == .full);
     term.vt_surface.scroll_up_rows = if (typed_response.damage_kind == .scroll) scrollRowsFromSurface(prior_surface, term.vt_surface) else 0;
     if (typed_response.published) {
-        term.prepare_pending = typed_response.queued;
-        if (typed_response.queued) term.submit_pending = false;
+        term.render_phase = if (typed_response.queued) .prepare else .idle;
         api.trace.logSourcePublishStartupf("stage=term-source-publish-first queued={d} damage={d} source_seq={d} geom_epoch={d}", .{
             @intFromBool(typed_response.queued),
             @intFromEnum(typed_response.damage_kind),
