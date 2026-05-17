@@ -4,6 +4,7 @@ const trace = @import("../input/window.zig");
 const prepare_owner = @import("prepare/owner.zig");
 const render_flow = @import("render_flow.zig");
 const surface_owner = @import("surface/owner.zig");
+const transport_owner = @import("transport/owner.zig");
 const c = @cImport({
     @cInclude("SDL3/SDL.h");
     @cInclude("SDL3/SDL_opengl.h");
@@ -424,95 +425,15 @@ pub fn start(term: *Term) !void {
 }
 
 pub fn waitTransport(term: *Term, timeout_ms: i32) bool {
-    return c.howl_pty_session_wait_readable(term.session, timeout_ms) != 0;
+    return transport_owner.waitTransport(term, timeout_ms);
 }
 
 pub fn pumpTransport(term: *Term, limits: TransportLimits) TransportProgress {
-    if (limits.max_reads == 0 or limits.max_bytes == 0) {
-        term.mutex.lock();
-        defer term.mutex.unlock();
-        return .{
-            .drained_input_bytes = 0,
-            .reads = 0,
-            .bytes_read = 0,
-            .pending_input_bytes = ptySessionPendingBytes(term.session),
-            .queued_events = vtQueuedEventCount(term.vt),
-        };
-    }
-
-    var scratch: [64 * 1024]u8 = undefined;
-    term.mutex.lock();
-    defer term.mutex.unlock();
-
-    const outbound = c.howl_pty_session_pump_outbound(term.session, 0);
-    ptyRequireStructOk(outbound.status);
-
-    var reads: u16 = 0;
-    var bytes_read: u32 = 0;
-    while (reads < limits.max_reads and bytes_read < limits.max_bytes) {
-        const remaining: usize = @intCast(@min(@as(u32, @intCast(scratch.len)), limits.max_bytes - bytes_read));
-        const read = c.howl_pty_session_read(term.session, scratch[0..remaining].ptr, remaining);
-        ptyRequireStructOk(read.status);
-        if (read.bytes_read == 0) break;
-        const chunk_len: u32 = @intCast(read.bytes_read);
-        std.debug.assert(chunk_len <= remaining);
-        std.debug.assert(bytes_read + chunk_len <= limits.max_bytes);
-        vtRequireStructOk(c.howl_vt_terminal_feed(term.vt, scratch[0..chunk_len].ptr, chunk_len));
-        term.output_seen = true;
-        reads += 1;
-        bytes_read += chunk_len;
-    }
-
-    std.debug.assert(reads <= limits.max_reads);
-    std.debug.assert(bytes_read <= limits.max_bytes);
-
-    if (reads > 0) {
-        trace.logTransportReadStartupf("stage=term-transport-read-first reads={d} read_bytes={d} queued_events={d}", .{
-            reads,
-            bytes_read,
-            vtQueuedEventCount(term.vt),
-        });
-    }
-    return .{
-        .drained_input_bytes = outbound.drained,
-        .reads = reads,
-        .bytes_read = bytes_read,
-        .pending_input_bytes = ptySessionPendingBytes(term.session),
-        .queued_events = vtQueuedEventCount(term.vt),
-    };
+    return transport_owner.pumpTransport(term, limits);
 }
 
 pub fn applyPending(term: *Term, max_events: u32) ApplyProgress {
-    if (max_events == 0) {
-        term.mutex.lock();
-        defer term.mutex.unlock();
-        return .{ .applied_events = 0, .remaining_events = vtQueuedEventCount(term.vt), .state_changed = false };
-    }
-
-    term.mutex.lock();
-    defer term.mutex.unlock();
-
-    const history_before = vtVisibleInfo(term.vt, term.scrollback_offset).history_count;
-    var title_buf: [default_title_capacity]u8 = undefined;
-    const result = c.howl_vt_terminal_apply(term.vt, max_events, title_buf[0..].ptr, title_buf.len);
-    vtRequireStructOk(result.status);
-    if (result.applied == 0) {
-        return .{ .applied_events = 0, .remaining_events = @intCast(result.remaining_events), .state_changed = false };
-    }
-    std.debug.assert(result.applied <= max_events);
-    std.debug.assert(result.title_written <= title_buf.len);
-    trace.logVtApplyStartupf("stage=term-vt-apply-first applied={d} remaining={d}", .{ result.applied, result.remaining_events });
-
-    if (result.title_written != 0) setCurrentTitle(term, title_buf[0..@intCast(result.title_written)]) catch {};
-    drainTerminalReply(term);
-    repairScrollback(term, history_before, true);
-    term.vt_epoch +%= 1;
-    noteVisibleChange(term);
-    return .{
-        .applied_events = @intCast(result.applied),
-        .remaining_events = @intCast(result.remaining_events),
-        .state_changed = true,
-    };
+    return transport_owner.applyPending(term, max_events);
 }
 
 pub fn lifecycleState(term: *const Term) LifecycleState {
@@ -523,17 +444,11 @@ pub fn lifecycleState(term: *const Term) LifecycleState {
 }
 
 pub fn isAlive(term: *const Term) bool {
-    const mut: *Term = @constCast(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    return ptySessionStatus(term.session) == c.HOWL_PTY_SESSION_ACTIVE;
+    return transport_owner.isAlive(term);
 }
 
 pub fn hasOutboundInputBacklog(term: *const Term) bool {
-    const mut: *Term = @constCast(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    return ptySessionPendingBytes(term.session) != 0;
+    return transport_owner.hasOutboundInputBacklog(term);
 }
 
 pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
@@ -597,48 +512,23 @@ pub fn setInputFocus(term: *Term, focused: bool) !bool {
 }
 
 pub fn drainPendingClipboardSet(term: *Term, allocator: std.mem.Allocator) !ClipboardDrainResult {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    const bytes = try vtDrainClipboard(term, allocator);
-    return if (bytes) |text| .{ .text = text } else null;
+    return transport_owner.drainPendingClipboardSet(term, allocator);
 }
 
 pub fn publishPaste(term: *Term, text: []const u8) !void {
-    if (text.len == 0) return;
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    followLiveBottomForInput(term);
-    _ = try publishEncodedInput(term, .{ .paste = text });
+    try transport_owner.publishPaste(term, text);
 }
 
 pub fn publishInputBytes(term: *Term, bytes: []const u8) !void {
-    if (bytes.len == 0) return;
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    followLiveBottomForInput(term);
-    _ = try publishEncodedInput(term, .{ .bytes = bytes });
+    try transport_owner.publishInputBytes(term, bytes);
 }
 
 pub fn publishInputKey(term: *Term, key: Input.Key, mods: Input.Modifier) !void {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    followLiveBottomForInput(term);
-    _ = try publishEncodedInput(term, .{ .key = .{ .key = key, .mods = mods } });
+    try transport_owner.publishInputKey(term, key, mods);
 }
 
 pub fn publishMouseEvent(term: *Term, mouse: MouseInput) !bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return publishEncodedInput(term, .{ .mouse = .{
-        .kind = mouse.kind,
-        .button = mouse.button,
-        .row = pixelToRow(term, mouse.pixel_y),
-        .col = pixelToCol(term, mouse.pixel_x),
-        .pixel_x = if (mouse.pixel_x < 0) null else @intCast(mouse.pixel_x),
-        .pixel_y = if (mouse.pixel_y < 0) null else @intCast(mouse.pixel_y),
-        .mods = mouse.mods,
-        .buttons_down = mouse.buttons_down,
-    } });
+    return try transport_owner.publishMouseEvent(term, mouse);
 }
 
 pub fn scrollState(term: *const Term) ScrollState {
@@ -705,10 +595,7 @@ pub fn hasOutputProof(term: *const Term) bool {
 }
 
 pub fn inputBytesApplied(term: *const Term) u64 {
-    const mut: *Term = @constCast(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    return c.howl_pty_session_bytes_applied(term.session);
+    return transport_owner.inputBytesApplied(term);
 }
 
 pub fn snapshotEventSeq(term: *const Term) u64 {
