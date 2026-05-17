@@ -11,18 +11,18 @@ pub const VisibleInfo = struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(c.HowlVtCellFlags) == @sizeOf(c.HowlRenderCellFlags));
+    std.debug.assert(@sizeOf(c.HowlVtSurfaceCellFlags) == @sizeOf(c.HowlRenderCellFlags));
     std.debug.assert(@sizeOf(c.HowlVtColor) == @sizeOf(c.HowlRenderColor));
-    std.debug.assert(@sizeOf(c.HowlVtCellAttrs) == @sizeOf(c.HowlRenderCellAttrs));
-    std.debug.assert(@sizeOf(c.HowlVtCell) == @sizeOf(c.HowlRenderCell));
-    std.debug.assert(@offsetOf(c.HowlVtCell, "codepoint") == @offsetOf(c.HowlRenderCell, "codepoint"));
-    std.debug.assert(@offsetOf(c.HowlVtCell, "flags") == @offsetOf(c.HowlRenderCell, "flags"));
-    std.debug.assert(@offsetOf(c.HowlVtCell, "fg_color") == @offsetOf(c.HowlRenderCell, "fg_color"));
-    std.debug.assert(@offsetOf(c.HowlVtCell, "bg_color") == @offsetOf(c.HowlRenderCell, "bg_color"));
-    std.debug.assert(@offsetOf(c.HowlVtCell, "underline_color") == @offsetOf(c.HowlRenderCell, "underline_color"));
-    std.debug.assert(@offsetOf(c.HowlVtCell, "underline_style") == @offsetOf(c.HowlRenderCell, "underline_style"));
-    std.debug.assert(@offsetOf(c.HowlVtCell, "attrs") == @offsetOf(c.HowlRenderCell, "attrs"));
-    std.debug.assert(@offsetOf(c.HowlVtCell, "link_id") == @offsetOf(c.HowlRenderCell, "link_id"));
+    std.debug.assert(@sizeOf(c.HowlVtSurfaceCellAttrs) == @sizeOf(c.HowlRenderCellAttrs));
+    std.debug.assert(@sizeOf(c.HowlVtSurfaceCell) == @sizeOf(c.HowlRenderCell));
+    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "codepoint") == @offsetOf(c.HowlRenderCell, "codepoint"));
+    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "flags") == @offsetOf(c.HowlRenderCell, "flags"));
+    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "fg_color") == @offsetOf(c.HowlRenderCell, "fg_color"));
+    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "bg_color") == @offsetOf(c.HowlRenderCell, "bg_color"));
+    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "underline_color") == @offsetOf(c.HowlRenderCell, "underline_color"));
+    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "underline_style") == @offsetOf(c.HowlRenderCell, "underline_style"));
+    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "attrs") == @offsetOf(c.HowlRenderCell, "attrs"));
+    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "link_id") == @offsetOf(c.HowlRenderCell, "link_id"));
 }
 
 pub const VisibleCopy = struct {
@@ -99,9 +99,9 @@ pub fn sourceRejected(term: *api.Term) render_flow.SourceResponse {
 
 pub fn surfaceSourceOut(term: *api.Term) !c.HowlRenderSurfaceSource {
     const cell_count = @as(usize, term.vt_state.surface.rows) * @as(usize, term.vt_state.surface.cols);
-    if (term.vt_state.cells.items.len < cell_count) return error.InvalidVisibleSnapshot;
+    if (term.vt_state.surface_cells.items.len < cell_count) return error.InvalidVisibleSnapshot;
     return .{
-        .cells = .{ .ptr = if (cell_count == 0) null else @ptrCast(term.vt_state.cells.items.ptr), .len = cell_count },
+        .cells = .{ .ptr = if (cell_count == 0) null else @ptrCast(term.vt_state.surface_cells.items.ptr), .len = cell_count },
         .cols = term.vt_state.surface.cols,
         .rows = term.vt_state.surface.rows,
         .scroll_row = term.vt_state.surface.scroll_row,
@@ -131,9 +131,9 @@ pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo
     };
 }
 
-pub fn vtEnsureCells(term: *api.Term, needed: usize) ![]c.HowlVtCell {
-    try term.vt_state.cells.resize(term.allocator, needed);
-    return term.vt_state.cells.items;
+pub fn vtEnsureCells(term: *api.Term, needed: usize) ![]c.HowlVtSurfaceCell {
+    try term.vt_state.surface_cells.resize(term.allocator, needed);
+    return term.vt_state.surface_cells.items;
 }
 
 pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
@@ -143,7 +143,7 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
     term.vt_state.visible_damage.dirty_cols_end.clearRetainingCapacity();
     var source = c.howl_vt_terminal_copy_surface_source(term.vt, term.vt_state.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0, null, 0, 0, 0);
     if (source.status == vt_abi.callShortBuffer()) {
-        cells = try vtEnsureCells(term, @intCast(source.source.cells.len));
+        cells = try vtEnsureCells(term, @intCast(source.source.surface_cells.len));
         try term.vt_state.visible_damage.dirty_rows.resize(term.allocator, source.source.rows);
         try term.vt_state.visible_damage.dirty_cols_start.resize(term.allocator, @intCast(source.source.rows));
         try term.vt_state.visible_damage.dirty_cols_end.resize(term.allocator, @intCast(source.source.rows));

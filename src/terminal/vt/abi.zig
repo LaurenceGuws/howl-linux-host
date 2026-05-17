@@ -157,7 +157,7 @@ pub fn vtVisibleInfo(handle: runtime.c.HowlVtHandle, scrollback_offset: u32) Vis
     return surface.vtVisibleInfo(handle, scrollback_offset);
 }
 
-pub fn vtEnsureCells(term: *Term, needed: usize) ![]runtime.c.HowlVtCell {
+pub fn vtEnsureCells(term: *Term, needed: usize) ![]runtime.c.HowlVtSurfaceCell {
     return surface.vtEnsureCells(term, needed);
 }
 

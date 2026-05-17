@@ -16,10 +16,10 @@ pub const VisibleDamage = struct {
 
 pub const State = struct {
     visible_damage: VisibleDamage = .{},
-    cells: std.ArrayListUnmanaged(c.HowlVtCell) = .empty,
+    surface_cells: std.ArrayListUnmanaged(c.HowlVtSurfaceCell) = .empty,
     bytes: std.ArrayListUnmanaged(u8) = .empty,
     surface: c.HowlVtSurfaceSource = .{
-        .cells = .{ .ptr = null, .len = 0 },
+        .surface_cells = .{ .ptr = null, .len = 0 },
         .cols = 0,
         .rows = 0,
         .scroll_row = 0,
@@ -41,6 +41,6 @@ pub const State = struct {
         self.title.deinit(allocator);
         self.visible_damage.deinit(allocator);
         self.bytes.deinit(allocator);
-        self.cells.deinit(allocator);
+        self.surface_cells.deinit(allocator);
     }
 };
