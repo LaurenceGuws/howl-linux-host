@@ -283,10 +283,10 @@ fn storePreparedBuffer(term: *api.Term, info: c.HowlRenderPreparedSurfaceInfo, b
     const expected_len = @as(usize, info.render_px.width) * @as(usize, info.render_px.height) * 4;
     if (buffer.rgba_pixels.len != expected_len) return false;
     if (expected_len > 0 and buffer.rgba_pixels.ptr == null) return false;
-    term.render.pixels.resize(term.allocator, expected_len) catch return false;
-    std.debug.assert(term.render.pixels.items.len == expected_len);
+    term.render.upload_pixels.resize(term.allocator, expected_len) catch return false;
+    std.debug.assert(term.render.upload_pixels.items.len == expected_len);
     if (expected_len == 0) return true;
-    @memcpy(term.render.pixels.items, buffer.rgba_pixels.ptr[0..expected_len]);
+    @memcpy(term.render.upload_pixels.items, buffer.rgba_pixels.ptr[0..expected_len]);
     return true;
 }
 
@@ -305,7 +305,7 @@ fn uploadSurfaceTexture(term: *api.Term, damage: c.HowlRenderPreparedSurfaceDama
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
     c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
     if (damage.full_redraw != 0 or damage.buffer_damage_rects.len == 0) {
-        c.glTexSubImage2D(c.GL_TEXTURE_2D, 0, 0, 0, term.render.surface.width, term.render.surface.height, c.GL_RGBA, c.GL_UNSIGNED_BYTE, term.render.pixels.items.ptr);
+        c.glTexSubImage2D(c.GL_TEXTURE_2D, 0, 0, 0, term.render.surface.width, term.render.surface.height, c.GL_RGBA, c.GL_UNSIGNED_BYTE, term.render.upload_pixels.items.ptr);
         return true;
     }
     for (0..damage.buffer_damage_rects.len) |i| {
@@ -320,7 +320,7 @@ fn uploadDamageRect(term: *api.Term, width: u16, height: u16, rect: c.HowlRender
     const clipped = clipDamageRect(width, height, rect) orelse return true;
     const row_bytes = @as(usize, @intCast(clipped.width)) * 4;
     const total_bytes = row_bytes * @as(usize, @intCast(clipped.height));
-    term.render.upload_scratch.resize(term.allocator, total_bytes) catch return false;
+    term.render.upload_rect_scratch.resize(term.allocator, total_bytes) catch return false;
     var row: usize = 0;
     while (row < @as(usize, @intCast(clipped.height))) : (row += 1) {
         const src_y = @as(usize, @intCast(clipped.y)) + row;
@@ -328,8 +328,8 @@ fn uploadDamageRect(term: *api.Term, width: u16, height: u16, rect: c.HowlRender
         const src_index = (src_y * @as(usize, width) + src_x) * 4;
         const dst_index = row * row_bytes;
         @memcpy(
-            term.render.upload_scratch.items[dst_index .. dst_index + row_bytes],
-            term.render.pixels.items[src_index .. src_index + row_bytes],
+            term.render.upload_rect_scratch.items[dst_index .. dst_index + row_bytes],
+            term.render.upload_pixels.items[src_index .. src_index + row_bytes],
         );
     }
     c.glTexSubImage2D(
@@ -341,7 +341,7 @@ fn uploadDamageRect(term: *api.Term, width: u16, height: u16, rect: c.HowlRender
         clipped.height,
         c.GL_RGBA,
         c.GL_UNSIGNED_BYTE,
-        term.render.upload_scratch.items.ptr,
+        term.render.upload_rect_scratch.items.ptr,
     );
     return true;
 }

@@ -25,8 +25,8 @@ pub const State = struct {
     surface_text: c.HowlRenderSurfaceTextHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
     surface: c.HowlRenderSurfaceHandle = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
-    pixels: std.ArrayListUnmanaged(u8) = .empty,
-    upload_scratch: std.ArrayListUnmanaged(u8) = .empty,
+    upload_pixels: std.ArrayListUnmanaged(u8) = .empty,
+    upload_rect_scratch: std.ArrayListUnmanaged(u8) = .empty,
     damage_rects: std.ArrayListUnmanaged(window.Rect) = .empty,
     font_size_px: u16,
     primary_font_path: ?[:0]u8 = null,
@@ -40,8 +40,8 @@ pub const State = struct {
         for (self.fallback_font_paths.items) |path| allocator.free(path);
         self.fallback_font_paths.clearRetainingCapacity();
         self.fallback_font_paths.deinit(allocator);
-        self.pixels.deinit(allocator);
-        self.upload_scratch.deinit(allocator);
+        self.upload_pixels.deinit(allocator);
+        self.upload_rect_scratch.deinit(allocator);
         self.damage_rects.deinit(allocator);
         if (self.surface.texture_id != 0) {
             var texture_id = self.surface.texture_id;
