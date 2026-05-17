@@ -150,10 +150,11 @@ fn runLoopTurn(app: *App) !LoopAction {
     const now_before_wait = Window.c_win.SDL_GetTicksNS();
     const work_before_wait = collectContentFrame(tab, now_before_wait);
     const wait_for_event = !work_before_wait.wantsFrame();
-    InputWindow.logLoopStartupf("stage=loop-turn-first content_before_wait={} wait_for_event={} render_phase={s} source_pending={} prepare_pending={} submit_pending={} present_pending={} alive={}", .{
+    InputWindow.logLoopStartupf("stage=loop-turn-first content_before_wait={} wait_for_event={} render_phase={s} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} alive={}", .{
         work_before_wait.wantsFrame(),
         wait_for_event,
         @tagName(work_before_wait.phase),
+        work_before_wait.inFlight(),
         work_before_wait.source_pending,
         work_before_wait.prepare_pending,
         work_before_wait.submit_pending,
@@ -173,9 +174,10 @@ fn runLoopTurn(app: *App) !LoopAction {
     const tab_after_input = activeTab(app.tabs.items, app.active_tab_idx.*);
     const now_before_render = Window.c_win.SDL_GetTicksNS();
     const work_before_render = collectContentFrame(tab_after_input, now_before_render);
-    InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} render_phase={s} source_pending={} prepare_pending={} submit_pending={} present_pending={} texture_id={d}", .{
+    InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} render_phase={s} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} texture_id={d}", .{
         work_before_render.wantsFrame(),
         @tagName(work_before_render.phase),
+        work_before_render.inFlight(),
         work_before_render.source_pending,
         work_before_render.prepare_pending,
         work_before_render.submit_pending,

@@ -607,3 +607,81 @@ fn forceFull(token: SnapshotToken) SnapshotToken {
         .damage_kind = .full,
     };
 }
+
+test "render flow keeps newer source pending while submit is in flight" {
+    var flow: Flow = .{};
+    _ = flow.syncGeometry(.{
+        .render_px = .{ .width = 10, .height = 10 },
+        .grid_px = .{ .width = 10, .height = 10 },
+        .cell_px = .{ .width = 1, .height = 1 },
+    });
+
+    const first = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 1,
+        .vt_epoch = 1,
+        .last_alt_screen = false,
+    });
+    try std.testing.expect(first.published);
+    const prepare_request = flow.prepare().?;
+    flow.publishPrepared(preparedFrameFromToken(tokenFromPrepareRequest(prepare_request), 0, 0));
+
+    const second = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 1,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 2,
+        .vt_epoch = 2,
+        .last_alt_screen = false,
+    });
+    try std.testing.expect(second.published);
+    try std.testing.expect(flow.pendingState().source_pending);
+
+    const submit = flow.submit();
+    try std.testing.expect(submit == .submit);
+    flow.acceptSubmitted(.{
+        .token = tokenFromPreparedFrame(submit.submit),
+        .target_epoch = 1,
+        .content_valid = true,
+    });
+    flow.markPresented();
+
+    const next_prepare = flow.prepare().?;
+    try std.testing.expectEqual(@as(u64, 2), next_prepare.snapshot_seq);
+}
+
+test "render flow does not treat unpresented submit as idle" {
+    var flow: Flow = .{};
+    _ = flow.syncGeometry(.{
+        .render_px = .{ .width = 10, .height = 10 },
+        .grid_px = .{ .width = 10, .height = 10 },
+        .cell_px = .{ .width = 1, .height = 1 },
+    });
+    _ = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 1,
+        .vt_epoch = 1,
+        .last_alt_screen = false,
+    });
+    const prepare_request = flow.prepare().?;
+    flow.publishPrepared(preparedFrameFromToken(tokenFromPrepareRequest(prepare_request), 0, 0));
+    const submit = flow.submit();
+    try std.testing.expect(submit == .submit);
+    try std.testing.expect(flow.pendingState().submit_pending == false);
+    flow.acceptSubmitted(.{
+        .token = tokenFromPreparedFrame(submit.submit),
+        .target_epoch = 1,
+        .content_valid = true,
+    });
+    try std.testing.expect(flow.targetValid());
+}

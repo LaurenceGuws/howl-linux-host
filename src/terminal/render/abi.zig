@@ -31,12 +31,15 @@ pub const RenderWorkState = struct {
     present_pending: bool,
     bootstrap_surface: bool,
 
-    pub fn wantsFrame(self: RenderWorkState) bool {
-        return self.bootstrap_surface or
-            self.source_pending or
+    pub fn inFlight(self: RenderWorkState) bool {
+        return self.source_pending or
             self.prepare_pending or
             self.submit_pending or
             self.present_pending;
+    }
+
+    pub fn wantsFrame(self: RenderWorkState) bool {
+        return self.bootstrap_surface or self.inFlight();
     }
 };
 
@@ -168,6 +171,10 @@ pub fn renderWorkState(term: *const Term, bootstrap_surface: bool) RenderWorkSta
         .present_pending = term.render.phase == .present,
         .bootstrap_surface = bootstrap_surface,
     };
+}
+
+pub fn renderInFlight(term: *const Term, bootstrap_surface: bool) bool {
+    return renderWorkState(term, bootstrap_surface).inFlight();
 }
 
 pub fn needsContentFrame(term: *const Term, bootstrap_surface: bool) bool {
