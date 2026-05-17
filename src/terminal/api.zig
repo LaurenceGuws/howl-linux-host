@@ -718,21 +718,7 @@ pub fn markRenderPresented(term: *Term) void {
     prepare_owner.markRenderPresented(term);
 }
 
-fn publishEncodedInput(term: *Term, event: Input.Event) !bool {
-    const encoded = try vtEncodeInput(term, event);
-    if (encoded.len == 0) return false;
-    try ptyPublishInput(term.session, encoded);
-    return true;
-}
-
-fn drainTerminalReply(term: *Term) void {
-    const pending = vtPendingOutput(term) catch return;
-    if (pending.len == 0) return;
-    ptyPublishInput(term.session, pending) catch return;
-    c.howl_vt_terminal_clear_pending_output(term.vt);
-}
-
-fn repairScrollback(term: *Term, history_before: u32, any_read: bool) void {
+pub fn repairScrollback(term: *Term, history_before: u32, any_read: bool) void {
     const history_after = vtVisibleInfo(term.vt, term.scrollback_offset).history_count;
     if (history_after > history_before) {
         if (term.scrollback_offset > 0) {
@@ -752,11 +738,11 @@ fn repairScrollback(term: *Term, history_before: u32, any_read: bool) void {
     if (any_read and term.scrollback_offset > 0) noteVisibleChange(term);
 }
 
-fn noteVisibleChange(term: *Term) void {
+pub fn noteVisibleChange(term: *Term) void {
     term.snapshot_seq +%= 1;
 }
 
-fn followLiveBottomForInput(term: *Term) void {
+pub fn followLiveBottomForInput(term: *Term) void {
     if (term.scrollback_offset == 0) return;
     term.scrollback_offset = 0;
     noteVisibleChange(term);
@@ -771,7 +757,7 @@ fn resetTitleFromLaunch(term: *Term) !void {
     try setCurrentTitle(term, title);
 }
 
-fn setCurrentTitle(term: *Term, title: []const u8) !void {
+pub fn setCurrentTitle(term: *Term, title: []const u8) !void {
     try term.current_title.resize(term.allocator, title.len);
     if (title.len > 0) @memcpy(term.current_title.items, title);
 }
@@ -781,7 +767,7 @@ fn clearFallbackFontPathsLocked(term: *Term) void {
     term.fallback_font_paths.clearRetainingCapacity();
 }
 
-fn pixelToCol(term: *const Term, pixel_x: i32) u16 {
+pub fn pixelToCol(term: *const Term, pixel_x: i32) u16 {
     if (term.cols == 0 or term.cell_px.width == 0) return 0;
     if (pixel_x <= 0) return 0;
     const x: u32 = @intCast(pixel_x);
@@ -789,7 +775,7 @@ fn pixelToCol(term: *const Term, pixel_x: i32) u16 {
     return @min(@as(u16, @intCast(col)), term.cols -| 1);
 }
 
-fn pixelToRow(term: *const Term, pixel_y: i32) i32 {
+pub fn pixelToRow(term: *const Term, pixel_y: i32) i32 {
     if (term.rows == 0 or term.cell_px.height == 0) return 0;
     if (pixel_y <= 0) return 0;
     const y: u32 = @intCast(pixel_y);
@@ -820,16 +806,16 @@ fn vtCallOk() i32 {
     return c.HOWL_VT_CALL_OK;
 }
 
-fn vtCallShortBuffer() i32 {
+pub fn vtCallShortBuffer() i32 {
     return c.HOWL_VT_CALL_SHORT_BUFFER;
 }
 
-fn vtRequireOk(status: i32) !void {
+pub fn vtRequireOk(status: i32) !void {
     if (status == vtCallOk()) return;
     return error.VtCallFailed;
 }
 
-fn vtRequireStructOk(status: i32) void {
+pub fn vtRequireStructOk(status: i32) void {
     std.debug.assert(status == vtCallOk());
 }
 
@@ -844,20 +830,16 @@ pub const VisibleInfo = struct {
     is_alternate_screen: bool,
 };
 
-fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
+pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
     return surface_owner.vtVisibleInfo(handle, scrollback_offset);
 }
 
-fn vtEnsureCells(term: *Term, needed: usize) ![]c.HowlVtCell {
+pub fn vtEnsureCells(term: *Term, needed: usize) ![]c.HowlVtCell {
     return surface_owner.vtEnsureCells(term, needed);
 }
-fn vtCopyVisible(term: *Term) !surface_owner.VisibleCopy {
+pub fn vtCopyVisible(term: *Term) !surface_owner.VisibleCopy {
     return surface_owner.vtCopyVisible(term);
 }
-fn countLen(count: u32) usize {
-    return @intCast(count);
-}
-
 fn renderRequireOk(status: i32) !void {
     if (status == c.HOWL_RENDER_CALL_OK) return;
     if (status == c.HOWL_RENDER_CALL_INVALID_ARGUMENT) return error.InvalidDimensions;
