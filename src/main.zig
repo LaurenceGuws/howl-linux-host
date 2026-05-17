@@ -18,6 +18,7 @@ const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
 const max_tabs_count: usize = TabBar.max_tabs_count;
 const max_binding_actions_per_turn: u8 = 8;
+const max_render_steps_per_turn: u8 = 3;
 const TabList = std.ArrayList(*TerminalPanel);
 
 const LoopAction = enum {
@@ -255,7 +256,10 @@ fn collectContentFrame(tab: *TerminalPanel, now_ns: u64) bool {
 fn render(app: *App) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
-    tab.render();
+    var step: u8 = 0;
+    while (step < max_render_steps_per_turn) : (step += 1) {
+        if (tab.renderStep() != .prepared) break;
+    }
 
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
     const surface = tab.surfaceSnapshot();

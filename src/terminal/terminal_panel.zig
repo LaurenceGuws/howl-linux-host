@@ -20,7 +20,6 @@ const window_log = @import("../input/window.zig");
 
 pub const TerminalPanel = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
-    const max_render_steps_per_turn: u8 = 3;
 
     pub const SurfaceMetrics = render_api.RenderMetrics;
 
@@ -151,67 +150,64 @@ pub const TerminalPanel = struct {
         return render_api.needsContentFrame(&self.term, self.last_surface.texture_id == 0);
     }
 
-    pub fn render(self: *TerminalPanel) void {
+    pub fn renderStep(self: *TerminalPanel) render_api.RenderAdvanceResult {
         const bootstrap_surface = self.last_surface.texture_id == 0;
         self.first_render_trace_logged = true;
         if (render_api.needsContentFrame(&self.term, false)) self.first_non_idle_action_logged = true;
-        var step: u8 = 0;
-        while (step < max_render_steps_per_turn) : (step += 1) {
-            if (!self.first_submit_phase_logged and render_api.renderPhase(&self.term) == .submit) {
-                self.first_submit_phase_logged = true;
-                window_log.logStartup("term-submit-phase-enter");
-            }
-            switch (render_api.advanceRender(&self.term, bootstrap_surface)) {
-                .idle => {
-                    window_log.logf("host-loop ts_ns={d} stage=term-render-step result=idle phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
-                    if (!self.first_idle_render_logged) {
-                        self.first_idle_render_logged = true;
-                        window_log.logStartupf("stage=term-render-idle-first phase={s} bootstrap={} texture_id={d}", .{
-                            @tagName(render_api.renderPhase(&self.term)),
-                            bootstrap_surface,
-                            self.term.render.surface.texture_id,
-                        });
-                    }
-                    return;
-                },
-                .blocked_present => {
-                    window_log.logf("host-loop ts_ns={d} stage=term-render-step result=blocked_present phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
-                    if (!self.first_blocked_present_logged) {
-                        self.first_blocked_present_logged = true;
-                        window_log.logStartup("term-present-blocked-first");
-                    }
-                    return;
-                },
-                .failed => {
-                    window_log.logf("host-loop ts_ns={d} stage=term-render-step result=failed phase={s}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)) });
-                    return;
-                },
-                .prepared => {
-                    window_log.logf("host-loop ts_ns={d} stage=term-render-step result=prepared phase={s}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)) });
-                    if (!self.first_prepare_result_logged) {
-                        self.first_prepare_result_logged = true;
-                        window_log.logStartupf("stage=term-prepare-first prepared=true", .{});
-                    }
-                    continue;
-                },
-                .rendered => {
-                    window_log.logf("host-loop ts_ns={d} stage=term-render-step result=rendered phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
-                    if (!self.first_submit_trace_logged) {
-                        self.first_submit_trace_logged = true;
-                        window_log.logStartupf("stage=term-submit-first result=rendered", .{});
-                    }
-                    if (!self.first_non_idle_submit_logged) {
-                        self.first_non_idle_submit_logged = true;
-                        window_log.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
-                    }
-                    self.last_surface = self.term.render.surface;
-                    if (!self.first_rendered_surface_logged) {
-                        self.first_rendered_surface_logged = true;
-                        window_log.logStartupf("stage=term-rendered-surface-first texture_id={d} epoch={d}", .{ self.last_surface.texture_id, self.last_surface.epoch });
-                    }
-                    return;
-                },
-            }
+        if (!self.first_submit_phase_logged and render_api.renderPhase(&self.term) == .submit) {
+            self.first_submit_phase_logged = true;
+            window_log.logStartup("term-submit-phase-enter");
+        }
+        switch (render_api.advanceRender(&self.term, bootstrap_surface)) {
+            .idle => {
+                window_log.logf("host-loop ts_ns={d} stage=term-render-step result=idle phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
+                if (!self.first_idle_render_logged) {
+                    self.first_idle_render_logged = true;
+                    window_log.logStartupf("stage=term-render-idle-first phase={s} bootstrap={} texture_id={d}", .{
+                        @tagName(render_api.renderPhase(&self.term)),
+                        bootstrap_surface,
+                        self.term.render.surface.texture_id,
+                    });
+                }
+                return .idle;
+            },
+            .blocked_present => {
+                window_log.logf("host-loop ts_ns={d} stage=term-render-step result=blocked_present phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
+                if (!self.first_blocked_present_logged) {
+                    self.first_blocked_present_logged = true;
+                    window_log.logStartup("term-present-blocked-first");
+                }
+                return .blocked_present;
+            },
+            .failed => {
+                window_log.logf("host-loop ts_ns={d} stage=term-render-step result=failed phase={s}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)) });
+                return .failed;
+            },
+            .prepared => {
+                window_log.logf("host-loop ts_ns={d} stage=term-render-step result=prepared phase={s}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)) });
+                if (!self.first_prepare_result_logged) {
+                    self.first_prepare_result_logged = true;
+                    window_log.logStartupf("stage=term-prepare-first prepared=true", .{});
+                }
+                return .prepared;
+            },
+            .rendered => {
+                window_log.logf("host-loop ts_ns={d} stage=term-render-step result=rendered phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
+                if (!self.first_submit_trace_logged) {
+                    self.first_submit_trace_logged = true;
+                    window_log.logStartupf("stage=term-submit-first result=rendered", .{});
+                }
+                if (!self.first_non_idle_submit_logged) {
+                    self.first_non_idle_submit_logged = true;
+                    window_log.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
+                }
+                self.last_surface = self.term.render.surface;
+                if (!self.first_rendered_surface_logged) {
+                    self.first_rendered_surface_logged = true;
+                    window_log.logStartupf("stage=term-rendered-surface-first texture_id={d} epoch={d}", .{ self.last_surface.texture_id, self.last_surface.epoch });
+                }
+                return .rendered;
+            },
         }
     }
 
