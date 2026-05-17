@@ -58,6 +58,12 @@ pub const SourceResponse = struct {
     geometry_epoch: u64,
 };
 
+pub const PendingState = struct {
+    source_pending: bool,
+    prepare_pending: bool,
+    submit_pending: bool,
+};
+
 pub const SnapshotToken = struct {
     snapshot_seq: u64,
     dirty_epoch: u64,
@@ -388,6 +394,17 @@ const TerminalSurface = struct {
         return if (self.submitted_frame) |frame| frame.token else null;
     }
 
+    fn pendingState(self: *const TerminalSurface) PendingState {
+        const mut: *TerminalSurface = @constCast(self);
+        lockMutex(&mut.mutex);
+        defer mut.mutex.unlock();
+        return .{
+            .source_pending = false,
+            .prepare_pending = self.prepare_mailbox.hasPending(),
+            .submit_pending = self.submit_mailbox.hasPending(),
+        };
+    }
+
     fn takeMetrics(self: *TerminalSurface) Metrics {
         lockMutex(&self.mutex);
         defer self.mutex.unlock();
@@ -497,6 +514,12 @@ pub const Flow = struct {
 
     pub fn surfaceQuery(self: *const Flow) SurfaceQuery {
         return .{ .render_px = self.render_px, .grid_px = self.grid_px, .cell_px = self.cell_px, .font_size_px = self.font_size_px, .epoch = self.geometry_epoch };
+    }
+
+    pub fn pendingState(self: *const Flow) PendingState {
+        var pending = self.surface.pendingState();
+        pending.source_pending = self.publication_state.pending;
+        return pending;
     }
 
     pub fn targetValid(self: *const Flow) bool {

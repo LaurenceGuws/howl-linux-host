@@ -148,12 +148,16 @@ fn runLoopTurn(app: *App) !LoopAction {
 
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
     const now_before_wait = Window.c_win.SDL_GetTicksNS();
-    const content_before_wait = collectContentFrame(tab, now_before_wait);
-    const wait_for_event = !content_before_wait;
-    InputWindow.logLoopStartupf("stage=loop-turn-first content_before_wait={} wait_for_event={} render_phase={s} alive={}", .{
-        content_before_wait,
+    const work_before_wait = collectContentFrame(tab, now_before_wait);
+    const wait_for_event = !work_before_wait.wantsFrame();
+    InputWindow.logLoopStartupf("stage=loop-turn-first content_before_wait={} wait_for_event={} render_phase={s} source_pending={} prepare_pending={} submit_pending={} present_pending={} alive={}", .{
+        work_before_wait.wantsFrame(),
         wait_for_event,
-        @tagName(RenderApi.renderPhase(&tab.term)),
+        @tagName(work_before_wait.phase),
+        work_before_wait.source_pending,
+        work_before_wait.prepare_pending,
+        work_before_wait.submit_pending,
+        work_before_wait.present_pending,
         PtyApi.isAlive(&tab.term),
     });
     const event_action = pumpWindowEvents(app, wait_for_event);
@@ -168,13 +172,17 @@ fn runLoopTurn(app: *App) !LoopAction {
 
     const tab_after_input = activeTab(app.tabs.items, app.active_tab_idx.*);
     const now_before_render = Window.c_win.SDL_GetTicksNS();
-    const content_before_render = collectContentFrame(tab_after_input, now_before_render);
-    InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} render_phase={s} texture_id={d}", .{
-        content_before_render,
-        @tagName(RenderApi.renderPhase(&tab_after_input.term)),
+    const work_before_render = collectContentFrame(tab_after_input, now_before_render);
+    InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} render_phase={s} source_pending={} prepare_pending={} submit_pending={} present_pending={} texture_id={d}", .{
+        work_before_render.wantsFrame(),
+        @tagName(work_before_render.phase),
+        work_before_render.source_pending,
+        work_before_render.prepare_pending,
+        work_before_render.submit_pending,
+        work_before_render.present_pending,
         tab_after_input.term.render.surface.texture_id,
     });
-    if (!content_before_render) return .continue_running;
+    if (!work_before_render.wantsFrame()) return .continue_running;
 
     render(app);
     if (quitRequested()) |action| return action;
@@ -233,11 +241,12 @@ fn ensureActiveTabHealthy(app: *App) !void {
 }
 
 fn wakeIfMoreContent(tab: *TerminalPanel, now_ns: u64) void {
-    if (!tab.needsContentFrame(now_ns)) return;
+    const work = collectContentFrame(tab, now_ns);
+    if (!work.wantsFrame()) return;
     if (!tab.first_wake_after_prepare_logged) {
         tab.first_wake_after_prepare_logged = true;
         InputWindow.logStartupf("stage=loop-wake-more-content phase={s} texture_id={d}", .{
-            @tagName(RenderApi.renderPhase(&tab.term)),
+            @tagName(work.phase),
             tab.term.render.surface.texture_id,
         });
     }
@@ -249,10 +258,11 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
     tabs.deinit(alloc);
 }
 
-fn collectContentFrame(tab: *TerminalPanel, now_ns: u64) bool {
+fn collectContentFrame(tab: *TerminalPanel, now_ns: u64) RenderApi.RenderWorkState {
+    _ = now_ns;
     tab.maybeCommitGridResize();
     _ = VtApi.publishSource(&tab.term);
-    return tab.needsContentFrame(now_ns);
+    return RenderApi.renderWorkState(&tab.term, tab.last_surface.texture_id == 0);
 }
 
 fn render(app: *App) void {

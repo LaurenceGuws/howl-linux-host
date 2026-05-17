@@ -23,6 +23,22 @@ pub const RenderSubmitResult = retained.SubmitResult;
 pub const RenderAdvanceResult = retained.AdvanceResult;
 pub const RenderPhase = retained.Phase;
 pub const RenderCellSize = flow.CellSize;
+pub const RenderWorkState = struct {
+    phase: RenderPhase,
+    source_pending: bool,
+    prepare_pending: bool,
+    submit_pending: bool,
+    present_pending: bool,
+    bootstrap_surface: bool,
+
+    pub fn wantsFrame(self: RenderWorkState) bool {
+        return self.bootstrap_surface or
+            self.source_pending or
+            self.prepare_pending or
+            self.submit_pending or
+            self.present_pending;
+    }
+};
 
 pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
     std.debug.assert(font_size_px > 0);
@@ -139,11 +155,23 @@ pub fn renderPhase(term: *const Term) RenderPhase {
     return term.render.phase;
 }
 
-pub fn needsContentFrame(term: *const Term, bootstrap_surface: bool) bool {
+pub fn renderWorkState(term: *const Term, bootstrap_surface: bool) RenderWorkState {
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return bootstrap_surface or term.render.phase != .idle;
+    const pending = term.render.flow.pendingState();
+    return .{
+        .phase = term.render.phase,
+        .source_pending = pending.source_pending,
+        .prepare_pending = pending.prepare_pending or term.render.phase == .prepare,
+        .submit_pending = pending.submit_pending or term.render.phase == .submit,
+        .present_pending = term.render.phase == .present,
+        .bootstrap_surface = bootstrap_surface,
+    };
+}
+
+pub fn needsContentFrame(term: *const Term, bootstrap_surface: bool) bool {
+    return renderWorkState(term, bootstrap_surface).wantsFrame();
 }
 
 pub fn advanceRender(term: *Term, bootstrap_surface: bool) RenderAdvanceResult {
