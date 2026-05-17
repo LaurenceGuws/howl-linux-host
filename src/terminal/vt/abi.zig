@@ -109,6 +109,10 @@ pub fn publishSource(term: *Term) SourceResponse {
     return surface.publishSource(term);
 }
 
+pub fn ackPublishedSource(term: *Term) void {
+    surface.ackPublishedSource(term);
+}
+
 pub fn repairScrollback(term: *Term, history_before: u32, any_read: bool) void {
     const history_after = vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
     if (history_after > history_before) {

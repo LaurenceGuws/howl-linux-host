@@ -34,6 +34,7 @@ pub const State = struct {
     title: std.ArrayListUnmanaged(u8) = .empty,
     snapshot_seq: u64 = 1,
     epoch: u64 = 1,
+    pending_dirty_generation: u64 = 0,
     scrollback_offset: u32 = 0,
     focused: bool = true,
 

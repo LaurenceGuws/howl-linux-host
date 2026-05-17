@@ -35,6 +35,7 @@ pub const VisibleCopy = struct {
     is_alternate_screen: bool,
     history_count: u32,
     start: u32,
+    dirty_generation: u64,
 };
 
 pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
@@ -60,6 +61,9 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
     if (typed_response.published) {
         std.debug.assert(typed_response.queued);
         std.debug.assert(typed_response.damage_kind != .none);
+        term.vt_state.pending_dirty_generation = visible.dirty_generation;
+    } else {
+        term.vt_state.pending_dirty_generation = 0;
     }
     term.vt_state.surface.full_damage = @intFromBool(typed_response.damage_kind == .full);
     term.vt_state.surface.scroll_up_rows = if (typed_response.damage_kind == .scroll) scrollRowsFromSurface(prior_surface, term.vt_state.surface) else 0;
@@ -86,8 +90,16 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
             typed_response.geometry_epoch,
         });
     }
-    c.howl_vt_terminal_clear_dirty_rows(term.vt);
     return typed_response;
+}
+
+pub fn ackPublishedSource(term: *api.Term) void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    const dirty_generation = term.vt_state.pending_dirty_generation;
+    if (dirty_generation == 0) return;
+    vt_abi.requireStructOk(c.howl_vt_terminal_ack_surface_source(term.vt, dirty_generation));
+    term.vt_state.pending_dirty_generation = 0;
 }
 
 pub fn sourceRejected(term: *api.Term) render_flow.SourceResponse {
@@ -194,6 +206,7 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
         .is_alternate_screen = source.source.is_alternate_screen != 0,
         .history_count = @intCast(source.history_count),
         .start = @intCast(source.source.scroll_row),
+        .dirty_generation = source.dirty_generation,
     };
 }
 

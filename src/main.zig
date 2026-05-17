@@ -296,6 +296,7 @@ fn render(app: *App) void {
         .active_tab = tab_bar_snapshot.active_idx,
         .tab_labels = tab_bar_snapshot.labels,
     });
+    VtApi.ackPublishedSource(&tab.term);
     RenderApi.markRenderPresented(&tab.term);
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
 }
