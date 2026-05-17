@@ -15,8 +15,8 @@ var window_wake_logged = std.atomic.Value(bool).init(false);
 var transport_read_logged = std.atomic.Value(bool).init(false);
 var vt_apply_logged = std.atomic.Value(bool).init(false);
 var source_publish_logged = std.atomic.Value(bool).init(false);
-
-pub const wait_timeout_ms: i32 = 16;
+var loop_turn_logged = std.atomic.Value(bool).init(false);
+var loop_render_check_logged = std.atomic.Value(bool).init(false);
 
 pub const EventSignal = enum {
     none,
@@ -77,6 +77,16 @@ pub fn logVtApplyStartupf(comptime fmt: []const u8, args: anytype) void {
 
 pub fn logSourcePublishStartupf(comptime fmt: []const u8, args: anytype) void {
     if (source_publish_logged.swap(true, .acq_rel)) return;
+    logStartupf(fmt, args);
+}
+
+pub fn logLoopStartupf(comptime fmt: []const u8, args: anytype) void {
+    if (loop_turn_logged.swap(true, .acq_rel)) return;
+    logStartupf(fmt, args);
+}
+
+pub fn logLoopRenderStartupf(comptime fmt: []const u8, args: anytype) void {
+    if (loop_render_check_logged.swap(true, .acq_rel)) return;
     logStartupf(fmt, args);
 }
 

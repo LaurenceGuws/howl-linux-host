@@ -1,6 +1,6 @@
 
 const std = @import("std");
-const api = @import("api.zig");
+const render_api = @import("../render/abi.zig");
 
 const min_font_px: u16 = 2;
 const max_font_px: u16 = 256;
@@ -24,6 +24,6 @@ pub fn reset(self: anytype) bool {
 fn set(self: anytype, next: u16) bool {
     if (next == self.font_size_px) return false;
     self.font_size_px = next;
-    api.setFontSizePx(&self.term, next);
+    render_api.setFontSizePx(&self.term, next);
     return true;
 }

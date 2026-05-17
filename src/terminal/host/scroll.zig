@@ -1,8 +1,8 @@
 
 const std = @import("std");
-const api = @import("api.zig");
-const window = @import("../window/window.zig");
-const HostInput = @import("../input/input.zig").Input;
+const vt_api = @import("../vt/abi.zig");
+const window = @import("../../window/window.zig");
+const HostInput = @import("../../input/input.zig").Input;
 const scrollbar = @import("scrollbar.zig");
 
 pub const State = scrollbar.State;
@@ -19,7 +19,7 @@ pub fn handlePages(self: anytype, input_events: *HostInput) void {
     const page_steps = input_events.drainScrollPages();
     var delta_rows: i32 = 0;
     if (page_steps != 0) {
-        const visible_rows: i32 = @intCast(@max(api.scrollState(&self.term).viewport_rows, 1));
+        const visible_rows: i32 = @intCast(@max(vt_api.scrollState(&self.term).visible_rows, 1));
         const page_rows: i32 = @max(visible_rows - 1, 1);
         delta_rows += page_steps * page_rows;
     }
@@ -27,7 +27,7 @@ pub fn handlePages(self: anytype, input_events: *HostInput) void {
 }
 
 pub fn byRows(self: anytype, delta_rows: i32) void {
-    const term_view = api.scrollState(&self.term);
+    const term_view = vt_api.scrollState(&self.term);
     if (term_view.alternate_screen) return;
     const history_count: i32 = cappedI32(term_view.scrollback_count);
     const current: i32 = cappedI32(term_view.scrollback_offset);
@@ -37,7 +37,7 @@ pub fn byRows(self: anytype, delta_rows: i32) void {
 }
 
 pub fn handleMouse(self: anytype, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-    const result = self.scrollbar.handleMouse(mouse_event, origin_x, origin_y, logical_width, logical_height, scrollbarView(api.scrollState(&self.term)), self.window_focused);
+    const result = self.scrollbar.handleMouse(mouse_event, origin_x, origin_y, logical_width, logical_height, scrollbarView(vt_api.scrollState(&self.term)), self.window_focused);
     if (result.target_offset) |offset| _ = setOffset(self, offset);
     return result.consumed;
 }
@@ -47,25 +47,25 @@ pub fn wantsPassiveHoverWake(self: anytype, origin_x: i32, origin_y: i32, logica
     _ = origin_y;
     _ = logical_width;
     _ = logical_height;
-    return self.scrollbar.wantsPassiveHoverWake(scrollbarView(api.scrollState(&self.term)), self.window_focused);
+    return self.scrollbar.wantsPassiveHoverWake(scrollbarView(vt_api.scrollState(&self.term)), self.window_focused);
 }
 
 pub fn layout(self: anytype, texture_rect: window.Rect) window.ScrollbarLayout {
-    return self.scrollbar.layout(texture_rect, scrollbarView(api.scrollState(&self.term)), self.logical_w, self.logical_h, self.window_focused, window.c_win.SDL_GetTicksNS());
+    return self.scrollbar.layout(texture_rect, scrollbarView(vt_api.scrollState(&self.term)), self.logical_w, self.logical_h, self.window_focused, window.c_win.SDL_GetTicksNS());
 }
 
 fn setOffset(self: anytype, offset: u32) bool {
     const changed = if (offset == 0)
-        api.followLiveBottom(&self.term)
+        vt_api.followLiveBottom(&self.term)
     else
-        api.setScrollbackOffset(&self.term, offset);
+        vt_api.setScrollbackOffset(&self.term, offset);
     if (changed) self.scrollbar.invalidate();
     return changed;
 }
 
-fn scrollbarView(term_view: api.ScrollState) scrollbar.View {
+fn scrollbarView(term_view: vt_api.ScrollState) scrollbar.View {
     return .{
-        .viewport_rows = term_view.viewport_rows,
+        .visible_rows = term_view.visible_rows,
         .scrollback_count = term_view.scrollback_count,
         .scrollback_offset = term_view.scrollback_offset,
         .alternate_screen = term_view.alternate_screen,

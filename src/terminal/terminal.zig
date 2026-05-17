@@ -2,26 +2,29 @@
 const std = @import("std");
 const window = @import("../window/window.zig");
 const HostInput = @import("../input/input.zig").Input;
-const api = @import("api.zig");
-const HowlTerm = api.Term;
-const LifecycleState = api.LifecycleState;
-const RenderGeometry = api.RenderGeometry;
-const SurfaceHandle = api.RenderSurface;
+const pty_api = @import("pty/abi.zig");
+const render_api = @import("render/abi.zig");
+const HowlTerm = pty_api.Term;
+const LifecycleState = pty_api.LifecycleState;
+const FrameLayout = render_api.FrameLayout;
+const SurfaceHandle = render_api.RenderSurface;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
-const effects = @import("effects.zig");
-const font_size = @import("font_size.zig");
-const geometry = @import("geometry.zig");
-const input_flow = @import("input_flow.zig");
-const lifecycle = @import("lifecycle.zig");
-const query = @import("query.zig");
-const scroll = @import("scroll.zig");
+const effects = @import("vt/effects.zig");
+const font_size = @import("host/font_size.zig");
+const geometry = @import("vt/geometry.zig");
+const input_flow = @import("pty/flow.zig");
+const lifecycle = @import("runtime/lifecycle.zig");
+const presentation = @import("host/presentation.zig");
+const query = @import("pty/query.zig");
+const scroll = @import("host/scroll.zig");
 const window_log = @import("../input/window.zig");
 
 pub const Terminal = struct {
     const resize_coalesce_ns = 25 * std.time.ns_per_ms;
+    const max_render_steps_per_turn: u8 = 3;
 
-    pub const SurfaceMetrics = api.RenderMetrics;
+    pub const SurfaceMetrics = render_api.RenderMetrics;
 
     pub const SurfaceSnapshot = struct {
         surface: SurfaceHandle,
@@ -63,6 +66,10 @@ pub const Terminal = struct {
     first_non_idle_action_logged: bool,
     first_non_idle_submit_logged: bool,
     first_rendered_surface_logged: bool,
+    first_submit_phase_logged: bool,
+    first_blocked_present_logged: bool,
+    first_idle_render_logged: bool,
+    first_wake_after_prepare_logged: bool,
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -122,6 +129,10 @@ pub const Terminal = struct {
             .first_non_idle_action_logged = false,
             .first_non_idle_submit_logged = false,
             .first_rendered_surface_logged = false,
+            .first_submit_phase_logged = false,
+            .first_blocked_present_logged = false,
+            .first_idle_render_logged = false,
+            .first_wake_after_prepare_logged = false,
         };
     }
 
@@ -139,42 +150,74 @@ pub const Terminal = struct {
 
     pub fn needsContentFrame(self: *Terminal, now_ns: u64) bool {
         _ = now_ns;
-        return api.needsContentFrame(&self.term, self.last_surface.texture_id == 0);
+        return render_api.needsContentFrame(&self.term, presentation.bootstrapSurface(self));
     }
 
     pub fn render(self: *Terminal) void {
-        const bootstrap_surface = self.last_surface.texture_id == 0;
+        const bootstrap_surface = presentation.bootstrapSurface(self);
         self.first_render_trace_logged = true;
-        if (api.needsContentFrame(&self.term, false)) self.first_non_idle_action_logged = true;
-        switch (api.advanceRender(&self.term, bootstrap_surface)) {
-            .idle, .blocked_present, .failed => return,
-            .prepared => {
-                if (!self.first_prepare_result_logged) {
-                    self.first_prepare_result_logged = true;
-                    window_log.logStartupf("stage=term-prepare-first prepared=true", .{});
-                }
-                return;
-            },
-            .rendered => {
-                if (!self.first_submit_trace_logged) {
-                    self.first_submit_trace_logged = true;
-                    window_log.logStartupf("stage=term-submit-first result=rendered", .{});
-                }
-                if (!self.first_non_idle_submit_logged) {
-                    self.first_non_idle_submit_logged = true;
-                    window_log.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
-                }
-                self.last_surface = self.term.render_surface;
-                if (!self.first_rendered_surface_logged) {
-                    self.first_rendered_surface_logged = true;
-                    window_log.logStartupf("stage=term-rendered-surface-first texture_id={d} epoch={d}", .{ self.last_surface.texture_id, self.last_surface.epoch });
-                }
-                return;
-            },
+        if (render_api.needsContentFrame(&self.term, false)) self.first_non_idle_action_logged = true;
+        var step: u8 = 0;
+        while (step < max_render_steps_per_turn) : (step += 1) {
+            if (!self.first_submit_phase_logged and render_api.renderPhase(&self.term) == .submit) {
+                self.first_submit_phase_logged = true;
+                window_log.logStartup("term-submit-phase-enter");
+            }
+            switch (render_api.advanceRender(&self.term, bootstrap_surface)) {
+                .idle => {
+                    window_log.logf("host-loop ts_ns={d} stage=term-render-step result=idle phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
+                    if (!self.first_idle_render_logged) {
+                        self.first_idle_render_logged = true;
+                        window_log.logStartupf("stage=term-render-idle-first phase={s} bootstrap={} texture_id={d}", .{
+                            @tagName(render_api.renderPhase(&self.term)),
+                            bootstrap_surface,
+                            self.term.render.surface.texture_id,
+                        });
+                    }
+                    return;
+                },
+                .blocked_present => {
+                    window_log.logf("host-loop ts_ns={d} stage=term-render-step result=blocked_present phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
+                    if (!self.first_blocked_present_logged) {
+                        self.first_blocked_present_logged = true;
+                        window_log.logStartup("term-present-blocked-first");
+                    }
+                    return;
+                },
+                .failed => {
+                    window_log.logf("host-loop ts_ns={d} stage=term-render-step result=failed phase={s}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)) });
+                    return;
+                },
+                .prepared => {
+                    window_log.logf("host-loop ts_ns={d} stage=term-render-step result=prepared phase={s}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)) });
+                    if (!self.first_prepare_result_logged) {
+                        self.first_prepare_result_logged = true;
+                        window_log.logStartupf("stage=term-prepare-first prepared=true", .{});
+                    }
+                    continue;
+                },
+                .rendered => {
+                    window_log.logf("host-loop ts_ns={d} stage=term-render-step result=rendered phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
+                    if (!self.first_submit_trace_logged) {
+                        self.first_submit_trace_logged = true;
+                        window_log.logStartupf("stage=term-submit-first result=rendered", .{});
+                    }
+                    if (!self.first_non_idle_submit_logged) {
+                        self.first_non_idle_submit_logged = true;
+                        window_log.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
+                    }
+                    presentation.acceptRendered(self);
+                    if (!self.first_rendered_surface_logged) {
+                        self.first_rendered_surface_logged = true;
+                        window_log.logStartupf("stage=term-rendered-surface-first texture_id={d} epoch={d}", .{ self.last_surface.texture_id, self.last_surface.epoch });
+                    }
+                    return;
+                },
+            }
         }
     }
 
-    pub fn geometrySnapshot(self: *Terminal) RenderGeometry {
+    pub fn frameLayoutSnapshot(self: *Terminal) FrameLayout {
         return geometry.snapshot(self);
     }
 
@@ -200,7 +243,7 @@ pub const Terminal = struct {
     }
 
     pub fn surfaceSnapshot(self: *const Terminal) SurfaceSnapshot {
-        return query.surfaceSnapshot(self);
+        return presentation.surfaceSnapshot(self);
     }
 
     pub fn overlaySnapshot(self: *const Terminal, texture_rect: window.Rect) OverlaySnapshot {

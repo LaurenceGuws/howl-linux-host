@@ -1,6 +1,7 @@
 
 const std = @import("std");
 const icon = @import("icon.zig");
+const log = @import("../input/window.zig");
 const Layout = @import("layout.zig");
 const Present = @import("present.zig");
 
@@ -120,7 +121,9 @@ pub const State = struct {
 };
 
 pub fn initVideo() bool {
-    return c.SDL_Init(c.SDL_INIT_VIDEO);
+    const ok = c.SDL_Init(c.SDL_INIT_VIDEO);
+    log.logStartupf("stage=sdl-init ok={} err={s}", .{ ok, c.SDL_GetError() });
+    return ok;
 }
 
 pub fn quit() void {
@@ -132,7 +135,9 @@ pub fn quit() void {
 }
 
 pub fn createWindow(title: [*:0]const u8, width: c_int, height: c_int, flags: Flags) ?Ptr {
+    log.logStartupf("stage=window-create-begin width={d} height={d} flags={d}", .{ width, height, flags });
     const handle = c.SDL_CreateWindow(title, width, height, @intCast(flags)) orelse return null;
+    log.logStartupf("stage=window-create-ok ptr={*} shown={} flags={d}", .{ handle, c.SDL_WindowHasSurface(handle), c.SDL_GetWindowFlags(handle) });
     _ = c.SDL_StartTextInput(handle);
     icon.apply(handle);
     return handle;
@@ -148,7 +153,9 @@ pub fn windowFlags() Flags {
 }
 
 pub fn initPresent(state: *PresentState, handle: Ptr) !void {
+    log.logStartupf("stage=present-init-begin window={*}", .{handle});
     try Present.init(c, state, handle);
+    log.logStartup("stage=present-init-ok");
 }
 
 pub fn deinitPresent(state: *PresentState) void {

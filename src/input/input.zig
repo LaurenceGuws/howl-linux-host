@@ -162,7 +162,7 @@ pub const Input = struct {
 
     fn waitAndDrainEvents(self: *Input) Signal {
         var event: c.SDL_Event = undefined;
-        if (c.SDL_WaitEventTimeout(&event, window.wait_timeout_ms)) {
+        if (c.SDL_WaitEvent(&event)) {
             self.processEvent(&event);
         }
         return self.drainPendingEvents();

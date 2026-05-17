@@ -1,10 +1,10 @@
 
 const std = @import("std");
-const api = @import("api.zig");
-const window = @import("../window/window.zig");
-const scroll = @import("scroll.zig");
+const render_api = @import("../render/abi.zig");
+const window = @import("../../window/window.zig");
+const scroll = @import("../host/scroll.zig");
 
-pub const RenderGeometry = api.RenderGeometry;
+pub const FrameLayout = render_api.FrameLayout;
 
 pub const Mutex = struct {
     state: std.Io.Mutex = .init,
@@ -42,16 +42,16 @@ pub fn maybeCommitGridResize(self: anytype) void {
         self.last_resize_ns = 0;
         break :blk snapshotLocked(self);
     };
-    api.syncRenderGeometry(&self.term, geom) catch return;
+    render_api.syncFrameLayout(&self.term, geom) catch return;
 }
 
-pub fn snapshot(self: anytype) RenderGeometry {
+pub fn snapshot(self: anytype) FrameLayout {
     lock(&self.geometry_mutex);
     defer self.geometry_mutex.unlock();
     return snapshotLocked(self);
 }
 
-fn snapshotLocked(self: anytype) RenderGeometry {
+fn snapshotLocked(self: anytype) FrameLayout {
     return .{
         .render_px = .{ .width = @as(u16, @intCast(@max(self.render_px_w, 1))), .height = @as(u16, @intCast(@max(self.render_px_h, 1))) },
         .grid_px = .{ .width = @as(u16, @intCast(@max(self.grid_px_w, 1))), .height = @as(u16, @intCast(@max(self.grid_px_h, 1))) },

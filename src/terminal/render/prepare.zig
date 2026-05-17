@@ -1,48 +1,45 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("SDL3/SDL.h");
-    @cInclude("SDL3/SDL_opengl.h");
-    @cInclude("howl_render.h");
-});
-const api = @import("../api.zig");
-const render_flow = @import("../render_flow.zig");
-const surface_owner = @import("../surface/owner.zig");
+const api = @import("../runtime/runtime.zig");
+const retained = @import("retained.zig");
+const c = api.c;
+const render_flow = @import("flow.zig");
+const surface_owner = @import("../vt/surface.zig");
 
 pub fn prepareRender(term: *api.Term) api.RenderPrepareResult {
     term.mutex.lock();
     defer term.mutex.unlock();
-    const request = term.render_flow.prepare() orelse {
+    const request = term.render.flow.prepare() orelse {
         releasePreparedSurface(term);
-        term.render_phase = .idle;
+        term.render.phase = .idle;
         return .idle;
     };
     var prepared: api.PreparedSurfaceHandle = null;
     var prepare_request = prepareRequestOut(request);
-    prepare_request.target_valid = @intFromBool(term.render_flow.targetValid());
+    prepare_request.target_valid = @intFromBool(term.render.flow.targetValid());
     var surface_source = surface_owner.surfaceSourceOut(term) catch return .failed;
-    return switch (c.howl_render_surface_text_prepare_handle(term.surface_text, &surface_source, prepare_request, surfaceQueryOut(term.render_flow.surfaceQuery()), &prepared)) {
+    return switch (c.howl_render_surface_text_prepare_handle(term.render.surface_text, &surface_source, prepare_request, surfaceQueryOut(term.render.flow.surfaceQuery()), &prepared)) {
         c.HOWL_RENDER_PREPARE_IDLE => blk: {
             releasePreparedSurface(term);
-            term.render_phase = .idle;
+            term.render.phase = .idle;
             break :blk .idle;
         },
         c.HOWL_RENDER_PREPARE_READY => blk: {
             var info = std.mem.zeroes(api.PreparedSurfaceInfo);
             if (c.howl_render_prepared_surface_describe(prepared, &info) != c.HOWL_RENDER_CALL_OK) {
                 releasePreparedSurface(term);
-                term.render_phase = .idle;
+                term.render.phase = .idle;
                 break :blk .failed;
             }
-            term.render_flow.publishPrepared(preparedFrameFromInfo(info));
+            term.render.flow.publishPrepared(preparedFrameFromInfo(info));
             releasePreparedSurface(term);
             consumePreparedSurfaceHandle(prepared);
-            term.prepared_surface = prepared;
-            term.render_phase = .submit;
+            term.render.prepared_surface = prepared;
+            term.render.phase = .submit;
             break :blk .prepared;
         },
         else => blk: {
             releasePreparedSurface(term);
-            term.render_phase = .idle;
+            term.render.phase = .idle;
             break :blk .failed;
         },
     };
@@ -51,19 +48,19 @@ pub fn prepareRender(term: *api.Term) api.RenderPrepareResult {
 pub fn submitRender(term: *api.Term) api.RenderSubmitResult {
     term.mutex.lock();
     defer term.mutex.unlock();
-    const prepared_frame = switch (term.render_flow.submit()) {
+    const prepared_frame = switch (term.render.flow.submit()) {
         .idle => {
-            term.render_phase = .idle;
+            term.render.phase = .idle;
             return .idle;
         },
         .stale => {
             releasePreparedSurface(term);
-            term.render_phase = .idle;
+            term.render.phase = .idle;
             return .stale;
         },
         .needs_full_prepare => {
             releasePreparedSurface(term);
-            term.render_phase = .prepare;
+            term.render.phase = .prepare;
             return .needs_prepare;
         },
         .submit => |prepared| prepared,
@@ -72,36 +69,38 @@ pub fn submitRender(term: *api.Term) api.RenderSubmitResult {
     feedback.status = c.HOWL_RENDER_CALL_FAILED;
     return switch (submitPreparedSurface(term, prepared_frame, &feedback)) {
         c.HOWL_RENDER_SUBMIT_IDLE => blk: {
-            term.render_phase = .idle;
+            term.render.phase = .idle;
             break :blk .idle;
         },
         c.HOWL_RENDER_SUBMIT_STALE => blk: {
             releasePreparedSurface(term);
-            term.render_phase = .idle;
+            term.render.phase = .idle;
             break :blk .stale;
         },
         c.HOWL_RENDER_SUBMIT_NEEDS_PREPARE => blk: {
             releasePreparedSurface(term);
-            term.render_phase = .prepare;
+            term.render.phase = .prepare;
             break :blk .needs_prepare;
         },
         c.HOWL_RENDER_SUBMIT_RENDERED => blk: {
-            term.render_phase = .present;
-            term.render_surface = feedback.surface;
+            term.render.phase = .present;
+            term.render.surface = feedback.surface;
             releasePreparedSurface(term);
             break :blk .rendered;
         },
         else => blk: {
             releasePreparedSurface(term);
-            term.render_phase = .idle;
+            term.render.phase = .idle;
             break :blk .failed;
         },
     };
 }
 
 pub fn markRenderPresented(term: *api.Term) void {
-    term.render_flow.markPresented();
-    term.render_phase = .idle;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    term.render.flow.markPresented();
+    if (term.render.phase == .present) term.render.phase = .idle;
 }
 
 pub fn releasePrepared(term: *api.Term) void {
@@ -164,7 +163,7 @@ fn submittedFrameFrom(prepared: render_flow.PreparedFrame, feedback: c.HowlRende
 }
 
 fn submitPreparedSurface(term: *api.Term, prepared_frame: render_flow.PreparedFrame, feedback: *c.HowlRenderSurfaceFeedback) c.HowlRenderSubmitStatus {
-    const prepared = term.prepared_surface orelse return c.HOWL_RENDER_SUBMIT_IDLE;
+    const prepared = term.render.prepared_surface orelse return c.HOWL_RENDER_SUBMIT_IDLE;
     const start_ns = c.SDL_GetTicksNS();
 
     var info = std.mem.zeroes(api.PreparedSurfaceInfo);
@@ -175,17 +174,17 @@ fn submitPreparedSurface(term: *api.Term, prepared_frame: render_flow.PreparedFr
     if (c.howl_render_prepared_surface_upload_plan(prepared, &upload) != c.HOWL_RENDER_CALL_OK) return c.HOWL_RENDER_SUBMIT_FAILED;
     var draw = std.mem.zeroes(api.PreparedSurfaceDrawPlan);
     if (c.howl_render_prepared_surface_draw_plan(prepared, &draw) != c.HOWL_RENDER_CALL_OK) return c.HOWL_RENDER_SUBMIT_FAILED;
-    const content_was_valid = term.render_surface.texture_id != 0 and term.render_surface.width == info.render_px.width and term.render_surface.height == info.render_px.height;
+    const content_was_valid = term.render.surface.texture_id != 0 and term.render.surface.width == info.render_px.width and term.render.surface.height == info.render_px.height;
     if (!ensureSurfaceStorage(term, info.render_px.width, info.render_px.height)) return c.HOWL_RENDER_SUBMIT_FAILED;
     if (!applyUploadPlan(term, upload)) return c.HOWL_RENDER_SUBMIT_FAILED;
     renderPreparedDrawPlan(term, info, damage, draw, content_was_valid);
     if (!uploadSurfaceTexture(term, info, damage, content_was_valid)) return c.HOWL_RENDER_SUBMIT_FAILED;
 
-    const query = term.render_flow.surfaceQuery();
+    const query = term.render.flow.surfaceQuery();
     const render_us: u64 = @intCast((c.SDL_GetTicksNS() - start_ns) / std.time.ns_per_us);
     const execution = api.SurfaceExecutionInput{
         .surface = .{
-            .texture_id = term.render_surface.texture_id,
+            .texture_id = term.render.surface.texture_id,
             .width = info.render_px.width,
             .height = info.render_px.height,
             .epoch = query.epoch,
@@ -195,44 +194,44 @@ fn submitPreparedSurface(term: *api.Term, prepared_frame: render_flow.PreparedFr
         .scroll_reuse_applied = if (damage.scroll_up_px > 0 and content_was_valid) 1 else 0,
         .content_valid = 1,
     };
-    const result = c.howl_render_surface_text_submit(term.surface_text, prepared, preparedFrameOut(prepared_frame), &execution, feedback);
+    const result = c.howl_render_surface_text_submit(term.render.surface_text, prepared, preparedFrameOut(prepared_frame), &execution, feedback);
     if (result == c.HOWL_RENDER_SUBMIT_RENDERED and !storeSurfaceDamage(term, damage)) return c.HOWL_RENDER_SUBMIT_FAILED;
     if (result == c.HOWL_RENDER_SUBMIT_RENDERED) {
-        term.render_flow.acceptSubmitted(submittedFrameFrom(prepared_frame, feedback.*));
-        term.prepared_surface = null;
+        term.render.flow.acceptSubmitted(submittedFrameFrom(prepared_frame, feedback.*));
+        term.render.prepared_surface = null;
     }
     return result;
 }
 
 fn ensureSurfaceStorage(term: *api.Term, width: u16, height: u16) bool {
     const pixels_len = @as(usize, width) * @as(usize, height) * 4;
-    if (term.surface_pixels.items.len != pixels_len) {
-        term.surface_pixels.resize(term.allocator, pixels_len) catch return false;
+    if (term.render.pixels.items.len != pixels_len) {
+        term.render.pixels.resize(term.allocator, pixels_len) catch return false;
     }
-    if (term.render_surface.texture_id == 0) {
-        c.glGenTextures(1, &term.render_surface.texture_id);
-        if (term.render_surface.texture_id == 0) return false;
+    if (term.render.surface.texture_id == 0) {
+        c.glGenTextures(1, &term.render.surface.texture_id);
+        if (term.render.surface.texture_id == 0) return false;
     }
-    if (term.render_surface.width != width or term.render_surface.height != height) {
-        c.glBindTexture(c.GL_TEXTURE_2D, term.render_surface.texture_id);
+    if (term.render.surface.width != width or term.render.surface.height != height) {
+        c.glBindTexture(c.GL_TEXTURE_2D, term.render.surface.texture_id);
         defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
         c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_NEAREST);
         c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
         c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
         c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
         c.glTexImage2D(c.GL_TEXTURE_2D, 0, c.GL_RGBA, width, height, 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, null);
-        term.render_surface.width = width;
-        term.render_surface.height = height;
+        term.render.surface.width = width;
+        term.render.surface.height = height;
     }
     return true;
 }
 
 fn storeSurfaceDamage(term: *api.Term, plan: api.PreparedSurfaceDamagePlan) bool {
-    term.surface_full_redraw = plan.full_redraw != 0;
-    term.surface_damage_rects.resize(term.allocator, plan.surface_damage_rects.len) catch return false;
+    term.render.full_redraw = plan.full_redraw != 0;
+    term.render.damage_rects.resize(term.allocator, plan.surface_damage_rects.len) catch return false;
     for (0..plan.surface_damage_rects.len) |i| {
         const rect = plan.surface_damage_rects.ptr[i];
-        term.surface_damage_rects.items[i] = .{
+        term.render.damage_rects.items[i] = .{
             .x = rect.x,
             .y = rect.y,
             .width = rect.width,
@@ -247,7 +246,7 @@ fn applyUploadPlan(term: *api.Term, plan: api.PreparedSurfaceUploadPlan) bool {
         const op = plan.uploads.ptr[i];
         if (op.blob_offset + op.blob_len > plan.pixel_blob.len) return false;
         if (!ensureAtlasSlot(term, op.slot)) return false;
-        const slot = &term.atlas_slots.items[op.slot];
+        const slot = &term.render.atlas_slots.items[op.slot];
         slot.deinit(term.allocator);
         slot.width_px = op.width_px;
         slot.height_px = op.height_px;
@@ -262,15 +261,15 @@ fn applyUploadPlan(term: *api.Term, plan: api.PreparedSurfaceUploadPlan) bool {
 }
 
 fn ensureAtlasSlot(term: *api.Term, slot_index: u32) bool {
-    if (slot_index < term.atlas_slots.items.len) return true;
-    const old_len = term.atlas_slots.items.len;
-    term.atlas_slots.resize(term.allocator, slot_index + 1) catch return false;
-    for (term.atlas_slots.items[old_len..]) |*slot| slot.* = .{};
+    if (slot_index < term.render.atlas_slots.items.len) return true;
+    const old_len = term.render.atlas_slots.items.len;
+    term.render.atlas_slots.resize(term.allocator, slot_index + 1) catch return false;
+    for (term.render.atlas_slots.items[old_len..]) |*slot| slot.* = .{};
     return true;
 }
 
 fn renderPreparedDrawPlan(term: *api.Term, info: api.PreparedSurfaceInfo, damage: api.PreparedSurfaceDamagePlan, draw: api.PreparedSurfaceDrawPlan, content_was_valid: bool) void {
-    const pixels = term.surface_pixels.items;
+    const pixels = term.render.pixels.items;
     if (pixels.len == 0) return;
     if (damage.full_redraw != 0 or !content_was_valid) {
         clearSurfacePixels(pixels);
@@ -321,15 +320,15 @@ fn drawSpriteBatches(term: *api.Term, pixels: []u8, width: u16, height: u16, bat
         var i = first_instance;
         while (i < end) : (i += 1) {
             const instance = instances.ptr[i];
-            if (instance.slot >= term.atlas_slots.items.len) continue;
-            const slot = term.atlas_slots.items[instance.slot];
+            if (instance.slot >= term.render.atlas_slots.items.len) continue;
+            const slot = term.render.atlas_slots.items[instance.slot];
             if (slot.pixels.len == 0) continue;
             drawSpriteInstance(pixels, width, height, instance, slot);
         }
     }
 }
 
-fn drawSpriteInstance(pixels: []u8, width: u16, height: u16, instance: c.HowlRenderSpriteInstance, slot: api.AtlasSlot) void {
+fn drawSpriteInstance(pixels: []u8, width: u16, height: u16, instance: c.HowlRenderSpriteInstance, slot: retained.AtlasSlot) void {
     const bounds = if (slot.visual_bounds.width_px != 0 and slot.visual_bounds.height_px != 0)
         slot.visual_bounds
     else
@@ -388,12 +387,12 @@ fn blendPixel(pixels: []u8, dst_index: usize, r: u8, g: u8, b: u8, a: u8) void {
 }
 
 fn uploadSurfaceTexture(term: *api.Term, info: api.PreparedSurfaceInfo, damage: api.PreparedSurfaceDamagePlan, content_was_valid: bool) bool {
-    if (term.render_surface.texture_id == 0) return false;
-    c.glBindTexture(c.GL_TEXTURE_2D, term.render_surface.texture_id);
+    if (term.render.surface.texture_id == 0) return false;
+    c.glBindTexture(c.GL_TEXTURE_2D, term.render.surface.texture_id);
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
     c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
     if (!content_was_valid or damage.full_redraw != 0 or damage.buffer_damage_rects.len == 0) {
-        c.glTexSubImage2D(c.GL_TEXTURE_2D, 0, 0, 0, term.render_surface.width, term.render_surface.height, c.GL_RGBA, c.GL_UNSIGNED_BYTE, term.surface_pixels.items.ptr);
+        c.glTexSubImage2D(c.GL_TEXTURE_2D, 0, 0, 0, term.render.surface.width, term.render.surface.height, c.GL_RGBA, c.GL_UNSIGNED_BYTE, term.render.pixels.items.ptr);
         return true;
     }
     for (0..damage.buffer_damage_rects.len) |i| {
@@ -408,7 +407,7 @@ fn uploadDamageRect(term: *api.Term, width: u16, height: u16, rect: c.HowlRender
     const clipped = clipDamageRect(width, height, rect) orelse return true;
     const row_bytes = @as(usize, @intCast(clipped.width)) * 4;
     const total_bytes = row_bytes * @as(usize, @intCast(clipped.height));
-    term.upload_scratch.resize(term.allocator, total_bytes) catch return false;
+    term.render.upload_scratch.resize(term.allocator, total_bytes) catch return false;
     var row: usize = 0;
     while (row < @as(usize, @intCast(clipped.height))) : (row += 1) {
         const src_y = @as(usize, @intCast(clipped.y)) + row;
@@ -416,8 +415,8 @@ fn uploadDamageRect(term: *api.Term, width: u16, height: u16, rect: c.HowlRender
         const src_index = (src_y * @as(usize, width) + src_x) * 4;
         const dst_index = row * row_bytes;
         @memcpy(
-            term.upload_scratch.items[dst_index .. dst_index + row_bytes],
-            term.surface_pixels.items[src_index .. src_index + row_bytes],
+            term.render.upload_scratch.items[dst_index .. dst_index + row_bytes],
+            term.render.pixels.items[src_index .. src_index + row_bytes],
         );
     }
     c.glTexSubImage2D(
@@ -429,7 +428,7 @@ fn uploadDamageRect(term: *api.Term, width: u16, height: u16, rect: c.HowlRender
         clipped.height,
         c.GL_RGBA,
         c.GL_UNSIGNED_BYTE,
-        term.upload_scratch.items.ptr,
+        term.render.upload_scratch.items.ptr,
     );
     return true;
 }
@@ -488,7 +487,7 @@ fn requireValidSpan(ptr: anytype, len: usize) void {
 }
 
 fn releasePreparedSurface(term: *api.Term) void {
-    if (term.prepared_surface == null) return;
-    c.howl_render_prepared_surface_release(term.prepared_surface);
-    term.prepared_surface = null;
+    if (term.render.prepared_surface == null) return;
+    c.howl_render_prepared_surface_release(term.render.prepared_surface);
+    term.render.prepared_surface = null;
 }

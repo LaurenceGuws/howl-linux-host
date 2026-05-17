@@ -1,16 +1,18 @@
 
-const api = @import("api.zig");
-const HostInput = @import("../input/input.zig").Input;
-const log = @import("../input/window.zig");
+const pty_api = @import("../pty/abi.zig");
+const vt_api = @import("../vt/abi.zig");
+const render_api = @import("../render/abi.zig");
+const HostInput = @import("../../input/input.zig").Input;
+const log = @import("../../input/window.zig");
 const std = @import("std");
 
-const transport_limits: api.TransportLimits = .{
+const transport_limits: pty_api.TransportLimits = .{
     .max_reads = 16,
     .max_bytes = 64 * 1024,
 };
 
 const apply_budget: u32 = 256;
-const transport_wait_timeout_ms: i32 = 16;
+const transport_wait_timeout_ms: i32 = -1;
 const drive_round_limit: u8 = 8;
 
 pub fn progressThreadMain(self: anytype) void {
@@ -48,12 +50,16 @@ fn driveOnce(self: anytype) bool {
 fn driveOnceWith(self: anytype, comptime Ops: type) bool {
     const transport = Ops.pumpTransport(&self.term, transport_limits);
     const applied = Ops.applyPending(&self.term, apply_budget);
+    const render_was_pending = render_api.hasPendingRenderWork(&self.term);
     const keep = Ops.hasOutboundInputBacklog(&self.term) or
         transport.reads == transport_limits.max_reads or
         transport.bytes_read == transport_limits.max_bytes or
         applied.remaining_events != 0;
-    const published: api.SourceResponse = if (keep) .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 } else Ops.publishSource(&self.term);
-    std.debug.assert(!keep or (!published.published and !published.queued));
+    const should_publish = applied.state_changed or !keep;
+    const published: vt_api.SourceResponse = if (should_publish)
+        Ops.publishSource(&self.term)
+    else
+        .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 };
     log.logProgressDriveStartupf(
         "stage=progress-drive-first reads={d} read_bytes={d} applied={d} publish={d} queued={d} damage={d} keep={} alive={}",
         .{
@@ -67,7 +73,28 @@ fn driveOnceWith(self: anytype, comptime Ops: type) bool {
             Ops.isAlive(&self.term),
         },
     );
-    if (!keep and published.published) Ops.wakeWindow();
+    if (published.published and !render_was_pending) Ops.wakeWindow();
+    if (transport.reads != 0 or transport.bytes_read != 0 or applied.applied_events != 0 or applied.remaining_events != 0 or published.published or Ops.hasOutboundInputBacklog(&self.term)) {
+        log.logf(
+            "host-loop ts_ns={d} stage=progress-drive-live drained={d} pending={d} reads={d} read_bytes={d} queued_events={d} applied={d} remaining={d} changed={} publish={} queued={} damage={d} keep={} phase={s}",
+            .{
+                log.nowNs(),
+                transport.drained_input_bytes,
+                transport.pending_input_bytes,
+                transport.reads,
+                transport.bytes_read,
+                transport.queued_events,
+                applied.applied_events,
+                applied.remaining_events,
+                applied.state_changed,
+                published.published,
+                published.queued,
+                @intFromEnum(published.damage_kind),
+                keep,
+                @tagName(render_api.renderPhase(&self.term)),
+            },
+        );
+    }
     log.logFramef(
         "host-loop ts_ns={d} stage=progress-drive drained={d} pending={d} reads={d} read_bytes={d} queued_events={d} applied_remaining={d} publish={d} queued={d} damage={d} keep={}",
         .{
@@ -88,28 +115,28 @@ fn driveOnceWith(self: anytype, comptime Ops: type) bool {
 }
 
 const RealOps = struct {
-    fn waitTransport(term: *api.Term, timeout_ms: i32) bool {
-        return api.waitTransport(term, timeout_ms);
+    fn waitTransport(term: *pty_api.Term, timeout_ms: i32) bool {
+        return pty_api.waitTransport(term, timeout_ms);
     }
 
-    fn pumpTransport(term: *api.Term, limits: api.TransportLimits) api.TransportProgress {
-        return api.pumpTransport(term, limits);
+    fn pumpTransport(term: *pty_api.Term, limits: pty_api.TransportLimits) pty_api.TransportProgress {
+        return pty_api.pumpTransport(term, limits);
     }
 
-    fn applyPending(term: *api.Term, max_events: u32) api.ApplyProgress {
-        return api.applyPending(term, max_events);
+    fn applyPending(term: *pty_api.Term, max_events: u32) pty_api.ApplyProgress {
+        return pty_api.applyPending(term, max_events);
     }
 
-    fn hasOutboundInputBacklog(term: *const api.Term) bool {
-        return api.hasOutboundInputBacklog(term);
+    fn hasOutboundInputBacklog(term: *const pty_api.Term) bool {
+        return pty_api.hasOutboundInputBacklog(term);
     }
 
-    fn publishSource(term: *api.Term) api.SourceResponse {
-        return api.publishSource(term);
+    fn publishSource(term: *vt_api.Term) vt_api.SourceResponse {
+        return vt_api.publishSource(term);
     }
 
-    fn isAlive(term: *const api.Term) bool {
-        return api.isAlive(term);
+    fn isAlive(term: *const pty_api.Term) bool {
+        return pty_api.isAlive(term);
     }
 
     fn wakeWindow() void {
@@ -186,7 +213,7 @@ var fake_state: struct {
     remaining_events: u32 = 0,
     applied_events: u32 = 0,
     publish_ready: bool = false,
-    publish_result: api.SourceResponse = .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 },
+    publish_result: vt_api.SourceResponse = .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 },
     stop_after_wait: bool = false,
     stop_ptr: ?*std.atomic.Value(bool) = null,
 } = .{};
@@ -200,12 +227,12 @@ const FakeOps = struct {
         return true;
     }
 
-    fn pumpTransport(_: *FakeTerm, _: api.TransportLimits) api.TransportProgress {
+    fn pumpTransport(_: *FakeTerm, _: pty_api.TransportLimits) pty_api.TransportProgress {
         fake_state.pump_calls += 1;
         return .{ .drained_input_bytes = 0, .reads = fake_state.reads, .bytes_read = fake_state.read_bytes, .pending_input_bytes = 0, .queued_events = 0 };
     }
 
-    fn applyPending(_: *FakeTerm, _: u32) api.ApplyProgress {
+    fn applyPending(_: *FakeTerm, _: u32) pty_api.ApplyProgress {
         fake_state.apply_calls += 1;
         if (fake_state.applied_events != 0) fake_state.publish_ready = true;
         return .{ .applied_events = fake_state.applied_events, .remaining_events = fake_state.remaining_events, .state_changed = fake_state.applied_events != 0 };
@@ -215,7 +242,7 @@ const FakeOps = struct {
         return fake_state.backlog;
     }
 
-    fn publishSource(_: *FakeTerm) api.SourceResponse {
+    fn publishSource(_: *FakeTerm) vt_api.SourceResponse {
         fake_state.publish_calls += 1;
         if (!fake_state.publish_ready) return .{ .published = false, .queued = false, .damage_kind = .none, .source_seq = 0, .geometry_epoch = 0 };
         return fake_state.publish_result;

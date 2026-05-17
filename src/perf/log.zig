@@ -1,7 +1,8 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const api = @import("../terminal/api.zig");
+const pty_api = @import("../terminal/pty/abi.zig");
+const render_api = @import("../terminal/render/abi.zig");
 const window = @import("../window/window.zig");
 
 const c = @cImport({
@@ -22,9 +23,9 @@ pub const State = struct {
     wake_sem: ?*window.c_win.SDL_Semaphore,
     thread: ?std.Thread,
     stop: std.atomic.Value(bool),
-    term: *api.Term,
+    term: *pty_api.Term,
 
-    pub fn init(self: *State, term: *api.Term, path: ?[*:0]const u8) !void {
+    pub fn init(self: *State, term: *pty_api.Term, path: ?[*:0]const u8) !void {
         assert(path == null or path.?[0] != 0);
         const file = c.fopen(path orelse default_log_name, "w") orelse return error.PerfLogOpenFailed;
         errdefer _ = c.fclose(file);
@@ -130,7 +131,7 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
     const ticks_per_second: u64 = @intCast(ticks_per_second_raw);
     assert(ticks_per_second > 0);
 
-    const render_metrics = api.takeRenderMetrics(self.term);
+    const render_metrics = render_api.takeRenderMetrics(self.term);
 
     const task_dir = c.opendir("/proc/self/task") orelse return error.TaskDirOpenFailed;
     defer _ = c.closedir(task_dir);

@@ -1,15 +1,26 @@
 const std = @import("std");
-const c = @cImport({
-    @cInclude("howl_pty.h");
-    @cInclude("howl_vt.h");
-});
-const api = @import("../api.zig");
+const api = @import("../runtime/runtime.zig");
+const render_abi = @import("../render/abi.zig");
+const vt_abi = @import("../vt/abi.zig");
+const c = api.c;
+
+const default_title_capacity: u32 = 4096;
 
 pub fn isAlive(term: *const api.Term) bool {
     const mut: *api.Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return ptySessionStatus(term.session) == c.HOWL_PTY_SESSION_ACTIVE;
+}
+
+pub fn requireResizeOk(status: i32) !void {
+    if (status == ptyCallOk()) return;
+    if (status == c.HOWL_PTY_CALL_INVALID_ARGUMENT) return error.InvalidDimensions;
+    return error.PtyCallFailed;
+}
+
+pub fn requireOk(status: i32) !void {
+    return ptyRequireOk(status);
 }
 
 pub fn hasOutboundInputBacklog(term: *const api.Term) bool {
@@ -54,7 +65,6 @@ pub fn pumpTransport(term: *api.Term, limits: api.TransportLimits) api.Transport
         std.debug.assert(chunk_len <= remaining);
         std.debug.assert(bytes_read + chunk_len <= limits.max_bytes);
         api.vtRequireStructOk(c.howl_vt_terminal_feed(term.vt, scratch[0..chunk_len].ptr, chunk_len));
-        term.output_seen = true;
         reads += 1;
         bytes_read += chunk_len;
     }
@@ -88,8 +98,8 @@ pub fn applyPending(term: *api.Term, max_events: u32) api.ApplyProgress {
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const history_before = api.vtVisibleInfo(term.vt, term.scrollback_offset).history_count;
-    var title_buf: [api.default_title_capacity]u8 = undefined;
+    const history_before = vt_abi.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
+    var title_buf: [default_title_capacity]u8 = undefined;
     const result = c.howl_vt_terminal_apply(term.vt, max_events, title_buf[0..].ptr, title_buf.len);
     api.vtRequireStructOk(result.status);
     if (result.applied == 0) {
@@ -99,11 +109,11 @@ pub fn applyPending(term: *api.Term, max_events: u32) api.ApplyProgress {
     std.debug.assert(result.title_written <= title_buf.len);
     api.trace.logVtApplyStartupf("stage=term-vt-apply-first applied={d} remaining={d}", .{ result.applied, result.remaining_events });
 
-    if (result.title_written != 0) api.setCurrentTitle(term, title_buf[0..@intCast(result.title_written)]) catch {};
+    if (result.title_written != 0) setCurrentTitle(term, title_buf[0..@intCast(result.title_written)]) catch {};
     drainTerminalReply(term);
-    api.repairScrollback(term, history_before, true);
-    term.vt_epoch +%= 1;
-    api.noteVisibleChange(term);
+    vt_abi.repairScrollback(term, history_before, true);
+    term.vt_state.epoch +%= 1;
+    vt_abi.noteVisibleChange(term);
     return .{
         .applied_events = @intCast(result.applied),
         .remaining_events = @intCast(result.remaining_events),
@@ -122,7 +132,8 @@ pub fn publishPaste(term: *api.Term, text: []const u8) !void {
     if (text.len == 0) return;
     term.mutex.lock();
     defer term.mutex.unlock();
-    api.followLiveBottomForInput(term);
+    vt_abi.followLiveBottomForInput(term);
+    api.trace.logf("host-loop ts_ns={d} stage=transport-publish-paste len={d}", .{ api.trace.nowNs(), text.len });
     _ = try publishEncodedInput(term, .{ .paste = text });
 }
 
@@ -130,25 +141,28 @@ pub fn publishInputBytes(term: *api.Term, bytes: []const u8) !void {
     if (bytes.len == 0) return;
     term.mutex.lock();
     defer term.mutex.unlock();
-    api.followLiveBottomForInput(term);
+    vt_abi.followLiveBottomForInput(term);
+    api.trace.logf("host-loop ts_ns={d} stage=transport-publish-bytes len={d}", .{ api.trace.nowNs(), bytes.len });
     _ = try publishEncodedInput(term, .{ .bytes = bytes });
 }
 
 pub fn publishInputKey(term: *api.Term, key: api.Input.Key, mods: api.Input.Modifier) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    api.followLiveBottomForInput(term);
+    vt_abi.followLiveBottomForInput(term);
+    api.trace.logf("host-loop ts_ns={d} stage=transport-publish-key key={d} mods={d}", .{ api.trace.nowNs(), key, mods });
     _ = try publishEncodedInput(term, .{ .key = .{ .key = key, .mods = mods } });
 }
 
 pub fn publishMouseEvent(term: *api.Term, mouse: api.MouseInput) !bool {
     term.mutex.lock();
     defer term.mutex.unlock();
+    api.trace.logf("host-loop ts_ns={d} stage=transport-publish-mouse kind={d} button={d}", .{ api.trace.nowNs(), mouse.kind, mouse.button });
     return publishEncodedInput(term, .{ .mouse = .{
         .kind = mouse.kind,
         .button = mouse.button,
-        .row = api.pixelToRow(term, mouse.pixel_y),
-        .col = api.pixelToCol(term, mouse.pixel_x),
+        .row = render_abi.pixelToRow(term, mouse.pixel_y),
+        .col = render_abi.pixelToCol(term, mouse.pixel_x),
         .pixel_x = if (mouse.pixel_x < 0) null else @intCast(mouse.pixel_x),
         .pixel_y = if (mouse.pixel_y < 0) null else @intCast(mouse.pixel_y),
         .mods = mouse.mods,
@@ -159,6 +173,11 @@ pub fn publishMouseEvent(term: *api.Term, mouse: api.MouseInput) !bool {
 pub fn publishFocusChange(term: *api.Term, focused: bool) !bool {
     term.mutex.lock();
     defer term.mutex.unlock();
+    api.trace.logf("host-loop ts_ns={d} stage=transport-publish-focus focused={}", .{ api.trace.nowNs(), focused });
+    return publishFocusChangeLocked(term, focused);
+}
+
+pub fn publishFocusChangeLocked(term: *api.Term, focused: bool) !bool {
     return publishEncodedInput(term, .{ .focus = if (focused) .in else .out });
 }
 
@@ -172,6 +191,7 @@ pub fn inputBytesApplied(term: *const api.Term) u64 {
 fn publishEncodedInput(term: *api.Term, event: api.Input.Event) !bool {
     const encoded = try vtEncodeInput(term, event);
     if (encoded.len == 0) return false;
+    api.trace.logf("host-loop ts_ns={d} stage=transport-publish-encoded len={d}", .{ api.trace.nowNs(), encoded.len });
     try ptyPublishInput(term.session, encoded);
     return true;
 }
@@ -179,6 +199,7 @@ fn publishEncodedInput(term: *api.Term, event: api.Input.Event) !bool {
 fn drainTerminalReply(term: *api.Term) void {
     const pending = vtPendingOutput(term) catch return;
     if (pending.len == 0) return;
+    api.trace.logf("host-loop ts_ns={d} stage=transport-drain-terminal-reply len={d}", .{ api.trace.nowNs(), pending.len });
     ptyPublishInput(term.session, pending) catch return;
     c.howl_vt_terminal_clear_pending_output(term.vt);
 }
@@ -191,8 +212,8 @@ fn vtPendingOutput(term: *api.Term) ![]const u8 {
         result = c.howl_vt_terminal_copy_pending_output(term.vt, out.ptr, out.len);
     }
     try api.vtRequireOk(result.status);
-    std.debug.assert(result.written <= term.vt_bytes.items.len);
-    return term.vt_bytes.items[0..@intCast(result.written)];
+    std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+    return term.vt_state.bytes.items[0..@intCast(result.written)];
 }
 
 fn vtDrainClipboard(term: *api.Term, allocator: std.mem.Allocator) !?[]u8 {
@@ -204,8 +225,8 @@ fn vtDrainClipboard(term: *api.Term, allocator: std.mem.Allocator) !?[]u8 {
     }
     try api.vtRequireOk(result.status);
     if (result.written == 0) return null;
-    std.debug.assert(result.written <= term.vt_bytes.items.len);
-    return try allocator.dupe(u8, term.vt_bytes.items[0..@intCast(result.written)]);
+    std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+    return try allocator.dupe(u8, term.vt_state.bytes.items[0..@intCast(result.written)]);
 }
 
 fn vtEncodeInput(term: *api.Term, event: api.Input.Event) ![]const u8 {
@@ -220,35 +241,35 @@ fn vtEncodeInput(term: *api.Term, event: api.Input.Event) ![]const u8 {
 
 fn vtEncodeKeyInput(term: *api.Term, key: api.Input.KeyEvent) ![]const u8 {
     while (true) {
-        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+        const out = try vtEnsureBytes(term, term.vt_state.bytes.items.len);
         const result = c.howl_vt_terminal_encode_key(term.vt, key.key, @intCast(key.mods), out.ptr, out.len);
         if (result.status == api.vtCallShortBuffer()) {
             _ = try vtEnsureBytes(term, @intCast(result.needed));
             continue;
         }
         try api.vtRequireOk(result.status);
-        std.debug.assert(result.written <= term.vt_bytes.items.len);
-        return term.vt_bytes.items[0..@intCast(result.written)];
+        std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+        return term.vt_state.bytes.items[0..@intCast(result.written)];
     }
 }
 
 fn vtEncodeFocusInput(term: *api.Term, focus: api.Input.FocusEvent) ![]const u8 {
     while (true) {
-        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+        const out = try vtEnsureBytes(term, term.vt_state.bytes.items.len);
         const result = c.howl_vt_terminal_encode_focus(term.vt, if (focus == .in) 1 else 0, out.ptr, out.len);
         if (result.status == api.vtCallShortBuffer()) {
             _ = try vtEnsureBytes(term, @intCast(result.needed));
             continue;
         }
         try api.vtRequireOk(result.status);
-        std.debug.assert(result.written <= term.vt_bytes.items.len);
-        return term.vt_bytes.items[0..@intCast(result.written)];
+        std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+        return term.vt_state.bytes.items[0..@intCast(result.written)];
     }
 }
 
 fn vtEncodeMouseInput(term: *api.Term, mouse: api.Input.MouseEvent) ![]const u8 {
     while (true) {
-        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+        const out = try vtEnsureBytes(term, term.vt_state.bytes.items.len);
         const result = c.howl_vt_terminal_encode_mouse(
             term.vt,
             mouse.kind,
@@ -269,28 +290,28 @@ fn vtEncodeMouseInput(term: *api.Term, mouse: api.Input.MouseEvent) ![]const u8 
             continue;
         }
         try api.vtRequireOk(result.status);
-        std.debug.assert(result.written <= term.vt_bytes.items.len);
-        return term.vt_bytes.items[0..@intCast(result.written)];
+        std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+        return term.vt_state.bytes.items[0..@intCast(result.written)];
     }
 }
 
 fn vtEncodePasteInput(term: *api.Term, text: []const u8) ![]const u8 {
     while (true) {
-        const out = try vtEnsureBytes(term, term.vt_bytes.items.len);
+        const out = try vtEnsureBytes(term, term.vt_state.bytes.items.len);
         const result = c.howl_vt_terminal_encode_paste(term.vt, text.ptr, text.len, out.ptr, out.len);
         if (result.status == api.vtCallShortBuffer()) {
             _ = try vtEnsureBytes(term, @intCast(result.needed));
             continue;
         }
         try api.vtRequireOk(result.status);
-        std.debug.assert(result.written <= term.vt_bytes.items.len);
-        return term.vt_bytes.items[0..@intCast(result.written)];
+        std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+        return term.vt_state.bytes.items[0..@intCast(result.written)];
     }
 }
 
 fn vtEnsureBytes(term: *api.Term, needed: usize) ![]u8 {
-    try term.vt_bytes.resize(term.allocator, needed);
-    return term.vt_bytes.items;
+    try term.vt_state.bytes.resize(term.allocator, needed);
+    return term.vt_state.bytes.items;
 }
 
 fn ptyRequireOk(status: i32) !void {
@@ -327,4 +348,9 @@ fn vtQueuedEventCount(handle: c.HowlVtHandle) u32 {
     const result = c.howl_vt_terminal_apply(handle, 0, null, 0);
     api.vtRequireStructOk(result.status);
     return @intCast(result.remaining_events);
+}
+
+fn setCurrentTitle(term: *api.Term, title: []const u8) !void {
+    try term.vt_state.title.resize(term.allocator, title.len);
+    if (title.len > 0) @memcpy(term.vt_state.title.items, title);
 }

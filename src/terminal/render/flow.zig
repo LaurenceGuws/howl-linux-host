@@ -44,23 +44,10 @@ pub const SourceView = struct {
     rows: u16,
     scrollback_count: u64,
     scrollback_offset: u64,
-    selection_anchor_depth: ?u64 = null,
-    selection_anchor_col: ?u16 = null,
-    selection_current_depth: ?u64 = null,
-    selection_current_col: ?u16 = null,
     focused: bool,
-    hover_link_id: u32,
-    hover_underline_style: u8,
     snapshot_seq: u64,
     vt_epoch: u64,
     last_alt_screen: bool,
-
-    pub fn selectionActive(self: SourceView) bool {
-        return self.selection_anchor_depth != null and
-            self.selection_anchor_col != null and
-            self.selection_current_depth != null and
-            self.selection_current_col != null;
-    }
 };
 
 pub const SourceResponse = struct {
@@ -163,13 +150,7 @@ const Publication = struct {
     rows: u16 = 0,
     scrollback_count: u64 = 0,
     scrollback_offset: u64 = 0,
-    selection_anchor_depth: ?u64 = null,
-    selection_anchor_col: ?u16 = null,
-    selection_current_depth: ?u64 = null,
-    selection_current_col: ?u16 = null,
     focused: bool = true,
-    hover_link_id: u32 = 0,
-    hover_underline_style: u8 = 0,
     snapshot_seq: u64 = 0,
     vt_epoch: u64 = 0,
     last_alt_screen: bool = false,
@@ -180,24 +161,11 @@ const Publication = struct {
         self.rows = source.rows;
         self.scrollback_count = source.scrollback_count;
         self.scrollback_offset = source.scrollback_offset;
-        self.selection_anchor_depth = source.selection_anchor_depth;
-        self.selection_anchor_col = source.selection_anchor_col;
-        self.selection_current_depth = source.selection_current_depth;
-        self.selection_current_col = source.selection_current_col;
         self.focused = source.focused;
-        self.hover_link_id = source.hover_link_id;
-        self.hover_underline_style = source.hover_underline_style;
         self.snapshot_seq = source.snapshot_seq;
         self.vt_epoch = source.vt_epoch;
         self.last_alt_screen = source.last_alt_screen;
         self.damage_kind = damage_kind;
-    }
-
-    fn selectionActive(self: Publication) bool {
-        return self.selection_anchor_depth != null and
-            self.selection_anchor_col != null and
-            self.selection_current_depth != null and
-            self.selection_current_col != null;
     }
 };
 
@@ -238,6 +206,7 @@ const PublicationState = struct {
     fn classify(self: *const PublicationState, source: SourceView) DamageKind {
         const prior = self.publication orelse return .full;
         if (source.snapshot_seq == prior.snapshot_seq) return .none;
+        if (self.pending) return .full;
         if (source.cols != prior.cols or source.rows != prior.rows) return .full;
         if (source.last_alt_screen != prior.last_alt_screen) return .full;
         if (source.scrollback_offset != prior.scrollback_offset) return .full;

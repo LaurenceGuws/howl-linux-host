@@ -1,14 +1,14 @@
 
-const Layout = @import("../window/layout.zig");
-const HostInput = @import("../input/input.zig").Input;
-const window = @import("../input/window.zig");
-const api = @import("api.zig");
-const term_input = @import("input.zig");
-const scroll = @import("scroll.zig");
+const Layout = @import("../../window/layout.zig");
+const HostInput = @import("../../input/input.zig").Input;
+const window = @import("../../input/window.zig");
+const pty_api = @import("abi.zig");
+const term_input = @import("../host/input.zig");
+const scroll = @import("../host/scroll.zig");
 
 pub fn paste(self: anytype, payload: []const u8) void {
     window.logf("host-loop ts_ns={d} stage=publish-paste len={d}", .{ window.nowNs(), payload.len });
-    api.publishPaste(&self.term, payload) catch return;
+    pty_api.publishPaste(&self.term, payload) catch return;
 }
 
 pub fn drain(self: anytype, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
@@ -37,17 +37,17 @@ pub fn drain(self: anytype, input_events: *HostInput, origin_x: i32, origin_y: i
 
 fn publishBytes(self: anytype, bytes: []const u8) void {
     window.logf("host-loop ts_ns={d} stage=publish-bytes len={d}", .{ window.nowNs(), bytes.len });
-    api.publishInputBytes(&self.term, bytes) catch return;
+    pty_api.publishInputBytes(&self.term, bytes) catch return;
 }
 
 fn publishKey(self: anytype, key: HostInput.Keys.Event) void {
     const terminal_key = term_input.key(key.key) orelse return;
     window.logf("host-loop ts_ns={d} stage=publish-key key={d}", .{ window.nowNs(), terminal_key });
-    api.publishInputKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return;
+    pty_api.publishInputKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return;
 }
 
 fn publishMouse(self: anytype, mouse_event: HostInput.Mouse.Event) bool {
-    return api.publishMouseEvent(&self.term, .{
+    return pty_api.publishMouseEvent(&self.term, .{
         .kind = term_input.mouseKind(mouse_event.kind),
         .button = term_input.mouseButton(mouse_event.button),
         .pixel_x = mouse_event.pixel_x,

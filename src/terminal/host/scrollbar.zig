@@ -1,8 +1,8 @@
 
 const std = @import("std");
-const window = @import("../window/window.zig");
-const Layout = @import("../window/layout.zig");
-const HostInput = @import("../input/input.zig").Input;
+const window = @import("../../window/window.zig");
+const Layout = @import("../../window/layout.zig");
+const HostInput = @import("../../input/input.zig").Input;
 
 const min_width_logical: c_int = 3;
 const max_width_logical: c_int = 11;
@@ -19,7 +19,7 @@ pub const Model = struct {
 };
 
 pub const View = struct {
-    viewport_rows: u16,
+    visible_rows: u16,
     scrollback_count: u32,
     scrollback_offset: u32,
     alternate_screen: bool,
@@ -37,7 +37,7 @@ pub const State = struct {
     grab_offset: f32 = 0,
     cache_valid: bool = false,
     cache_rect: window.Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-    cache_view: View = .{ .viewport_rows = 1, .scrollback_count = 0, .scrollback_offset = 0, .alternate_screen = false },
+    cache_view: View = .{ .visible_rows = 1, .scrollback_count = 0, .scrollback_offset = 0, .alternate_screen = false },
     cache_layout: window.ScrollbarLayout = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
     cache_ns: u64 = 0,
 
@@ -231,7 +231,7 @@ fn smoothstep01(t: f32) f32 {
 }
 
 fn modelFromView(view: View) Model {
-    const rows: u32 = @intCast(@max(view.viewport_rows, 1));
+    const rows: u32 = @intCast(@max(view.visible_rows, 1));
     const history_count = view.scrollback_count;
     const alt = view.alternate_screen;
     const visible = !alt and history_count > 0 and rows > 0;
@@ -248,7 +248,7 @@ fn sameRect(a: window.Rect, b: window.Rect) bool {
 }
 
 fn sameView(a: View, b: View) bool {
-    return a.viewport_rows == b.viewport_rows and
+    return a.visible_rows == b.visible_rows and
         a.scrollback_count == b.scrollback_count and
         a.scrollback_offset == b.scrollback_offset and
         a.alternate_screen == b.alternate_screen;

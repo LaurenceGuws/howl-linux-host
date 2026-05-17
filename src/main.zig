@@ -7,7 +7,9 @@ const Input = @import("input/input.zig").Input;
 const InputWindow = @import("input/window.zig");
 const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
-const TermApi = @import("terminal/api.zig");
+const PtyApi = @import("terminal/pty/abi.zig");
+const RenderApi = @import("terminal/render/abi.zig");
+const TermPresentation = @import("terminal/host/presentation.zig");
 const TerminalWidget = @import("terminal/terminal.zig").Terminal;
 const Window = @import("window/window.zig");
 
@@ -43,26 +45,32 @@ pub fn main(init: std.process.Init) !void {
 
 fn start(options: Options) !void {
     setCurrentThreadName("howl-main");
+    InputWindow.logStartup("app-start");
     try initVideo();
     defer Window.quit();
 
     var conf = try loadConfig(options);
     defer conf.deinit(std.heap.c_allocator);
+    InputWindow.logStartupf("stage=config-loaded shell_len={d} title_len={d}", .{ conf.term.shell.len, conf.window.title.len });
 
     var window = try createWindow(&conf, options);
     defer window.deinit();
+    InputWindow.logStartupf("stage=window-ready px_w={d} px_h={d} logical_w={d} logical_h={d}", .{ window.px_w, window.px_h, window.logical_w, window.logical_h });
 
     var tab_bar = TabBar{};
     var tabs: TabList = .empty;
     defer destroyTabs(std.heap.c_allocator, &tabs);
     var active_tab_idx: TabIndex = 0;
     try openInitialTab(&conf, &window, &tabs, &active_tab_idx);
+    InputWindow.logStartup("initial-tab-opened");
 
     var perf: PerfLog.State = undefined;
     try initPerf(&perf, activeTab(tabs.items, active_tab_idx));
     defer perf.stopAndDeinit();
+    InputWindow.logStartup("perf-ready");
 
     var input = try initInput(&window);
+    InputWindow.logStartup("input-ready");
     const duration_timer = InputWindow.startQuitTimer(options.duration_ms);
     defer InputWindow.stopQuitTimer(duration_timer);
 
@@ -75,6 +83,8 @@ fn start(options: Options) !void {
         .input = &input,
     };
     configureInputPolicies(&app);
+    InputWindow.logStartup("policies-configured");
+    InputWindow.logStartup("loop-enter");
     try runLoop(&app);
 }
 
@@ -144,6 +154,12 @@ fn runLoopTurn(app: *App) !LoopAction {
     const now_before_wait = Window.c_win.SDL_GetTicksNS();
     const content_before_wait = collectContentFrame(tab, now_before_wait);
     const wait_for_event = !content_before_wait;
+    InputWindow.logLoopStartupf("stage=loop-turn-first content_before_wait={} wait_for_event={} render_phase={s} alive={}", .{
+        content_before_wait,
+        wait_for_event,
+        @tagName(RenderApi.renderPhase(&tab.term)),
+        PtyApi.isAlive(&tab.term),
+    });
     const event_action = pumpWindowEvents(app, wait_for_event);
     if (event_action == .quit) return .quit;
 
@@ -157,6 +173,11 @@ fn runLoopTurn(app: *App) !LoopAction {
     const tab_after_input = activeTab(app.tabs.items, app.active_tab_idx.*);
     const now_before_render = Window.c_win.SDL_GetTicksNS();
     const content_before_render = collectContentFrame(tab_after_input, now_before_render);
+    InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} render_phase={s} texture_id={d}", .{
+        content_before_render,
+        @tagName(RenderApi.renderPhase(&tab_after_input.term)),
+        tab_after_input.term.render.surface.texture_id,
+    });
     if (!content_before_render) return .continue_running;
 
     render(app);
@@ -217,6 +238,13 @@ fn ensureActiveTabHealthy(app: *App) !void {
 
 fn wakeIfMoreContent(tab: *TerminalWidget, now_ns: u64) void {
     if (!tab.needsContentFrame(now_ns)) return;
+    if (!tab.first_wake_after_prepare_logged) {
+        tab.first_wake_after_prepare_logged = true;
+        InputWindow.logStartupf("stage=loop-wake-more-content phase={s} texture_id={d}", .{
+            @tagName(RenderApi.renderPhase(&tab.term)),
+            tab.term.render.surface.texture_id,
+        });
+    }
     Input.wakeWindow();
 }
 
@@ -251,7 +279,7 @@ fn render(app: *App) void {
         .active_tab = tab_bar_snapshot.active_idx,
         .tab_labels = tab_bar_snapshot.labels,
     });
-    TermApi.markRenderPresented(&tab.term);
+    TermPresentation.markPresented(&tab.term);
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
 }
 
