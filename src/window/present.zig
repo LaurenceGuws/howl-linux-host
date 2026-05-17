@@ -87,15 +87,11 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     updateTabCacheIfNeeded(c, state, @max(fb_w, 1), @max(fb_h, 1), frame);
     const after_cache_ns = c.SDL_GetTicksNS();
     c.glViewport(0, 0, @max(fb_w, 1), @max(fb_h, 1));
-    if (frame.texture_full_redraw or frame.texture_damage_rects.len == 0) {
-        c.glClearColor(0.06, 0.09, 0.14, 1.0);
-        c.glClear(c.GL_COLOR_BUFFER_BIT);
-        drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.texture_rect.y);
-        Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
-        Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
-    } else {
-        presentTerminalDamage(c, state, @max(fb_w, 1), @max(fb_h, 1), frame);
-    }
+    c.glClearColor(0.06, 0.09, 0.14, 1.0);
+    c.glClear(c.GL_COLOR_BUFFER_BIT);
+    drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.texture_rect.y);
+    Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
+    Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
     state.last_scrollbar = scrollbarRect(frame.scrollbar);
     const before_swap_ns = c.SDL_GetTicksNS();
     if (!state.first_present_attempt_logged) {

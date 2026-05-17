@@ -260,9 +260,14 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
 
 fn collectContentFrame(tab: *TerminalPanel, now_ns: u64) RenderApi.RenderWorkState {
     _ = now_ns;
+    const bootstrap_surface = tab.last_surface.texture_id == 0;
     tab.maybeCommitGridResize();
-    _ = VtApi.publishSource(&tab.term);
-    return RenderApi.renderWorkState(&tab.term, tab.last_surface.texture_id == 0);
+    var work = RenderApi.renderWorkState(&tab.term, bootstrap_surface);
+    if (bootstrap_surface or !work.wantsFrame()) {
+        _ = VtApi.publishSource(&tab.term);
+        work = RenderApi.renderWorkState(&tab.term, bootstrap_surface);
+    }
+    return work;
 }
 
 fn render(app: *App) void {
