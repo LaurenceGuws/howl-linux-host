@@ -133,8 +133,8 @@ test "host loop waits when nothing is ready" {
     fake_state.stop_ptr = &ctx.progress_stop;
     fake_state.stop_after_wait = true;
     progressThreadMainWith(&ctx, FakeOps);
-    try std.testing.expectEqual(@as(usize, 1), fake_state.wait_calls);
-    try std.testing.expectEqual(@as(usize, 0), fake_state.wake_calls);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.wait_calls);
+    try std.testing.expectEqual(@as(u8, 0), fake_state.wake_calls);
 }
 
 test "host loop wakes on applied vt work" {

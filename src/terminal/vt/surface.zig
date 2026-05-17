@@ -54,6 +54,7 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.start <= visible.history_count + visible.rows);
 
+    const damage_kind = sourceDamageKind(prior_surface, term.vt_state.surface, term.vt_state.visible_damage);
     const typed_response = term.render.flow.acceptSource(.{
         .cols = visible.cols,
         .rows = visible.rows,
@@ -63,6 +64,7 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
         .snapshot_seq = term.vt_state.snapshot_seq,
         .vt_epoch = term.vt_state.epoch,
         .last_alt_screen = visible.is_alternate_screen,
+        .damage_kind = damage_kind,
     });
     recordPendingDirtyGeneration(term, visible, typed_response);
     term.vt_state.surface.full_damage = @intFromBool(typed_response.damage_kind == .full);
@@ -243,6 +245,31 @@ fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_respo
         return;
     }
     term.vt_state.pending_dirty_generation = 0;
+}
+
+fn sourceDamageKind(prior: c.HowlVtSurfaceSource, current: c.HowlVtSurfaceSource, damage: anytype) render_flow.DamageKind {
+    const scroll_rows = scrollRowsFromSurface(prior, current);
+    var any_dirty = false;
+    var all_rows_dirty = current.rows != 0;
+    for (damage.dirty_rows.items, 0..) |dirty, row_idx| {
+        if (row_idx >= current.rows) break;
+        if (dirty == 0) {
+            all_rows_dirty = false;
+            continue;
+        }
+        any_dirty = true;
+        if (row_idx >= damage.dirty_cols_start.items.len or row_idx >= damage.dirty_cols_end.items.len) {
+            all_rows_dirty = false;
+            continue;
+        }
+        if (damage.dirty_cols_start.items[row_idx] != 0 or damage.dirty_cols_end.items[row_idx] != current.cols -| 1) {
+            all_rows_dirty = false;
+        }
+    }
+    if (!any_dirty) return .none;
+    if (scroll_rows != 0) return .scroll;
+    if (all_rows_dirty) return .full;
+    return .none;
 }
 
 pub fn scrollRowsFromSurface(prior: c.HowlVtSurfaceSource, current: c.HowlVtSurfaceSource) u16 {

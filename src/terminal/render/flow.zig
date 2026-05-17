@@ -48,6 +48,7 @@ pub const SourceView = struct {
     snapshot_seq: u64,
     vt_epoch: u64,
     last_alt_screen: bool,
+    damage_kind: DamageKind,
 };
 
 pub const SourceResponse = struct {
@@ -625,6 +626,7 @@ test "render flow keeps newer source pending while submit is in flight" {
         .snapshot_seq = 1,
         .vt_epoch = 1,
         .last_alt_screen = false,
+        .damage_kind = .full,
     });
     try std.testing.expect(first.published);
     const prepare_request = flow.prepare().?;
@@ -639,6 +641,7 @@ test "render flow keeps newer source pending while submit is in flight" {
         .snapshot_seq = 2,
         .vt_epoch = 2,
         .last_alt_screen = false,
+        .damage_kind = .scroll,
     });
     try std.testing.expect(second.published);
     try std.testing.expect(flow.pendingState().source_pending);
@@ -672,6 +675,7 @@ test "render flow does not treat unpresented submit as idle" {
         .snapshot_seq = 1,
         .vt_epoch = 1,
         .last_alt_screen = false,
+        .damage_kind = .full,
     });
     const prepare_request = flow.prepare().?;
     flow.publishPrepared(preparedFrameFromToken(tokenFromPrepareRequest(prepare_request), 0, 0));
@@ -684,4 +688,104 @@ test "render flow does not treat unpresented submit as idle" {
         .content_valid = true,
     });
     try std.testing.expect(flow.targetValid());
+}
+
+test "render flow preserves partial source damage" {
+    var flow: Flow = .{};
+    _ = flow.syncGeometry(.{
+        .render_px = .{ .width = 10, .height = 10 },
+        .grid_px = .{ .width = 10, .height = 10 },
+        .cell_px = .{ .width = 1, .height = 1 },
+    });
+    _ = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 1,
+        .vt_epoch = 1,
+        .last_alt_screen = false,
+        .damage_kind = .full,
+    });
+    _ = flow.prepare();
+    const second = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 2,
+        .vt_epoch = 2,
+        .last_alt_screen = false,
+        .damage_kind = .partial,
+    });
+    try std.testing.expectEqual(DamageKind.partial, second.damage_kind);
+}
+
+test "render flow preserves scroll source damage" {
+    var flow: Flow = .{};
+    _ = flow.syncGeometry(.{
+        .render_px = .{ .width = 10, .height = 10 },
+        .grid_px = .{ .width = 10, .height = 10 },
+        .cell_px = .{ .width = 1, .height = 1 },
+    });
+    _ = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 1,
+        .vt_epoch = 1,
+        .last_alt_screen = false,
+        .damage_kind = .full,
+    });
+    _ = flow.prepare();
+    const second = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 1,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 2,
+        .vt_epoch = 2,
+        .last_alt_screen = false,
+        .damage_kind = .scroll,
+    });
+    try std.testing.expectEqual(DamageKind.scroll, second.damage_kind);
+}
+
+test "render flow drops clean source" {
+    var flow: Flow = .{};
+    _ = flow.syncGeometry(.{
+        .render_px = .{ .width = 10, .height = 10 },
+        .grid_px = .{ .width = 10, .height = 10 },
+        .cell_px = .{ .width = 1, .height = 1 },
+    });
+    _ = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 1,
+        .vt_epoch = 1,
+        .last_alt_screen = false,
+        .damage_kind = .full,
+    });
+    _ = flow.prepare();
+    const second = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 2,
+        .vt_epoch = 2,
+        .last_alt_screen = false,
+        .damage_kind = .none,
+    });
+    try std.testing.expect(!second.published);
+    try std.testing.expectEqual(DamageKind.none, second.damage_kind);
 }
