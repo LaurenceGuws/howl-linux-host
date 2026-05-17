@@ -136,6 +136,7 @@ pub const PreparedSurfaceDiagnostics = c.HowlRenderPreparedSurfaceDiagnostics;
 pub const SurfaceExecutionInput = c.HowlRenderSurfaceExecutionInput;
 pub const RenderPrepareResult = enum { idle, prepared, failed };
 pub const RenderSubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
+pub const RenderAdvanceResult = enum { idle, prepared, rendered, blocked_present, failed };
 pub const RenderCellSize = render_flow.CellSize;
 pub const SourceResponse = render_flow.SourceResponse;
 pub const DamageKind = render_flow.DamageKind;
@@ -933,6 +934,27 @@ fn submittedFrameFrom(prepared: render_flow.PreparedFrame, feedback: c.HowlRende
 
 pub fn hasPendingRenderWork(term: *const Term) bool {
     return term.prepare_pending or term.submit_pending or term.present_pending;
+}
+
+pub fn advanceRender(term: *Term, bootstrap_surface: bool) RenderAdvanceResult {
+    if (term.submit_pending) {
+        return switch (submitRender(term)) {
+            .rendered => .rendered,
+            .failed => .failed,
+            .idle, .stale, .needs_prepare => .idle,
+        };
+    }
+
+    if (term.prepare_pending or bootstrap_surface) {
+        return switch (prepareRender(term)) {
+            .prepared => .prepared,
+            .failed => .failed,
+            .idle => .idle,
+        };
+    }
+
+    if (term.present_pending) return .blocked_present;
+    return .idle;
 }
 
 pub fn prepareRender(term: *Term) RenderPrepareResult {

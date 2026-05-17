@@ -14,50 +14,29 @@ pub fn needsContentFrame(self: anytype, now_ns: u64) bool {
     return self.last_surface.texture_id == 0 or api.hasPendingRenderWork(&self.term);
 }
 
-pub fn prepareNext(self: anytype) bool {
-    const result = api.prepareRender(&self.term);
-    switch (result) {
-        .idle => return false,
-        .prepared => {
-            HostInput.wakeWindow();
-            return true;
-        },
-        .failed => return false,
-    }
-}
-
 pub fn render(self: anytype) void {
     const bootstrap_surface = self.last_surface.texture_id == 0;
     self.first_render_trace_logged = true;
     if (api.hasPendingRenderWork(&self.term)) self.first_non_idle_action_logged = true;
-    if (self.term.submit_pending) {
-        submitPrepared(self);
-        return;
-    }
-    if (self.term.prepare_pending or bootstrap_surface) {
-        const prepared = prepareNext(self);
-        if (!self.first_prepare_result_logged) {
-            self.first_prepare_result_logged = true;
-            window.logStartupf("stage=term-prepare-first prepared={}", .{prepared});
-        }
-        return;
-    }
-    if (self.term.present_pending) return;
-}
-
-fn submitPrepared(self: anytype) void {
-    const result = api.submitRender(&self.term);
-    if (!self.first_submit_trace_logged) {
-        self.first_submit_trace_logged = true;
-        window.logStartupf("stage=term-submit-first result={s}", .{@tagName(result)});
-    }
-    if (!self.first_non_idle_submit_logged and result != .idle) {
-        self.first_non_idle_submit_logged = true;
-        window.logStartupf("stage=term-submit-non-idle-first result={s}", .{@tagName(result)});
-    }
-    switch (result) {
-        .idle, .stale, .failed, .needs_prepare => return,
+    switch (api.advanceRender(&self.term, bootstrap_surface)) {
+        .idle, .blocked_present, .failed => return,
+        .prepared => {
+            if (!self.first_prepare_result_logged) {
+                self.first_prepare_result_logged = true;
+                window.logStartupf("stage=term-prepare-first prepared=true", .{});
+            }
+            HostInput.wakeWindow();
+            return;
+        },
         .rendered => {
+            if (!self.first_submit_trace_logged) {
+                self.first_submit_trace_logged = true;
+                window.logStartupf("stage=term-submit-first result=rendered", .{});
+            }
+            if (!self.first_non_idle_submit_logged) {
+                self.first_non_idle_submit_logged = true;
+                window.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
+            }
             self.last_surface = self.term.render_surface;
             if (!self.first_rendered_surface_logged) {
                 self.first_rendered_surface_logged = true;
