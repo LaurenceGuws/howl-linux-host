@@ -1,6 +1,7 @@
 
 const std = @import("std");
 const trace = @import("../input/window.zig");
+const prepare_owner = @import("prepare/owner.zig");
 const render_flow = @import("render_flow.zig");
 const surface_owner = @import("surface/owner.zig");
 const c = @cImport({
@@ -873,99 +874,11 @@ pub fn advanceRender(term: *Term, bootstrap_surface: bool) RenderAdvanceResult {
 }
 
 pub fn prepareRender(term: *Term) RenderPrepareResult {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    const request = term.render_flow.prepare() orelse {
-        releasePreparedSurface(term);
-        term.prepare_pending = false;
-        return .idle;
-    };
-    var prepared: PreparedSurfaceHandle = null;
-    var prepare_request = prepareRequestOut(request);
-    prepare_request.target_valid = @intFromBool(term.render_flow.targetValid());
-    var surface_source = surfaceSourceOut(term) catch return .failed;
-    return switch (c.howl_render_surface_text_prepare_handle(term.surface_text, &surface_source, prepare_request, surfaceQueryOut(term.render_flow.surfaceQuery()), &prepared)) {
-        c.HOWL_RENDER_PREPARE_IDLE => blk: {
-            releasePreparedSurface(term);
-            term.prepare_pending = false;
-            break :blk .idle;
-        },
-        c.HOWL_RENDER_PREPARE_READY => blk: {
-            var info = std.mem.zeroes(PreparedSurfaceInfo);
-            if (c.howl_render_prepared_surface_describe(prepared, &info) != c.HOWL_RENDER_CALL_OK) {
-                releasePreparedSurface(term);
-                term.prepare_pending = false;
-                term.submit_pending = false;
-                break :blk .failed;
-            }
-            term.render_flow.publishPrepared(preparedFrameFromInfo(info));
-            releasePreparedSurface(term);
-            consumePreparedSurfaceHandle(term, prepared);
-            term.prepared_surface = prepared;
-            term.prepare_pending = false;
-            term.submit_pending = true;
-            break :blk .prepared;
-        },
-        else => blk: {
-            releasePreparedSurface(term);
-            term.prepare_pending = false;
-            term.submit_pending = false;
-            break :blk .failed;
-        },
-    };
+    return prepare_owner.prepareRender(term);
 }
 
 pub fn submitRender(term: *Term) RenderSubmitResult {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    const prepared_frame = switch (term.render_flow.submit()) {
-        .idle => {
-            term.submit_pending = false;
-            return .idle;
-        },
-        .stale => {
-            releasePreparedSurface(term);
-            term.submit_pending = false;
-            return .stale;
-        },
-        .needs_full_prepare => {
-            releasePreparedSurface(term);
-            term.submit_pending = false;
-            term.prepare_pending = true;
-            return .needs_prepare;
-        },
-        .submit => |prepared| prepared,
-    };
-    var feedback = c.HowlRenderSurfaceFeedback{ .status = c.HOWL_RENDER_CALL_FAILED, .damage_kind = 0, .surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 }, .metrics = .{ .sync_us = 0, .copy_us = 0, .render_us = 0, .glyphs = 0, .fills = 0, .clear_fills = 0, .background_fills = 0, .decoration_fills = 0, .cursor_fills = 0, .uploads = 0, .face_checks = 0, .face_cache_hits = 0, .shape_requests = 0, .shape_cache_hits = 0, .fallback_hits = 0, .fallback_misses = 0, .missing_glyphs = 0 } };
-    return switch (submitPreparedSurface(term, prepared_frame, &feedback)) {
-        c.HOWL_RENDER_SUBMIT_IDLE => blk: {
-            term.submit_pending = false;
-            break :blk .idle;
-        },
-        c.HOWL_RENDER_SUBMIT_STALE => blk: {
-            releasePreparedSurface(term);
-            term.submit_pending = false;
-            break :blk .stale;
-        },
-        c.HOWL_RENDER_SUBMIT_NEEDS_PREPARE => blk: {
-            releasePreparedSurface(term);
-            term.submit_pending = false;
-            term.prepare_pending = true;
-            break :blk .needs_prepare;
-        },
-        c.HOWL_RENDER_SUBMIT_RENDERED => blk: {
-            term.submit_pending = false;
-            term.present_pending = true;
-            term.render_surface = feedback.surface;
-            releasePreparedSurface(term);
-            break :blk .rendered;
-        },
-        else => blk: {
-            releasePreparedSurface(term);
-            term.submit_pending = false;
-            break :blk .failed;
-        },
-    };
+    return prepare_owner.submitRender(term);
 }
 
 fn submitPreparedSurface(term: *Term, prepared_frame: render_flow.PreparedFrame, feedback: *c.HowlRenderSurfaceFeedback) c.HowlRenderSubmitStatus {
@@ -1313,8 +1226,7 @@ pub fn takeRenderMetrics(term: *Term) RenderMetrics {
 }
 
 pub fn markRenderPresented(term: *Term) void {
-    term.render_flow.markPresented();
-    term.present_pending = false;
+    prepare_owner.markRenderPresented(term);
 }
 
 fn publishEncodedInput(term: *Term, event: Input.Event) !bool {
