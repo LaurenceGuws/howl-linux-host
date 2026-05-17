@@ -10,33 +10,8 @@ const ExpectedRectSpan = extern struct {
     len: usize,
 };
 
-const ExpectedUploadOpSpan = extern struct {
-    ptr: [*c]const c.HowlRenderUploadOp,
-    len: usize,
-};
-
 const ExpectedByteSpan = extern struct {
     ptr: [*c]const u8,
-    len: usize,
-};
-
-const ExpectedColorDrawSpan = extern struct {
-    ptr: [*c]const c.HowlRenderColorDraw,
-    len: usize,
-};
-
-const ExpectedSpriteBatchSpan = extern struct {
-    ptr: [*c]const c.HowlRenderSpriteBatch,
-    len: usize,
-};
-
-const ExpectedSpriteInstanceSpan = extern struct {
-    ptr: [*c]const c.HowlRenderSpriteInstance,
-    len: usize,
-};
-
-const ExpectedDecorationDrawSpan = extern struct {
-    ptr: [*c]const c.HowlRenderDecorationDraw,
     len: usize,
 };
 
@@ -49,20 +24,10 @@ const ExpectedPreparedSurfaceDamagePlan = extern struct {
     buffer_damage_rects: ExpectedRectSpan,
 };
 
-const ExpectedPreparedSurfaceUploadPlan = extern struct {
+const ExpectedPreparedSurfaceBuffer = extern struct {
     status: i32,
-    uploads: ExpectedUploadOpSpan,
-    pixel_blob: ExpectedByteSpan,
-};
-
-const ExpectedPreparedSurfaceDrawPlan = extern struct {
-    status: i32,
-    clear_draws: ExpectedColorDrawSpan,
-    background_draws: ExpectedColorDrawSpan,
-    sprite_batches: ExpectedSpriteBatchSpan,
-    sprite_instances: ExpectedSpriteInstanceSpan,
-    decoration_draws: ExpectedDecorationDrawSpan,
-    cursor_draws: ExpectedColorDrawSpan,
+    rgba_pixels: ExpectedByteSpan,
+    uploads_committed: u64,
 };
 
 const ExpectedPreparedSurfaceDiagnostics = extern struct {
@@ -74,10 +39,8 @@ const ExpectedPreparedSurfaceDiagnostics = extern struct {
 comptime {
     std.debug.assert(@sizeOf(c.HowlRenderPreparedSurfaceDamagePlan) == @sizeOf(ExpectedPreparedSurfaceDamagePlan));
     std.debug.assert(@offsetOf(c.HowlRenderPreparedSurfaceDamagePlan, "surface_damage_rects") == @offsetOf(ExpectedPreparedSurfaceDamagePlan, "surface_damage_rects"));
-    std.debug.assert(@sizeOf(c.HowlRenderPreparedSurfaceUploadPlan) == @sizeOf(ExpectedPreparedSurfaceUploadPlan));
-    std.debug.assert(@offsetOf(c.HowlRenderPreparedSurfaceUploadPlan, "uploads") == @offsetOf(ExpectedPreparedSurfaceUploadPlan, "uploads"));
-    std.debug.assert(@sizeOf(c.HowlRenderPreparedSurfaceDrawPlan) == @sizeOf(ExpectedPreparedSurfaceDrawPlan));
-    std.debug.assert(@offsetOf(c.HowlRenderPreparedSurfaceDrawPlan, "background_draws") == @offsetOf(ExpectedPreparedSurfaceDrawPlan, "background_draws"));
+    std.debug.assert(@sizeOf(c.HowlRenderPreparedSurfaceBuffer) == @sizeOf(ExpectedPreparedSurfaceBuffer));
+    std.debug.assert(@offsetOf(c.HowlRenderPreparedSurfaceBuffer, "rgba_pixels") == @offsetOf(ExpectedPreparedSurfaceBuffer, "rgba_pixels"));
     std.debug.assert(@sizeOf(c.HowlRenderPreparedSurfaceDiagnostics) == @sizeOf(ExpectedPreparedSurfaceDiagnostics));
     std.debug.assert(@offsetOf(c.HowlRenderPreparedSurfaceDiagnostics, "missing_glyphs") == @offsetOf(ExpectedPreparedSurfaceDiagnostics, "missing_glyphs"));
 }
@@ -247,14 +210,11 @@ fn submitPreparedSurface(term: *api.Term, prepared_frame: render_flow.PreparedFr
     if (c.howl_render_prepared_surface_describe(prepared, &info) != c.HOWL_RENDER_CALL_OK) return c.HOWL_RENDER_SUBMIT_FAILED;
     var damage = std.mem.zeroes(c.HowlRenderPreparedSurfaceDamagePlan);
     if (c.howl_render_prepared_surface_damage_plan(prepared, &damage) != c.HOWL_RENDER_CALL_OK) return c.HOWL_RENDER_SUBMIT_FAILED;
-    var upload = std.mem.zeroes(c.HowlRenderPreparedSurfaceUploadPlan);
-    if (c.howl_render_prepared_surface_upload_plan(prepared, &upload) != c.HOWL_RENDER_CALL_OK) return c.HOWL_RENDER_SUBMIT_FAILED;
-    var draw = std.mem.zeroes(c.HowlRenderPreparedSurfaceDrawPlan);
-    if (c.howl_render_prepared_surface_draw_plan(prepared, &draw) != c.HOWL_RENDER_CALL_OK) return c.HOWL_RENDER_SUBMIT_FAILED;
-    const content_was_valid = term.render.surface.texture_id != 0 and term.render.surface.width == info.render_px.width and term.render.surface.height == info.render_px.height;
+    var buffer = std.mem.zeroes(c.HowlRenderPreparedSurfaceBuffer);
+    if (c.howl_render_prepared_surface_buffer(prepared, &buffer) != c.HOWL_RENDER_CALL_OK) return c.HOWL_RENDER_SUBMIT_FAILED;
     if (!ensureSurfaceStorage(term, info.render_px.width, info.render_px.height)) return c.HOWL_RENDER_SUBMIT_FAILED;
-    if (!renderPreparedDrawPlan(term, info, damage, upload, draw, content_was_valid)) return c.HOWL_RENDER_SUBMIT_FAILED;
-    if (!uploadSurfaceTexture(term, info, damage, content_was_valid)) return c.HOWL_RENDER_SUBMIT_FAILED;
+    if (!storePreparedBuffer(term, info, buffer)) return c.HOWL_RENDER_SUBMIT_FAILED;
+    if (!uploadSurfaceTexture(term, damage)) return c.HOWL_RENDER_SUBMIT_FAILED;
 
     const query = term.render.flow.surfaceQuery();
     const render_us: u64 = @intCast((c.SDL_GetTicksNS() - start_ns) / std.time.ns_per_us);
@@ -265,9 +225,9 @@ fn submitPreparedSurface(term: *api.Term, prepared_frame: render_flow.PreparedFr
             .height = info.render_px.height,
             .epoch = query.epoch,
         },
-        .uploads_committed = upload.uploads.len,
+        .uploads_committed = buffer.uploads_committed,
         .render_us = render_us,
-        .scroll_reuse_applied = if (damage.scroll_up_px > 0 and content_was_valid) 1 else 0,
+        .scroll_reuse_applied = 0,
         .content_valid = 1,
     };
     const result = c.howl_render_surface_text_submit(term.render.surface_text, prepared, preparedFrameOut(prepared_frame), &execution, feedback);
@@ -321,6 +281,16 @@ fn storeSurfaceDamage(term: *api.Term, plan: c.HowlRenderPreparedSurfaceDamagePl
     return true;
 }
 
+fn storePreparedBuffer(term: *api.Term, info: c.HowlRenderPreparedSurfaceInfo, buffer: c.HowlRenderPreparedSurfaceBuffer) bool {
+    const expected_len = @as(usize, info.render_px.width) * @as(usize, info.render_px.height) * 4;
+    if (buffer.rgba_pixels.len != expected_len) return false;
+    if (expected_len > 0 and buffer.rgba_pixels.ptr == null) return false;
+    term.render.pixels.resize(term.allocator, expected_len) catch return false;
+    if (expected_len == 0) return true;
+    @memcpy(term.render.pixels.items, buffer.rgba_pixels.ptr[0..expected_len]);
+    return true;
+}
+
 fn validPresentRect(rect: c.HowlRenderRect) bool {
     if (rect.width <= 0 or rect.height <= 0) return false;
     if (rect.x > std.math.maxInt(c_int) - rect.width) return false;
@@ -328,158 +298,18 @@ fn validPresentRect(rect: c.HowlRenderRect) bool {
     return true;
 }
 
-fn renderPreparedDrawPlan(term: *api.Term, info: c.HowlRenderPreparedSurfaceInfo, damage: c.HowlRenderPreparedSurfaceDamagePlan, upload: c.HowlRenderPreparedSurfaceUploadPlan, draw: c.HowlRenderPreparedSurfaceDrawPlan, content_was_valid: bool) bool {
-    const pixels = term.render.pixels.items;
-    if (pixels.len == 0) return true;
-    if (damage.full_redraw != 0 or !content_was_valid) {
-        clearSurfacePixels(pixels);
-    } else if (damage.scroll_up_px > 0) {
-        applyScrollReuse(pixels, info.render_px.width, info.render_px.height, damage.scroll_up_px);
-    }
-    drawColorSpan(pixels, info.render_px.width, info.render_px.height, draw.clear_draws);
-    drawColorSpan(pixels, info.render_px.width, info.render_px.height, draw.background_draws);
-    drawDecorationSpan(pixels, info.render_px.width, info.render_px.height, draw.decoration_draws);
-    if (!drawSpriteBatches(term, pixels, info.render_px.width, info.render_px.height, upload, draw.sprite_batches, draw.sprite_instances)) return false;
-    drawColorSpan(pixels, info.render_px.width, info.render_px.height, draw.cursor_draws);
-    return true;
-}
-
-fn clearSurfacePixels(pixels: []u8) void {
-    var i: usize = 0;
-    while (i + 3 < pixels.len) : (i += 4) {
-        pixels[i] = 0;
-        pixels[i + 1] = 0;
-        pixels[i + 2] = 0;
-        pixels[i + 3] = 255;
-    }
-}
-
-fn applyScrollReuse(pixels: []u8, width: u16, height: u16, scroll_up_px: u16) void {
-    if (scroll_up_px == 0 or scroll_up_px >= height) return;
-    const stride = @as(usize, width) * 4;
-    const delta = @as(usize, scroll_up_px) * stride;
-    const keep = pixels.len - delta;
-    std.mem.copyForwards(u8, pixels[0..keep], pixels[delta .. delta + keep]);
-}
-
-fn drawColorSpan(pixels: []u8, width: u16, height: u16, span: c.HowlRenderColorDrawSpan) void {
-    for (0..span.len) |i| drawSolidRect(pixels, width, height, span.ptr[i].x_px, span.ptr[i].y_px, span.ptr[i].width_px, span.ptr[i].height_px, span.ptr[i].color);
-}
-
-fn drawDecorationSpan(pixels: []u8, width: u16, height: u16, span: c.HowlRenderDecorationDrawSpan) void {
-    for (0..span.len) |i| {
-        const draw = span.ptr[i];
-        drawSolidRect(pixels, width, height, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-    }
-}
-
-fn drawSpriteBatches(term: *api.Term, pixels: []u8, width: u16, height: u16, upload: c.HowlRenderPreparedSurfaceUploadPlan, batches: c.HowlRenderSpriteBatchSpan, instances: c.HowlRenderSpriteInstanceSpan) bool {
-    for (0..batches.len) |batch_index| {
-        const batch = batches.ptr[batch_index];
-        const first_instance = batch.first_instance;
-        const end = @min(first_instance + batch.instance_count, instances.len);
-        var i = first_instance;
-        while (i < end) : (i += 1) {
-            const instance = instances.ptr[i];
-            const sprite = lookupSprite(term, upload, instance) orelse return false;
-            drawSpriteInstance(pixels, width, height, instance, sprite);
-        }
-    }
-    return true;
-}
-
-const SpriteRaster = struct {
-    pixels: []const u8,
-    stride: u16,
-    color_mode: u8,
-    visual_bounds: c.HowlRenderRasterBounds,
-};
-
-fn drawSpriteInstance(pixels: []u8, width: u16, height: u16, instance: c.HowlRenderSpriteInstance, sprite: SpriteRaster) void {
-    const bounds = if (sprite.visual_bounds.width_px != 0 and sprite.visual_bounds.height_px != 0)
-        sprite.visual_bounds
-    else
-        c.HowlRenderRasterBounds{ .x_px = instance.src_x_px, .y_px = instance.src_y_px, .width_px = instance.src_width_px, .height_px = instance.src_height_px };
-    const dst_origin_x = instance.dst_x_px + bounds.x_px;
-    const dst_origin_y = instance.dst_y_px + bounds.y_px;
-    const max_w = @min(@as(u16, @intCast(instance.dst_width_px)), bounds.width_px);
-    const max_h = @min(@as(u16, @intCast(instance.dst_height_px)), bounds.height_px);
-    var yy: u16 = 0;
-    while (yy < max_h) : (yy += 1) {
-        var xx: u16 = 0;
-        while (xx < max_w) : (xx += 1) {
-            const dst_x = dst_origin_x + @as(i32, xx);
-            const dst_y = dst_origin_y + @as(i32, yy);
-            if (dst_x < 0 or dst_y < 0 or dst_x >= @as(i32, width) or dst_y >= @as(i32, height)) continue;
-            const src_x = bounds.x_px + xx;
-            const src_y = bounds.y_px + yy;
-            const src_index = @as(usize, src_y) * @as(usize, sprite.stride) + if (sprite.color_mode == 0) @as(usize, src_x) else @as(usize, src_x) * 4;
-            const dst_index = (@as(usize, @intCast(dst_y)) * @as(usize, width) + @as(usize, @intCast(dst_x))) * 4;
-            if (sprite.color_mode == 0) {
-                if (src_index >= sprite.pixels.len) continue;
-                const alpha = sprite.pixels[src_index];
-                if (alpha == 0) continue;
-                blendPixel(pixels, dst_index, instance.color.r, instance.color.g, instance.color.b, @intCast((@as(u16, instance.color.a) * @as(u16, alpha)) / 255));
-            } else {
-                if (src_index + 3 >= sprite.pixels.len) continue;
-                blendPixel(pixels, dst_index, sprite.pixels[src_index], sprite.pixels[src_index + 1], sprite.pixels[src_index + 2], sprite.pixels[src_index + 3]);
-            }
-        }
-    }
-}
-
-fn lookupSprite(term: *api.Term, upload: c.HowlRenderPreparedSurfaceUploadPlan, instance: c.HowlRenderSpriteInstance) ?SpriteRaster {
-    for (0..upload.uploads.len) |i| {
-        const op = upload.uploads.ptr[i];
-        if (op.sprite_key != instance.sprite_key or op.slot != instance.slot) continue;
-        if (op.blob_offset + op.blob_len > upload.pixel_blob.len) return null;
-        const pixels = upload.pixel_blob.ptr[op.blob_offset .. op.blob_offset + op.blob_len];
-        return .{ .pixels = pixels, .stride = op.stride, .color_mode = op.color_mode, .visual_bounds = op.visual_bounds };
-    }
-    var cached = std.mem.zeroes(c.HowlRenderCachedSprite);
-    if (c.howl_render_surface_text_cached_sprite(term.render.surface_text, instance.sprite_key, &cached) != c.HOWL_RENDER_CALL_OK) return null;
-    if (cached.pixels.len == 0 or cached.pixels.ptr == null) return null;
-    const stride: u16 = if (cached.color_mode == 0) cached.width_px else @intCast(@as(u32, cached.width_px) * 4);
-    return .{ .pixels = cached.pixels.ptr[0..cached.pixels.len], .stride = stride, .color_mode = cached.color_mode, .visual_bounds = cached.visual_bounds };
-}
-
-fn drawSolidRect(pixels: []u8, width: u16, height: u16, x: i32, y: i32, rect_w: u16, rect_h: u16, color: c.HowlRenderRgba8) void {
-    var yy: u16 = 0;
-    while (yy < rect_h) : (yy += 1) {
-        const dst_y = y + @as(i32, yy);
-        if (dst_y < 0 or dst_y >= @as(i32, height)) continue;
-        var xx: u16 = 0;
-        while (xx < rect_w) : (xx += 1) {
-            const dst_x = x + @as(i32, xx);
-            if (dst_x < 0 or dst_x >= @as(i32, width)) continue;
-            const dst_index = (@as(usize, @intCast(dst_y)) * @as(usize, width) + @as(usize, @intCast(dst_x))) * 4;
-            blendPixel(pixels, dst_index, color.r, color.g, color.b, color.a);
-        }
-    }
-}
-
-fn blendPixel(pixels: []u8, dst_index: usize, r: u8, g: u8, b: u8, a: u8) void {
-    if (dst_index + 3 >= pixels.len) return;
-    const src_a: u32 = a;
-    const inv_a: u32 = 255 - src_a;
-    pixels[dst_index] = @intCast((@as(u32, r) * src_a + @as(u32, pixels[dst_index]) * inv_a) / 255);
-    pixels[dst_index + 1] = @intCast((@as(u32, g) * src_a + @as(u32, pixels[dst_index + 1]) * inv_a) / 255);
-    pixels[dst_index + 2] = @intCast((@as(u32, b) * src_a + @as(u32, pixels[dst_index + 2]) * inv_a) / 255);
-    pixels[dst_index + 3] = @intCast(@min(@as(u32, 255), src_a + (@as(u32, pixels[dst_index + 3]) * inv_a) / 255));
-}
-
-fn uploadSurfaceTexture(term: *api.Term, info: c.HowlRenderPreparedSurfaceInfo, damage: c.HowlRenderPreparedSurfaceDamagePlan, content_was_valid: bool) bool {
+fn uploadSurfaceTexture(term: *api.Term, damage: c.HowlRenderPreparedSurfaceDamagePlan) bool {
     if (term.render.surface.texture_id == 0) return false;
     c.glBindTexture(c.GL_TEXTURE_2D, term.render.surface.texture_id);
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
     c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
-    if (!content_was_valid or damage.full_redraw != 0 or damage.buffer_damage_rects.len == 0) {
+    if (damage.full_redraw != 0 or damage.buffer_damage_rects.len == 0) {
         c.glTexSubImage2D(c.GL_TEXTURE_2D, 0, 0, 0, term.render.surface.width, term.render.surface.height, c.GL_RGBA, c.GL_UNSIGNED_BYTE, term.render.pixels.items.ptr);
         return true;
     }
     for (0..damage.buffer_damage_rects.len) |i| {
         const rect = damage.buffer_damage_rects.ptr[i];
-        if (!uploadDamageRect(term, info.render_px.width, info.render_px.height, rect)) return false;
+        if (!uploadDamageRect(term, term.render.surface.width, term.render.surface.height, rect)) return false;
     }
     return true;
 }
@@ -545,19 +375,9 @@ fn consumePreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) voi
     requireValidSpan(damage.surface_damage_rects.ptr, damage.surface_damage_rects.len);
     requireValidSpan(damage.buffer_damage_rects.ptr, damage.buffer_damage_rects.len);
 
-    var upload = std.mem.zeroes(c.HowlRenderPreparedSurfaceUploadPlan);
-    std.debug.assert(c.howl_render_prepared_surface_upload_plan(prepared, &upload) == c.HOWL_RENDER_CALL_OK);
-    requireValidSpan(upload.uploads.ptr, upload.uploads.len);
-    if (upload.pixel_blob.len > 0) std.debug.assert(upload.pixel_blob.ptr != null);
-
-    var draw = std.mem.zeroes(c.HowlRenderPreparedSurfaceDrawPlan);
-    std.debug.assert(c.howl_render_prepared_surface_draw_plan(prepared, &draw) == c.HOWL_RENDER_CALL_OK);
-    requireValidSpan(draw.clear_draws.ptr, draw.clear_draws.len);
-    requireValidSpan(draw.background_draws.ptr, draw.background_draws.len);
-    requireValidSpan(draw.sprite_batches.ptr, draw.sprite_batches.len);
-    requireValidSpan(draw.sprite_instances.ptr, draw.sprite_instances.len);
-    requireValidSpan(draw.decoration_draws.ptr, draw.decoration_draws.len);
-    requireValidSpan(draw.cursor_draws.ptr, draw.cursor_draws.len);
+    var buffer = std.mem.zeroes(c.HowlRenderPreparedSurfaceBuffer);
+    std.debug.assert(c.howl_render_prepared_surface_buffer(prepared, &buffer) == c.HOWL_RENDER_CALL_OK);
+    if (buffer.rgba_pixels.len > 0) std.debug.assert(buffer.rgba_pixels.ptr != null);
 
     var diagnostics = std.mem.zeroes(c.HowlRenderPreparedSurfaceDiagnostics);
     std.debug.assert(c.howl_render_prepared_surface_diagnostics(prepared, &diagnostics) == c.HOWL_RENDER_CALL_OK);

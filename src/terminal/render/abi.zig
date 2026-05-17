@@ -2,6 +2,7 @@ const std = @import("std");
 const runtime = @import("../runtime/runtime.zig");
 const flow = @import("flow.zig");
 const pty_session = @import("../pty/session.zig");
+const retained = @import("retained.zig");
 const vt_abi = @import("../vt/abi.zig");
 const c = runtime.c;
 const prepare = @import("prepare.zig");
@@ -14,14 +15,13 @@ pub const PreparedSurface = c.HowlRenderPreparedSurface;
 pub const PreparedSurfaceHandle = c.HowlRenderPreparedSurfaceHandle;
 pub const PreparedSurfaceInfo = c.HowlRenderPreparedSurfaceInfo;
 pub const PreparedSurfaceDamagePlan = c.HowlRenderPreparedSurfaceDamagePlan;
-pub const PreparedSurfaceUploadPlan = c.HowlRenderPreparedSurfaceUploadPlan;
-pub const PreparedSurfaceDrawPlan = c.HowlRenderPreparedSurfaceDrawPlan;
+pub const PreparedSurfaceBuffer = c.HowlRenderPreparedSurfaceBuffer;
 pub const PreparedSurfaceDiagnostics = c.HowlRenderPreparedSurfaceDiagnostics;
 pub const SurfaceExecutionInput = c.HowlRenderSurfaceExecutionInput;
-pub const RenderPrepareResult = runtime.RenderPrepareResult;
-pub const RenderSubmitResult = runtime.RenderSubmitResult;
-pub const RenderAdvanceResult = runtime.RenderAdvanceResult;
-pub const RenderPhase = runtime.RenderPhase;
+pub const RenderPrepareResult = retained.PrepareResult;
+pub const RenderSubmitResult = retained.SubmitResult;
+pub const RenderAdvanceResult = retained.AdvanceResult;
+pub const RenderPhase = retained.Phase;
 pub const RenderCellSize = flow.CellSize;
 
 pub fn setFontSizePx(term: *Term, font_size_px: u16) void {

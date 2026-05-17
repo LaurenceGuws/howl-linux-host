@@ -9,10 +9,10 @@ pub fn titleSlice(self: anytype) []const u8 {
 }
 
 pub fn refreshTitle(self: anytype) void {
-    self.title_len = pty_api.copyCurrentTitle(&self.term, self.title_buf[0..]);
+    self.title_len = @intCast(pty_api.copyCurrentTitle(&self.term, self.title_buf[0..]));
     if (self.title_len != 0) return;
     const fallback = self.conf.command orelse self.conf.shell;
-    self.title_len = @min(fallback.len, self.title_buf.len);
+    self.title_len = @intCast(@min(fallback.len, self.title_buf.len));
     if (self.title_len != 0) @memcpy(self.title_buf[0..self.title_len], fallback[0..self.title_len]);
 }
 
