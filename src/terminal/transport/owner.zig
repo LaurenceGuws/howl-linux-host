@@ -156,6 +156,12 @@ pub fn publishMouseEvent(term: *api.Term, mouse: api.MouseInput) !bool {
     } });
 }
 
+pub fn publishFocusChange(term: *api.Term, focused: bool) !bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return publishEncodedInput(term, .{ .focus = if (focused) .in else .out });
+}
+
 pub fn inputBytesApplied(term: *const api.Term) u64 {
     const mut: *api.Term = @constCast(term);
     mut.mutex.lock();

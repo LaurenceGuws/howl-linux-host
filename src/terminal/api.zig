@@ -512,7 +512,7 @@ pub fn setInputFocus(term: *Term, focused: bool) !bool {
     if (term.has_input_focus == focused) return false;
     term.has_input_focus = focused;
     noteVisibleChange(term);
-    return publishEncodedInput(term, .{ .focus = if (focused) .in else .out });
+    return transport_owner.publishFocusChange(term, focused);
 }
 
 pub fn drainPendingClipboardSet(term: *Term, allocator: std.mem.Allocator) !ClipboardDrainResult {
