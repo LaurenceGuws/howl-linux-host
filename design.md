@@ -47,9 +47,10 @@ classDiagram
 - `src/terminal/vt/` owns VT ABI calls, retained visible state, and host-side VT contract translation.
 - `src/terminal/render/` owns render ABI calls, frame layout sync, prepared-surface drive, and host-side backend upload/present contract translation.
 - `src/terminal/runtime/` owns the shared runtime aggregate state and the bounded host control spine that drives PTY, VT, and render work.
+- `main.zig` drives one explicit in-flight render-work query when deciding whether to wait, render, present, or wake again.
 - `Window` owns the OS window and host chrome presentation. It receives a texture handle; it does not infer terminal state.
 - `Input` owns input collection and queueing. Input payload types live under `src/input/`.
-- Hosts send events to PTY-facing owners, publish one VT surface snapshot, upload the render-owned prepared buffer into host graphics resources, and present returned surfaces. They do not mutate scrollback, VT dirty state, or render composition rules.
+- Hosts send events to PTY-facing owners, publish one VT surface snapshot, upload the render-owned prepared buffer into host graphics resources, present returned surfaces, and then acknowledge the rendered VT dirty generation. They do not mutate scrollback, VT dirty state, or render composition rules.
 
 ## Lifecycle
 
@@ -85,6 +86,7 @@ sequenceDiagram
         T->>R: prepare / submit prepared surface
         T-->>Main: snapshot(surface + metadata)
         Main->>W: present(frame)
+        Main->>V: acknowledge rendered dirty generation
     end
 ```
 
@@ -95,6 +97,7 @@ sequenceDiagram
 - `TerminalPanel.snapshot` returns host chrome metadata and the current backend surface handle.
 - PTY, VT, and render seam owners are failure-aware. Recoverable backend failures return `false` or error unions and move lifecycle state to `failed`; host code should not panic from normal render or wake failure paths.
 - `Window.present` draws static host chrome and places the active terminal surface. It owns platform presentation only; it does not own terminal logic or render composition semantics.
+- VT dirty retirement is tied to the rendered base. The host acknowledges the dirty generation reported by the published VT surface only after present.
 
 ## Non-Goals
 

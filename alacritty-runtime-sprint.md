@@ -54,12 +54,14 @@ What is already true:
 - `howl-vt` publishes one surface snapshot contract, so the host no longer stitches visible and dirty state through separate ABI pulls.
 - `howl-render` now publishes one prepared RGBA buffer plus damage truth.
 - the host no longer reconstructs render cells or render composition rules from VT-visible cells.
+- VT dirty retirement now follows the rendered base through explicit dirty-generation acknowledgment after present.
 
 What is still wrong-shaped:
 
 - VT surface ABI vocabulary still reflects cell-copy posture instead of renderer-facing surface posture
 - host wake/render flow still needs to be reviewed checkpoint by checkpoint against Alacritty’s event-loop discipline
 - the host still owns backend-specific texture upload and present execution, which is acceptable only while that path stays explicit and minimal
+- host/runtime proofs still need to make rendered-base acknowledgment and in-flight work-state ownership exact
 
 ## Alacritty Reference Model
 
