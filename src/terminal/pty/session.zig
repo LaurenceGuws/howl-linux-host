@@ -6,15 +6,23 @@ const c = api.c;
 const log = @import("../../input/window.zig");
 
 const default_title_capacity: u32 = 4096;
+// Match Alacritty's locked-read byte scale for one transport chunk. Larger PTY
+// bursts come from the PTY owner's transport mode, not from a second host byte
+// budget layered on top of the same read path.
+const transport_chunk_bytes = 64 * 1024;
 
-pub const TransportLimits = struct { max_reads: u16, max_bytes: u32 };
+pub const TransportPumpMode = enum(u8) {
+    normal = c.HOWL_PTY_TRANSPORT_PUMP_NORMAL,
+    constrained = c.HOWL_PTY_TRANSPORT_PUMP_CONSTRAINED,
+};
 
 pub const TransportProgress = struct {
     drained_input_bytes: u64,
-    reads: u16,
+    reads: u32,
     bytes_read: u32,
     pending_input_bytes: u64,
     queued_events: u32,
+    hit_limit: bool,
 };
 
 pub const ApplyProgress = struct {
@@ -53,7 +61,8 @@ pub fn waitTransport(term: *api.Term, timeout_ms: i32) bool {
     return c.howl_pty_session_wait_readable(term.session, timeout_ms) != 0;
 }
 
-pub fn pumpTransport(term: *api.Term, limits: TransportLimits) TransportProgress {
+pub fn pumpTransport(term: *api.Term, mode: TransportPumpMode) TransportProgress {
+    const limits = transportPumpLimits(mode);
     if (limits.max_reads == 0 or limits.max_bytes == 0) {
         term.mutex.lock();
         defer term.mutex.unlock();
@@ -63,17 +72,18 @@ pub fn pumpTransport(term: *api.Term, limits: TransportLimits) TransportProgress
             .bytes_read = 0,
             .pending_input_bytes = ptySessionPendingBytes(term.session),
             .queued_events = vtQueuedEventCount(term.vt),
+            .hit_limit = false,
         };
     }
 
-    var scratch: [64 * 1024]u8 = undefined;
+    var scratch: [transport_chunk_bytes]u8 = undefined;
     term.mutex.lock();
     defer term.mutex.unlock();
 
     const outbound = c.howl_pty_session_pump_outbound(term.session, 0);
     ptyRequireStructOk(outbound.status);
 
-    var reads: u16 = 0;
+    var reads: u32 = 0;
     var bytes_read: u32 = 0;
     while (reads < limits.max_reads and bytes_read < limits.max_bytes) {
         const remaining: usize = @intCast(@min(@as(u32, @intCast(scratch.len)), limits.max_bytes - bytes_read));
@@ -90,6 +100,7 @@ pub fn pumpTransport(term: *api.Term, limits: TransportLimits) TransportProgress
 
     std.debug.assert(reads <= limits.max_reads);
     std.debug.assert(bytes_read <= limits.max_bytes);
+    const hit_limit = reads == limits.max_reads or bytes_read == limits.max_bytes;
 
     if (reads > 0) {
         log.logTransportReadStartupf("stage=term-transport-read-first reads={d} read_bytes={d} queued_events={d}", .{
@@ -104,18 +115,26 @@ pub fn pumpTransport(term: *api.Term, limits: TransportLimits) TransportProgress
         .bytes_read = bytes_read,
         .pending_input_bytes = ptySessionPendingBytes(term.session),
         .queued_events = vtQueuedEventCount(term.vt),
+        .hit_limit = hit_limit,
     };
 }
 
-pub fn applyPending(term: *api.Term, max_events: u32) ApplyProgress {
-    if (max_events == 0) {
-        term.mutex.lock();
-        defer term.mutex.unlock();
-        return .{ .applied_events = 0, .remaining_events = vtQueuedEventCount(term.vt), .state_changed = false };
-    }
-
+pub fn applyReady(term: *api.Term) ApplyProgress {
     term.mutex.lock();
     defer term.mutex.unlock();
+    return applyPendingLocked(term, pendingEventCountLocked(term));
+}
+
+pub fn applyPending(term: *api.Term, max_events: u32) ApplyProgress {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return applyPendingLocked(term, max_events);
+}
+
+fn applyPendingLocked(term: *api.Term, max_events: u32) ApplyProgress {
+    if (max_events == 0) {
+        return .{ .applied_events = 0, .remaining_events = pendingEventCountLocked(term), .state_changed = false };
+    }
 
     const history_before = vt_abi.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
     var title_buf: [default_title_capacity]u8 = undefined;
@@ -138,6 +157,18 @@ pub fn applyPending(term: *api.Term, max_events: u32) ApplyProgress {
         .remaining_events = @intCast(result.remaining_events),
         .state_changed = true,
     };
+}
+
+fn transportPumpLimits(mode: TransportPumpMode) struct { max_reads: u32, max_bytes: u32 } {
+    const result = c.howl_pty_transport_pump_limits(@intFromEnum(mode));
+    ptyRequireStructOk(result.status);
+    std.debug.assert(result.max_reads > 0);
+    std.debug.assert(result.max_bytes > 0);
+    return .{ .max_reads = result.max_reads, .max_bytes = result.max_bytes };
+}
+
+fn pendingEventCountLocked(term: *api.Term) u32 {
+    return vtQueuedEventCount(term.vt);
 }
 
 pub fn drainPendingClipboardSet(term: *api.Term, allocator: std.mem.Allocator) !ClipboardDrainResult {

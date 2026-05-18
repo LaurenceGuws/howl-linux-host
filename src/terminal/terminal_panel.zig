@@ -19,8 +19,6 @@ const scroll = @import("host/scroll.zig");
 const window_log = @import("../input/window.zig");
 
 pub const TerminalPanel = struct {
-    const resize_coalesce_ns = 25 * std.time.ns_per_ms;
-
     pub const SurfaceMetrics = render_api.RenderMetrics;
 
     pub const SurfaceSnapshot = struct {
@@ -66,7 +64,6 @@ pub const TerminalPanel = struct {
     first_submit_phase_logged: bool,
     first_blocked_present_logged: bool,
     first_idle_render_logged: bool,
-    first_wake_after_prepare_logged: bool,
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -105,10 +102,10 @@ pub const TerminalPanel = struct {
             .render_px_h = render_h,
             .logical_w = logical_w,
             .logical_h = logical_h,
-            .grid_px_w = logical_w,
-            .grid_px_h = logical_h,
-            .pending_grid_px_w = logical_w,
-            .pending_grid_px_h = logical_h,
+            .grid_px_w = render_w,
+            .grid_px_h = render_h,
+            .pending_grid_px_w = render_w,
+            .pending_grid_px_h = render_h,
             .geometry_mutex = .{},
             .font_size_px = start_font_px,
             .default_font_size_px = start_font_px,
@@ -129,7 +126,6 @@ pub const TerminalPanel = struct {
             .first_submit_phase_logged = false,
             .first_blocked_present_logged = false,
             .first_idle_render_logged = false,
-            .first_wake_after_prepare_logged = false,
         };
     }
 
@@ -143,11 +139,6 @@ pub const TerminalPanel = struct {
 
     pub fn maybeCommitGridResize(self: *TerminalPanel) void {
         geometry.maybeCommitGridResize(self);
-    }
-
-    pub fn needsContentFrame(self: *TerminalPanel, now_ns: u64) bool {
-        _ = now_ns;
-        return render_api.needsContentFrame(&self.term, self.last_surface.texture_id == 0);
     }
 
     pub fn renderStep(self: *TerminalPanel) render_api.RenderAdvanceResult {

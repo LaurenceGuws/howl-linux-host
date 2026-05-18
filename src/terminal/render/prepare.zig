@@ -19,7 +19,7 @@ const ExpectedPreparedSurfaceDamagePlan = extern struct {
     status: i32,
     full_redraw: u8,
     reserved0: u8,
-    scroll_up_px: u16,
+    reserved1: u16,
     surface_damage_rects: ExpectedRectSpan,
     buffer_damage_rects: ExpectedRectSpan,
 };
@@ -185,7 +185,7 @@ fn preparedFrameFromInfo(info: c.HowlRenderPreparedSurfaceInfo) render_flow.Prep
         .snapshot_seq = info.snapshot_seq,
         .dirty_epoch = info.dirty_epoch,
         .geometry_epoch = info.geometry_epoch,
-        .damage_base_seq = if (info.damage_kind == c.HOWL_RENDER_DAMAGE_PARTIAL or info.damage_kind == c.HOWL_RENDER_DAMAGE_SCROLL) info.required_base_seq else 0,
+        .damage_base_seq = if (info.damage_kind == c.HOWL_RENDER_DAMAGE_PARTIAL) info.required_base_seq else 0,
         .required_base_seq = info.required_base_seq,
         .required_target_epoch = info.required_surface_epoch,
         .damage_kind = info.damage_kind,
@@ -242,6 +242,7 @@ fn submitPreparedSurface(term: *api.Term, prepared_frame: render_flow.PreparedFr
     const result = c.howl_render_surface_text_submit(term.render.surface_text, prepared, preparedFrameOut(prepared_frame), &execution, feedback);
     if (result == c.HOWL_RENDER_SUBMIT_RENDERED and !storeSurfaceDamage(term, damage)) return c.HOWL_RENDER_SUBMIT_FAILED;
     if (result == c.HOWL_RENDER_SUBMIT_RENDERED) {
+        term.render.perf.add(feedback.metrics);
         term.render.flow.acceptSubmitted(submittedFrameFrom(prepared_frame, feedback.*));
         term.render.prepared_surface = null;
     }

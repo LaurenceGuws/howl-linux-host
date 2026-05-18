@@ -48,13 +48,14 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const visible = vtCopyVisible(term) catch return sourceRejected(term);
     const prior_surface = term.vt_state.surface;
+    const visible = vtCopyVisible(term) catch return sourceRejected(term);
+    const viewport_moved = prior_surface.scroll_row != term.vt_state.surface.scroll_row;
 
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.start <= visible.history_count + visible.rows);
 
-    const damage_kind = sourceDamageKind(prior_surface, term.vt_state.surface, term.vt_state.visible_damage);
+    const damage_kind = sourceDamageKind(viewport_moved, term.vt_state.surface, term.vt_state.visible_damage);
     const typed_response = term.render.flow.acceptSource(.{
         .cols = visible.cols,
         .rows = visible.rows,
@@ -68,7 +69,6 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
     });
     recordPendingDirtyGeneration(term, visible, typed_response);
     term.vt_state.surface.full_damage = @intFromBool(typed_response.damage_kind == .full);
-    term.vt_state.surface.scroll_up_rows = if (typed_response.damage_kind == .scroll) scrollRowsFromSurface(prior_surface, term.vt_state.surface) else 0;
     if (typed_response.published) {
         term.render.phase = if (typed_response.queued) .prepare else .idle;
         log.logf(
@@ -129,7 +129,6 @@ pub fn surfaceSourceOut(term: *api.Term) !c.HowlRenderSurfaceSource {
         .scroll_row = term.vt_state.surface.scroll_row,
         .is_alternate_screen = term.vt_state.surface.is_alternate_screen,
         .full_damage = term.vt_state.surface.full_damage,
-        .scroll_up_rows = term.vt_state.surface.scroll_up_rows,
         .dirty_rows = .{ .ptr = if (term.vt_state.visible_damage.dirty_rows.items.len == 0) null else term.vt_state.visible_damage.dirty_rows.items.ptr, .len = term.vt_state.visible_damage.dirty_rows.items.len },
         .dirty_cols_start = .{ .ptr = if (term.vt_state.visible_damage.dirty_cols_start.items.len == 0) null else term.vt_state.visible_damage.dirty_cols_start.items.ptr, .len = term.vt_state.visible_damage.dirty_cols_start.items.len },
         .dirty_cols_end = .{ .ptr = if (term.vt_state.visible_damage.dirty_cols_end.items.len == 0) null else term.vt_state.visible_damage.dirty_cols_end.items.ptr, .len = term.vt_state.visible_damage.dirty_cols_end.items.len },
@@ -195,7 +194,6 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
         if (source.status == c.HOWL_VT_CALL_OK) {
             scatterDirtyCols(term.vt_state.visible_damage.dirty_rows.items, raw_dirty_cols_start, term.vt_state.visible_damage.dirty_cols_start.items);
             scatterDirtyCols(term.vt_state.visible_damage.dirty_rows.items, raw_dirty_cols_end, term.vt_state.visible_damage.dirty_cols_end.items);
-            if (source.source.scroll_up_rows != 0) widenScrollDirtyRows(term.vt_state.visible_damage.dirty_rows.items, term.vt_state.visible_damage.dirty_cols_start.items, term.vt_state.visible_damage.dirty_cols_end.items, source.source.cols);
         }
     }
     try vt_abi.requireOk(source.status);
@@ -227,16 +225,6 @@ fn scatterDirtyCols(dirty_rows: []const u8, compact: []const u16, expanded: []u1
     }
 }
 
-fn widenScrollDirtyRows(dirty_rows: []const u8, cols_start: []u16, cols_end: []u16, cols: u16) void {
-    if (cols == 0) return;
-    for (dirty_rows, 0..) |dirty, row_idx| {
-        if (dirty == 0) continue;
-        if (row_idx >= cols_start.len or row_idx >= cols_end.len) break;
-        cols_start[row_idx] = 0;
-        cols_end[row_idx] = cols -| 1;
-    }
-}
-
 fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_response: render_flow.SourceResponse) void {
     if (typed_response.published) {
         std.debug.assert(typed_response.queued);
@@ -247,8 +235,7 @@ fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_respo
     term.vt_state.pending_dirty_generation = 0;
 }
 
-fn sourceDamageKind(prior: c.HowlVtSurfaceSource, current: c.HowlVtSurfaceSource, damage: anytype) render_flow.DamageKind {
-    const scroll_rows = scrollRowsFromSurface(prior, current);
+fn sourceDamageKind(viewport_moved: bool, current: c.HowlVtSurfaceSource, damage: anytype) render_flow.DamageKind {
     var any_dirty = false;
     var all_rows_dirty = current.rows != 0;
     for (damage.dirty_rows.items, 0..) |dirty, row_idx| {
@@ -267,17 +254,22 @@ fn sourceDamageKind(prior: c.HowlVtSurfaceSource, current: c.HowlVtSurfaceSource
         }
     }
     if (!any_dirty) return .none;
-    if (scroll_rows != 0) return .scroll;
+    if (viewport_moved) return .full;
     if (all_rows_dirty) return .full;
     return .partial;
 }
 
-pub fn scrollRowsFromSurface(prior: c.HowlVtSurfaceSource, current: c.HowlVtSurfaceSource) u16 {
-    if (prior.cols != current.cols or prior.rows != current.rows) return 0;
-    if (current.scroll_row < prior.scroll_row) return 0;
-    if (current.scroll_row <= prior.scroll_row) return 0;
-    const delta = current.scroll_row - prior.scroll_row;
-    return @intCast(@min(delta, current.rows));
+test "viewport move damage becomes full" {
+    var current = std.mem.zeroes(c.HowlVtSurfaceSource);
+    current.cols = 5;
+    current.rows = 4;
+    current.scroll_row = 2;
+    const damage = .{
+        .dirty_rows = .{ .items = &[_]u8{ 0, 0, 1, 1 } },
+        .dirty_cols_start = .{ .items = &[_]u16{ 0, 0, 0, 0 } },
+        .dirty_cols_end = .{ .items = &[_]u16{ 0, 0, 4, 4 } },
+    };
+    try std.testing.expectEqual(render_flow.DamageKind.full, sourceDamageKind(true, current, damage));
 }
 
 test "publish records dirty generation only for published source" {

@@ -18,8 +18,6 @@ pub const Options = cli_args.Options;
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
 const max_tabs_count: usize = TabBar.max_tabs_count;
-const max_binding_actions_per_turn: u8 = 8;
-const max_render_steps_per_turn: u8 = 3;
 const TabList = std.ArrayList(*TerminalPanel);
 
 const LoopAction = enum {
@@ -147,8 +145,7 @@ fn runLoopTurn(app: *App) !LoopAction {
     if (quitRequested()) |action| return action;
 
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
-    const now_before_wait = Window.c_win.SDL_GetTicksNS();
-    const work_before_wait = collectContentFrame(tab, now_before_wait);
+    const work_before_wait = renderWorkState(tab);
     const wait_for_event = !work_before_wait.wantsFrame();
     InputWindow.logLoopStartupf("stage=loop-turn-first content_before_wait={} wait_for_event={} render_phase={s} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} alive={}", .{
         work_before_wait.wantsFrame(),
@@ -169,11 +166,10 @@ fn runLoopTurn(app: *App) !LoopAction {
     if (quitRequested()) |action| return action;
 
     forwardTerminalInput(app);
-    applyWindowResize(app);
+    _ = applyWindowResize(app);
 
     const tab_after_input = activeTab(app.tabs.items, app.active_tab_idx.*);
-    const now_before_render = Window.c_win.SDL_GetTicksNS();
-    const work_before_render = collectContentFrame(tab_after_input, now_before_render);
+    const work_before_render = collectContentFrame(tab_after_input);
     InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} render_phase={s} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} texture_id={d}", .{
         work_before_render.wantsFrame(),
         @tagName(work_before_render.phase),
@@ -189,7 +185,6 @@ fn runLoopTurn(app: *App) !LoopAction {
     render(app);
     if (quitRequested()) |action| return action;
     try ensureActiveTabHealthy(app);
-    wakeIfMoreContent(tab_after_input, Window.c_win.SDL_GetTicksNS());
     return .continue_running;
 }
 
@@ -214,8 +209,7 @@ fn applyFocusChange(app: *App) void {
 }
 
 fn drainBindingActions(app: *App) !void {
-    var drained: u8 = 0;
-    while (drained < max_binding_actions_per_turn) : (drained += 1) {
+    while (true) {
         const action = app.input.drainBindingAction() orelse return;
         try handleBindingAction(app.conf, app.window, app.tabs, app.active_tab_idx, action);
     }
@@ -229,10 +223,11 @@ fn forwardTerminalInput(app: *App) void {
     tab.handleScrollInput(app.input);
 }
 
-fn applyWindowResize(app: *App) void {
-    if (!app.input.drainWindowGeometryChanged()) return;
-    if (!app.window.refreshGeometry()) return;
+fn applyWindowResize(app: *App) bool {
+    if (!app.input.drainWindowGeometryChanged()) return false;
+    if (!app.window.refreshGeometry()) return false;
     resizeTerminals(app.conf, app.window, app.tabs.items);
+    return true;
 }
 
 fn ensureActiveTabHealthy(app: *App) !void {
@@ -242,26 +237,18 @@ fn ensureActiveTabHealthy(app: *App) !void {
     return error.HostTabFailed;
 }
 
-fn wakeIfMoreContent(tab: *TerminalPanel, now_ns: u64) void {
-    const work = collectContentFrame(tab, now_ns);
-    if (!work.wantsFrame()) return;
-    if (!tab.first_wake_after_prepare_logged) {
-        tab.first_wake_after_prepare_logged = true;
-        InputWindow.logStartupf("stage=loop-wake-more-content phase={s} texture_id={d}", .{
-            @tagName(work.phase),
-            tab.term.render.surface.texture_id,
-        });
-    }
-    Input.wakeWindow();
-}
-
 fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
     for (tabs.items) |tab| tab.destroy(alloc);
     tabs.deinit(alloc);
 }
 
-fn collectContentFrame(tab: *TerminalPanel, now_ns: u64) RenderApi.RenderWorkState {
-    _ = now_ns;
+fn renderWorkState(tab: *TerminalPanel) RenderApi.RenderWorkState {
+    const bootstrap_surface = tab.last_surface.texture_id == 0;
+    tab.maybeCommitGridResize();
+    return RenderApi.renderWorkState(&tab.term, bootstrap_surface);
+}
+
+fn collectContentFrame(tab: *TerminalPanel) RenderApi.RenderWorkState {
     const bootstrap_surface = tab.last_surface.texture_id == 0;
     tab.maybeCommitGridResize();
     var work = RenderApi.renderWorkState(&tab.term, bootstrap_surface);
@@ -276,9 +263,10 @@ fn render(app: *App) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
     const texture_before = tab.last_surface.texture_id;
-    var step: u8 = 0;
-    while (step < max_render_steps_per_turn) : (step += 1) {
-        if (tab.renderStep() != .prepared) break;
+    const first_step = tab.renderStep();
+    if (first_step == .prepared) {
+        const second_step = tab.renderStep();
+        std.debug.assert(second_step != .prepared);
     }
 
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);

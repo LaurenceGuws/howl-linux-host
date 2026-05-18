@@ -12,7 +12,7 @@ pub const Term = runtime.Term;
 pub const Input = vt_abi.Input;
 pub const MouseInput = vt_abi.MouseInput;
 pub const LifecycleState = retained.LifecycleState;
-pub const TransportLimits = session.TransportLimits;
+pub const TransportPumpMode = session.TransportPumpMode;
 pub const TransportProgress = session.TransportProgress;
 pub const ApplyProgress = session.ApplyProgress;
 pub const ClipboardDrainResult = session.ClipboardDrainResult;
@@ -122,6 +122,7 @@ pub fn start(term: *Term) !void {
 }
 pub const waitTransport = session.waitTransport;
 pub const pumpTransport = session.pumpTransport;
+pub const applyReady = session.applyReady;
 pub const applyPending = session.applyPending;
 pub const isAlive = session.isAlive;
 pub const hasOutboundInputBacklog = session.hasOutboundInputBacklog;

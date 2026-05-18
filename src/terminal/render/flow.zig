@@ -3,7 +3,6 @@ const std = @import("std");
 pub const DamageKind = enum(u8) {
     none = 0,
     partial = 1,
-    scroll = 2,
     full = 3,
 };
 
@@ -73,7 +72,7 @@ pub const SnapshotToken = struct {
     damage_kind: DamageKind,
 
     pub fn requiresRetainedBase(self: SnapshotToken) bool {
-        return self.damage_kind == .partial or self.damage_kind == .scroll;
+        return self.damage_kind == .partial;
     }
 
     pub fn isNewerThan(self: SnapshotToken, other: SnapshotToken) bool {
@@ -211,14 +210,12 @@ const PublicationState = struct {
     }
 
     fn classify(self: *const PublicationState, source: SourceView) DamageKind {
-        const prior = self.publication orelse return .full;
+        const prior = self.publication orelse return source.damage_kind;
         if (source.snapshot_seq == prior.snapshot_seq) return .none;
-        if (self.pending) return .full;
         if (source.cols != prior.cols or source.rows != prior.rows) return .full;
         if (source.last_alt_screen != prior.last_alt_screen) return .full;
         if (source.scrollback_offset != prior.scrollback_offset) return .full;
-        if (source.scrollback_count != prior.scrollback_count) return .scroll;
-        return .full;
+        return source.damage_kind;
     }
 };
 
@@ -641,7 +638,7 @@ test "render flow keeps newer source pending while submit is in flight" {
         .snapshot_seq = 2,
         .vt_epoch = 2,
         .last_alt_screen = false,
-        .damage_kind = .scroll,
+        .damage_kind = .partial,
     });
     try std.testing.expect(second.published);
     try std.testing.expect(flow.pendingState().source_pending);
@@ -723,7 +720,40 @@ test "render flow preserves partial source damage" {
     try std.testing.expectEqual(DamageKind.partial, second.damage_kind);
 }
 
-test "render flow preserves scroll source damage" {
+test "render flow preserves partial source damage while prior source is still pending" {
+    var flow: Flow = .{};
+    _ = flow.syncGeometry(.{
+        .render_px = .{ .width = 10, .height = 10 },
+        .grid_px = .{ .width = 10, .height = 10 },
+        .cell_px = .{ .width = 1, .height = 1 },
+    });
+    _ = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 1,
+        .vt_epoch = 1,
+        .last_alt_screen = false,
+        .damage_kind = .full,
+    });
+    const second = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 2,
+        .vt_epoch = 2,
+        .last_alt_screen = false,
+        .damage_kind = .partial,
+    });
+    try std.testing.expect(second.published);
+    try std.testing.expectEqual(DamageKind.partial, second.damage_kind);
+}
+
+test "render flow preserves partial source damage when history grows" {
     var flow: Flow = .{};
     _ = flow.syncGeometry(.{
         .render_px = .{ .width = 10, .height = 10 },
@@ -751,9 +781,42 @@ test "render flow preserves scroll source damage" {
         .snapshot_seq = 2,
         .vt_epoch = 2,
         .last_alt_screen = false,
-        .damage_kind = .scroll,
+        .damage_kind = .partial,
     });
-    try std.testing.expectEqual(DamageKind.scroll, second.damage_kind);
+    try std.testing.expectEqual(DamageKind.partial, second.damage_kind);
+}
+
+test "render flow forces full on viewport offset change" {
+    var flow: Flow = .{};
+    _ = flow.syncGeometry(.{
+        .render_px = .{ .width = 10, .height = 10 },
+        .grid_px = .{ .width = 10, .height = 10 },
+        .cell_px = .{ .width = 1, .height = 1 },
+    });
+    _ = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 4,
+        .scrollback_offset = 0,
+        .focused = true,
+        .snapshot_seq = 1,
+        .vt_epoch = 1,
+        .last_alt_screen = false,
+        .damage_kind = .full,
+    });
+    _ = flow.prepare();
+    const second = flow.acceptSource(.{
+        .cols = 10,
+        .rows = 10,
+        .scrollback_count = 4,
+        .scrollback_offset = 1,
+        .focused = true,
+        .snapshot_seq = 2,
+        .vt_epoch = 2,
+        .last_alt_screen = false,
+        .damage_kind = .partial,
+    });
+    try std.testing.expectEqual(DamageKind.full, second.damage_kind);
 }
 
 test "render flow drops clean source" {

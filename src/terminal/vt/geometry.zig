@@ -21,13 +21,16 @@ pub fn resize(self: anytype, render_width: c_int, render_height: c_int, logical_
     const lh = @max(logical_height, 1);
     lock(&self.geometry_mutex);
     defer self.geometry_mutex.unlock();
-    if (rw == self.render_px_w and rh == self.render_px_h and lw == self.pending_grid_px_w and lh == self.pending_grid_px_h) return;
+    if (rw == self.render_px_w and rh == self.render_px_h and rw == self.pending_grid_px_w and rh == self.pending_grid_px_h and lw == self.logical_w and lh == self.logical_h) return;
     self.render_px_w = rw;
     self.render_px_h = rh;
     self.logical_w = lw;
     self.logical_h = lh;
-    self.pending_grid_px_w = lw;
-    self.pending_grid_px_h = lh;
+    // Keep terminal grid geometry pixel-owned. SDL logical size can change with
+    // scale/reporting quirks without a real framebuffer resize, and feeding that
+    // into the PTY grid can falsely halve the visible row count.
+    self.pending_grid_px_w = rw;
+    self.pending_grid_px_h = rh;
     self.last_resize_ns = window.c_win.SDL_GetTicksNS();
     scroll.invalidate(self);
 }

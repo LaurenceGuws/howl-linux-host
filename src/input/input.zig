@@ -5,6 +5,9 @@ const mouse = @import("mouse.zig");
 const window = @import("window.zig");
 
 const c = window.c_win;
+// Bound queued host input to one SDL drain-sized burst so the main thread can
+// flush all captured terminal input in a single batching turn without creating
+// a second unbounded queue tier behind the window event loop.
 const max_input_events = 256;
 
 pub const Input = struct {
@@ -118,6 +121,10 @@ pub const Input = struct {
             std.mem.copyForwards(Bindings.Action, self.binding_buf[0..live_len], self.binding_buf[1 .. live_len + 1]);
         }
         return out;
+    }
+
+    pub fn hasQueuedTerminalInput(self: *const Input) bool {
+        return self.input_len != 0 or self.scroll_pages != 0;
     }
 
     pub fn drainWindowGeometryChanged(self: *Input) bool {

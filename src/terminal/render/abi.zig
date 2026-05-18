@@ -11,6 +11,7 @@ pub const Term = runtime.Term;
 pub const FrameLayout = flow.Geometry;
 pub const RenderSurface = c.HowlRenderSurfaceHandle;
 pub const RenderMetrics = flow.Metrics;
+pub const RenderPerf = retained.Perf;
 pub const PreparedSurface = c.HowlRenderPreparedSurface;
 pub const PreparedSurfaceHandle = c.HowlRenderPreparedSurfaceHandle;
 pub const PreparedSurfaceInfo = c.HowlRenderPreparedSurfaceInfo;
@@ -212,6 +213,14 @@ pub fn submitRender(term: *Term) RenderSubmitResult {
 
 pub fn takeRenderMetrics(term: *Term) RenderMetrics {
     return term.render.flow.takeMetrics();
+}
+
+pub fn takeRenderPerf(term: *Term) RenderPerf {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    const out = term.render.perf;
+    term.render.perf = .{};
+    return out;
 }
 
 pub fn markRenderPresented(term: *Term) void {
