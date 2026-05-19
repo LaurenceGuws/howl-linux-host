@@ -88,7 +88,7 @@ pub const Flow = struct {
         return .{
             .published = response.published != 0,
             .queued = response.queued != 0,
-            .damage_kind = @enumFromInt(response.damage_kind),
+            .damage_kind = damageKindOut(response.damage_kind),
             .source_seq = response.snapshot_seq,
             .geometry_epoch = response.geometry_epoch,
         };
@@ -177,6 +177,15 @@ fn sourceViewIn(value: SourceView) c.HowlRenderVtSnapshot {
     };
 }
 
+fn damageKindOut(value: u8) DamageKind {
+    return switch (value) {
+        @intFromEnum(DamageKind.none) => .none,
+        @intFromEnum(DamageKind.partial) => .partial,
+        @intFromEnum(DamageKind.full) => .full,
+        else => unreachable,
+    };
+}
+
 fn prepareDecision(status: c_int, request: PrepareRequest) PrepareDecision {
     return switch (status) {
         c.HOWL_RENDER_PREPARE_IDLE => .idle,
@@ -198,6 +207,12 @@ fn submitDecision(status: c_int, prepared: PreparedFrame) SubmitDecision {
 test "prepareDecision maps failed status explicitly" {
     const request = std.mem.zeroes(PrepareRequest);
     try std.testing.expectEqual(PrepareDecision.failed, prepareDecision(c.HOWL_RENDER_PREPARE_FAILED, request));
+}
+
+test "damageKindOut maps render queue damage tags explicitly" {
+    try std.testing.expectEqual(DamageKind.none, damageKindOut(@intFromEnum(DamageKind.none)));
+    try std.testing.expectEqual(DamageKind.partial, damageKindOut(@intFromEnum(DamageKind.partial)));
+    try std.testing.expectEqual(DamageKind.full, damageKindOut(@intFromEnum(DamageKind.full)));
 }
 
 test "submitDecision maps failed status explicitly" {
