@@ -5,7 +5,6 @@ const env = @import("env.zig");
 const Input = @import("../input/input.zig").Input;
 
 const Lua = howl_lua;
-const max_fallback_fonts = 32;
 
 pub const FontStack = struct {
     primary: ?[:0]u8,
@@ -20,7 +19,7 @@ pub const FontStack = struct {
         freeZSlice(alloc, self.emoji);
     }
 
-    pub fn flattenFallbacks(self: FontStack, buf: *[max_fallback_fonts][:0]const u8) []const [:0]const u8 {
+    pub fn flattenFallbacks(self: FontStack, buf: [][:0]const u8) []const [:0]const u8 {
         var n: u8 = 0;
         for (self.mono) |p| {
             if (n >= buf.len) return buf[0..n];

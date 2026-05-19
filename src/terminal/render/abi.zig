@@ -24,7 +24,7 @@ pub const RenderSubmitResult = retained.SubmitResult;
 pub const RenderAdvanceResult = retained.AdvanceResult;
 pub const RenderPhase = retained.Phase;
 pub const RenderCellSize = flow.CellSize;
-const max_host_fallback_paths: u8 = 32;
+pub const max_fallback_font_paths: u8 = @intCast(c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
 pub const RenderWorkState = struct {
     phase: RenderPhase,
@@ -84,9 +84,9 @@ pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) void {
     // render owner state aligned on the old fallback set.
     var staged: std.ArrayListUnmanaged([:0]u8) = .empty;
     defer freeOwnedFallbackFontPaths(term, &staged);
-    const path_count: u8 = @intCast(@min(paths.len, max_host_fallback_paths));
+    const path_count: u8 = @intCast(@min(paths.len, max_fallback_font_paths));
     staged.ensureTotalCapacity(term.allocator, path_count) catch return;
-    var raw: [max_host_fallback_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_host_fallback_paths;
+    var raw: [max_fallback_font_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_fallback_font_paths;
     var i: u8 = 0;
     while (i < path_count) : (i += 1) {
         const owned = term.allocator.dupeZ(u8, paths[@intCast(i)]) catch return;

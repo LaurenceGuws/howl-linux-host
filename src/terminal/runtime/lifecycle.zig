@@ -9,8 +9,8 @@ const thread = @import("thread.zig");
 
 pub fn start(self: anytype) !void {
     trace.logStartup("term-start-begin");
-    var font_fallbacks_buf: [32][:0]const u8 = undefined;
-    const font_fallbacks = self.conf.fonts.flattenFallbacks(&font_fallbacks_buf);
+    var font_fallbacks_buf: [render_api.max_fallback_font_paths][:0]const u8 = undefined;
+    const font_fallbacks = self.conf.fonts.flattenFallbacks(font_fallbacks_buf[0..]);
     // The explicit seam files keep PTY/VT/render ownership visible to the host.
     self.term = try pty_api.initPty(std.heap.c_allocator, .{
         .shell = self.conf.shell,
