@@ -7,10 +7,11 @@ const std = @import("std");
 // hidden helper. Keep Howl on the same shape: one explicit PTY slice and one
 // explicit VT apply slice per main-thread turn.
 //
-// The PTY owner's normal transport burst already follows Alacritty's 1 MiB
-// read scale. Keep the VT slice much smaller until proof says otherwise so one
-// transport burst cannot quietly monopolize the same turn before render and
-// present get a chance to run.
+// The PTY owner already follows Alacritty's 1 MiB burst. Keep the VT slice
+// tiny until Howl is closer to Ghostty's direct VT path: parsed events still
+// queue separately, and style-heavy events still carry fixed-width payloads
+// inline. 256 events is the current fairness gate that lets render and present
+// run between bursts instead of letting one transport read monopolize a turn.
 const transport_mode: pty_api.TransportPumpMode = .normal;
 const vt_apply_events_per_turn: u32 = 256;
 

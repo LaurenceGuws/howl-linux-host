@@ -6,10 +6,13 @@ const retained = @import("retained.zig");
 const c = api.c;
 const log = @import("../../input/window.zig");
 
+// Latest title export is one metadata-sized VT control payload. Match the VT
+// owner's metadata control bound so the host does not invent a second title
+// size policy at the apply seam.
 const default_title_capacity: u32 = 4096;
-// Match Alacritty's locked-read byte scale for one transport chunk. Larger PTY
-// bursts come from the PTY owner's transport mode, not from a second host byte
-// budget layered on top of the same read path.
+// Alacritty caps locked terminal parsing at roughly 64 KiB. Howl rounds that
+// to one 64 KiB scratch chunk so the host can cover the PTY owner's 1 MiB
+// burst in sixteen equal reads without adding a second host byte budget.
 const transport_chunk_bytes = 64 * 1024;
 
 pub const TransportPumpMode = enum(u8) {
