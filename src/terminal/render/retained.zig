@@ -35,6 +35,30 @@ pub const State = struct {
         self.fallback_font_paths.deinit(allocator);
         c.howl_render_surface_text_deinit(self.surface_text);
     }
+
+    pub fn clearInFlight(self: *State) void {
+        self.phase = .idle;
+    }
+
+    pub fn noteNeedsPrepare(self: *State) void {
+        self.phase = .prepare;
+    }
+
+    pub fn notePrepared(self: *State) void {
+        self.phase = .submit;
+    }
+
+    pub fn noteRendered(self: *State) void {
+        self.phase = .present;
+    }
+
+    pub fn notePresented(self: *State) void {
+        self.phase = .idle;
+    }
+
+    pub fn noteSourcePublished(self: *State, queued: bool) void {
+        self.phase = if (queued) .prepare else .idle;
+    }
 };
 
 pub const Perf = struct {

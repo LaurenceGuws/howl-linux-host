@@ -201,13 +201,13 @@ pub fn prepareRender(term: *Term) RenderPrepareResult {
     switch (c.howl_render_surface_text_take_prepare_request(term.render.surface_text, &request)) {
         c.HOWL_RENDER_PREPARE_IDLE => {
             releasePreparedSurface(term);
-            term.render.phase = .idle;
+            term.render.clearInFlight();
             return .idle;
         },
         c.HOWL_RENDER_PREPARE_READY => {},
         else => {
             releasePreparedSurface(term);
-            term.render.phase = .idle;
+            term.render.clearInFlight();
             return .failed;
         },
     }
@@ -218,14 +218,14 @@ pub fn prepareRender(term: *Term) RenderPrepareResult {
     return switch (c.howl_render_surface_text_prepare_handle(term.render.surface_text, &vt_surface, request, query, &prepared)) {
         c.HOWL_RENDER_PREPARE_IDLE => blk: {
             releasePreparedSurface(term);
-            term.render.phase = .idle;
+            term.render.clearInFlight();
             break :blk .idle;
         },
         c.HOWL_RENDER_PREPARE_READY => blk: {
             var info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo);
             if (c.howl_render_prepared_surface_describe(prepared, &info) != c.HOWL_RENDER_CALL_OK) {
                 releasePreparedSurface(term);
-                term.render.phase = .idle;
+                term.render.clearInFlight();
                 break :blk .failed;
             }
             std.debug.assert(info.snapshot_seq == request.snapshot_seq);
@@ -235,12 +235,12 @@ pub fn prepareRender(term: *Term) RenderPrepareResult {
             releasePreparedSurface(term);
             assertPreparedSurfaceHandle(prepared);
             term.render.prepared_surface = prepared;
-            term.render.phase = .submit;
+            term.render.notePrepared();
             break :blk .prepared;
         },
         else => blk: {
             releasePreparedSurface(term);
-            term.render.phase = .idle;
+            term.render.clearInFlight();
             break :blk .failed;
         },
     };
@@ -253,52 +253,52 @@ pub fn submitPrepared(term: *Term, execution: *const SurfaceExecutionInput, feed
     var prepared_frame = std.mem.zeroes(c.HowlRenderPreparedFrame);
     switch (c.howl_render_surface_text_take_submit_decision(term.render.surface_text, &prepared_frame)) {
         c.HOWL_RENDER_SUBMIT_DECISION_IDLE => {
-            term.render.phase = .idle;
+            term.render.clearInFlight();
             return .idle;
         },
         c.HOWL_RENDER_SUBMIT_DECISION_SUBMIT => {},
         c.HOWL_RENDER_SUBMIT_DECISION_STALE => {
             releasePreparedSurface(term);
-            term.render.phase = .idle;
+            term.render.clearInFlight();
             return .stale;
         },
         c.HOWL_RENDER_SUBMIT_DECISION_NEEDS_PREPARE => {
             releasePreparedSurface(term);
-            term.render.phase = .prepare;
+            term.render.noteNeedsPrepare();
             return .needs_prepare;
         },
         else => {
             releasePreparedSurface(term);
-            term.render.phase = .idle;
+            term.render.clearInFlight();
             return .failed;
         },
     }
     return switch (submitPreparedSurface(term, prepared_frame, execution, feedback)) {
         c.HOWL_RENDER_SUBMIT_IDLE => blk: {
-            term.render.phase = .idle;
+            term.render.clearInFlight();
             break :blk .idle;
         },
         c.HOWL_RENDER_SUBMIT_STALE => blk: {
             releasePreparedSurface(term);
-            term.render.phase = .idle;
+            term.render.clearInFlight();
             break :blk .stale;
         },
         c.HOWL_RENDER_SUBMIT_NEEDS_PREPARE => blk: {
             releasePreparedSurface(term);
-            term.render.phase = .prepare;
+            term.render.noteNeedsPrepare();
             break :blk .needs_prepare;
         },
         c.HOWL_RENDER_SUBMIT_RENDERED => blk: {
             std.debug.assert(feedback.surface.host_surface_id != 0);
             std.debug.assert(feedback.surface.width > 0);
             std.debug.assert(feedback.surface.height > 0);
-            term.render.phase = .present;
+            term.render.noteRendered();
             releasePreparedSurface(term);
             break :blk .rendered;
         },
         else => blk: {
             releasePreparedSurface(term);
-            term.render.phase = .idle;
+            term.render.clearInFlight();
             break :blk .failed;
         },
     };
@@ -353,7 +353,7 @@ pub fn markRenderPresented(term: *Term) void {
     defer term.mutex.unlock();
     std.debug.assert(term.render.phase == .present);
     c.howl_render_surface_text_mark_presented(term.render.surface_text);
-    term.render.phase = .idle;
+    term.render.notePresented();
 }
 
 pub fn pixelToCol(term: *const Term, pixel_x: i32) u16 {

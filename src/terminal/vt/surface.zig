@@ -70,7 +70,7 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     recordPendingDirtyGeneration(term, visible, typed_response);
     term.vt_state.surface.full_damage = @intFromBool(typed_response.damage_kind == damage_full);
     if (typed_response.published != 0) {
-        term.render.phase = if (typed_response.queued != 0) .prepare else .idle;
+        term.render.noteSourcePublished(typed_response.queued != 0);
         log.logf(
             "host-loop ts_ns={d} stage=surface-publish snapshot_seq={d} vt_epoch={d} queued={} damage={d} render_phase={s} rows={d} cols={d} scroll={d}",
             .{
