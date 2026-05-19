@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const window = @import("../../window/window.zig");
 const trace = @import("../../input/window.zig");
@@ -40,7 +39,7 @@ pub fn start(self: anytype) !void {
     setThreadName(progress_thread, "howl-term-host");
     self.progress_thread = progress_thread;
     trace.logStartup("term-progress-thread-started");
-    HostInput.wakeWindow();
+    HostInput.requestRedraw();
 }
 
 pub fn stop(self: anytype) void {

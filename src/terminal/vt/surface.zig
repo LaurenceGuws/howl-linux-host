@@ -40,7 +40,7 @@ pub const VisibleCopy = struct {
 
 const PublishAckOps = struct {
     fn ack(handle: c.HowlVtHandle, dirty_generation: u64) i32 {
-        return c.howl_vt_terminal_ack_surface_source(handle, dirty_generation);
+        return c.howl_vt_terminal_ack_surface(handle, dirty_generation);
     }
 };
 
@@ -119,7 +119,7 @@ pub fn sourceRejected(term: *api.Term) render_flow.SourceResponse {
     };
 }
 
-pub fn surfaceSourceOut(term: *api.Term) !c.HowlRenderSurfaceSource {
+pub fn vtSurfaceOut(term: *api.Term) !c.HowlRenderVtSurface {
     const cell_count = @as(usize, term.vt_state.surface.rows) * @as(usize, term.vt_state.surface.cols);
     if (term.vt_state.surface_cells.items.len < cell_count) return error.InvalidVisibleSnapshot;
     return .{
@@ -143,7 +143,7 @@ pub fn surfaceSourceOut(term: *api.Term) !c.HowlRenderSurfaceSource {
 
 pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
     std.debug.assert(handle != null);
-    const view = c.howl_vt_terminal_copy_surface_source(handle, scrollback_offset, null, 0, null, 0, null, 0, null, 0, 0, 0);
+    const view = c.howl_vt_terminal_copy_surface(handle, scrollback_offset, null, 0, null, 0, null, 0, null, 0, 0, 0);
     if (view.status != vt_abi.callShortBuffer()) vt_abi.requireStructOk(view.status);
     std.debug.assert(scrollback_offset <= view.history_count);
     return .{
@@ -162,7 +162,7 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
     term.vt_state.visible_damage.dirty_rows.clearRetainingCapacity();
     term.vt_state.visible_damage.dirty_cols_start.clearRetainingCapacity();
     term.vt_state.visible_damage.dirty_cols_end.clearRetainingCapacity();
-    var source = c.howl_vt_terminal_copy_surface_source(term.vt, term.vt_state.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0, null, 0, 0, 0);
+    var source = c.howl_vt_terminal_copy_surface(term.vt, term.vt_state.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0, null, 0, 0, 0);
     if (source.status == vt_abi.callShortBuffer()) {
         cells = try vtEnsureCells(term, @intCast(source.source.surface_cells.len));
         try term.vt_state.visible_damage.dirty_rows.resize(term.allocator, source.source.rows);
@@ -177,7 +177,7 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
         defer term.allocator.free(raw_dirty_cols_end);
         @memset(raw_dirty_cols_start, 0);
         @memset(raw_dirty_cols_end, 0);
-        source = c.howl_vt_terminal_copy_surface_source(
+        source = c.howl_vt_terminal_copy_surface(
             term.vt,
             term.vt_state.scrollback_offset,
             cells.ptr,
@@ -235,7 +235,7 @@ fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_respo
     term.vt_state.pending_dirty_generation = 0;
 }
 
-fn sourceDamageKind(viewport_moved: bool, current: c.HowlVtSurfaceSource, damage: anytype) render_flow.DamageKind {
+fn sourceDamageKind(viewport_moved: bool, current: c.HowlVtSurface, damage: anytype) render_flow.DamageKind {
     var any_dirty = false;
     var all_rows_dirty = current.rows != 0;
     for (damage.dirty_rows.items, 0..) |dirty, row_idx| {
@@ -260,7 +260,7 @@ fn sourceDamageKind(viewport_moved: bool, current: c.HowlVtSurfaceSource, damage
 }
 
 test "viewport move damage becomes full" {
-    var current = std.mem.zeroes(c.HowlVtSurfaceSource);
+    var current = std.mem.zeroes(c.HowlVtSurface);
     current.cols = 5;
     current.rows = 4;
     current.scroll_row = 2;

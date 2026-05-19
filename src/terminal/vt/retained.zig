@@ -18,7 +18,7 @@ pub const State = struct {
     visible_damage: VisibleDamage = .{},
     surface_cells: std.ArrayListUnmanaged(c.HowlVtSurfaceCell) = .empty,
     bytes: std.ArrayListUnmanaged(u8) = .empty,
-    surface: c.HowlVtSurfaceSource = defaultSurface(),
+    surface: c.HowlVtSurface = defaultSurface(),
     title: std.ArrayListUnmanaged(u8) = .empty,
     snapshot_seq: u64 = 1,
     epoch: u64 = 1,
@@ -34,8 +34,8 @@ pub const State = struct {
     }
 };
 
-fn defaultSurface() c.HowlVtSurfaceSource {
-    var surface = std.mem.zeroes(c.HowlVtSurfaceSource);
+fn defaultSurface() c.HowlVtSurface {
+    var surface = std.mem.zeroes(c.HowlVtSurface);
     surface.full_damage = 1;
     surface.cursor.visible = 1;
     return surface;

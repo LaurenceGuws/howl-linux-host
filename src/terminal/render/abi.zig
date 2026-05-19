@@ -19,6 +19,7 @@ pub const PreparedSurfaceDamagePlan = c.HowlRenderPreparedSurfaceDamagePlan;
 pub const PreparedSurfaceBuffer = c.HowlRenderPreparedSurfaceBuffer;
 pub const PreparedSurfaceDiagnostics = c.HowlRenderPreparedSurfaceDiagnostics;
 pub const SurfaceExecutionInput = c.HowlRenderSurfaceExecutionInput;
+pub const RenderSurfaceFeedback = c.HowlRenderSurfaceFeedback;
 pub const RenderPrepareResult = retained.PrepareResult;
 pub const RenderSubmitResult = retained.SubmitResult;
 pub const RenderAdvanceResult = retained.AdvanceResult;
@@ -182,33 +183,35 @@ pub fn needsContentFrame(term: *const Term, bootstrap_surface: bool) bool {
     return renderWorkState(term, bootstrap_surface).wantsFrame();
 }
 
-pub fn advanceRender(term: *Term, bootstrap_surface: bool) RenderAdvanceResult {
-    if (term.render.phase == .submit) {
-        return switch (submitRender(term)) {
-            .rendered => .rendered,
-            .failed => .failed,
-            .idle, .stale, .needs_prepare => .idle,
-        };
-    }
-
-    if (term.render.phase == .prepare or bootstrap_surface) {
-        return switch (prepareRender(term)) {
-            .prepared => .prepared,
-            .failed => .failed,
-            .idle => .idle,
-        };
-    }
-
-    if (term.render.phase == .present) return .blocked_present;
-    return .idle;
-}
-
 pub fn prepareRender(term: *Term) RenderPrepareResult {
     return prepare.prepareRender(term);
 }
 
-pub fn submitRender(term: *Term) RenderSubmitResult {
-    return prepare.submitRender(term);
+pub fn submitPrepared(term: *Term, execution: *const SurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) RenderSubmitResult {
+    return prepare.submitPrepared(term, execution, feedback);
+}
+
+pub fn preparedSurfaceInfo(term: *Term, info_out: *PreparedSurfaceInfo) bool {
+    return prepare.preparedSurfaceInfo(term, info_out);
+}
+
+pub fn preparedSurfaceDamagePlan(term: *Term, plan_out: *PreparedSurfaceDamagePlan) bool {
+    return prepare.preparedSurfaceDamagePlan(term, plan_out);
+}
+
+pub fn preparedSurfaceBuffer(term: *Term, buffer_out: *PreparedSurfaceBuffer) bool {
+    return prepare.preparedSurfaceBuffer(term, buffer_out);
+}
+
+pub fn preparedSurfaceDiagnostics(term: *Term, diagnostics_out: *PreparedSurfaceDiagnostics) bool {
+    return prepare.preparedSurfaceDiagnostics(term, diagnostics_out);
+}
+
+pub fn surfaceQuery(term: *const Term) flow.SurfaceQuery {
+    const mut: *Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.render.flow.surfaceQuery();
 }
 
 pub fn takeRenderMetrics(term: *Term) RenderMetrics {

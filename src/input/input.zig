@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const keys = @import("keys.zig");
 const mouse = @import("mouse.zig");
@@ -39,6 +38,7 @@ pub const Input = struct {
     scroll_pages: i32,
     binding_buf: [64]Bindings.Action,
     binding_len: u8,
+    redraw_requested: bool,
     window_geometry_changed: bool,
     window_focus_changed: ?bool,
     last_mouse_x: i32,
@@ -57,6 +57,7 @@ pub const Input = struct {
             .scroll_pages = 0,
             .binding_buf = undefined,
             .binding_len = 0,
+            .redraw_requested = false,
             .window_geometry_changed = false,
             .window_focus_changed = null,
             .last_mouse_x = 0,
@@ -79,6 +80,12 @@ pub const Input = struct {
     pub fn setTerminalMousePolicy(self: *Input, policy: TerminalMousePolicy) void {
         self.terminal_motion_mod = policy.bypass_mod;
         self.updateMouseMotionEvents();
+    }
+
+    pub fn drainRedrawRequested(self: *Input) bool {
+        const requested = self.redraw_requested;
+        self.redraw_requested = false;
+        return requested;
     }
 
     fn updateMouseMotionEvents(self: *Input) void {
@@ -162,6 +169,10 @@ pub const Input = struct {
         window.wakeEventLoop();
     }
 
+    pub fn requestRedraw() void {
+        window.requestRedraw();
+    }
+
     pub fn keyFromLabel(raw: []const u8) ?Key {
         return keys.parseLabel(raw);
     }
@@ -185,6 +196,13 @@ pub const Input = struct {
     }
 
     fn processEvent(self: *Input, event: *const c.SDL_Event) void {
+        if (window.isWakeEventType(event.type)) return;
+        if (window.isRedrawEventType(event.type)) {
+            self.redraw_requested = true;
+            window.ackRedrawEvent();
+            return;
+        }
+
         switch (event.type) {
             c.SDL_EVENT_QUIT,
             c.SDL_EVENT_TERMINATING,
@@ -196,10 +214,16 @@ pub const Input = struct {
             },
             c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
                 self.window_focus_changed = true;
+                self.redraw_requested = true;
                 return;
             },
             c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                 self.window_focus_changed = false;
+                self.redraw_requested = true;
+                return;
+            },
+            c.SDL_EVENT_WINDOW_EXPOSED => {
+                self.redraw_requested = true;
                 return;
             },
             c.SDL_EVENT_TEXT_INPUT => {
@@ -233,6 +257,7 @@ pub const Input = struct {
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
             c.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
             => {
+                self.redraw_requested = true;
                 self.window_geometry_changed = true;
                 return;
             },
@@ -286,6 +311,7 @@ fn appendBindingAction(input: *Input, action: Input.Bindings.Action) void {
     input.binding_buf[idx] = action;
     input.binding_len += 1;
     std.debug.assert(input.binding_len <= input.binding_buf.len);
+    input.redraw_requested = true;
     window.logf("host-loop ts_ns={d} stage=queue-binding action={s}", .{ window.nowNs(), @tagName(action) });
 }
 
@@ -305,10 +331,12 @@ fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
     const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
     if (event.key.key == c.SDLK_PAGEUP and shift and !ctrl and !alt) {
         input.scroll_pages += 1;
+        input.redraw_requested = true;
         return;
     }
     if (event.key.key == c.SDLK_PAGEDOWN and shift and !ctrl and !alt) {
         input.scroll_pages -= 1;
+        input.redraw_requested = true;
         return;
     }
     if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
@@ -363,6 +391,7 @@ fn processMouseMotion(input: *Input, event: *const c.SDL_Event) void {
         .buttons_down = buttons_down,
         .host_only = host_only,
     });
+    input.redraw_requested = true;
 }
 
 fn processMouseButtonDown(input: *Input, event: *const c.SDL_Event) void {
@@ -381,6 +410,7 @@ fn processMouseButtonDown(input: *Input, event: *const c.SDL_Event) void {
         .mods = sdlMods(c.SDL_GetModState()),
         .buttons_down = .{},
     });
+    input.redraw_requested = true;
 }
 
 fn processMouseButtonUp(input: *Input, event: *const c.SDL_Event) void {
@@ -399,6 +429,7 @@ fn processMouseButtonUp(input: *Input, event: *const c.SDL_Event) void {
         .mods = sdlMods(c.SDL_GetModState()),
         .buttons_down = .{},
     });
+    input.redraw_requested = true;
 }
 
 fn processMouseWheel(input: *Input, event: *const c.SDL_Event) void {
@@ -418,6 +449,7 @@ fn processMouseWheel(input: *Input, event: *const c.SDL_Event) void {
             .buttons_down = .{},
         });
     }
+    input.redraw_requested = true;
 }
 
 fn sdlKey(sdl_key: c_uint) ?keys.Key {

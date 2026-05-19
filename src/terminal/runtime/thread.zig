@@ -1,4 +1,3 @@
-
 const pty_api = @import("../pty/abi.zig");
 const HostInput = @import("../../input/input.zig").Input;
 const log = @import("../../input/window.zig");
@@ -20,7 +19,11 @@ fn progressThreadMainWith(self: anytype, comptime Ops: type) void {
         if (wait_transport) waitForTransport(self, Ops);
         if (self.progress_stop.load(.acquire)) break;
         const outcome = driveOnceWith(self, Ops);
-        if (outcome.should_wake) Ops.wakeWindow();
+        if (outcome.should_redraw) {
+            Ops.requestRedraw();
+        } else if (outcome.should_wake) {
+            Ops.wakeWindow();
+        }
         wait_transport = !outcome.keep;
         if (!Ops.isAlive(&self.term) and !outcome.keep) break;
     }
@@ -34,19 +37,22 @@ fn waitForTransport(self: anytype, comptime Ops: type) void {
 
 const DriveOutcome = struct {
     keep: bool,
+    should_redraw: bool,
     should_wake: bool,
 };
 
 fn driveOnceWith(self: anytype, comptime Ops: type) DriveOutcome {
     const transport = Ops.pumpTransport(&self.term, transport_mode);
     const applied = Ops.applyReady(&self.term);
+    const alive = Ops.isAlive(&self.term);
     const keep = Ops.hasOutboundInputBacklog(&self.term) or transport.hit_limit or
         applied.remaining_events != 0;
-    const should_wake = transport.reads != 0 or
+    const should_redraw = transport.reads != 0 or
         transport.bytes_read != 0 or
         applied.applied_events != 0 or
         applied.remaining_events != 0 or
         Ops.hasOutboundInputBacklog(&self.term);
+    const should_wake = should_redraw or !alive;
     log.logProgressDriveStartupf(
         "stage=progress-drive-first reads={d} read_bytes={d} applied={d} wake={d} keep={} alive={}",
         .{
@@ -55,7 +61,7 @@ fn driveOnceWith(self: anytype, comptime Ops: type) DriveOutcome {
             applied.applied_events,
             @intFromBool(should_wake),
             keep,
-            Ops.isAlive(&self.term),
+            alive,
         },
     );
     if (should_wake) {
@@ -90,7 +96,7 @@ fn driveOnceWith(self: anytype, comptime Ops: type) DriveOutcome {
             keep,
         },
     );
-    return .{ .keep = keep, .should_wake = should_wake };
+    return .{ .keep = keep, .should_redraw = should_redraw, .should_wake = should_wake };
 }
 
 const RealOps = struct {
@@ -116,6 +122,10 @@ const RealOps = struct {
     fn wakeWindow() void {
         HostInput.wakeWindow();
     }
+
+    fn requestRedraw() void {
+        HostInput.requestRedraw();
+    }
 };
 
 test "host loop waits when nothing is ready" {
@@ -127,6 +137,7 @@ test "host loop waits when nothing is ready" {
     progressThreadMainWith(&ctx, FakeOps);
     try std.testing.expectEqual(@as(u8, 1), fake_state.wait_calls);
     try std.testing.expectEqual(@as(u8, 0), fake_state.wake_calls);
+    try std.testing.expectEqual(@as(u8, 0), fake_state.redraw_calls);
 }
 
 test "host loop drains queued vt work after transport exit" {
@@ -147,6 +158,7 @@ test "host loop wakes on applied vt work" {
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const outcome = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(!outcome.keep);
+    try std.testing.expect(outcome.should_redraw);
     try std.testing.expect(outcome.should_wake);
 }
 
@@ -159,6 +171,7 @@ test "host loop keeps driving while vt work remains" {
     try std.testing.expect(keep);
     try std.testing.expectEqual(@as(u8, 1), fake_state.apply_calls);
     try std.testing.expectEqual(@as(u8, 0), fake_state.wake_calls);
+    try std.testing.expectEqual(@as(u8, 0), fake_state.redraw_calls);
 }
 
 test "host loop stays quiet when nothing changes" {
@@ -166,6 +179,7 @@ test "host loop stays quiet when nothing changes" {
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const outcome = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(!outcome.keep);
+    try std.testing.expect(!outcome.should_redraw);
     try std.testing.expect(!outcome.should_wake);
 }
 
@@ -177,6 +191,7 @@ test "host loop keeps driving after saturated transport slice" {
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const outcome = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(outcome.keep);
+    try std.testing.expect(outcome.should_redraw);
     try std.testing.expect(outcome.should_wake);
 }
 
@@ -187,8 +202,19 @@ test "host loop wake path does not publish render work" {
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     const outcome = driveOnceWith(&ctx, FakeOps);
     try std.testing.expect(!outcome.keep);
+    try std.testing.expect(outcome.should_redraw);
     try std.testing.expect(outcome.should_wake);
     try std.testing.expectEqual(@as(u8, 0), ctx.term.render_calls);
+}
+
+test "host loop wakes on quiet transport death" {
+    fake_state = .{};
+    fake_state.is_alive = false;
+    var ctx = FakeCtx{ .term = FakeTerm.init() };
+    const outcome = driveOnceWith(&ctx, FakeOps);
+    try std.testing.expect(!outcome.keep);
+    try std.testing.expect(!outcome.should_redraw);
+    try std.testing.expect(outcome.should_wake);
 }
 
 const FakeTerm = struct {
@@ -208,6 +234,7 @@ var fake_state: struct {
     pump_calls: u8 = 0,
     apply_calls: u8 = 0,
     wake_calls: u8 = 0,
+    redraw_calls: u8 = 0,
     is_alive: bool = true,
     backlog: bool = false,
     hit_limit: bool = false,
@@ -255,5 +282,9 @@ const FakeOps = struct {
 
     fn wakeWindow() void {
         fake_state.wake_calls += 1;
+    }
+
+    fn requestRedraw() void {
+        fake_state.redraw_calls += 1;
     }
 };

@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const icon = @import("icon.zig");
 const log = @import("../input/window.zig");
@@ -198,6 +197,13 @@ pub fn openUrl(uri: []const u8) bool {
     defer std.heap.c_allocator.free(z);
     @memcpy(z[0..uri.len], uri);
     return c.SDL_OpenURL(z.ptr) == true;
+}
+
+pub fn deleteTexture(surface_id: *u64) void {
+    if (surface_id.* == 0) return;
+    var value: c_uint = @intCast(surface_id.*);
+    c.glDeleteTextures(1, &value);
+    surface_id.* = 0;
 }
 
 /// Select the default desktop cursor.

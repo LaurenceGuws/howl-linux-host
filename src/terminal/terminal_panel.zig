@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const window = @import("../window/window.zig");
 const HostInput = @import("../input/input.zig").Input;
@@ -7,7 +6,6 @@ const render_api = @import("render/abi.zig");
 const HowlTerm = pty_api.Term;
 const LifecycleState = pty_api.LifecycleState;
 const FrameLayout = render_api.FrameLayout;
-const SurfaceHandle = render_api.RenderSurface;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const effects = @import("vt/effects.zig");
@@ -16,17 +14,8 @@ const geometry = @import("vt/geometry.zig");
 const input_flow = @import("pty/flow.zig");
 const lifecycle = @import("runtime/lifecycle.zig");
 const scroll = @import("host/scroll.zig");
-const window_log = @import("../input/window.zig");
 
 pub const TerminalPanel = struct {
-    pub const SurfaceMetrics = render_api.RenderMetrics;
-
-    pub const SurfaceSnapshot = struct {
-        surface: SurfaceHandle,
-        full_redraw: bool,
-        damage_rects: []const window.Rect,
-    };
-
     pub const OverlaySnapshot = struct {
         scrollbar: window.ScrollbarLayout,
     };
@@ -47,7 +36,6 @@ pub const TerminalPanel = struct {
     geometry_mutex: geometry.Mutex,
     font_size_px: u16,
     default_font_size_px: u16,
-    last_surface: SurfaceHandle,
     last_resize_ns: u64,
     progress_stop: std.atomic.Value(bool),
     progress_thread: ?std.Thread,
@@ -55,15 +43,6 @@ pub const TerminalPanel = struct {
     widget_focused: bool,
     scrollbar: scroll.State,
     link_cursor_active: bool,
-    first_render_trace_logged: bool,
-    first_submit_trace_logged: bool,
-    first_prepare_result_logged: bool,
-    first_non_idle_action_logged: bool,
-    first_non_idle_submit_logged: bool,
-    first_rendered_surface_logged: bool,
-    first_submit_phase_logged: bool,
-    first_blocked_present_logged: bool,
-    first_idle_render_logged: bool,
 
     pub fn create(
         allocator: std.mem.Allocator,
@@ -75,7 +54,7 @@ pub const TerminalPanel = struct {
     ) !*TerminalPanel {
         const self = try allocator.create(TerminalPanel);
         errdefer allocator.destroy(self);
-        self.* = initial(conf, render_width, render_height, logical_width, logical_height);
+        self.* = initial(allocator, conf, render_width, render_height, logical_width, logical_height);
         errdefer self.deinit();
         try lifecycle.start(self);
         return self;
@@ -86,7 +65,8 @@ pub const TerminalPanel = struct {
         allocator.destroy(self);
     }
 
-    fn initial(conf: *const TerminalConfig, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) TerminalPanel {
+    fn initial(allocator: std.mem.Allocator, conf: *const TerminalConfig, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) TerminalPanel {
+        _ = allocator;
         const render_w = @max(render_width, 1);
         const render_h = @max(render_height, 1);
         const logical_w = @max(logical_width, 1);
@@ -109,7 +89,6 @@ pub const TerminalPanel = struct {
             .geometry_mutex = .{},
             .font_size_px = start_font_px,
             .default_font_size_px = start_font_px,
-            .last_surface = .{ .texture_id = 0, .width = 0, .height = 0, .epoch = 0 },
             .last_resize_ns = 0,
             .progress_stop = std.atomic.Value(bool).init(false),
             .progress_thread = null,
@@ -117,15 +96,6 @@ pub const TerminalPanel = struct {
             .widget_focused = true,
             .scrollbar = .{},
             .link_cursor_active = false,
-            .first_render_trace_logged = false,
-            .first_submit_trace_logged = false,
-            .first_prepare_result_logged = false,
-            .first_non_idle_action_logged = false,
-            .first_non_idle_submit_logged = false,
-            .first_rendered_surface_logged = false,
-            .first_submit_phase_logged = false,
-            .first_blocked_present_logged = false,
-            .first_idle_render_logged = false,
         };
     }
 
@@ -139,67 +109,6 @@ pub const TerminalPanel = struct {
 
     pub fn maybeCommitGridResize(self: *TerminalPanel) void {
         geometry.maybeCommitGridResize(self);
-    }
-
-    pub fn renderStep(self: *TerminalPanel) render_api.RenderAdvanceResult {
-        const bootstrap_surface = self.last_surface.texture_id == 0;
-        self.first_render_trace_logged = true;
-        if (render_api.needsContentFrame(&self.term, false)) self.first_non_idle_action_logged = true;
-        if (!self.first_submit_phase_logged and render_api.renderPhase(&self.term) == .submit) {
-            self.first_submit_phase_logged = true;
-            window_log.logStartup("term-submit-phase-enter");
-        }
-        switch (render_api.advanceRender(&self.term, bootstrap_surface)) {
-            .idle => {
-                window_log.logf("host-loop ts_ns={d} stage=term-render-step result=idle phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
-                if (!self.first_idle_render_logged) {
-                    self.first_idle_render_logged = true;
-                    window_log.logStartupf("stage=term-render-idle-first phase={s} bootstrap={} texture_id={d}", .{
-                        @tagName(render_api.renderPhase(&self.term)),
-                        bootstrap_surface,
-                        self.term.render.surface.texture_id,
-                    });
-                }
-                return .idle;
-            },
-            .blocked_present => {
-                window_log.logf("host-loop ts_ns={d} stage=term-render-step result=blocked_present phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
-                if (!self.first_blocked_present_logged) {
-                    self.first_blocked_present_logged = true;
-                    window_log.logStartup("term-present-blocked-first");
-                }
-                return .blocked_present;
-            },
-            .failed => {
-                window_log.logf("host-loop ts_ns={d} stage=term-render-step result=failed phase={s}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)) });
-                return .failed;
-            },
-            .prepared => {
-                window_log.logf("host-loop ts_ns={d} stage=term-render-step result=prepared phase={s}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)) });
-                if (!self.first_prepare_result_logged) {
-                    self.first_prepare_result_logged = true;
-                    window_log.logStartupf("stage=term-prepare-first prepared=true", .{});
-                }
-                return .prepared;
-            },
-            .rendered => {
-                window_log.logf("host-loop ts_ns={d} stage=term-render-step result=rendered phase={s} texture_id={d}", .{ window_log.nowNs(), @tagName(render_api.renderPhase(&self.term)), self.term.render.surface.texture_id });
-                if (!self.first_submit_trace_logged) {
-                    self.first_submit_trace_logged = true;
-                    window_log.logStartupf("stage=term-submit-first result=rendered", .{});
-                }
-                if (!self.first_non_idle_submit_logged) {
-                    self.first_non_idle_submit_logged = true;
-                    window_log.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
-                }
-                self.last_surface = self.term.render.surface;
-                if (!self.first_rendered_surface_logged) {
-                    self.first_rendered_surface_logged = true;
-                    window_log.logStartupf("stage=term-rendered-surface-first texture_id={d} epoch={d}", .{ self.last_surface.texture_id, self.last_surface.epoch });
-                }
-                return .rendered;
-            },
-        }
     }
 
     pub fn frameLayoutSnapshot(self: *TerminalPanel) FrameLayout {
@@ -227,14 +136,6 @@ pub const TerminalPanel = struct {
         return self.conf.links.hover != .off;
     }
 
-    pub fn surfaceSnapshot(self: *const TerminalPanel) SurfaceSnapshot {
-        return .{
-            .surface = self.last_surface,
-            .full_redraw = self.term.render.full_redraw,
-            .damage_rects = self.term.render.damage_rects.items,
-        };
-    }
-
     pub fn overlaySnapshot(self: *const TerminalPanel, texture_rect: window.Rect) OverlaySnapshot {
         return .{
             .scrollbar = scroll.layout(@constCast(self), texture_rect),
@@ -243,6 +144,10 @@ pub const TerminalPanel = struct {
 
     pub fn lifecycleState(self: *const TerminalPanel) LifecycleState {
         return pty_api.lifecycleState(&self.term);
+    }
+
+    pub fn isAlive(self: *const TerminalPanel) bool {
+        return pty_api.isAlive(&self.term);
     }
 
     pub fn titleSlice(self: *const TerminalPanel) []const u8 {
@@ -268,5 +173,4 @@ pub const TerminalPanel = struct {
     pub fn resetFontSize(self: *TerminalPanel) bool {
         return font_size.reset(self);
     }
-
 };

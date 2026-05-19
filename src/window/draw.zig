@@ -1,4 +1,3 @@
-
 const Font = @import("../config/tab_bar.zig");
 const Layout = @import("layout.zig");
 
@@ -8,7 +7,7 @@ pub fn frame(comptime c: type, fb_w: c_int, fb_h: c_int, value: Layout.Frame) vo
 }
 
 pub fn tabBar(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: Layout.Frame) void {
-    const bar_h = @max(frame_value.texture_rect.y, 0);
+    const bar_h = @max(frame_value.term_texture_rect.y, 0);
     if (bar_h <= 0) return;
 
     drawSolidRect(c, fb_w, fb_h, 0, 0, fb_w, bar_h, 0.09, 0.11, 0.16, 1.0);

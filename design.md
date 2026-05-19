@@ -41,16 +41,16 @@ classDiagram
 
 ## Ownership Rules
 
-- `main.zig` owns app entry, app-owned config, tab lifecycle, and event-loop orchestration.
-- `src/terminal/terminal_panel.zig` owns one terminal panel boundary: input translation, focus, scrollbar interaction, tab label snapshot, and terminal runtime lifetime.
+- `main.zig` owns app entry, app-owned config, tab lifecycle, event-loop orchestration, and per-tab term-texture ownership.
+- `src/terminal/terminal_panel.zig` owns one terminal panel boundary: input translation, focus, scrollbar interaction, tab label snapshot, and terminal runtime lifetime. It does not own host term-texture state or GL upload.
 - `src/terminal/pty/` owns PTY transport calls and child/session lifecycle at the host seam.
 - `src/terminal/vt/` owns VT ABI calls, retained visible state, and host-side VT contract translation.
-- `src/terminal/render/` owns render ABI calls, frame layout sync, prepared-surface drive, and host-side backend upload/present contract translation.
+- `src/terminal/render/` owns render ABI calls, frame layout sync, prepared-surface drive, and contract translation between VT-surface input and render-surface output. It does not own host term-texture state.
 - `src/terminal/runtime/` owns the shared runtime aggregate state and the bounded host control spine that drives PTY, VT, and render work.
-- `main.zig` drives one explicit in-flight render-work query when deciding whether to wait, render, present, or wake again.
-- `Window` owns the OS window and host chrome presentation. It receives a texture handle; it does not infer terminal state.
+- `main.zig` drives one explicit in-flight render-work query when deciding whether to wait, render, present, or wake again. It also owns per-tab term-texture creation, upload, submit execution input, and present acknowledgment.
+- `Window` owns the OS window and host chrome presentation. It receives a term-texture handle; it does not infer terminal state.
 - `Input` owns input collection and queueing. Input payload types live under `src/input/`.
-- Hosts send events to PTY-facing owners, publish one VT surface snapshot, upload the render-owned prepared buffer into host graphics resources, present returned surfaces, and then acknowledge the rendered VT dirty generation. They do not mutate scrollback, VT dirty state, or render composition rules.
+- Hosts send events to PTY-facing owners, publish one VT-surface snapshot, upload the render-owned prepared buffer into host graphics resources, submit render-surface execution input using the host-owned term-texture, present that term-texture, and then acknowledge the rendered VT dirty generation. They do not mutate scrollback, VT dirty state, or render composition rules.
 
 ## Lifecycle
 
@@ -80,12 +80,13 @@ sequenceDiagram
     Main->>T: create(...)
     loop event loop
         Main->>I: poll/wait/drain
-        Main->>T: drainInput/resize/render
+        Main->>T: drainInput/resize
         T->>P: publish host input
-        T->>V: publish VT surface snapshot
-        T->>R: prepare / submit prepared surface
-        T-->>Main: snapshot(surface + metadata)
-        Main->>W: present(frame)
+        Main->>V: publish VT-surface snapshot
+        Main->>R: prepare render work
+        Main->>R: query prepared render-surface
+        Main->>W: upload term-texture / present(frame)
+        Main->>R: submit render-surface execution input
         Main->>V: acknowledge rendered dirty generation
     end
 ```
@@ -94,9 +95,10 @@ sequenceDiagram
 
 - `TerminalPanel.create` starts one terminal panel and hides seam-owner field construction from `main.zig`.
 - `TerminalPanel.destroy` is the matching lifetime close; app code must not manually deinit seam internals.
-- `TerminalPanel.snapshot` returns host chrome metadata and the current backend surface handle.
+- `TerminalPanel` does not own or export concrete backend resources.
+- `main.zig` owns per-tab term-texture state and uses the terminal/render ABIs to prepare, upload, submit, present, and acknowledge.
 - PTY, VT, and render seam owners are failure-aware. Recoverable backend failures return `false` or error unions and move lifecycle state to `failed`; host code should not panic from normal render or wake failure paths.
-- `Window.present` draws static host chrome and places the active terminal surface. It owns platform presentation only; it does not own terminal logic or render composition semantics.
+- `Window.present` draws static host chrome and places the active term-texture. It owns platform presentation only; it does not own terminal logic or render composition semantics.
 - VT dirty retirement is tied to the rendered base. The host acknowledges the dirty generation reported by the published VT surface only after present.
 
 ## Non-Goals

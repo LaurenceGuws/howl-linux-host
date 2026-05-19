@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const Window = @import("../window/window.zig");
 
@@ -6,6 +5,9 @@ pub const c_win = Window.c_win;
 const assert = std.debug.assert;
 
 var quit_requested = std.atomic.Value(bool).init(false);
+var wake_event_type: u32 = 0;
+var redraw_event_type: u32 = 0;
+var redraw_event_pending = std.atomic.Value(bool).init(false);
 var frame_trace_cached: enum { unknown, disabled, enabled } = .unknown;
 var progress_wait_logged = std.atomic.Value(bool).init(false);
 var progress_wake_logged = std.atomic.Value(bool).init(false);
@@ -25,6 +27,15 @@ pub const EventSignal = enum {
 
 pub fn clearQuitRequest() void {
     quit_requested.store(false, .release);
+    redraw_event_pending.store(false, .release);
+}
+
+pub fn initEventTypes() void {
+    if (wake_event_type != 0) return;
+    const event_base = c_win.SDL_RegisterEvents(2);
+    assert(event_base != std.math.maxInt(@TypeOf(event_base)));
+    wake_event_type = event_base;
+    redraw_event_type = event_base + 1;
 }
 
 pub fn quitRequested() bool {
@@ -121,6 +132,25 @@ pub fn requestQuit() void {
     wakeEventLoop();
 }
 
+pub fn requestRedraw() void {
+    if (redraw_event_pending.swap(true, .acq_rel)) return;
+    if (!pushEvent(redrawType())) {
+        redraw_event_pending.store(false, .release);
+    }
+}
+
+pub fn isWakeEventType(event_type: u32) bool {
+    return wake_event_type != 0 and event_type == wake_event_type;
+}
+
+pub fn isRedrawEventType(event_type: u32) bool {
+    return redraw_event_type != 0 and event_type == redraw_event_type;
+}
+
+pub fn ackRedrawEvent() void {
+    redraw_event_pending.store(false, .release);
+}
+
 pub fn startQuitTimer(duration_ms: ?u64) c_win.SDL_TimerID {
     if (duration_ms) |value| {
         assert(value <= std.math.maxInt(u32));
@@ -142,9 +172,7 @@ pub fn isQuitEventType(event_type: u32) bool {
 }
 
 pub fn wakeEventLoop() void {
-    var event: c_win.SDL_Event = std.mem.zeroes(c_win.SDL_Event);
-    event.type = c_win.SDL_EVENT_USER;
-    _ = c_win.SDL_PushEvent(&event);
+    _ = pushEvent(wakeType());
 }
 
 fn quitTimer(_: ?*anyopaque, _: c_win.SDL_TimerID, _: u32) callconv(.c) u32 {
@@ -152,4 +180,22 @@ fn quitTimer(_: ?*anyopaque, _: c_win.SDL_TimerID, _: u32) callconv(.c) u32 {
     event.type = c_win.SDL_EVENT_QUIT;
     _ = c_win.SDL_PushEvent(&event);
     return 0;
+}
+
+fn wakeType() u32 {
+    initEventTypes();
+    assert(wake_event_type != 0);
+    return wake_event_type;
+}
+
+fn redrawType() u32 {
+    initEventTypes();
+    assert(redraw_event_type != 0);
+    return redraw_event_type;
+}
+
+fn pushEvent(event_type: u32) bool {
+    var event: c_win.SDL_Event = std.mem.zeroes(c_win.SDL_Event);
+    event.type = event_type;
+    return c_win.SDL_PushEvent(&event);
 }

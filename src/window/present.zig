@@ -1,4 +1,3 @@
-
 const Draw = @import("draw.zig");
 const Layout = @import("layout.zig");
 const PerfLog = @import("../perf/log.zig");
@@ -35,25 +34,25 @@ pub fn flags(comptime c: type) c_uint {
 }
 
 pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
-        state.* = .{
-            .window = handle,
-            .gl_context = null,
-            .tab_texture_id = 0,
-            .tab_cache_valid = false,
-            .tab_cache_w = 0,
-            .tab_cache_h = 0,
-            .tab_cache_hash = 0,
-            .first_present_attempt_logged = false,
-            .first_present_logged = false,
-            .present_frames = 0,
-            .fps_window_start_ns = c.SDL_GetTicksNS(),
-            .fps_window_start_frame = 0,
-            .fps_next_log_frame = sdl_fps_log_every_frames,
-            .cache_window_ns = 0,
-            .draw_window_ns = 0,
-            .swap_window_ns = 0,
-            .total_window_ns = 0,
-        };
+    state.* = .{
+        .window = handle,
+        .gl_context = null,
+        .tab_texture_id = 0,
+        .tab_cache_valid = false,
+        .tab_cache_w = 0,
+        .tab_cache_h = 0,
+        .tab_cache_hash = 0,
+        .first_present_attempt_logged = false,
+        .first_present_logged = false,
+        .present_frames = 0,
+        .fps_window_start_ns = c.SDL_GetTicksNS(),
+        .fps_window_start_frame = 0,
+        .fps_next_log_frame = sdl_fps_log_every_frames,
+        .cache_window_ns = 0,
+        .draw_window_ns = 0,
+        .swap_window_ns = 0,
+        .total_window_ns = 0,
+    };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_PROFILE_MASK, c.SDL_GL_CONTEXT_PROFILE_COMPATIBILITY)) return error.GlAttrFailed;
@@ -87,16 +86,16 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     c.glViewport(0, 0, @max(fb_w, 1), @max(fb_h, 1));
     c.glClearColor(0.06, 0.09, 0.14, 1.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
-    drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.texture_rect.y);
-    Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.texture_id, frame.texture_rect.x, frame.texture_rect.y, frame.texture_rect.width, frame.texture_rect.height);
+    drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.term_texture_rect.y);
+    Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.term_texture_id, frame.term_texture_rect.x, frame.term_texture_rect.y, frame.term_texture_rect.width, frame.term_texture_rect.height);
     Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
     const before_swap_ns = c.SDL_GetTicksNS();
     if (!state.first_present_attempt_logged) {
         state.first_present_attempt_logged = true;
     }
-    if (!state.first_present_logged and frame.texture_id != 0) {
+    if (!state.first_present_logged and frame.term_texture_id != 0) {
         state.first_present_logged = true;
-        InputWindow.logStartupf("stage=term-present-first texture_id={d} rect_w={d} rect_h={d}", .{ frame.texture_id, frame.texture_rect.width, frame.texture_rect.height });
+        InputWindow.logStartupf("stage=term-present-first term_texture_id={d} rect_w={d} rect_h={d}", .{ frame.term_texture_id, frame.term_texture_rect.width, frame.term_texture_rect.height });
     }
     Texture.swapWindow(c, handle);
     const end_ns = c.SDL_GetTicksNS();
@@ -138,7 +137,7 @@ fn logSdlFps(comptime c: type, state: *State(c), force: bool) void {
 }
 
 fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {
-    const bar_h = @max(frame.texture_rect.y, 0);
+    const bar_h = @max(frame.term_texture_rect.y, 0);
     if (bar_h <= 0) {
         releaseTabCache(c, state);
         return;
@@ -201,7 +200,7 @@ fn setTextureParams(comptime c: type) void {
 
 fn hashTabBarState(frame: Layout.Frame) u64 {
     var hasher = std.hash.Wyhash.init(0);
-    hasher.update(std.mem.asBytes(&frame.texture_rect.y));
+    hasher.update(std.mem.asBytes(&frame.term_texture_rect.y));
     hasher.update(std.mem.asBytes(&frame.tab_count));
     hasher.update(std.mem.asBytes(&frame.active_tab));
     for (frame.tab_labels[0..@min(frame.tab_labels.len, frame.tab_count)]) |label| {
