@@ -56,14 +56,11 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
     std.debug.assert(visible.start <= visible.history_count + visible.rows);
 
     const damage_kind = sourceDamageKind(viewport_moved, term.vt_state.surface, term.vt_state.visible_damage);
-    const typed_response = term.render.flow.acceptSource(.{
+    const typed_response = term.render.flow.acceptSource(term.render.surface_text, .{
         .cols = visible.cols,
         .rows = visible.rows,
-        .scrollback_count = visible.history_count,
         .scrollback_offset = term.vt_state.scrollback_offset,
-        .focused = term.vt_state.focused,
         .snapshot_seq = term.vt_state.snapshot_seq,
-        .vt_epoch = term.vt_state.epoch,
         .last_alt_screen = visible.is_alternate_screen,
         .damage_kind = damage_kind,
     });
@@ -115,7 +112,7 @@ pub fn sourceRejected(term: *api.Term) render_flow.SourceResponse {
         .queued = false,
         .damage_kind = .none,
         .source_seq = term.vt_state.snapshot_seq,
-        .geometry_epoch = term.render.flow.surfaceQuery().epoch,
+        .geometry_epoch = term.render.flow.surfaceQuery(term.render.surface_text).epoch,
     };
 }
 

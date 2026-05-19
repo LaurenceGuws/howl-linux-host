@@ -91,7 +91,7 @@ pub fn initPty(
             .font_size_px = cell_px.height,
         },
     };
-    _ = term.render.flow.syncGeometry(.{
+    _ = term.render.flow.syncGeometry(term.render.surface_text, .{
         .render_px = initial_flow_surface_px,
         .grid_px = initial_flow_surface_px,
         .cell_px = initial_cell_px,

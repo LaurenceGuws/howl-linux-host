@@ -1,4 +1,5 @@
 const std = @import("std");
+const c = @import("../c.zig").c;
 
 pub const DamageKind = enum(u8) {
     none = 0,
@@ -41,11 +42,8 @@ pub const SurfaceQuery = extern struct {
 pub const SourceView = struct {
     cols: u16,
     rows: u16,
-    scrollback_count: u64,
     scrollback_offset: u64,
-    focused: bool,
     snapshot_seq: u64,
-    vt_epoch: u64,
     last_alt_screen: bool,
     damage_kind: DamageKind,
 };
@@ -62,793 +60,122 @@ pub const PendingState = struct {
     source_pending: bool,
     prepare_pending: bool,
     submit_pending: bool,
+    target_valid: bool,
 };
 
-pub const SnapshotToken = struct {
-    snapshot_seq: u64,
-    dirty_epoch: u64,
-    geometry_epoch: u64,
-    damage_base_seq: u64,
-    damage_kind: DamageKind,
-
-    pub fn requiresRetainedBase(self: SnapshotToken) bool {
-        return self.damage_kind == .partial;
-    }
-
-    pub fn isNewerThan(self: SnapshotToken, other: SnapshotToken) bool {
-        if (self.snapshot_seq != other.snapshot_seq) return self.snapshot_seq > other.snapshot_seq;
-        return self.dirty_epoch > other.dirty_epoch;
-    }
-};
-
-pub const PrepareRequest = extern struct {
-    snapshot_seq: u64,
-    dirty_epoch: u64,
-    geometry_epoch: u64,
-    damage_base_seq: u64,
-    known_target_epoch: u64,
-    damage_kind: u8,
-    reserved0: u8 = 0,
-    reserved1: u16 = 0,
-};
-
-pub const PreparedFrame = extern struct {
-    snapshot_seq: u64,
-    dirty_epoch: u64,
-    geometry_epoch: u64,
-    damage_base_seq: u64,
-    required_base_seq: u64,
-    required_target_epoch: u64,
-    damage_kind: u8,
-    reserved0: u8 = 0,
-    reserved1: u16 = 0,
-};
-
-pub const SubmittedFrame = struct {
-    token: SnapshotToken,
-    target_epoch: u64,
-    content_valid: bool,
-};
-
-pub const SubmitValidation = enum {
-    valid,
-    stale_geometry,
-    missing_retained_base,
-    stale_retained_base,
-    stale_target,
-};
-
-pub const FullPrepareReason = enum {
-    retained_base_missing,
-    retained_base_stale,
-    target_changed,
-    geometry_changed,
-};
+pub const PrepareRequest = c.HowlRenderPrepareRequest;
+pub const PreparedFrame = c.HowlRenderPreparedFrame;
+pub const Metrics = c.HowlRenderQueueMetrics;
 
 pub const SubmitDecision = union(enum) {
     submit: PreparedFrame,
-    stale: SnapshotToken,
-    needs_full_prepare: FullPrepareReason,
+    stale,
+    needs_full_prepare,
     idle,
 };
 
-pub const Metrics = struct {
-    snapshot_publishes: u64 = 0,
-    snapshot_hidden_drops: u64 = 0,
-    snapshot_clean_drops: u64 = 0,
-    prepare_requests: u64 = 0,
-    prepare_coalesces: u64 = 0,
-    prepare_forced_full: u64 = 0,
-    prepare_takes: u64 = 0,
-    prepared_publishes: u64 = 0,
-    prepared_coalesces: u64 = 0,
-    submit_takes: u64 = 0,
-    submit_valid: u64 = 0,
-    submit_rejected: u64 = 0,
-    full_prepare_requests: u64 = 0,
-    submitted_accepts: u64 = 0,
-    presents: u64 = 0,
-    target_invalidations: u64 = 0,
-};
-
-const Publication = struct {
-    cols: u16 = 0,
-    rows: u16 = 0,
-    scrollback_count: u64 = 0,
-    scrollback_offset: u64 = 0,
-    focused: bool = true,
-    snapshot_seq: u64 = 0,
-    vt_epoch: u64 = 0,
-    last_alt_screen: bool = false,
-    damage_kind: DamageKind = .none,
-
-    fn copyFrom(self: *Publication, source: SourceView, damage_kind: DamageKind) void {
-        self.cols = source.cols;
-        self.rows = source.rows;
-        self.scrollback_count = source.scrollback_count;
-        self.scrollback_offset = source.scrollback_offset;
-        self.focused = source.focused;
-        self.snapshot_seq = source.snapshot_seq;
-        self.vt_epoch = source.vt_epoch;
-        self.last_alt_screen = source.last_alt_screen;
-        self.damage_kind = damage_kind;
-    }
-};
-
-const PublicationState = struct {
-    publication: ?Publication = null,
-    pending: bool = false,
-
-    fn acceptSource(self: *PublicationState, source: SourceView, geometry_epoch: u64) SourceResponse {
-        const damage_kind = self.classify(source);
-        const published = damage_kind != .none;
-        if (published) {
-            if (self.publication == null) self.publication = .{};
-            self.publication.?.copyFrom(source, damage_kind);
-            self.pending = true;
-        }
-        return .{
-            .published = published,
-            .queued = self.pending,
-            .damage_kind = damage_kind,
-            .source_seq = source.snapshot_seq,
-            .geometry_epoch = geometry_epoch,
-        };
-    }
-
-    fn takePendingToken(self: *PublicationState, geometry_epoch: u64, submitted_token: ?SnapshotToken) ?SnapshotToken {
-        if (!self.pending) return null;
-        const publication = self.publication orelse return null;
-        self.pending = false;
-        return .{
-            .snapshot_seq = publication.snapshot_seq,
-            .dirty_epoch = publication.snapshot_seq,
-            .geometry_epoch = geometry_epoch,
-            .damage_base_seq = if (submitted_token) |token| token.snapshot_seq else 0,
-            .damage_kind = publication.damage_kind,
-        };
-    }
-
-    fn classify(self: *const PublicationState, source: SourceView) DamageKind {
-        const prior = self.publication orelse return source.damage_kind;
-        if (source.snapshot_seq == prior.snapshot_seq) return .none;
-        if (source.cols != prior.cols or source.rows != prior.rows) return .full;
-        if (source.last_alt_screen != prior.last_alt_screen) return .full;
-        if (source.scrollback_offset != prior.scrollback_offset) return .full;
-        return source.damage_kind;
-    }
-};
-
-const ThreadMutex = struct {
-    state: std.Io.Mutex = .init,
-
-    fn unlock(self: *ThreadMutex) void {
-        std.Io.Threaded.mutexUnlock(&self.state);
-    }
-};
-
-fn lockMutex(mutex: *ThreadMutex) void {
-    std.Io.Threaded.mutexLock(&mutex.state);
-}
-
-fn LatestMailbox(comptime T: type) type {
-    return struct {
-        const Self = @This();
-        const Envelope = struct { sequence: u64, item: T };
-        mutex: ThreadMutex = .{},
-        sequence: u64 = 0,
-        item: ?T = null,
-
-        fn publish(self: *Self, item: T) u64 {
-            lockMutex(&self.mutex);
-            defer self.mutex.unlock();
-            self.sequence +%= 1;
-            self.item = item;
-            return self.sequence;
-        }
-
-        fn takeLatest(self: *Self) ?Envelope {
-            lockMutex(&self.mutex);
-            defer self.mutex.unlock();
-            const item = self.item orelse return null;
-            self.item = null;
-            return .{ .sequence = self.sequence, .item = item };
-        }
-
-        fn hasPending(self: *Self) bool {
-            lockMutex(&self.mutex);
-            defer self.mutex.unlock();
-            return self.item != null;
-        }
-
-        fn dropAtOrBefore(self: *Self, token: SnapshotToken) void {
-            lockMutex(&self.mutex);
-            defer self.mutex.unlock();
-            const item = self.item orelse return;
-            const item_token: SnapshotToken = if (T == PrepareRequest)
-                tokenFromPrepareRequest(item)
-            else if (T == PreparedFrame)
-                tokenFromPreparedFrame(item)
-            else if (T == SnapshotToken)
-                item
-            else
-                @compileError("unsupported mailbox item");
-            if (!item_token.isNewerThan(token)) self.item = null;
-        }
-    };
-}
-
-const TerminalSurface = struct {
-    const PrepareMailbox = LatestMailbox(PrepareRequest);
-    const SubmitMailbox = LatestMailbox(PreparedFrame);
-
-    mutex: ThreadMutex = .{},
-    prepare_mailbox: PrepareMailbox = .{},
-    submit_mailbox: SubmitMailbox = .{},
-    latest_token: ?SnapshotToken = null,
-    submitted_frame: ?SubmittedFrame = null,
-    presented_token: ?SnapshotToken = null,
-    target_epoch: u64 = 0,
-    visible: bool = true,
-    metrics: Metrics = .{},
-
-    fn bindTargetEpoch(self: *TerminalSurface, target_epoch: u64) void {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        if (self.target_epoch == target_epoch) return;
-        self.target_epoch = target_epoch;
-        if (self.submitted_frame) |*frame| frame.content_valid = false;
-        self.metrics.target_invalidations +%= 1;
-    }
-
-    fn publishSnapshot(self: *TerminalSurface, token: SnapshotToken) void {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        self.latest_token = token;
-        self.metrics.snapshot_publishes +%= 1;
-        if (!self.visible) {
-            self.metrics.snapshot_hidden_drops +%= 1;
-            return;
-        }
-        if (token.damage_kind == .none) {
-            self.metrics.snapshot_clean_drops +%= 1;
-            return;
-        }
-        const effective_token = self.prepareTokenForCurrentRetainedState(token);
-        if (effective_token.damage_kind == .full and token.damage_kind != .full) self.metrics.prepare_forced_full +%= 1;
-        if (self.prepare_mailbox.hasPending()) self.metrics.prepare_coalesces +%= 1;
-        self.metrics.prepare_requests +%= 1;
-        _ = self.prepare_mailbox.publish(prepareRequestFromToken(effective_token, self.target_epoch));
-    }
-
-    fn takePrepare(self: *TerminalSurface) ?PrepareRequest {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        const envelope = self.prepare_mailbox.takeLatest() orelse return null;
-        self.metrics.prepare_takes +%= 1;
-        return envelope.item;
-    }
-
-    fn publishPrepared(self: *TerminalSurface, prepared: PreparedFrame) void {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        if (self.submit_mailbox.hasPending()) self.metrics.prepared_coalesces +%= 1;
-        self.metrics.prepared_publishes +%= 1;
-        _ = self.submit_mailbox.publish(prepared);
-    }
-
-    fn takeSubmit(self: *TerminalSurface) SubmitDecision {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        const envelope = self.submit_mailbox.takeLatest() orelse return .idle;
-        self.metrics.submit_takes +%= 1;
-        const prepared = envelope.item;
-        if (self.latest_token) |latest| {
-            if (latest.isNewerThan(tokenFromPreparedFrame(prepared))) return .{ .stale = tokenFromPreparedFrame(prepared) };
-        }
-        const validation = validatePrepared(prepared, self.submitted_frame);
-        if (validation == .valid) {
-            self.metrics.submit_valid +%= 1;
-            return .{ .submit = prepared };
-        }
-        self.metrics.submit_rejected +%= 1;
-        return .{ .needs_full_prepare = fullPrepareReason(validation) };
-    }
-
-    fn requestFullPrepare(self: *TerminalSurface, fallback: SnapshotToken) void {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        if (!self.visible) return;
-        const latest = self.latest_token orelse fallback;
-        const token = forceFull(latest);
-        if (self.prepare_mailbox.hasPending()) self.metrics.prepare_coalesces +%= 1;
-        self.metrics.full_prepare_requests +%= 1;
-        self.metrics.prepare_requests +%= 1;
-        _ = self.prepare_mailbox.publish(prepareRequestFromToken(token, self.target_epoch));
-    }
-
-    fn acceptSubmitted(self: *TerminalSurface, frame: SubmittedFrame) void {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        self.submitted_frame = frame;
-        self.target_epoch = frame.target_epoch;
-        self.prepare_mailbox.dropAtOrBefore(frame.token);
-        self.metrics.submitted_accepts +%= 1;
-    }
-
-    fn markPresented(self: *TerminalSurface) void {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        if (self.submitted_frame) |frame| {
-            self.presented_token = frame.token;
-            self.metrics.presents +%= 1;
-        }
-    }
-
-    fn submittedToken(self: *const TerminalSurface) ?SnapshotToken {
-        const mut: *TerminalSurface = @constCast(self);
-        lockMutex(&mut.mutex);
-        defer mut.mutex.unlock();
-        return if (self.submitted_frame) |frame| frame.token else null;
-    }
-
-    fn pendingState(self: *const TerminalSurface) PendingState {
-        const mut: *TerminalSurface = @constCast(self);
-        lockMutex(&mut.mutex);
-        defer mut.mutex.unlock();
-        return .{
-            .source_pending = false,
-            .prepare_pending = mut.prepare_mailbox.hasPending(),
-            .submit_pending = mut.submit_mailbox.hasPending(),
-        };
-    }
-
-    fn takeMetrics(self: *TerminalSurface) Metrics {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        const out = self.metrics;
-        self.metrics = .{};
-        return out;
-    }
-
-    fn resetMetrics(self: *TerminalSurface) void {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        self.metrics = .{};
-    }
-
-    fn prepareTokenForCurrentRetainedState(self: *const TerminalSurface, token: SnapshotToken) SnapshotToken {
-        if (!token.requiresRetainedBase()) return token;
-        const submitted = self.submitted_frame orelse return forceFull(token);
-        if (!submitted.content_valid) return forceFull(token);
-        if (submitted.token.geometry_epoch != token.geometry_epoch) return forceFull(token);
-        if (submitted.token.snapshot_seq != token.damage_base_seq) return forceFull(token);
-        return token;
-    }
-};
-
 pub const Flow = struct {
-    surface: TerminalSurface = .{},
-    render_px: PixelSize = .{ .width = 0, .height = 0 },
-    grid_px: PixelSize = .{ .width = 0, .height = 0 },
-    cell_px: CellSize = .{ .width = 0, .height = 0 },
-    font_size_px: u16 = 1,
-    geometry_epoch: u64 = 0,
-    publication_state: PublicationState = .{},
-
-    pub fn setFontSizePx(self: *Flow, font_size_px: u16) void {
-        self.font_size_px = @max(font_size_px, 1);
-    }
-
-    pub fn acceptSource(self: *Flow, source: SourceView) SourceResponse {
-        std.debug.assert(source.cols > 0);
-        std.debug.assert(source.rows > 0);
-        std.debug.assert(source.scrollback_offset <= source.scrollback_count);
-        return self.publication_state.acceptSource(source, self.geometry_epoch);
-    }
-
-    pub fn syncGeometry(self: *Flow, layout: Geometry) GeometryResponse {
-        const changed = self.geometry_epoch == 0 or
-            self.render_px.width != layout.render_px.width or
-            self.render_px.height != layout.render_px.height or
-            self.grid_px.width != layout.grid_px.width or
-            self.grid_px.height != layout.grid_px.height or
-            self.cell_px.width != layout.cell_px.width or
-            self.cell_px.height != layout.cell_px.height;
-        if (changed) {
-            self.geometry_epoch +%= 1;
-            self.render_px = layout.render_px;
-            self.grid_px = layout.grid_px;
-            self.cell_px = layout.cell_px;
-            self.surface.bindTargetEpoch(self.geometry_epoch);
-        }
-        return .{ .changed = changed, .render_px = self.render_px, .grid_px = self.grid_px, .cell_px = self.cell_px, .geometry_epoch = self.geometry_epoch };
-    }
-
-    pub fn prepare(self: *Flow) ?PrepareRequest {
-        if (self.publication_state.takePendingToken(self.geometry_epoch, self.surface.submittedToken())) |token| self.surface.publishSnapshot(token);
-        return self.surface.takePrepare();
-    }
-
-    pub fn publishPrepared(self: *Flow, prepared: PreparedFrame) void {
-        self.surface.publishPrepared(prepared);
-    }
-
-    pub fn submit(self: *Flow) SubmitDecision {
-        return switch (self.surface.takeSubmit()) {
-            .idle => .idle,
-            .stale => |token| .{ .stale = token },
-            .submit => |prepared| .{ .submit = prepared },
-            .needs_full_prepare => |reason| blk: {
-                if (self.publication_state.publication) |publication| {
-                    self.surface.requestFullPrepare(.{
-                        .snapshot_seq = publication.snapshot_seq,
-                        .dirty_epoch = publication.snapshot_seq,
-                        .geometry_epoch = self.geometry_epoch,
-                        .damage_base_seq = 0,
-                        .damage_kind = .full,
-                    });
-                }
-                break :blk .{ .needs_full_prepare = reason };
-            },
+    pub fn acceptSource(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle, source: SourceView) SourceResponse {
+        const response = c.howl_render_surface_text_publish_vt_snapshot(surface_text, sourceViewIn(source));
+        std.debug.assert(response.status == c.HOWL_RENDER_CALL_OK);
+        return .{
+            .published = response.published != 0,
+            .queued = response.queued != 0,
+            .damage_kind = @enumFromInt(response.damage_kind),
+            .source_seq = response.snapshot_seq,
+            .geometry_epoch = response.geometry_epoch,
         };
     }
 
-    pub fn requestFullPrepare(self: *Flow, token: SnapshotToken) void {
-        self.surface.requestFullPrepare(token);
+    pub fn syncGeometry(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle, geometry: Geometry) GeometryResponse {
+        const response = c.howl_render_surface_text_sync_geometry(surface_text, geometryIn(geometry));
+        std.debug.assert(response.status == c.HOWL_RENDER_CALL_OK);
+        return .{
+            .changed = response.changed != 0,
+            .render_px = .{ .width = response.render_px.width, .height = response.render_px.height },
+            .grid_px = .{ .width = response.grid_px.width, .height = response.grid_px.height },
+            .cell_px = .{ .width = response.cell_px.width, .height = response.cell_px.height },
+            .geometry_epoch = response.geometry_epoch,
+        };
     }
 
-    pub fn acceptSubmitted(self: *Flow, frame: SubmittedFrame) void {
-        if (frame.token.geometry_epoch != self.geometry_epoch) {
-            self.surface.requestFullPrepare(frame.token);
-            return;
-        }
-        self.surface.acceptSubmitted(frame);
+    pub fn prepare(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle) ?PrepareRequest {
+        var request = std.mem.zeroes(PrepareRequest);
+        return switch (c.howl_render_surface_text_take_prepare_request(surface_text, &request)) {
+            c.HOWL_RENDER_PREPARE_IDLE => null,
+            c.HOWL_RENDER_PREPARE_READY => request,
+            else => null,
+        };
     }
 
-    pub fn markPresented(self: *Flow) void {
-        self.surface.markPresented();
+    pub fn publishPrepared(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle, prepared: PreparedFrame) void {
+        std.debug.assert(c.howl_render_surface_text_publish_prepared(surface_text, prepared) == c.HOWL_RENDER_CALL_OK);
     }
 
-    pub fn surfaceQuery(self: *const Flow) SurfaceQuery {
-        return .{ .render_px = self.render_px, .grid_px = self.grid_px, .cell_px = self.cell_px, .font_size_px = self.font_size_px, .epoch = self.geometry_epoch };
+    pub fn submit(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle) SubmitDecision {
+        var prepared = std.mem.zeroes(PreparedFrame);
+        return switch (c.howl_render_surface_text_take_submit_decision(surface_text, &prepared)) {
+            c.HOWL_RENDER_SUBMIT_DECISION_IDLE => .idle,
+            c.HOWL_RENDER_SUBMIT_DECISION_SUBMIT => .{ .submit = prepared },
+            c.HOWL_RENDER_SUBMIT_DECISION_STALE => .stale,
+            c.HOWL_RENDER_SUBMIT_DECISION_NEEDS_PREPARE => .needs_full_prepare,
+            else => .idle,
+        };
     }
 
-    pub fn pendingState(self: *const Flow) PendingState {
-        var pending = self.surface.pendingState();
-        pending.source_pending = self.publication_state.pending;
-        return pending;
+    pub fn acceptSubmitted(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle, prepared: PreparedFrame, surface: c.HowlRenderSurfaceHandle, content_valid: bool) void {
+        std.debug.assert(c.howl_render_surface_text_accept_submitted(surface_text, prepared, surface, @intFromBool(content_valid)) == c.HOWL_RENDER_CALL_OK);
     }
 
-    pub fn targetValid(self: *const Flow) bool {
-        return if (self.surface.submitted_frame) |frame| frame.content_valid else false;
+    pub fn markPresented(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle) void {
+        c.howl_render_surface_text_mark_presented(surface_text);
     }
 
-    pub fn takeMetrics(self: *Flow) Metrics {
-        return self.surface.takeMetrics();
+    pub fn pendingState(_: *const Flow, surface_text: c.HowlRenderSurfaceTextHandle) PendingState {
+        var pending = std.mem.zeroes(c.HowlRenderPendingState);
+        std.debug.assert(c.howl_render_surface_text_pending_state(surface_text, &pending) == c.HOWL_RENDER_CALL_OK);
+        return .{
+            .source_pending = pending.source_pending != 0,
+            .prepare_pending = pending.prepare_pending != 0,
+            .submit_pending = pending.submit_pending != 0,
+            .target_valid = pending.target_valid != 0,
+        };
     }
 
-    pub fn resetMetrics(self: *Flow) void {
-        self.surface.resetMetrics();
+    pub fn surfaceQuery(_: *const Flow, surface_text: c.HowlRenderSurfaceTextHandle) SurfaceQuery {
+        const query = c.howl_render_surface_text_surface_query(surface_text);
+        std.debug.assert(query.status == c.HOWL_RENDER_CALL_OK);
+        return .{
+            .render_px = .{ .width = query.render_px.width, .height = query.render_px.height },
+            .grid_px = .{ .width = query.grid_px.width, .height = query.grid_px.height },
+            .cell_px = .{ .width = query.cell_px.width, .height = query.cell_px.height },
+            .font_size_px = query.font_size_px,
+            .epoch = query.epoch,
+        };
+    }
+
+    pub fn takeMetrics(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle) Metrics {
+        var metrics = std.mem.zeroes(Metrics);
+        std.debug.assert(c.howl_render_surface_text_take_queue_metrics(surface_text, &metrics) == c.HOWL_RENDER_CALL_OK);
+        return metrics;
     }
 };
 
-pub fn prepareRequestFromToken(token: SnapshotToken, known_target_epoch: u64) PrepareRequest {
+fn geometryIn(value: Geometry) c.HowlRenderGeometry {
     return .{
-        .snapshot_seq = token.snapshot_seq,
-        .dirty_epoch = token.dirty_epoch,
-        .geometry_epoch = token.geometry_epoch,
-        .damage_base_seq = token.damage_base_seq,
-        .known_target_epoch = known_target_epoch,
-        .damage_kind = @intFromEnum(token.damage_kind),
+        .render_px = .{ .width = value.render_px.width, .height = value.render_px.height },
+        .grid_px = .{ .width = value.grid_px.width, .height = value.grid_px.height },
+        .cell_px = .{ .width = value.cell_px.width, .height = value.cell_px.height },
     };
 }
 
-pub fn preparedFrameFromToken(token: SnapshotToken, required_base_seq: u64, required_target_epoch: u64) PreparedFrame {
+fn sourceViewIn(value: SourceView) c.HowlRenderVtSnapshot {
     return .{
-        .snapshot_seq = token.snapshot_seq,
-        .dirty_epoch = token.dirty_epoch,
-        .geometry_epoch = token.geometry_epoch,
-        .damage_base_seq = token.damage_base_seq,
-        .required_base_seq = required_base_seq,
-        .required_target_epoch = required_target_epoch,
-        .damage_kind = @intFromEnum(token.damage_kind),
+        .cols = value.cols,
+        .rows = value.rows,
+        .is_alternate_screen = @intFromBool(value.last_alt_screen),
+        .damage_kind = @intFromEnum(value.damage_kind),
+        .scrollback_offset = value.scrollback_offset,
+        .snapshot_seq = value.snapshot_seq,
     };
-}
-
-pub fn tokenFromPrepareRequest(request: PrepareRequest) SnapshotToken {
-    return .{
-        .snapshot_seq = request.snapshot_seq,
-        .dirty_epoch = request.dirty_epoch,
-        .geometry_epoch = request.geometry_epoch,
-        .damage_base_seq = request.damage_base_seq,
-        .damage_kind = @enumFromInt(request.damage_kind),
-    };
-}
-
-pub fn tokenFromPreparedFrame(frame: PreparedFrame) SnapshotToken {
-    return .{
-        .snapshot_seq = frame.snapshot_seq,
-        .dirty_epoch = frame.dirty_epoch,
-        .geometry_epoch = frame.geometry_epoch,
-        .damage_base_seq = frame.damage_base_seq,
-        .damage_kind = @enumFromInt(frame.damage_kind),
-    };
-}
-
-fn validatePrepared(prepared: PreparedFrame, submitted: ?SubmittedFrame) SubmitValidation {
-    if (!tokenFromPreparedFrame(prepared).requiresRetainedBase()) return .valid;
-    const current = submitted orelse return .missing_retained_base;
-    if (prepared.geometry_epoch != current.token.geometry_epoch) return .stale_geometry;
-    if (!current.content_valid) return .missing_retained_base;
-    if (prepared.required_base_seq != current.token.snapshot_seq) return .stale_retained_base;
-    if (prepared.required_target_epoch != 0 and prepared.required_target_epoch != current.target_epoch) return .stale_target;
-    return .valid;
-}
-
-fn fullPrepareReason(validation: SubmitValidation) FullPrepareReason {
-    return switch (validation) {
-        .missing_retained_base => .retained_base_missing,
-        .stale_retained_base => .retained_base_stale,
-        .stale_target => .target_changed,
-        .stale_geometry => .geometry_changed,
-        .valid => unreachable,
-    };
-}
-
-fn forceFull(token: SnapshotToken) SnapshotToken {
-    return .{
-        .snapshot_seq = token.snapshot_seq,
-        .dirty_epoch = token.dirty_epoch,
-        .geometry_epoch = token.geometry_epoch,
-        .damage_base_seq = 0,
-        .damage_kind = .full,
-    };
-}
-
-test "render flow keeps newer source pending while submit is in flight" {
-    var flow: Flow = .{};
-    _ = flow.syncGeometry(.{
-        .render_px = .{ .width = 10, .height = 10 },
-        .grid_px = .{ .width = 10, .height = 10 },
-        .cell_px = .{ .width = 1, .height = 1 },
-    });
-
-    const first = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 0,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 1,
-        .vt_epoch = 1,
-        .last_alt_screen = false,
-        .damage_kind = .full,
-    });
-    try std.testing.expect(first.published);
-    const prepare_request = flow.prepare().?;
-    flow.publishPrepared(preparedFrameFromToken(tokenFromPrepareRequest(prepare_request), 0, 0));
-
-    const second = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 1,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 2,
-        .vt_epoch = 2,
-        .last_alt_screen = false,
-        .damage_kind = .partial,
-    });
-    try std.testing.expect(second.published);
-    try std.testing.expect(flow.pendingState().source_pending);
-
-    const submit = flow.submit();
-    try std.testing.expect(submit == .submit);
-    flow.acceptSubmitted(.{
-        .token = tokenFromPreparedFrame(submit.submit),
-        .target_epoch = 1,
-        .content_valid = true,
-    });
-    flow.markPresented();
-
-    const next_prepare = flow.prepare().?;
-    try std.testing.expectEqual(@as(u64, 2), next_prepare.snapshot_seq);
-}
-
-test "render flow does not treat unpresented submit as idle" {
-    var flow: Flow = .{};
-    _ = flow.syncGeometry(.{
-        .render_px = .{ .width = 10, .height = 10 },
-        .grid_px = .{ .width = 10, .height = 10 },
-        .cell_px = .{ .width = 1, .height = 1 },
-    });
-    _ = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 0,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 1,
-        .vt_epoch = 1,
-        .last_alt_screen = false,
-        .damage_kind = .full,
-    });
-    const prepare_request = flow.prepare().?;
-    flow.publishPrepared(preparedFrameFromToken(tokenFromPrepareRequest(prepare_request), 0, 0));
-    const submit = flow.submit();
-    try std.testing.expect(submit == .submit);
-    try std.testing.expect(flow.pendingState().submit_pending == false);
-    flow.acceptSubmitted(.{
-        .token = tokenFromPreparedFrame(submit.submit),
-        .target_epoch = 1,
-        .content_valid = true,
-    });
-    try std.testing.expect(flow.targetValid());
-}
-
-test "render flow preserves partial source damage" {
-    var flow: Flow = .{};
-    _ = flow.syncGeometry(.{
-        .render_px = .{ .width = 10, .height = 10 },
-        .grid_px = .{ .width = 10, .height = 10 },
-        .cell_px = .{ .width = 1, .height = 1 },
-    });
-    _ = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 0,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 1,
-        .vt_epoch = 1,
-        .last_alt_screen = false,
-        .damage_kind = .full,
-    });
-    _ = flow.prepare();
-    const second = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 0,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 2,
-        .vt_epoch = 2,
-        .last_alt_screen = false,
-        .damage_kind = .partial,
-    });
-    try std.testing.expectEqual(DamageKind.partial, second.damage_kind);
-}
-
-test "render flow preserves partial source damage while prior source is still pending" {
-    var flow: Flow = .{};
-    _ = flow.syncGeometry(.{
-        .render_px = .{ .width = 10, .height = 10 },
-        .grid_px = .{ .width = 10, .height = 10 },
-        .cell_px = .{ .width = 1, .height = 1 },
-    });
-    _ = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 0,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 1,
-        .vt_epoch = 1,
-        .last_alt_screen = false,
-        .damage_kind = .full,
-    });
-    const second = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 0,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 2,
-        .vt_epoch = 2,
-        .last_alt_screen = false,
-        .damage_kind = .partial,
-    });
-    try std.testing.expect(second.published);
-    try std.testing.expectEqual(DamageKind.partial, second.damage_kind);
-}
-
-test "render flow preserves partial source damage when history grows" {
-    var flow: Flow = .{};
-    _ = flow.syncGeometry(.{
-        .render_px = .{ .width = 10, .height = 10 },
-        .grid_px = .{ .width = 10, .height = 10 },
-        .cell_px = .{ .width = 1, .height = 1 },
-    });
-    _ = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 0,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 1,
-        .vt_epoch = 1,
-        .last_alt_screen = false,
-        .damage_kind = .full,
-    });
-    _ = flow.prepare();
-    const second = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 1,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 2,
-        .vt_epoch = 2,
-        .last_alt_screen = false,
-        .damage_kind = .partial,
-    });
-    try std.testing.expectEqual(DamageKind.partial, second.damage_kind);
-}
-
-test "render flow forces full on viewport offset change" {
-    var flow: Flow = .{};
-    _ = flow.syncGeometry(.{
-        .render_px = .{ .width = 10, .height = 10 },
-        .grid_px = .{ .width = 10, .height = 10 },
-        .cell_px = .{ .width = 1, .height = 1 },
-    });
-    _ = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 4,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 1,
-        .vt_epoch = 1,
-        .last_alt_screen = false,
-        .damage_kind = .full,
-    });
-    _ = flow.prepare();
-    const second = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 4,
-        .scrollback_offset = 1,
-        .focused = true,
-        .snapshot_seq = 2,
-        .vt_epoch = 2,
-        .last_alt_screen = false,
-        .damage_kind = .partial,
-    });
-    try std.testing.expectEqual(DamageKind.full, second.damage_kind);
-}
-
-test "render flow drops clean source" {
-    var flow: Flow = .{};
-    _ = flow.syncGeometry(.{
-        .render_px = .{ .width = 10, .height = 10 },
-        .grid_px = .{ .width = 10, .height = 10 },
-        .cell_px = .{ .width = 1, .height = 1 },
-    });
-    _ = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 0,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 1,
-        .vt_epoch = 1,
-        .last_alt_screen = false,
-        .damage_kind = .full,
-    });
-    _ = flow.prepare();
-    const second = flow.acceptSource(.{
-        .cols = 10,
-        .rows = 10,
-        .scrollback_count = 0,
-        .scrollback_offset = 0,
-        .focused = true,
-        .snapshot_seq = 2,
-        .vt_epoch = 2,
-        .last_alt_screen = false,
-        .damage_kind = .none,
-    });
-    try std.testing.expect(!second.published);
-    try std.testing.expectEqual(DamageKind.none, second.damage_kind);
 }

@@ -51,7 +51,6 @@ pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
     defer term.mutex.unlock();
     term.render.font_size_px = font_size_px;
     _ = c.howl_render_surface_text_set_font_size_px(term.render.surface_text, font_size_px);
-    term.render.flow.setFontSizePx(font_size_px);
 }
 
 pub fn setPrimaryFontPath(term: *Term, font_path: ?[:0]const u8) void {
@@ -139,7 +138,7 @@ pub fn syncFrameLayout(term: *Term, frame_layout: FrameLayout) !void {
         term.vt_state.epoch +%= 1;
         vt_abi.noteVisibleChange(term);
     }
-    _ = term.render.flow.syncGeometry(.{
+    _ = term.render.flow.syncGeometry(term.render.surface_text, .{
         .render_px = frame_layout.render_px,
         .grid_px = frame_layout.grid_px,
         .cell_px = .{ .width = cell_px.width, .height = cell_px.height },
@@ -164,7 +163,7 @@ pub fn renderWorkState(term: *const Term, bootstrap_surface: bool) RenderWorkSta
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    const pending = term.render.flow.pendingState();
+    const pending = term.render.flow.pendingState(term.render.surface_text);
     return .{
         .phase = term.render.phase,
         .source_pending = pending.source_pending,
@@ -211,11 +210,11 @@ pub fn surfaceQuery(term: *const Term) flow.SurfaceQuery {
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return term.render.flow.surfaceQuery();
+    return term.render.flow.surfaceQuery(term.render.surface_text);
 }
 
 pub fn takeRenderMetrics(term: *Term) RenderMetrics {
-    return term.render.flow.takeMetrics();
+    return term.render.flow.takeMetrics(term.render.surface_text);
 }
 
 pub fn takeRenderPerf(term: *Term) RenderPerf {

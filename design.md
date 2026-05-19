@@ -45,12 +45,20 @@ classDiagram
 - `src/terminal/terminal_panel.zig` owns one terminal panel boundary: input translation, focus, scrollbar interaction, tab label snapshot, and terminal runtime lifetime. It does not own host term-texture state or GL upload.
 - `src/terminal/pty/` owns PTY transport calls and child/session lifecycle at the host seam.
 - `src/terminal/vt/` owns VT ABI calls, retained visible state, and host-side VT contract translation.
-- `src/terminal/render/` owns render ABI calls, frame layout sync, prepared-surface drive, and contract translation between VT-surface input and render-surface output. It does not own host term-texture state.
+- `src/terminal/render/` owns render ABI calls, frame layout sync, prepared-surface drive, and
+  contract translation between VT-surface input and render-surface output. Retained render queue
+  state, geometry epoch/query state, VT snapshot publication classification, submit validation, and
+  present retirement belong to `howl-render`; the host consumes those steps through the render C
+  ABI. Host render code does not own host term-texture state.
 - `src/terminal/runtime/` owns the shared runtime aggregate state and the bounded host control spine that drives PTY, VT, and render work.
 - `main.zig` drives one explicit in-flight render-work query when deciding whether to wait, render, present, or wake again. It also owns per-tab term-texture creation, upload, submit execution input, and present acknowledgment.
 - `Window` owns the OS window and host chrome presentation. It receives a term-texture handle; it does not infer terminal state.
 - `Input` owns input collection and queueing. Input payload types live under `src/input/`.
-- Hosts send events to PTY-facing owners, publish one VT-surface snapshot, upload the render-owned prepared buffer into host graphics resources, submit render-surface execution input using the host-owned term-texture, present that term-texture, and then acknowledge the rendered VT dirty generation. They do not mutate scrollback, VT dirty state, or render composition rules.
+- Hosts send events to PTY-facing owners, sync render geometry, publish VT snapshot metadata into
+  the render owner, upload the render-owned prepared buffer into host graphics resources, submit
+  render-surface execution input using the host-owned term-texture, present that term-texture, and
+  then acknowledge the rendered VT dirty generation. They do not mutate scrollback, VT dirty state,
+  or render composition rules.
 
 ## Lifecycle
 
