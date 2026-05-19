@@ -151,11 +151,10 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
     defer unlockFile();
     if (c.fprintf(
         file,
-        "{\"type\":\"thread_cpu\",\"schema\":1,\"mono_ns\":%llu,\"elapsed_ns\":%llu,\"render\":{\"snapshot_publishes\":%llu,\"snapshot_hidden_drops\":%llu,\"snapshot_clean_drops\":%llu,\"prepare_requests\":%llu,\"prepare_coalesces\":%llu,\"prepare_forced_full\":%llu,\"prepare_takes\":%llu,\"prepared_publishes\":%llu,\"prepared_coalesces\":%llu,\"submit_takes\":%llu,\"submit_valid\":%llu,\"submit_rejected\":%llu,\"full_prepare_requests\":%llu,\"submitted_accepts\":%llu,\"presents\":%llu,\"target_invalidations\":%llu},\"threads\":[",
+        "{\"type\":\"thread_cpu\",\"schema\":1,\"mono_ns\":%llu,\"elapsed_ns\":%llu,\"render\":{\"snapshot_publishes\":%llu,\"snapshot_clean_drops\":%llu,\"prepare_requests\":%llu,\"prepare_coalesces\":%llu,\"prepare_forced_full\":%llu,\"prepare_takes\":%llu,\"prepared_publishes\":%llu,\"prepared_coalesces\":%llu,\"submit_takes\":%llu,\"submit_valid\":%llu,\"submit_rejected\":%llu,\"full_prepare_requests\":%llu,\"submitted_accepts\":%llu,\"presents\":%llu,\"target_invalidations\":%llu},\"threads\":[",
         @as(c_ulonglong, now_ns),
         @as(c_ulonglong, elapsed_ns),
         @as(c_ulonglong, render_metrics.snapshot_publishes),
-        @as(c_ulonglong, render_metrics.snapshot_hidden_drops),
         @as(c_ulonglong, render_metrics.snapshot_clean_drops),
         @as(c_ulonglong, render_metrics.prepare_requests),
         @as(c_ulonglong, render_metrics.prepare_coalesces),
