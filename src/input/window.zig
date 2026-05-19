@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Window = @import("../window/window.zig");
 
 pub const c_win = Window.c_win;
@@ -47,6 +48,7 @@ pub fn nowNs() u64 {
 }
 
 pub fn logf(comptime fmt: []const u8, args: anytype) void {
+    if (builtin.is_test) return;
     std.debug.print(fmt ++ "\n", args);
 }
 
