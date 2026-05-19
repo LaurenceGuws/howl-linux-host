@@ -144,13 +144,6 @@ pub fn syncFrameLayout(term: *Term, frame_layout: FrameLayout) !void {
     });
 }
 
-pub fn hasPendingRenderWork(term: *const Term) bool {
-    const mut: *Term = @constCast(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    return term.render.phase != .idle;
-}
-
 pub fn renderPhase(term: *const Term) RenderPhase {
     const mut: *Term = @constCast(term);
     mut.mutex.lock();
@@ -171,14 +164,6 @@ pub fn renderWorkState(term: *const Term, bootstrap_surface: bool) RenderWorkSta
         .present_pending = term.render.phase == .present,
         .bootstrap_surface = bootstrap_surface,
     };
-}
-
-pub fn renderInFlight(term: *const Term, bootstrap_surface: bool) bool {
-    return renderWorkState(term, bootstrap_surface).inFlight();
-}
-
-pub fn needsContentFrame(term: *const Term, bootstrap_surface: bool) bool {
-    return renderWorkState(term, bootstrap_surface).wantsFrame();
 }
 
 pub fn prepareRender(term: *Term) RenderPrepareResult {
