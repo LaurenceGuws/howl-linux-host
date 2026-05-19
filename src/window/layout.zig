@@ -18,8 +18,6 @@ pub const ScrollbarLayout = struct {
 pub const Frame = struct {
     term_texture_id: u32,
     term_texture_rect: Rect,
-    term_texture_full_redraw: bool,
-    term_texture_damage_rects: []const Rect,
     scrollbar: ScrollbarLayout,
     tab_count: usize,
     active_tab: usize,

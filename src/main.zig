@@ -9,6 +9,8 @@ const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const RenderApi = @import("terminal/render/abi.zig");
 const VtApi = @import("terminal/vt/abi.zig");
 const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
+const RuntimeProgress = @import("terminal/runtime/progress.zig");
+const RuntimeThread = @import("terminal/runtime/thread.zig");
 const TermTextureOps = @import("window/term_texture.zig");
 const Window = @import("window/window.zig");
 
@@ -18,18 +20,9 @@ const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
 const max_tabs_count: usize = TabBar.max_tabs_count;
 const AppTab = struct {
-    pub const TermTextureSnapshot = struct {
-        term_texture: RenderApi.RenderSurface,
-        full_redraw: bool,
-        damage_rects: []const Window.Rect,
-    };
-
     allocator: std.mem.Allocator,
     panel: *TerminalPanel,
     term_texture: RenderApi.RenderSurface = .{ .host_surface_id = 0, .width = 0, .height = 0, .epoch = 0 },
-    term_texture_full_redraw: bool = true,
-    term_texture_damage_rects: std.ArrayListUnmanaged(Window.Rect) = .empty,
-    term_texture_upload_scratch: std.ArrayListUnmanaged(u8) = .empty,
     first_render_trace_logged: bool = false,
     first_submit_trace_logged: bool = false,
     first_prepare_result_logged: bool = false,
@@ -49,17 +42,7 @@ const AppTab = struct {
         self.term_texture.width = 0;
         self.term_texture.height = 0;
         self.term_texture.epoch = 0;
-        self.term_texture_damage_rects.deinit(self.allocator);
-        self.term_texture_upload_scratch.deinit(self.allocator);
         self.panel.destroy(self.allocator);
-    }
-
-    fn termTextureSnapshot(self: *const AppTab) TermTextureSnapshot {
-        return .{
-            .term_texture = self.term_texture,
-            .full_redraw = self.term_texture_full_redraw,
-            .damage_rects = self.term_texture_damage_rects.items,
-        };
     }
 
     fn renderStep(self: *AppTab) RenderApi.RenderAdvanceResult {
@@ -140,10 +123,6 @@ const AppTab = struct {
         var info = std.mem.zeroes(RenderApi.PreparedSurfaceInfo);
         if (!RenderApi.preparedSurfaceInfo(&self.panel.term, &info)) return .failed;
 
-        var plan = std.mem.zeroes(RenderApi.PreparedSurfaceDamagePlan);
-        if (!RenderApi.preparedSurfaceDamagePlan(&self.panel.term, &plan)) return .failed;
-        if (!TermTextureOps.storePresentDamage(self.allocator, &self.term_texture_full_redraw, &self.term_texture_damage_rects, plan)) return .failed;
-
         var buffer = std.mem.zeroes(RenderApi.PreparedSurfaceBuffer);
         if (!RenderApi.preparedSurfaceBuffer(&self.panel.term, &buffer)) return .failed;
         const pixels: []const u8 = if (buffer.rgba_pixels.len == 0)
@@ -151,7 +130,7 @@ const AppTab = struct {
         else
             buffer.rgba_pixels.ptr[0..buffer.rgba_pixels.len];
         if (!TermTextureOps.ensureSurface(&self.term_texture, info.render_px.width, info.render_px.height)) return .failed;
-        if (!TermTextureOps.uploadPreparedBuffer(self.allocator, &self.term_texture_upload_scratch, self.term_texture, plan, pixels)) return .failed;
+        if (!TermTextureOps.uploadPreparedBuffer(self.term_texture, pixels)) return .failed;
 
         const query = RenderApi.surfaceQuery(&self.panel.term);
         var feedback = std.mem.zeroes(RenderApi.RenderSurfaceFeedback);
@@ -308,9 +287,10 @@ fn runLoopTurn(app: *App) !LoopAction {
 
     forwardTerminalInput(app);
     _ = applyWindowResize(app);
+    const progress_redraw = driveTerminalProgress(app.tabs.items, app.active_tab_idx.*);
     try ensureActiveTabHealthy(app);
 
-    if (!app.input.drainRedrawRequested()) return .continue_running;
+    if (!progress_redraw and !app.input.drainRedrawRequested()) return .continue_running;
 
     render(app);
     if (quitRequested()) |action| return action;
@@ -358,6 +338,24 @@ fn applyWindowResize(app: *App) bool {
     if (!app.window.refreshGeometry()) return false;
     resizeTerminals(app.conf, app.window, app.tabs.items);
     return true;
+}
+
+fn driveTerminalProgress(tabs: []AppTab, active_tab_idx: TabIndex) bool {
+    var redraw = false;
+    var request_next_turn = false;
+    for (tabs, 0..) |*tab, i| {
+        const is_active = i == @as(usize, active_tab_idx);
+        // The active tab owns one bounded PTY/VT turn every loop. Background
+        // tabs only run when their transport thread has an acknowledged wake
+        // pending, so the main thread stays in charge of all terminal turns.
+        if (!is_active and !RuntimeThread.wakePending(tab.panel)) continue;
+        const outcome = RuntimeProgress.driveOnce(&tab.panel.term);
+        RuntimeThread.ackWake(tab.panel);
+        redraw = redraw or outcome.should_redraw;
+        request_next_turn = request_next_turn or outcome.keep;
+    }
+    if (request_next_turn) Input.requestRedraw();
+    return redraw;
 }
 
 fn ensureActiveTabHealthy(app: *App) !void {
@@ -414,17 +412,14 @@ fn render(app: *App) void {
     const render_present_pending = RenderApi.renderPhase(&tab.panel.term) == .present;
 
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
-    const term_texture = tab.termTextureSnapshot();
     const overlay = tab.panel.overlaySnapshot(texture_rect);
     var title_buf: [max_tabs_count][]const u8 = undefined;
     const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items, title_buf[0..]));
-    std.debug.assert(term_texture.term_texture.host_surface_id != 0 or term_texture_before == 0);
+    std.debug.assert(tab.term_texture.host_surface_id != 0 or term_texture_before == 0);
 
     app.window.present(.{
-        .term_texture_id = @intCast(term_texture.term_texture.host_surface_id),
+        .term_texture_id = @intCast(tab.term_texture.host_surface_id),
         .term_texture_rect = texture_rect,
-        .term_texture_full_redraw = term_texture.full_redraw,
-        .term_texture_damage_rects = term_texture.damage_rects,
         .scrollbar = overlay.scrollbar,
         .tab_count = tab_bar_snapshot.labels.len,
         .active_tab = tab_bar_snapshot.active_idx,

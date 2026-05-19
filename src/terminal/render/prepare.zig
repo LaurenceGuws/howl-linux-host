@@ -5,23 +5,9 @@ const c = api.c;
 const render_flow = @import("flow.zig");
 const surface_owner = @import("../vt/surface.zig");
 
-const ExpectedRectSpan = extern struct {
-    ptr: [*c]const c.HowlRenderRect,
-    len: usize,
-};
-
 const ExpectedByteSpan = extern struct {
     ptr: [*c]const u8,
     len: usize,
-};
-
-const ExpectedPreparedSurfaceDamagePlan = extern struct {
-    status: i32,
-    full_redraw: u8,
-    reserved0: u8,
-    reserved1: u16,
-    surface_damage_rects: ExpectedRectSpan,
-    buffer_damage_rects: ExpectedRectSpan,
 };
 
 const ExpectedPreparedSurfaceBuffer = extern struct {
@@ -37,8 +23,6 @@ const ExpectedPreparedSurfaceDiagnostics = extern struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(c.HowlRenderPreparedSurfaceDamagePlan) == @sizeOf(ExpectedPreparedSurfaceDamagePlan));
-    std.debug.assert(@offsetOf(c.HowlRenderPreparedSurfaceDamagePlan, "surface_damage_rects") == @offsetOf(ExpectedPreparedSurfaceDamagePlan, "surface_damage_rects"));
     std.debug.assert(@sizeOf(c.HowlRenderPreparedSurfaceBuffer) == @sizeOf(ExpectedPreparedSurfaceBuffer));
     std.debug.assert(@offsetOf(c.HowlRenderPreparedSurfaceBuffer, "rgba_pixels") == @offsetOf(ExpectedPreparedSurfaceBuffer, "rgba_pixels"));
     std.debug.assert(@sizeOf(c.HowlRenderPreparedSurfaceDiagnostics) == @sizeOf(ExpectedPreparedSurfaceDiagnostics));
@@ -146,13 +130,6 @@ pub fn preparedSurfaceInfo(term: *api.Term, info_out: *c.HowlRenderPreparedSurfa
     return c.howl_render_prepared_surface_describe(prepared, info_out) == c.HOWL_RENDER_CALL_OK;
 }
 
-pub fn preparedSurfaceDamagePlan(term: *api.Term, plan_out: *c.HowlRenderPreparedSurfaceDamagePlan) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    const prepared = term.render.prepared_surface orelse return false;
-    return c.howl_render_prepared_surface_damage_plan(prepared, plan_out) == c.HOWL_RENDER_CALL_OK;
-}
-
 pub fn preparedSurfaceBuffer(term: *api.Term, buffer_out: *c.HowlRenderPreparedSurfaceBuffer) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
@@ -230,11 +207,6 @@ fn consumePreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) voi
     var info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo);
     std.debug.assert(c.howl_render_prepared_surface_describe(prepared, &info) == c.HOWL_RENDER_CALL_OK);
 
-    var damage = std.mem.zeroes(c.HowlRenderPreparedSurfaceDamagePlan);
-    std.debug.assert(c.howl_render_prepared_surface_damage_plan(prepared, &damage) == c.HOWL_RENDER_CALL_OK);
-    requireValidSpan(damage.surface_damage_rects.ptr, damage.surface_damage_rects.len);
-    requireValidSpan(damage.buffer_damage_rects.ptr, damage.buffer_damage_rects.len);
-
     var buffer = std.mem.zeroes(c.HowlRenderPreparedSurfaceBuffer);
     std.debug.assert(c.howl_render_prepared_surface_buffer(prepared, &buffer) == c.HOWL_RENDER_CALL_OK);
     if (buffer.rgba_pixels.len > 0) std.debug.assert(buffer.rgba_pixels.ptr != null);
@@ -242,12 +214,6 @@ fn consumePreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) voi
     var diagnostics = std.mem.zeroes(c.HowlRenderPreparedSurfaceDiagnostics);
     std.debug.assert(c.howl_render_prepared_surface_diagnostics(prepared, &diagnostics) == c.HOWL_RENDER_CALL_OK);
 }
-
-fn requireValidSpan(ptr: anytype, len: usize) void {
-    if (len == 0) return;
-    std.debug.assert(ptr != null);
-}
-
 fn releasePreparedSurface(term: *api.Term) void {
     if (term.render.prepared_surface == null) return;
     c.howl_render_prepared_surface_release(term.render.prepared_surface);

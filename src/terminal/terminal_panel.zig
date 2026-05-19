@@ -38,6 +38,14 @@ pub const TerminalPanel = struct {
     default_font_size_px: u16,
     last_resize_ns: u64,
     progress_stop: std.atomic.Value(bool),
+    // The atomic bit is the truth for whether the transport thread already has
+    // an unacknowledged wake in flight. This keeps PTY readiness bursts from
+    // stacking up into multiple owner-thread turns.
+    progress_wake_state: std.atomic.Value(u32),
+    // SDL documents semaphore wait/signal as the blocking/wake pair for host
+    // threads, so the host uses it only as the sleep primitive while the
+    // atomic bit above remains the wake-state owner.
+    progress_wake_sem: ?*window.c_win.SDL_Semaphore,
     progress_thread: ?std.Thread,
     window_focused: bool,
     widget_focused: bool,
@@ -55,6 +63,7 @@ pub const TerminalPanel = struct {
         const self = try allocator.create(TerminalPanel);
         errdefer allocator.destroy(self);
         self.* = initial(allocator, conf, render_width, render_height, logical_width, logical_height);
+        self.progress_wake_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.ProgressSemaphoreUnavailable;
         errdefer self.deinit();
         try lifecycle.start(self);
         return self;
@@ -91,6 +100,8 @@ pub const TerminalPanel = struct {
             .default_font_size_px = start_font_px,
             .last_resize_ns = 0,
             .progress_stop = std.atomic.Value(bool).init(false),
+            .progress_wake_state = std.atomic.Value(u32).init(0),
+            .progress_wake_sem = null,
             .progress_thread = null,
             .window_focused = true,
             .widget_focused = true,
@@ -101,6 +112,7 @@ pub const TerminalPanel = struct {
 
     pub fn deinit(self: *TerminalPanel) void {
         lifecycle.stop(self);
+        destroyProgressSemaphore(self);
     }
 
     pub fn resize(self: *TerminalPanel, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
@@ -172,5 +184,11 @@ pub const TerminalPanel = struct {
 
     pub fn resetFontSize(self: *TerminalPanel) bool {
         return font_size.reset(self);
+    }
+
+    fn destroyProgressSemaphore(self: *TerminalPanel) void {
+        const sem = self.progress_wake_sem orelse return;
+        window.c_win.SDL_DestroySemaphore(sem);
+        self.progress_wake_sem = null;
     }
 };

@@ -15,7 +15,6 @@ pub const RenderPerf = retained.Perf;
 pub const PreparedSurface = c.HowlRenderPreparedSurface;
 pub const PreparedSurfaceHandle = c.HowlRenderPreparedSurfaceHandle;
 pub const PreparedSurfaceInfo = c.HowlRenderPreparedSurfaceInfo;
-pub const PreparedSurfaceDamagePlan = c.HowlRenderPreparedSurfaceDamagePlan;
 pub const PreparedSurfaceBuffer = c.HowlRenderPreparedSurfaceBuffer;
 pub const PreparedSurfaceDiagnostics = c.HowlRenderPreparedSurfaceDiagnostics;
 pub const SurfaceExecutionInput = c.HowlRenderSurfaceExecutionInput;
@@ -192,10 +191,6 @@ pub fn submitPrepared(term: *Term, execution: *const SurfaceExecutionInput, feed
 
 pub fn preparedSurfaceInfo(term: *Term, info_out: *PreparedSurfaceInfo) bool {
     return prepare.preparedSurfaceInfo(term, info_out);
-}
-
-pub fn preparedSurfaceDamagePlan(term: *Term, plan_out: *PreparedSurfaceDamagePlan) bool {
-    return prepare.preparedSurfaceDamagePlan(term, plan_out);
 }
 
 pub fn preparedSurfaceBuffer(term: *Term, buffer_out: *PreparedSurfaceBuffer) bool {

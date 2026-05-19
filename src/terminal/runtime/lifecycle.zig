@@ -45,6 +45,7 @@ pub fn start(self: anytype) !void {
 pub fn stop(self: anytype) void {
     trace.logStartup("term-stop-begin");
     self.progress_stop.store(true, .release);
+    thread.ackWake(self);
     if (self.term_ready) pty_api.stop(&self.term);
     trace.logStartup("term-stop-session-ok");
     if (self.progress_thread) |handle| handle.join();
