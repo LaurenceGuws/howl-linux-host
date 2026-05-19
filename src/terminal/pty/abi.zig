@@ -1,6 +1,5 @@
 const runtime = @import("../runtime/runtime.zig");
 const retained = @import("retained.zig");
-const render_flow = @import("../render/flow.zig");
 const session = @import("session.zig");
 const vt_abi = @import("../vt/abi.zig");
 const std = @import("std");
@@ -23,33 +22,29 @@ pub fn initPty(
     launch: PtyLaunchConfig,
     cols: u16,
     rows: u16,
-    cell_px: render_flow.CellSize,
+    cell_px: runtime.c.HowlRenderCellSize,
 ) !Term {
     std.debug.assert(cols > 0);
     std.debug.assert(rows > 0);
     std.debug.assert(cell_px.width > 0);
     std.debug.assert(cell_px.height > 0);
 
-    const initial_surface_px = runtime.c.HowlRenderPixelSize{
+    const initial_render_px = runtime.c.HowlRenderPixelSize{
         .width = cols * cell_px.width,
         .height = rows * cell_px.height,
     };
-    const initial_flow_surface_px = render_flow.PixelSize{
-        .width = initial_surface_px.width,
-        .height = initial_surface_px.height,
-    };
     const surface_text = runtime.c.howl_render_surface_text_init(.{
-        .surface_px = initial_surface_px,
+        .surface_px = initial_render_px,
         .font_size_px = cell_px.height,
     });
     if (surface_text == null) return error.RendererInitFailed;
     errdefer runtime.c.howl_render_surface_text_deinit(surface_text);
 
-    const initial_layout = runtime.c.howl_render_surface_text_derive_frame_layout(surface_text, initial_surface_px, initial_surface_px);
+    const initial_layout = runtime.c.howl_render_surface_text_derive_frame_layout(surface_text, initial_render_px, initial_render_px);
     if (initial_layout.status != runtime.c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
 
     const initial_grid = initial_layout.grid;
-    const initial_cell_px = render_flow.CellSize{
+    const initial_cell_px = runtime.c.HowlRenderCellSize{
         .width = initial_layout.cell_px.width,
         .height = initial_layout.cell_px.height,
     };
@@ -81,8 +76,8 @@ pub fn initPty(
         .vt = vt,
         .render = .{
             .frame_layout = .{
-                .render_px = initial_flow_surface_px,
-                .grid_px = initial_flow_surface_px,
+                .render_px = initial_render_px,
+                .grid_px = initial_render_px,
                 .cols = initial_grid.cols,
                 .rows = initial_grid.rows,
                 .cell_px = initial_cell_px,
@@ -91,11 +86,12 @@ pub fn initPty(
             .font_size_px = cell_px.height,
         },
     };
-    _ = term.render.flow.syncGeometry(term.render.surface_text, .{
-        .render_px = initial_flow_surface_px,
-        .grid_px = initial_flow_surface_px,
+    const geometry = runtime.c.howl_render_surface_text_sync_geometry(surface_text, .{
+        .render_px = initial_render_px,
+        .grid_px = initial_render_px,
         .cell_px = initial_cell_px,
     });
+    if (geometry.status != runtime.c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     try resetTitleFromLaunch(&term);
     return term;
 }

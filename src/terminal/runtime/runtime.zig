@@ -4,7 +4,6 @@ const terminal_c = @import("../c.zig");
 const pty_retained = @import("../pty/retained.zig");
 const render_retained = @import("../render/retained.zig");
 const vt_retained = @import("../vt/retained.zig");
-const prepare = @import("../render/prepare.zig");
 pub const c = terminal_c.c;
 
 pub const LifecycleState = pty_retained.LifecycleState;
@@ -33,7 +32,6 @@ pub const Term = struct {
 
 pub fn deinit(term: *Term) void {
     stop(term);
-    prepare.releasePrepared(term);
     term.render.deinit(term.allocator);
     term.vt_state.deinit(term.allocator);
     c.howl_vt_terminal_deinit(term.vt);

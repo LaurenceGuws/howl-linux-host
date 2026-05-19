@@ -3,7 +3,10 @@ const api = @import("../runtime/runtime.zig");
 const c = api.c;
 const vt_abi = @import("abi.zig");
 const log = @import("../../input/window.zig");
-const render_flow = @import("../render/flow.zig");
+
+const damage_none: u8 = @intCast(c.HOWL_RENDER_DAMAGE_NONE);
+const damage_partial: u8 = @intCast(c.HOWL_RENDER_DAMAGE_PARTIAL);
+const damage_full: u8 = @intCast(c.HOWL_RENDER_DAMAGE_FULL);
 
 pub const VisibleInfo = struct {
     history_count: u32,
@@ -44,7 +47,7 @@ const PublishAckOps = struct {
     }
 };
 
-pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
+pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     term.mutex.lock();
     defer term.mutex.unlock();
 
@@ -55,37 +58,37 @@ pub fn publishSource(term: *api.Term) render_flow.SourceResponse {
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.start <= visible.history_count + visible.rows);
 
-    const damage_kind = sourceDamageKind(viewport_moved, term.vt_state.surface, term.vt_state.visible_damage);
-    const typed_response = term.render.flow.acceptSource(term.render.surface_text, .{
+    const typed_response = c.howl_render_surface_text_publish_vt_snapshot(term.render.surface_text, .{
         .cols = visible.cols,
         .rows = visible.rows,
         .scrollback_offset = term.vt_state.scrollback_offset,
         .snapshot_seq = term.vt_state.snapshot_seq,
-        .last_alt_screen = visible.is_alternate_screen,
-        .damage_kind = damage_kind,
+        .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
+        .damage_kind = sourceDamageKind(viewport_moved, term.vt_state.surface, term.vt_state.visible_damage),
     });
+    std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPendingDirtyGeneration(term, visible, typed_response);
-    term.vt_state.surface.full_damage = @intFromBool(typed_response.damage_kind == .full);
-    if (typed_response.published) {
-        term.render.phase = if (typed_response.queued) .prepare else .idle;
+    term.vt_state.surface.full_damage = @intFromBool(typed_response.damage_kind == damage_full);
+    if (typed_response.published != 0) {
+        term.render.phase = if (typed_response.queued != 0) .prepare else .idle;
         log.logf(
             "host-loop ts_ns={d} stage=surface-publish snapshot_seq={d} vt_epoch={d} queued={} damage={d} render_phase={s} rows={d} cols={d} scroll={d}",
             .{
                 log.nowNs(),
-                typed_response.source_seq,
+                typed_response.snapshot_seq,
                 term.vt_state.epoch,
-                typed_response.queued,
-                @intFromEnum(typed_response.damage_kind),
+                typed_response.queued != 0,
+                typed_response.damage_kind,
                 @tagName(term.render.phase),
                 visible.rows,
                 visible.cols,
                 visible.start,
             },
         );
-        log.logSourcePublishStartupf("stage=term-source-publish-first queued={d} damage={d} source_seq={d} geom_epoch={d}", .{
-            @intFromBool(typed_response.queued),
-            @intFromEnum(typed_response.damage_kind),
-            typed_response.source_seq,
+        log.logSourcePublishStartupf("stage=term-source-publish-first queued={d} damage={d} snapshot_seq={d} geom_epoch={d}", .{
+            typed_response.queued,
+            typed_response.damage_kind,
+            typed_response.snapshot_seq,
             typed_response.geometry_epoch,
         });
     }
@@ -105,14 +108,18 @@ fn ackPublishedSourceWith(term: anytype, comptime Ops: type) void {
     term.vt_state.pending_dirty_generation = 0;
 }
 
-pub fn sourceRejected(term: *api.Term) render_flow.SourceResponse {
+pub fn sourceRejected(term: *api.Term) c.HowlRenderVtPublishResult {
     log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d} render_phase={s}", .{ log.nowNs(), term.vt_state.snapshot_seq, @tagName(term.render.phase) });
+    const query = c.howl_render_surface_text_surface_query(term.render.surface_text);
+    std.debug.assert(query.status == c.HOWL_RENDER_CALL_OK);
     return .{
-        .published = false,
-        .queued = false,
-        .damage_kind = .none,
-        .source_seq = term.vt_state.snapshot_seq,
-        .geometry_epoch = term.render.flow.surfaceQuery(term.render.surface_text).epoch,
+        .status = c.HOWL_RENDER_CALL_FAILED,
+        .published = 0,
+        .queued = 0,
+        .damage_kind = damage_none,
+        .reserved0 = 0,
+        .snapshot_seq = term.vt_state.snapshot_seq,
+        .geometry_epoch = query.epoch,
     };
 }
 
@@ -222,17 +229,17 @@ fn scatterDirtyCols(dirty_rows: []const u8, compact: []const u16, expanded: []u1
     }
 }
 
-fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_response: render_flow.SourceResponse) void {
-    if (typed_response.published) {
-        std.debug.assert(typed_response.queued);
-        std.debug.assert(typed_response.damage_kind != .none);
+fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_response: c.HowlRenderVtPublishResult) void {
+    if (typed_response.published != 0) {
+        std.debug.assert(typed_response.queued != 0);
+        std.debug.assert(typed_response.damage_kind != damage_none);
         term.vt_state.pending_dirty_generation = visible.dirty_generation;
         return;
     }
     term.vt_state.pending_dirty_generation = 0;
 }
 
-fn sourceDamageKind(viewport_moved: bool, current: c.HowlVtSurface, damage: anytype) render_flow.DamageKind {
+fn sourceDamageKind(viewport_moved: bool, current: c.HowlVtSurface, damage: anytype) u8 {
     var any_dirty = false;
     var all_rows_dirty = current.rows != 0;
     for (damage.dirty_rows.items, 0..) |dirty, row_idx| {
@@ -250,10 +257,10 @@ fn sourceDamageKind(viewport_moved: bool, current: c.HowlVtSurface, damage: anyt
             all_rows_dirty = false;
         }
     }
-    if (!any_dirty) return .none;
-    if (viewport_moved) return .full;
-    if (all_rows_dirty) return .full;
-    return .partial;
+    if (!any_dirty) return damage_none;
+    if (viewport_moved) return damage_full;
+    if (all_rows_dirty) return damage_full;
+    return damage_partial;
 }
 
 test "viewport move damage becomes full" {
@@ -266,7 +273,7 @@ test "viewport move damage becomes full" {
         .dirty_cols_start = .{ .items = &[_]u16{ 0, 0, 0, 0 } },
         .dirty_cols_end = .{ .items = &[_]u16{ 0, 0, 4, 4 } },
     };
-    try std.testing.expectEqual(render_flow.DamageKind.full, sourceDamageKind(true, current, damage));
+    try std.testing.expectEqual(damage_full, sourceDamageKind(true, current, damage));
 }
 
 test "publish records dirty generation only for published source" {
@@ -286,10 +293,12 @@ test "publish records dirty generation only for published source" {
         .start = 0,
         .dirty_generation = 9,
     }, .{
-        .published = true,
-        .queued = true,
-        .damage_kind = .partial,
-        .source_seq = 1,
+        .status = c.HOWL_RENDER_CALL_OK,
+        .published = 1,
+        .queued = 1,
+        .damage_kind = damage_partial,
+        .reserved0 = 0,
+        .snapshot_seq = 1,
         .geometry_epoch = 1,
     });
     try std.testing.expectEqual(@as(u64, 9), term.vt_state.pending_dirty_generation);
@@ -306,10 +315,12 @@ test "publish records dirty generation only for published source" {
         .start = 0,
         .dirty_generation = 11,
     }, .{
-        .published = false,
-        .queued = false,
-        .damage_kind = .none,
-        .source_seq = 2,
+        .status = c.HOWL_RENDER_CALL_FAILED,
+        .published = 0,
+        .queued = 0,
+        .damage_kind = damage_none,
+        .reserved0 = 0,
+        .snapshot_seq = 2,
         .geometry_epoch = 1,
     });
     try std.testing.expectEqual(@as(u64, 0), term.vt_state.pending_dirty_generation);

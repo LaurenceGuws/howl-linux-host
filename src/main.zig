@@ -18,7 +18,6 @@ pub const Options = cli_args.Options;
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
-const max_tabs_count: usize = TabBar.max_tabs_count;
 const AppTab = struct {
     allocator: std.mem.Allocator,
     panel: *TerminalPanel,
@@ -43,15 +42,31 @@ const AppTab = struct {
         self.panel.destroy(self.allocator);
     }
 
-    fn renderStep(self: *AppTab) RenderApi.RenderAdvanceResult {
+    fn renderStep(self: *AppTab) void {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
-        const phase = RenderApi.renderPhase(&self.panel.term);
-        self.noteSubmitPhaseEntry(phase);
-        return switch (phase) {
-            .submit => self.renderSubmitPhase(),
-            .present => self.renderPresentPhase(),
-            .idle, .prepare => self.renderPreparePhase(phase, bootstrap_surface),
-        };
+        var phase = RenderApi.renderPhase(&self.panel.term);
+        var followed_prepare = false;
+        while (true) {
+            self.noteSubmitPhaseEntry(phase);
+            switch (phase) {
+                .submit => switch (self.submitPreparedSurface()) {
+                    .rendered => return self.noteRenderedStep(),
+                    .failed => return self.noteFailedStep(),
+                    .idle, .stale, .needs_prepare => return self.noteIdleStep(),
+                },
+                .present => return self.noteBlockedPresentStep(phase),
+                .idle, .prepare => switch (if (phase == .prepare or bootstrap_surface) RenderApi.prepareRender(&self.panel.term) else .idle) {
+                    .idle => return self.notePrepareIdleStep(bootstrap_surface),
+                    .failed => return self.noteFailedStep(),
+                    .prepared => {
+                        phase = self.notePreparedStep();
+                        std.debug.assert(!followed_prepare);
+                        followed_prepare = true;
+                        continue;
+                    },
+                },
+            }
+        }
     }
 
     fn noteSubmitPhaseEntry(self: *AppTab, phase: RenderApi.RenderPhase) void {
@@ -61,82 +76,59 @@ const AppTab = struct {
         }
     }
 
-    fn renderSubmitPhase(self: *AppTab) RenderApi.RenderAdvanceResult {
-        return switch (self.submitPreparedSurface()) {
-            .rendered => blk: {
-                const phase = RenderApi.renderPhase(&self.panel.term);
-                InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=rendered phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(phase), self.term_texture.host_surface_id });
-                if (!self.first_submit_trace_logged) {
-                    self.first_submit_trace_logged = true;
-                    InputWindow.logStartupf("stage=term-submit-first result=rendered", .{});
-                }
-                if (!self.first_non_idle_submit_logged) {
-                    self.first_non_idle_submit_logged = true;
-                    InputWindow.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
-                }
-                if (!self.first_rendered_surface_logged) {
-                    self.first_rendered_surface_logged = true;
-                    InputWindow.logStartupf("stage=term-rendered-surface-first term_texture_id={d} epoch={d}", .{ self.term_texture.host_surface_id, self.term_texture.epoch });
-                }
-                break :blk .rendered;
-            },
-            .failed => blk: {
-                const phase = RenderApi.renderPhase(&self.panel.term);
-                InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=failed phase={s}", .{ InputWindow.nowNs(), @tagName(phase) });
-                break :blk .failed;
-            },
-            .idle, .stale, .needs_prepare => blk: {
-                const phase = RenderApi.renderPhase(&self.panel.term);
-                InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(phase), self.term_texture.host_surface_id });
-                break :blk .idle;
-            },
-        };
+    fn noteRenderedStep(self: *AppTab) void {
+        const next_phase = RenderApi.renderPhase(&self.panel.term);
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=rendered phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(next_phase), self.term_texture.host_surface_id });
+        if (!self.first_submit_trace_logged) {
+            self.first_submit_trace_logged = true;
+            InputWindow.logStartupf("stage=term-submit-first result=rendered", .{});
+        }
+        if (!self.first_non_idle_submit_logged) {
+            self.first_non_idle_submit_logged = true;
+            InputWindow.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
+        }
+        if (!self.first_rendered_surface_logged) {
+            self.first_rendered_surface_logged = true;
+            InputWindow.logStartupf("stage=term-rendered-surface-first term_texture_id={d} epoch={d}", .{ self.term_texture.host_surface_id, self.term_texture.epoch });
+        }
     }
 
-    fn renderPresentPhase(self: *AppTab) RenderApi.RenderAdvanceResult {
-        const phase = RenderApi.renderPhase(&self.panel.term);
+    fn noteFailedStep(self: *AppTab) void {
+        const next_phase = RenderApi.renderPhase(&self.panel.term);
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=failed phase={s}", .{ InputWindow.nowNs(), @tagName(next_phase) });
+    }
+
+    fn noteIdleStep(self: *AppTab) void {
+        const next_phase = RenderApi.renderPhase(&self.panel.term);
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(next_phase), self.term_texture.host_surface_id });
+    }
+
+    fn noteBlockedPresentStep(self: *AppTab, phase: RenderApi.RenderPhase) void {
         InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=blocked_present phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(phase), self.term_texture.host_surface_id });
         if (!self.first_blocked_present_logged) {
             self.first_blocked_present_logged = true;
             InputWindow.logStartup("term-present-blocked-first");
         }
-        return .blocked_present;
     }
 
-    fn renderPreparePhase(
-        self: *AppTab,
-        phase: RenderApi.RenderPhase,
-        bootstrap_surface: bool,
-    ) RenderApi.RenderAdvanceResult {
-        switch (if (phase == .prepare or bootstrap_surface) RenderApi.prepareRender(&self.panel.term) else .idle) {
-            .idle => {
-                const next_phase = RenderApi.renderPhase(&self.panel.term);
-                InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(next_phase), self.term_texture.host_surface_id });
-                if (!self.first_idle_render_logged) {
-                    self.first_idle_render_logged = true;
-                    InputWindow.logStartupf("stage=term-render-idle-first phase={s} bootstrap={} term_texture_id={d}", .{
-                        @tagName(next_phase),
-                        bootstrap_surface,
-                        self.term_texture.host_surface_id,
-                    });
-                }
-                return .idle;
-            },
-            .failed => {
-                const next_phase = RenderApi.renderPhase(&self.panel.term);
-                InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=failed phase={s}", .{ InputWindow.nowNs(), @tagName(next_phase) });
-                return .failed;
-            },
-            .prepared => {
-                const next_phase = RenderApi.renderPhase(&self.panel.term);
-                InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=prepared phase={s}", .{ InputWindow.nowNs(), @tagName(next_phase) });
-                if (!self.first_prepare_result_logged) {
-                    self.first_prepare_result_logged = true;
-                    InputWindow.logStartupf("stage=term-prepare-first prepared=true", .{});
-                }
-                return .prepared;
-            },
+    fn notePrepareIdleStep(self: *AppTab, bootstrap_surface: bool) void {
+        const next_phase = RenderApi.renderPhase(&self.panel.term);
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(next_phase), self.term_texture.host_surface_id });
+        if (!self.first_idle_render_logged) {
+            self.first_idle_render_logged = true;
+            InputWindow.logStartupf("stage=term-render-idle-first phase={s} bootstrap={} term_texture_id={d}", .{ @tagName(next_phase), bootstrap_surface, self.term_texture.host_surface_id });
         }
+    }
+
+    fn notePreparedStep(self: *AppTab) RenderApi.RenderPhase {
+        const next_phase = RenderApi.renderPhase(&self.panel.term);
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=prepared phase={s}", .{ InputWindow.nowNs(), @tagName(next_phase) });
+        if (!self.first_prepare_result_logged) {
+            self.first_prepare_result_logged = true;
+            InputWindow.logStartupf("stage=term-prepare-first prepared=true", .{});
+        }
+        std.debug.assert(next_phase == .submit);
+        return next_phase;
     }
 
     fn submitPreparedSurface(self: *AppTab) RenderApi.RenderSubmitResult {
@@ -367,7 +359,7 @@ fn driveTerminalProgress(tabs: []AppTab, active_tab_idx: TabIndex) bool {
     var redraw = false;
     var request_next_turn = false;
     for (tabs, 0..) |*tab, i| {
-        const is_active = i == @as(usize, active_tab_idx);
+        const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
         // The active tab owns one bounded PTY/VT turn every loop. Background
         // tabs only run when their transport thread has an acknowledged wake
         // pending, so the main thread stays in charge of all terminal turns.
@@ -425,18 +417,12 @@ fn render(app: *App) void {
     });
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
     const term_texture_before = tab.term_texture.host_surface_id;
-    if (work_before_render.wantsFrame()) {
-        const first_step = tab.renderStep();
-        if (first_step == .prepared) {
-            const second_step = tab.renderStep();
-            std.debug.assert(second_step != .prepared);
-        }
-    }
+    if (work_before_render.wantsFrame()) tab.renderStep();
     const render_present_pending = RenderApi.renderPhase(&tab.panel.term) == .present;
 
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
     const overlay = tab.panel.overlaySnapshot(texture_rect);
-    var title_buf: [max_tabs_count][]const u8 = undefined;
+    var title_buf: [TabBar.max_tabs_count][]const u8 = undefined;
     const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items, title_buf[0..]));
     std.debug.assert(tab.term_texture.host_surface_id != 0 or term_texture_before == 0);
 
@@ -501,7 +487,7 @@ fn handleBindingAction(conf: *const Config.State, window: *Window.State, tabs: *
 
 fn openTab(alloc: std.mem.Allocator, conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
     assert(tabs.items.len <= max_tabs);
-    if (tabs.items.len >= max_tabs_count) return;
+    if (tabs.items.len >= TabBar.max_tabs_count) return;
 
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);

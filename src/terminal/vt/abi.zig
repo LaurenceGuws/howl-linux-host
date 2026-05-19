@@ -1,5 +1,4 @@
 const runtime = @import("../runtime/runtime.zig");
-const render_flow = @import("../render/flow.zig");
 const surface = @import("surface.zig");
 const std = @import("std");
 
@@ -44,8 +43,7 @@ pub const ScrollState = struct {
     alternate_screen: bool,
 };
 pub const VisibleInfo = surface.VisibleInfo;
-pub const SourceResponse = render_flow.SourceResponse;
-pub const DamageKind = render_flow.DamageKind;
+pub const SourceResponse = runtime.c.HowlRenderVtPublishResult;
 
 fn callOk() i32 {
     return runtime.c.HOWL_VT_CALL_OK;

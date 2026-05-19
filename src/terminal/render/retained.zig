@@ -1,5 +1,4 @@
 const std = @import("std");
-const flow = @import("flow.zig");
 const c = @import("../c.zig").c;
 
 pub const Phase = enum(u8) { idle, prepare, submit, present };
@@ -8,18 +7,15 @@ pub const PrepareResult = enum { idle, prepared, failed };
 
 pub const SubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
 
-pub const AdvanceResult = enum { idle, prepared, rendered, blocked_present, failed };
-
 pub const FrameLayout = struct {
-    render_px: flow.PixelSize,
-    grid_px: flow.PixelSize,
+    render_px: c.HowlRenderPixelSize,
+    grid_px: c.HowlRenderPixelSize,
     cols: u16,
     rows: u16,
-    cell_px: flow.CellSize,
+    cell_px: c.HowlRenderCellSize,
 };
 
 pub const State = struct {
-    flow: flow.Flow = .{},
     frame_layout: FrameLayout,
     surface_text: c.HowlRenderSurfaceTextHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
@@ -30,6 +26,8 @@ pub const State = struct {
     perf: Perf = .{},
 
     pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
+        if (self.prepared_surface) |prepared| c.howl_render_prepared_surface_release(prepared);
+        self.prepared_surface = null;
         if (self.primary_font_path) |path| allocator.free(path);
         self.primary_font_path = null;
         for (self.fallback_font_paths.items) |path| allocator.free(path);
