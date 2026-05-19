@@ -61,7 +61,7 @@ pub fn waitTransport(term: *api.Term, timeout_ms: i32) bool {
     return c.howl_pty_session_wait_readable(term.session, timeout_ms) != 0;
 }
 
-pub fn pumpTransport(term: *api.Term, mode: TransportPumpMode) TransportProgress {
+pub fn pumpTransport(term: *api.Term, mode: TransportPumpMode, max_queued_events: u32) TransportProgress {
     const limits = transportPumpLimits(mode);
     if (limits.max_reads == 0 or limits.max_bytes == 0) {
         term.mutex.lock();
@@ -82,6 +82,20 @@ pub fn pumpTransport(term: *api.Term, mode: TransportPumpMode) TransportProgress
 
     const outbound = c.howl_pty_session_pump_outbound(term.session, 0);
     ptyRequireStructOk(outbound.status);
+    // The host owns one explicit VT apply slice per turn. Once queued VT work
+    // already fills that budget, stop reading more PTY bytes and hand control
+    // back to the owner thread so transport cannot silently outrun apply.
+    const queued_before = vtQueuedEventCount(term.vt);
+    if (max_queued_events != 0 and queued_before >= max_queued_events) {
+        return .{
+            .drained_input_bytes = outbound.drained,
+            .reads = 0,
+            .bytes_read = 0,
+            .pending_input_bytes = ptySessionPendingBytes(term.session),
+            .queued_events = queued_before,
+            .hit_limit = true,
+        };
+    }
 
     var reads: u32 = 0;
     var bytes_read: u32 = 0;
@@ -96,17 +110,21 @@ pub fn pumpTransport(term: *api.Term, mode: TransportPumpMode) TransportProgress
         vt_abi.requireStructOk(c.howl_vt_terminal_feed(term.vt, scratch[0..chunk_len].ptr, chunk_len));
         reads += 1;
         bytes_read += chunk_len;
+        if (max_queued_events != 0 and vtQueuedEventCount(term.vt) >= max_queued_events) break;
     }
 
     std.debug.assert(reads <= limits.max_reads);
     std.debug.assert(bytes_read <= limits.max_bytes);
-    const hit_limit = reads == limits.max_reads or bytes_read == limits.max_bytes;
+    const queued_events = vtQueuedEventCount(term.vt);
+    const hit_limit = reads == limits.max_reads or
+        bytes_read == limits.max_bytes or
+        (max_queued_events != 0 and queued_events >= max_queued_events);
 
     if (reads > 0) {
         log.logTransportReadStartupf("stage=term-transport-read-first reads={d} read_bytes={d} queued_events={d}", .{
             reads,
             bytes_read,
-            vtQueuedEventCount(term.vt),
+            queued_events,
         });
     }
     return .{
@@ -114,7 +132,7 @@ pub fn pumpTransport(term: *api.Term, mode: TransportPumpMode) TransportProgress
         .reads = reads,
         .bytes_read = bytes_read,
         .pending_input_bytes = ptySessionPendingBytes(term.session),
-        .queued_events = vtQueuedEventCount(term.vt),
+        .queued_events = queued_events,
         .hit_limit = hit_limit,
     };
 }

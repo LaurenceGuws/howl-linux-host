@@ -25,7 +25,7 @@ pub fn driveOnce(term: *pty_api.Term) Outcome {
 }
 
 fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
-    const transport = Ops.pumpTransport(term, transport_mode);
+    const transport = Ops.pumpTransport(term, transport_mode, vt_apply_events_per_turn);
     const applied = Ops.applyPending(term, vt_apply_events_per_turn);
     const backlog = Ops.hasOutboundInputBacklog(term);
     const alive = Ops.isAlive(term);
@@ -82,8 +82,8 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
 }
 
 const RealOps = struct {
-    fn pumpTransport(term: *pty_api.Term, mode: pty_api.TransportPumpMode) pty_api.TransportProgress {
-        return pty_api.pumpTransport(term, mode);
+    fn pumpTransport(term: *pty_api.Term, mode: pty_api.TransportPumpMode, max_queued_events: u32) pty_api.TransportProgress {
+        return pty_api.pumpTransport(term, mode, max_queued_events);
     }
 
     fn applyPending(term: *pty_api.Term, max_events: u32) pty_api.ApplyProgress {
@@ -177,7 +177,7 @@ var fake_state: struct {
 } = .{};
 
 const FakeOps = struct {
-    fn pumpTransport(_: *FakeTerm, _: pty_api.TransportPumpMode) pty_api.TransportProgress {
+    fn pumpTransport(_: *FakeTerm, _: pty_api.TransportPumpMode, _: u32) pty_api.TransportProgress {
         fake_state.pump_calls += 1;
         return .{
             .drained_input_bytes = 0,
