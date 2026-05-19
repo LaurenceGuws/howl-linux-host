@@ -50,8 +50,8 @@ pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
     std.debug.assert(font_size_px > 0);
     term.mutex.lock();
     defer term.mutex.unlock();
+    if (!renderCallOk(c.howl_render_surface_text_set_font_size_px(term.render.surface_text, font_size_px))) return;
     term.render.font_size_px = font_size_px;
-    _ = c.howl_render_surface_text_set_font_size_px(term.render.surface_text, font_size_px);
 }
 
 pub fn setPrimaryFontPath(term: *Term, font_path: ?[:0]const u8) void {
@@ -84,7 +84,8 @@ pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) void {
     // render owner state aligned on the old fallback set.
     var staged: std.ArrayListUnmanaged([:0]u8) = .empty;
     defer freeOwnedFallbackFontPaths(term, &staged);
-    const path_count: u8 = @intCast(@min(paths.len, max_fallback_font_paths));
+    std.debug.assert(paths.len <= max_fallback_font_paths);
+    const path_count: u8 = @intCast(paths.len);
     staged.ensureTotalCapacity(term.allocator, path_count) catch return;
     var raw: [max_fallback_font_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_fallback_font_paths;
     var i: u8 = 0;
