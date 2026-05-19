@@ -22,9 +22,9 @@ pub fn start(self: anytype) !void {
         pty_api.deinit(&self.term);
         self.term_ready = false;
     }
-    render_api.setFontSizePx(&self.term, @max(self.conf.font_size, 1));
-    render_api.setPrimaryFontPath(&self.term, self.conf.fonts.primary);
-    render_api.setFallbackFontPaths(&self.term, font_fallbacks);
+    if (!render_api.setFontSizePx(&self.term, @max(self.conf.font_size, 1))) return error.RenderConfigFailed;
+    if (!render_api.setPrimaryFontPath(&self.term, self.conf.fonts.primary)) return error.RenderConfigFailed;
+    if (!render_api.setFallbackFontPaths(&self.term, font_fallbacks)) return error.RenderConfigFailed;
     try pty_api.start(&self.term);
     trace.logStartup("term-session-started");
     const frame_layout = self.frameLayoutSnapshot();

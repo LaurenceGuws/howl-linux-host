@@ -46,39 +46,41 @@ pub const RenderWorkState = struct {
     }
 };
 
-pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
+pub fn setFontSizePx(term: *Term, font_size_px: u16) bool {
     std.debug.assert(font_size_px > 0);
     term.mutex.lock();
     defer term.mutex.unlock();
-    if (!renderCallOk(c.howl_render_surface_text_set_font_size_px(term.render.surface_text, font_size_px))) return;
+    if (!renderCallOk(c.howl_render_surface_text_set_font_size_px(term.render.surface_text, font_size_px))) return false;
     term.render.font_size_px = font_size_px;
+    return true;
 }
 
-pub fn setPrimaryFontPath(term: *Term, font_path: ?[:0]const u8) void {
+pub fn setPrimaryFontPath(term: *Term, font_path: ?[:0]const u8) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
     if (font_path) |path| {
         // Stage the replacement first so allocation failure leaves host and
         // render owner state aligned on the old path.
-        const owned = term.allocator.dupeZ(u8, path) catch return;
+        const owned = term.allocator.dupeZ(u8, path) catch return false;
         if (!renderCallOk(c.howl_render_surface_text_set_font_path(term.render.surface_text, owned.ptr, owned.len))) {
             term.allocator.free(owned);
-            return;
+            return false;
         }
         replacePrimaryFontPathLocked(term, owned);
-        return;
+        return true;
     }
-    if (!renderCallOk(c.howl_render_surface_text_set_font_path(term.render.surface_text, null, 0))) return;
+    if (!renderCallOk(c.howl_render_surface_text_set_font_path(term.render.surface_text, null, 0))) return false;
     replacePrimaryFontPathLocked(term, null);
+    return true;
 }
 
-pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) void {
+pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
     if (paths.len == 0) {
-        if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0))) return;
+        if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0))) return false;
         clearFallbackFontPathsLocked(term);
-        return;
+        return true;
     }
     // Stage owned fallback paths first so a failed update leaves host and
     // render owner state aligned on the old fallback set.
@@ -86,23 +88,25 @@ pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) void {
     defer freeOwnedFallbackFontPaths(term, &staged);
     std.debug.assert(paths.len <= max_fallback_font_paths);
     const path_count: u8 = @intCast(paths.len);
-    staged.ensureTotalCapacity(term.allocator, path_count) catch return;
+    staged.ensureTotalCapacity(term.allocator, path_count) catch return false;
     var raw: [max_fallback_font_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_fallback_font_paths;
     var i: u8 = 0;
     while (i < path_count) : (i += 1) {
-        const owned = term.allocator.dupeZ(u8, paths[@intCast(i)]) catch return;
+        const owned = term.allocator.dupeZ(u8, paths[@intCast(i)]) catch return false;
         staged.appendAssumeCapacity(owned);
         raw[i] = owned.ptr;
     }
-    if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, &raw, path_count))) return;
+    if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, &raw, path_count))) return false;
     replaceFallbackFontPathsLocked(term, &staged);
+    return true;
 }
 
-pub fn clearFallbackFontPaths(term: *Term) void {
+pub fn clearFallbackFontPaths(term: *Term) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0))) return;
+    if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0))) return false;
     clearFallbackFontPathsLocked(term);
+    return true;
 }
 
 pub fn syncFrameLayout(term: *Term, frame_layout: FrameLayout) !void {
