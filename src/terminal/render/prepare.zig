@@ -58,7 +58,7 @@ pub fn prepareRender(term: *api.Term) retained.PrepareResult {
             std.debug.assert(info.geometry_epoch == request.geometry_epoch);
             term.render.flow.publishPrepared(term.render.surface_text, preparedFrameFromInfo(info));
             releasePreparedSurface(term);
-            consumePreparedSurfaceHandle(prepared);
+            assertPreparedSurfaceHandle(prepared);
             term.render.prepared_surface = prepared;
             term.render.phase = .submit;
             break :blk .prepared;
@@ -149,7 +149,7 @@ pub fn markRenderPresented(term: *api.Term) void {
     defer term.mutex.unlock();
     std.debug.assert(term.render.phase == .present);
     term.render.flow.markPresented(term.render.surface_text);
-    if (term.render.phase == .present) term.render.phase = .idle;
+    term.render.phase = .idle;
 }
 
 pub fn releasePrepared(term: *api.Term) void {
@@ -202,8 +202,10 @@ fn submitPreparedSurface(term: *api.Term, prepared_frame: render_flow.PreparedFr
     return result;
 }
 
-fn consumePreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) void {
+fn assertPreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) void {
     if (prepared == null) return;
+    // The host stores this handle for the next phase, so prove the exported
+    // prepared-surface views agree before treating it as live state.
     var info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo);
     std.debug.assert(c.howl_render_prepared_surface_describe(prepared, &info) == c.HOWL_RENDER_CALL_OK);
 
@@ -214,8 +216,9 @@ fn consumePreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) voi
     var diagnostics = std.mem.zeroes(c.HowlRenderPreparedSurfaceDiagnostics);
     std.debug.assert(c.howl_render_prepared_surface_diagnostics(prepared, &diagnostics) == c.HOWL_RENDER_CALL_OK);
 }
+
 fn releasePreparedSurface(term: *api.Term) void {
-    if (term.render.prepared_surface == null) return;
-    c.howl_render_prepared_surface_release(term.render.prepared_surface);
+    const prepared = term.render.prepared_surface orelse return;
+    c.howl_render_prepared_surface_release(prepared);
     term.render.prepared_surface = null;
 }
