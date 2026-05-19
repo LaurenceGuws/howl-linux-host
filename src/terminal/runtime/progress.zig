@@ -29,18 +29,19 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
         transport.bytes_read != 0 or
         applied.applied_events != 0 or
         applied.remaining_events != 0;
+    const wake = should_redraw or !alive;
     log.logProgressDriveStartupf(
         "stage=progress-drive-first reads={d} read_bytes={d} applied={d} wake={d} keep={} alive={}",
         .{
             transport.reads,
             transport.bytes_read,
             applied.applied_events,
-            @intFromBool(should_redraw or !alive),
+            @intFromBool(wake),
             keep,
             alive,
         },
     );
-    if (should_redraw or !alive) {
+    if (wake) {
         log.logf(
             "host-loop ts_ns={d} stage=progress-drive-live drained={d} pending={d} reads={d} read_bytes={d} queued_events={d} applied={d} remaining={d} changed={} wake={} keep={}",
             .{
@@ -53,7 +54,7 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
                 applied.applied_events,
                 applied.remaining_events,
                 applied.state_changed,
-                should_redraw or !alive,
+                wake,
                 keep,
             },
         );
@@ -68,7 +69,7 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
             transport.bytes_read,
             transport.queued_events,
             applied.remaining_events,
-            @intFromBool(should_redraw or !alive),
+            @intFromBool(wake),
             keep,
         },
     );
@@ -133,6 +134,16 @@ test "progress drive keeps work bounded after saturated transport slice" {
     const outcome = driveOnceWith(&term, FakeOps);
     try std.testing.expect(outcome.keep);
     try std.testing.expect(outcome.should_redraw);
+}
+
+test "progress drive keeps next turn alive for outbound backlog only" {
+    fake_state = .{};
+    fake_state.backlog = true;
+    var term = FakeTerm{};
+    const outcome = driveOnceWith(&term, FakeOps);
+    try std.testing.expect(outcome.keep);
+    try std.testing.expect(!outcome.should_redraw);
+    try std.testing.expect(outcome.alive);
 }
 
 test "progress drive reports quiet transport death without redraw" {
