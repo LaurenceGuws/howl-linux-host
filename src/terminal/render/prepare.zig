@@ -33,10 +33,18 @@ pub fn prepareRender(term: *api.Term) retained.PrepareResult {
     term.mutex.lock();
     defer term.mutex.unlock();
     std.debug.assert(term.render.phase == .prepare or term.render.phase == .idle);
-    const request = term.render.flow.prepare(term.render.surface_text) orelse {
-        releasePreparedSurface(term);
-        term.render.phase = .idle;
-        return .idle;
+    const request = switch (term.render.flow.prepare(term.render.surface_text)) {
+        .idle => {
+            releasePreparedSurface(term);
+            term.render.phase = .idle;
+            return .idle;
+        },
+        .failed => {
+            releasePreparedSurface(term);
+            term.render.phase = .idle;
+            return .failed;
+        },
+        .ready => |request| request,
     };
     var prepared: c.HowlRenderPreparedSurfaceHandle = null;
     var vt_surface = surface_owner.vtSurfaceOut(term) catch return .failed;
@@ -79,6 +87,11 @@ pub fn submitPrepared(term: *api.Term, execution: *const c.HowlRenderSurfaceExec
         .idle => {
             term.render.phase = .idle;
             return .idle;
+        },
+        .failed => {
+            releasePreparedSurface(term);
+            term.render.phase = .idle;
+            return .failed;
         },
         .stale => {
             releasePreparedSurface(term);

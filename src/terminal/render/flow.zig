@@ -67,11 +67,18 @@ pub const PrepareRequest = c.HowlRenderPrepareRequest;
 pub const PreparedFrame = c.HowlRenderPreparedFrame;
 pub const Metrics = c.HowlRenderQueueMetrics;
 
+pub const PrepareDecision = union(enum) {
+    ready: PrepareRequest,
+    idle,
+    failed,
+};
+
 pub const SubmitDecision = union(enum) {
     submit: PreparedFrame,
     stale,
     needs_full_prepare,
     idle,
+    failed,
 };
 
 pub const Flow = struct {
@@ -99,13 +106,9 @@ pub const Flow = struct {
         };
     }
 
-    pub fn prepare(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle) ?PrepareRequest {
+    pub fn prepare(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle) PrepareDecision {
         var request = std.mem.zeroes(PrepareRequest);
-        return switch (c.howl_render_surface_text_take_prepare_request(surface_text, &request)) {
-            c.HOWL_RENDER_PREPARE_IDLE => null,
-            c.HOWL_RENDER_PREPARE_READY => request,
-            else => null,
-        };
+        return prepareDecision(c.howl_render_surface_text_take_prepare_request(surface_text, &request), request);
     }
 
     pub fn publishPrepared(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle, prepared: PreparedFrame) void {
@@ -114,13 +117,7 @@ pub const Flow = struct {
 
     pub fn submit(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle) SubmitDecision {
         var prepared = std.mem.zeroes(PreparedFrame);
-        return switch (c.howl_render_surface_text_take_submit_decision(surface_text, &prepared)) {
-            c.HOWL_RENDER_SUBMIT_DECISION_IDLE => .idle,
-            c.HOWL_RENDER_SUBMIT_DECISION_SUBMIT => .{ .submit = prepared },
-            c.HOWL_RENDER_SUBMIT_DECISION_STALE => .stale,
-            c.HOWL_RENDER_SUBMIT_DECISION_NEEDS_PREPARE => .needs_full_prepare,
-            else => .idle,
-        };
+        return submitDecision(c.howl_render_surface_text_take_submit_decision(surface_text, &prepared), prepared);
     }
 
     pub fn acceptSubmitted(_: *Flow, surface_text: c.HowlRenderSurfaceTextHandle, prepared: PreparedFrame, surface: c.HowlRenderSurfaceHandle, content_valid: bool) void {
@@ -178,4 +175,32 @@ fn sourceViewIn(value: SourceView) c.HowlRenderVtSnapshot {
         .scrollback_offset = value.scrollback_offset,
         .snapshot_seq = value.snapshot_seq,
     };
+}
+
+fn prepareDecision(status: c_int, request: PrepareRequest) PrepareDecision {
+    return switch (status) {
+        c.HOWL_RENDER_PREPARE_IDLE => .idle,
+        c.HOWL_RENDER_PREPARE_READY => .{ .ready = request },
+        else => .failed,
+    };
+}
+
+fn submitDecision(status: c_int, prepared: PreparedFrame) SubmitDecision {
+    return switch (status) {
+        c.HOWL_RENDER_SUBMIT_DECISION_IDLE => .idle,
+        c.HOWL_RENDER_SUBMIT_DECISION_SUBMIT => .{ .submit = prepared },
+        c.HOWL_RENDER_SUBMIT_DECISION_STALE => .stale,
+        c.HOWL_RENDER_SUBMIT_DECISION_NEEDS_PREPARE => .needs_full_prepare,
+        else => .failed,
+    };
+}
+
+test "prepareDecision maps failed status explicitly" {
+    const request = std.mem.zeroes(PrepareRequest);
+    try std.testing.expectEqual(PrepareDecision.failed, prepareDecision(c.HOWL_RENDER_PREPARE_FAILED, request));
+}
+
+test "submitDecision maps failed status explicitly" {
+    const prepared = std.mem.zeroes(PreparedFrame);
+    try std.testing.expectEqual(SubmitDecision.failed, submitDecision(c.HOWL_RENDER_SUBMIT_DECISION_FAILED, prepared));
 }
