@@ -2,12 +2,17 @@ const pty_api = @import("../pty/abi.zig");
 const log = @import("../../input/window.zig");
 const std = @import("std");
 
-// Keep one explicit PTY transport slice and one explicit VT apply slice per
-// main-thread turn so runtime ownership stays centralized and bounded. If this
-// ever grows, it should grow by changing these limits explicitly rather than by
-// letting helper code silently absorb more work.
+// Ghostty keeps VT mutation on the owner thread, and Alacritty keeps the outer
+// loop honest by bounding each I/O or parse slice instead of draining work in a
+// hidden helper. Keep Howl on the same shape: one explicit PTY slice and one
+// explicit VT apply slice per main-thread turn.
+//
+// The PTY owner's normal transport burst already follows Alacritty's 1 MiB
+// read scale. Keep the VT slice much smaller until proof says otherwise so one
+// transport burst cannot quietly monopolize the same turn before render and
+// present get a chance to run.
 const transport_mode: pty_api.TransportPumpMode = .normal;
-const max_apply_events_per_turn: u32 = 256;
+const vt_apply_events_per_turn: u32 = 256;
 
 pub const Outcome = struct {
     keep: bool,
@@ -21,7 +26,7 @@ pub fn driveOnce(term: *pty_api.Term) Outcome {
 
 fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
     const transport = Ops.pumpTransport(term, transport_mode);
-    const applied = Ops.applyPending(term, max_apply_events_per_turn);
+    const applied = Ops.applyPending(term, vt_apply_events_per_turn);
     const backlog = Ops.hasOutboundInputBacklog(term);
     const alive = Ops.isAlive(term);
     const keep = backlog or transport.hit_limit or applied.remaining_events != 0;
@@ -122,7 +127,7 @@ test "progress drive keeps work bounded when vt work remains" {
     try std.testing.expect(outcome.keep);
     try std.testing.expect(outcome.should_redraw);
     try std.testing.expectEqual(@as(u8, 1), fake_state.apply_calls);
-    try std.testing.expectEqual(@as(u32, max_apply_events_per_turn), fake_state.last_apply_limit);
+    try std.testing.expectEqual(@as(u32, vt_apply_events_per_turn), fake_state.last_apply_limit);
 }
 
 test "progress drive keeps work bounded after saturated transport slice" {
