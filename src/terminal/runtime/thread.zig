@@ -98,6 +98,15 @@ test "ack wake clears pending handoff state" {
     try std.testing.expect(!wakePending(&ctx));
 }
 
+test "signal wake coalesces duplicate owner-thread wake requests" {
+    fake_state = .{};
+    var ctx = FakeCtx{ .term = FakeTerm.init() };
+    signalWake(&ctx, FakeOps);
+    try std.testing.expect(wakePending(&ctx));
+    signalWake(&ctx, FakeOps);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
+}
+
 test "progress thread wakes on quiet transport death" {
     fake_state = .{};
     fake_state.is_alive = false;
