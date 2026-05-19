@@ -2,6 +2,7 @@ const std = @import("std");
 const api = @import("../runtime/runtime.zig");
 const render_abi = @import("../render/abi.zig");
 const vt_abi = @import("../vt/abi.zig");
+const retained = @import("retained.zig");
 const c = api.c;
 const log = @import("../../input/window.zig");
 
@@ -107,7 +108,7 @@ pub fn pumpTransport(term: *api.Term, mode: TransportPumpMode, max_queued_events
         const chunk_len: u32 = @intCast(read.bytes_read);
         std.debug.assert(chunk_len <= remaining);
         std.debug.assert(bytes_read + chunk_len <= limits.max_bytes);
-        vt_abi.requireStructOk(c.howl_vt_terminal_feed(term.vt, scratch[0..chunk_len].ptr, chunk_len));
+        if (!handleVtFeedStatus(term, c.howl_vt_terminal_feed(term.vt, scratch[0..chunk_len].ptr, chunk_len), chunk_len)) break;
         reads += 1;
         bytes_read += chunk_len;
         if (max_queued_events != 0 and vtQueuedEventCount(term.vt) >= max_queued_events) break;
@@ -387,6 +388,13 @@ fn ptyRequireOk(status: i32) !void {
     return error.PtyCallFailed;
 }
 
+fn handleVtFeedStatus(term: anytype, status: i32, chunk_len: u32) bool {
+    if (status == c.HOWL_VT_CALL_OK) return true;
+    term.pty.lifecycle = .failed;
+    log.logf("host-loop ts_ns={d} stage=transport-vt-feed-failed status={d} chunk_len={d}", .{ log.nowNs(), status, chunk_len });
+    return false;
+}
+
 fn ptyRequireStructOk(status: i32) void {
     std.debug.assert(status == ptyCallOk());
 }
@@ -409,6 +417,30 @@ fn ptySessionPendingBytes(handle: c.HowlPtySessionHandle) u64 {
 
 fn ptyCallOk() i32 {
     return c.HOWL_PTY_CALL_OK;
+}
+
+test "vt feed failure marks lifecycle failed" {
+    const FakeTerm = struct {
+        pty: struct {
+            lifecycle: retained.LifecycleState = .ready,
+        } = .{},
+    };
+
+    var term = FakeTerm{};
+    try std.testing.expect(!handleVtFeedStatus(&term, c.HOWL_VT_CALL_LIMIT_REACHED, 32));
+    try std.testing.expectEqual(retained.LifecycleState.failed, term.pty.lifecycle);
+}
+
+test "vt feed ok keeps lifecycle ready" {
+    const FakeTerm = struct {
+        pty: struct {
+            lifecycle: retained.LifecycleState = .ready,
+        } = .{},
+    };
+
+    var term = FakeTerm{};
+    try std.testing.expect(handleVtFeedStatus(&term, c.HOWL_VT_CALL_OK, 32));
+    try std.testing.expectEqual(retained.LifecycleState.ready, term.pty.lifecycle);
 }
 
 fn vtQueuedEventCount(handle: c.HowlVtHandle) u32 {
