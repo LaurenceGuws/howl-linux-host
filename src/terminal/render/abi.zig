@@ -24,6 +24,8 @@ pub const RenderSubmitResult = retained.SubmitResult;
 pub const RenderAdvanceResult = retained.AdvanceResult;
 pub const RenderPhase = retained.Phase;
 pub const RenderCellSize = flow.CellSize;
+const max_host_fallback_paths: u8 = 32;
+
 pub const RenderWorkState = struct {
     phase: RenderPhase,
     source_pending: bool,
@@ -55,43 +57,51 @@ pub fn setFontSizePx(term: *Term, font_size_px: u16) void {
 pub fn setPrimaryFontPath(term: *Term, font_path: ?[:0]const u8) void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    if (term.render.primary_font_path) |path| {
-        term.allocator.free(path);
-        term.render.primary_font_path = null;
-    }
     if (font_path) |path| {
+        // Stage the replacement first so allocation failure leaves host and
+        // render owner state aligned on the old path.
         const owned = term.allocator.dupeZ(u8, path) catch return;
-        term.render.primary_font_path = owned;
-        _ = c.howl_render_surface_text_set_font_path(term.render.surface_text, owned.ptr, owned.len);
+        if (!renderCallOk(c.howl_render_surface_text_set_font_path(term.render.surface_text, owned.ptr, owned.len))) {
+            term.allocator.free(owned);
+            return;
+        }
+        replacePrimaryFontPathLocked(term, owned);
         return;
     }
-    _ = c.howl_render_surface_text_set_font_path(term.render.surface_text, null, 0);
+    if (!renderCallOk(c.howl_render_surface_text_set_font_path(term.render.surface_text, null, 0))) return;
+    replacePrimaryFontPathLocked(term, null);
 }
 
 pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    clearFallbackFontPathsLocked(term);
-    var owned: [32][:0]u8 = undefined;
-    var count: u8 = 0;
-    while (count < paths.len and count < owned.len) : (count += 1) {
-        owned[count] = term.allocator.dupeZ(u8, paths[count]) catch break;
+    if (paths.len == 0) {
+        if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0))) return;
+        clearFallbackFontPathsLocked(term);
+        return;
     }
+    // Stage owned fallback paths first so a failed update leaves host and
+    // render owner state aligned on the old fallback set.
+    var staged: std.ArrayListUnmanaged([:0]u8) = .empty;
+    defer freeOwnedFallbackFontPaths(term, &staged);
+    const path_count: u8 = @intCast(@min(paths.len, max_host_fallback_paths));
+    staged.ensureTotalCapacity(term.allocator, path_count) catch return;
+    var raw: [max_host_fallback_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_host_fallback_paths;
     var i: u8 = 0;
-    while (i < count) : (i += 1) {
-        term.render.fallback_font_paths.append(term.allocator, owned[i]) catch break;
+    while (i < path_count) : (i += 1) {
+        const owned = term.allocator.dupeZ(u8, paths[@intCast(i)]) catch return;
+        staged.appendAssumeCapacity(owned);
+        raw[i] = owned.ptr;
     }
-    var raw: [32]?[*]const u8 = [_]?[*]const u8{null} ** 32;
-    var j: usize = 0;
-    while (j < term.render.fallback_font_paths.items.len and j < raw.len) : (j += 1) raw[j] = term.render.fallback_font_paths.items[j].ptr;
-    _ = c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, &raw, j);
+    if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, &raw, path_count))) return;
+    replaceFallbackFontPathsLocked(term, &staged);
 }
 
 pub fn clearFallbackFontPaths(term: *Term) void {
     term.mutex.lock();
     defer term.mutex.unlock();
+    if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0))) return;
     clearFallbackFontPathsLocked(term);
-    _ = c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0);
 }
 
 pub fn syncFrameLayout(term: *Term, frame_layout: FrameLayout) !void {
@@ -228,8 +238,30 @@ pub fn pixelToRow(term: *const Term, pixel_y: i32) i32 {
 }
 
 fn clearFallbackFontPathsLocked(term: *Term) void {
-    for (term.render.fallback_font_paths.items) |path| term.allocator.free(path);
-    term.render.fallback_font_paths.clearRetainingCapacity();
+    freeOwnedFallbackFontPaths(term, &term.render.fallback_font_paths);
+}
+
+fn replacePrimaryFontPathLocked(term: *Term, owned: ?[:0]u8) void {
+    const old = term.render.primary_font_path;
+    term.render.primary_font_path = owned;
+    if (old) |path| term.allocator.free(path);
+}
+
+fn replaceFallbackFontPathsLocked(term: *Term, staged: *std.ArrayListUnmanaged([:0]u8)) void {
+    var old = term.render.fallback_font_paths;
+    term.render.fallback_font_paths = staged.*;
+    staged.* = .empty;
+    freeOwnedFallbackFontPaths(term, &old);
+}
+
+fn freeOwnedFallbackFontPaths(term: *Term, paths: *std.ArrayListUnmanaged([:0]u8)) void {
+    for (paths.items) |path| term.allocator.free(path);
+    paths.deinit(term.allocator);
+    paths.* = .empty;
+}
+
+fn renderCallOk(status: i32) bool {
+    return status == c.HOWL_RENDER_CALL_OK;
 }
 
 fn vtCallOk() i32 {
