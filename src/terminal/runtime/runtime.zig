@@ -5,12 +5,30 @@ const feed_record = @import("../pty/feed_record.zig");
 const pty_retained = @import("../pty/retained.zig");
 const render_retained = @import("../render/retained.zig");
 const vt_retained = @import("../vt/retained.zig");
+const window = @import("../../window/window.zig");
 pub const c = terminal_c.c;
 
 const default_history_capacity: u16 = 4096;
 const default_pending_capacity: u32 = 4096;
 
 pub const LifecycleState = pty_retained.LifecycleState;
+pub const Progress = struct {
+    stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    wake_state: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    wake_sem: ?*window.c_win.SDL_Semaphore = null,
+    thread: ?std.Thread = null,
+
+    pub fn init(self: *Progress) !void {
+        self.wake_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.ProgressSemaphoreUnavailable;
+    }
+
+    pub fn deinit(self: *Progress) void {
+        const sem = self.wake_sem orelse return;
+        window.c_win.SDL_DestroySemaphore(sem);
+        self.wake_sem = null;
+    }
+};
+
 pub const Mutex = struct {
     state: std.Io.Mutex = .init,
 
@@ -30,6 +48,7 @@ pub const Term = struct {
     vt: c.HowlVtHandle,
     render: render_retained.State,
     vt_state: vt_retained.State = .{},
+    progress: Progress = .{},
     mutex: Mutex = .{},
     lifecycle_state: LifecycleState = .stopped,
 };

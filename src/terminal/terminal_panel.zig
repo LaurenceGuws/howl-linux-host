@@ -4,7 +4,7 @@ const Layout = @import("../window/layout.zig");
 const HostInput = @import("../input/input.zig").Input;
 const pty_api = @import("pty/abi.zig");
 const render_api = @import("render/abi.zig");
-const vt_api = @import("vt/abi.zig");
+const vt_retained = @import("vt/retained.zig");
 const HowlTerm = pty_api.Term;
 const LifecycleState = pty_api.LifecycleState;
 const FrameLayout = render_api.FrameLayout;
@@ -13,6 +13,7 @@ const TerminalConfig = Config.Terminal;
 const font_size = @import("host/font_size.zig");
 const term_input = @import("host/input.zig");
 const lifecycle = @import("runtime/lifecycle.zig");
+const runtime = @import("runtime/runtime.zig");
 const scroll = @import("host/scroll.zig");
 
 const GeometryMutex = struct {
@@ -51,16 +52,7 @@ pub const TerminalPanel = struct {
     font_size_px: u16,
     default_font_size_px: u16,
     last_resize_ns: u64,
-    progress_stop: std.atomic.Value(bool),
-    // The atomic bit is the truth for whether the transport thread already has
-    // an unacknowledged wake in flight. This keeps PTY readiness bursts from
-    // stacking up into multiple owner-thread turns.
-    progress_wake_state: std.atomic.Value(u32),
-    // SDL documents semaphore wait/signal as the blocking/wake pair for host
-    // threads, so the host uses it only as the sleep primitive while the
-    // atomic bit above remains the wake-state owner.
-    progress_wake_sem: ?*window.c_win.SDL_Semaphore,
-    progress_thread: ?std.Thread,
+    progress: runtime.Progress,
     window_focused: bool,
     widget_focused: bool,
     scrollbar: scroll.State,
@@ -79,7 +71,6 @@ pub const TerminalPanel = struct {
         const self = try allocator.create(TerminalPanel);
         errdefer allocator.destroy(self);
         self.* = initial(allocator, io, conf, feed_record_path, render_width, render_height, logical_width, logical_height);
-        self.progress_wake_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.ProgressSemaphoreUnavailable;
         errdefer self.deinit();
         try lifecycle.start(self);
         return self;
@@ -117,10 +108,7 @@ pub const TerminalPanel = struct {
             .font_size_px = start_font_px,
             .default_font_size_px = start_font_px,
             .last_resize_ns = 0,
-            .progress_stop = std.atomic.Value(bool).init(false),
-            .progress_wake_state = std.atomic.Value(u32).init(0),
-            .progress_wake_sem = null,
-            .progress_thread = null,
+            .progress = .{},
             .window_focused = true,
             .widget_focused = true,
             .scrollbar = .{},
@@ -130,7 +118,6 @@ pub const TerminalPanel = struct {
 
     pub fn deinit(self: *TerminalPanel) void {
         lifecycle.stop(self);
-        destroyProgressSemaphore(self);
     }
 
     pub fn resize(self: *TerminalPanel, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
@@ -172,7 +159,7 @@ pub const TerminalPanel = struct {
         if (!sync.changed) return;
         if (sync.grid_changed) {
             try pty_api.resize(&self.term, sync.layout.cols, sync.layout.rows);
-            try vt_api.resize(&self.term, sync.layout.rows, sync.layout.cols);
+            try vt_retained.resize(&self.term, sync.layout.rows, sync.layout.cols);
         }
         render_api.commitFrameLayout(&self.term, sync.layout);
     }
@@ -184,7 +171,7 @@ pub const TerminalPanel = struct {
     }
 
     pub fn paste(self: *TerminalPanel, payload: []const u8) void {
-        vt_api.publishPaste(&self.term, payload) catch return;
+        term_input.publishPaste(&self.term, payload) catch return;
     }
 
     pub fn drainInput(self: *TerminalPanel, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
@@ -244,7 +231,7 @@ pub const TerminalPanel = struct {
     }
 
     pub fn refreshTitle(self: *TerminalPanel) void {
-        self.title_len = @intCast(vt_api.copyCurrentTitle(&self.term, self.title_buf[0..]));
+        self.title_len = @intCast(vt_retained.copyCurrentTitle(&self.term, self.title_buf[0..]));
         if (self.title_len != 0) return;
         const fallback = self.conf.command orelse self.conf.shell;
         self.title_len = @intCast(@min(fallback.len, self.title_buf.len));
@@ -266,7 +253,7 @@ pub const TerminalPanel = struct {
     }
 
     pub fn syncInputFocus(self: *TerminalPanel) void {
-        _ = vt_api.publishInputFocus(&self.term, self.window_focused and self.widget_focused) catch return;
+        _ = term_input.publishFocus(&self.term, self.window_focused and self.widget_focused) catch return;
     }
 
     pub fn adjustFontSize(self: *TerminalPanel, delta: i16) bool {
@@ -280,25 +267,18 @@ pub const TerminalPanel = struct {
     pub fn resetFontSize(self: *TerminalPanel) bool {
         return font_size.reset(self);
     }
-
-    fn destroyProgressSemaphore(self: *TerminalPanel) void {
-        const sem = self.progress_wake_sem orelse return;
-        window.c_win.SDL_DestroySemaphore(sem);
-        self.progress_wake_sem = null;
-    }
-
     fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) void {
-        _ = vt_api.followLiveBottom(&self.term);
+        _ = vt_retained.followLiveBottom(&self.term);
         pty_api.publishInputBytes(&self.term, bytes) catch return;
     }
 
     fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) void {
         const terminal_key = term_input.key(key.key) orelse return;
-        vt_api.publishInputKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return;
+        term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return;
     }
 
     fn publishTerminalMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
-        return vt_api.publishMouseEvent(&self.term, .{
+        return term_input.publishMouse(&self.term, .{
             .kind = term_input.mouseKind(mouse_event.kind),
             .button = term_input.mouseButton(mouse_event.button),
             .row = render_api.pixelToRow(&self.term, mouse_event.pixel_y),

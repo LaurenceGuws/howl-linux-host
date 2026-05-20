@@ -2,6 +2,7 @@ const feed_record = @import("../pty/feed_record.zig");
 const pty_api = @import("../pty/abi.zig");
 const pty_session = @import("../pty/session.zig");
 const vt_api = @import("../vt/abi.zig");
+const vt_retained = @import("../vt/retained.zig");
 const log = @import("../../input/window.zig");
 const std = @import("std");
 
@@ -106,7 +107,7 @@ fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode) Tran
         std.debug.assert(chunk_len <= remaining);
         std.debug.assert(bytes_read + chunk_len <= limits.max_bytes);
         if (!recordChunkLocked(term, scratch[0..chunk_len])) break;
-        if (!handleFeedStatusLocked(term, vt_api.feedTransportLocked(term, scratch[0..chunk_len]), chunk_len)) break;
+        if (!feedTermLocked(term, scratch[0..chunk_len], chunk_len)) break;
         reads += 1;
         bytes_read += chunk_len;
     }
@@ -130,11 +131,22 @@ fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode) Tran
     };
 }
 
-fn handleFeedStatusLocked(term: *pty_api.Term, status: i32, chunk_len: u32) bool {
-    if (vt_api.isCallOk(status)) return true;
-    term.pty.lifecycle = .failed;
-    log.logf("host-loop ts_ns={d} stage=transport-vt-feed-failed status={d} chunk_len={d}", .{ log.nowNs(), status, chunk_len });
-    return false;
+fn feedTermLocked(term: *pty_api.Term, bytes: []const u8, chunk_len: u32) bool {
+    const history_before = vt_api.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
+    const result = vt_retained.feedLocked(term, bytes);
+    if (!vt_api.isCallOk(result.status)) {
+        term.pty.lifecycle = .failed;
+        log.logf("host-loop ts_ns={d} stage=transport-vt-feed-failed status={d} chunk_len={d}", .{ log.nowNs(), result.status, chunk_len });
+        return false;
+    }
+    const title = if (result.title_changed != 0) vt_retained.copyTitleLocked(term) catch null else null;
+    drainTerminalReplyLocked(term);
+    const history_after = if (result.state_changed != 0)
+        vt_api.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count
+    else
+        history_before;
+    vt_retained.finishFeed(term, history_before, history_after, result.state_changed != 0, title);
+    return true;
 }
 
 fn recordChunkLocked(term: *pty_api.Term, chunk: []const u8) bool {
@@ -144,6 +156,14 @@ fn recordChunkLocked(term: *pty_api.Term, chunk: []const u8) bool {
         return false;
     };
     return true;
+}
+
+fn drainTerminalReplyLocked(term: *pty_api.Term) void {
+    const pending = vt_retained.copyPendingOutputLocked(term) catch return;
+    if (pending.len == 0) return;
+    log.logf("host-loop ts_ns={d} stage=transport-drain-terminal-reply len={d}", .{ log.nowNs(), pending.len });
+    _ = pty_api.publishInputBytesLocked(term, pending) catch return;
+    vt_retained.clearPendingOutputLocked(term);
 }
 
 test "progress drive stays quiet when nothing changes" {

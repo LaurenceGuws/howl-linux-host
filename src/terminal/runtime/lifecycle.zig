@@ -36,27 +36,30 @@ pub fn start(self: anytype) !void {
     trace.logStartup("term-transport-alive");
     self.refreshTitle();
     self.syncInputFocus();
-    self.progress_stop.store(false, .release);
+    try self.progress.init();
+    errdefer self.progress.deinit();
+    self.progress.stop.store(false, .release);
     const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
     setThreadName(progress_thread, "howl-term-host");
-    self.progress_thread = progress_thread;
+    self.progress.thread = progress_thread;
     trace.logStartup("term-progress-thread-started");
     HostInput.requestRedraw();
 }
 
 pub fn stop(self: anytype) void {
     trace.logStartup("term-stop-begin");
-    self.progress_stop.store(true, .release);
+    self.progress.stop.store(true, .release);
     thread.ackWake(self);
     if (self.term_ready) pty_api.stop(&self.term);
     trace.logStartup("term-stop-session-ok");
-    if (self.progress_thread) |handle| handle.join();
+    if (self.progress.thread) |handle| handle.join();
     trace.logStartup("term-stop-thread-joined");
-    self.progress_thread = null;
+    self.progress.thread = null;
     if (self.link_cursor_active) window.useDefaultCursor();
     self.link_cursor_active = false;
     if (self.term_ready) pty_api.deinit(&self.term);
     self.term_ready = false;
+    self.progress.deinit();
     trace.logStartup("term-stop-complete");
 }
 

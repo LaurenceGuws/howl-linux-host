@@ -1,10 +1,15 @@
 
 const Input = @import("../../input/input.zig").Input;
 const api = @import("../vt/abi.zig");
+const pty_api = @import("../pty/abi.zig");
+const retained = @import("../vt/retained.zig");
+const log = @import("../../input/window.zig");
+const std = @import("std");
 const c = @cImport({
     @cInclude("howl_vt.h");
 });
 
+const Term = api.Term;
 const TermInput = api.Input;
 
 pub fn key(key_event: Input.Key) ?TermInput.Key {
@@ -73,4 +78,117 @@ pub fn buttons(input_buttons: Input.Buttons) u8 {
     if (input_buttons.middle) out |= 0x02;
     if (input_buttons.right) out |= 0x04;
     return out;
+}
+
+pub fn publishPaste(term: *Term, text: []const u8) !void {
+    if (text.len == 0) return;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    _ = retained.followLiveBottomLocked(term);
+    log.logf("host-loop ts_ns={d} stage=transport-publish-paste len={d}", .{ log.nowNs(), text.len });
+    _ = try pty_api.publishInputBytesLocked(term, try encodePasteBytes(term, text));
+}
+
+pub fn publishKey(term: *Term, key_code: TermInput.Key, modifiers: TermInput.Modifier) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    _ = retained.followLiveBottomLocked(term);
+    log.logf("host-loop ts_ns={d} stage=transport-publish-key key={d} mods={d}", .{ log.nowNs(), key_code, modifiers });
+    _ = try pty_api.publishInputBytesLocked(term, try encodeKeyBytes(term, .{ .key = key_code, .mods = modifiers }));
+}
+
+pub fn publishMouse(term: *Term, mouse: TermInput.MouseEvent) !bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    log.logf("host-loop ts_ns={d} stage=transport-publish-mouse kind={d} button={d}", .{ log.nowNs(), mouse.kind, mouse.button });
+    return try pty_api.publishInputBytesLocked(term, try encodeMouseBytes(term, mouse));
+}
+
+pub fn publishFocus(term: *Term, focused: bool) !bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    if (!retained.setFocused(term, focused)) return false;
+    _ = retained.followLiveBottomLocked(term);
+    log.logf("host-loop ts_ns={d} stage=transport-publish-focus focused={}", .{ log.nowNs(), focused });
+    return try pty_api.publishInputBytesLocked(term, try encodeFocusBytes(term, focused));
+}
+
+fn encodeFocusBytes(term: *Term, focused: bool) ![]const u8 {
+    while (true) {
+        const out = try retained.ensureBytes(term, boundedLen(term.vt_state.bytes.items.len));
+        const result = c.howl_vt_terminal_encode_focus(term.vt, if (focused) 1 else 0, out.ptr, out.len);
+        if (result.status == api.callShortBuffer()) {
+            _ = try retained.ensureBytes(term, neededLen(result.needed));
+            continue;
+        }
+        try api.requireOk(result.status);
+        std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+        return term.vt_state.bytes.items[0..@intCast(result.written)];
+    }
+}
+
+fn encodeKeyBytes(term: *Term, key_event: TermInput.KeyEvent) ![]const u8 {
+    while (true) {
+        const out = try retained.ensureBytes(term, boundedLen(term.vt_state.bytes.items.len));
+        const result = c.howl_vt_terminal_encode_key(term.vt, key_event.key, @intCast(key_event.mods), out.ptr, out.len);
+        if (result.status == api.callShortBuffer()) {
+            _ = try retained.ensureBytes(term, neededLen(result.needed));
+            continue;
+        }
+        try api.requireOk(result.status);
+        std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+        return term.vt_state.bytes.items[0..@intCast(result.written)];
+    }
+}
+
+fn encodeMouseBytes(term: *Term, mouse: TermInput.MouseEvent) ![]const u8 {
+    while (true) {
+        const out = try retained.ensureBytes(term, boundedLen(term.vt_state.bytes.items.len));
+        const result = c.howl_vt_terminal_encode_mouse(
+            term.vt,
+            mouse.kind,
+            mouse.button,
+            mouse.row,
+            mouse.col,
+            if (mouse.pixel_x != null) 1 else 0,
+            if (mouse.pixel_x) |value| value else 0,
+            if (mouse.pixel_y != null) 1 else 0,
+            if (mouse.pixel_y) |value| value else 0,
+            @intCast(mouse.mods),
+            mouse.buttons_down,
+            out.ptr,
+            out.len,
+        );
+        if (result.status == api.callShortBuffer()) {
+            _ = try retained.ensureBytes(term, neededLen(result.needed));
+            continue;
+        }
+        try api.requireOk(result.status);
+        std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+        return term.vt_state.bytes.items[0..@intCast(result.written)];
+    }
+}
+
+fn encodePasteBytes(term: *Term, text: []const u8) ![]const u8 {
+    while (true) {
+        const out = try retained.ensureBytes(term, boundedLen(term.vt_state.bytes.items.len));
+        const result = c.howl_vt_terminal_encode_paste(term.vt, text.ptr, text.len, out.ptr, out.len);
+        if (result.status == api.callShortBuffer()) {
+            _ = try retained.ensureBytes(term, neededLen(result.needed));
+            continue;
+        }
+        try api.requireOk(result.status);
+        std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+        return term.vt_state.bytes.items[0..@intCast(result.written)];
+    }
+}
+
+fn boundedLen(len: usize) u32 {
+    std.debug.assert(len <= std.math.maxInt(u32));
+    return @intCast(len);
+}
+
+fn neededLen(needed: u64) u32 {
+    std.debug.assert(needed <= std.math.maxInt(u32));
+    return @intCast(needed);
 }
