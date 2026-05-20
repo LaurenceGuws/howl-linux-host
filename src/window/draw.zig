@@ -1,5 +1,6 @@
 const Font = @import("../config/tab_bar.zig");
 const Layout = @import("layout.zig");
+const TabIndex = @import("../tab_bar/tab_bar.zig").TabBar.TabIndex;
 
 pub fn frame(comptime c: type, fb_w: c_int, fb_h: c_int, value: Layout.Frame) void {
     tabBar(c, fb_w, fb_h, value);
@@ -13,7 +14,7 @@ pub fn tabBar(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: Layout.Fr
     drawSolidRect(c, fb_w, fb_h, 0, 0, fb_w, bar_h, 0.09, 0.11, 0.16, 1.0);
     const tab_count_i: c_int = @intCast(@max(frame_value.tab_count, 1));
     const tab_w = @max(@divTrunc(fb_w, tab_count_i), 1);
-    var i: usize = 0;
+    var i: TabIndex = 0;
     while (i < frame_value.tab_count) : (i += 1) {
         const x = @as(c_int, @intCast(i)) * tab_w;
         const is_active = i == frame_value.active_tab;
@@ -33,7 +34,7 @@ pub fn tabBar(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: Layout.Fr
             1.0,
         );
         if (is_active) drawSolidRect(c, fb_w, fb_h, x + inset, bar_h - 4, @max(next_x - x - inset * 2, 1), 3, 0.53, 0.67, 0.97, 1.0);
-        if (i < frame_value.tab_labels.len) {
+        if (@as(usize, i) < frame_value.tab_labels.len) {
             drawLabel(
                 c,
                 fb_w,
@@ -41,7 +42,7 @@ pub fn tabBar(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: Layout.Fr
                 x + inset + 8,
                 inset + 7,
                 next_x - x - inset * 2 - 16,
-                frame_value.tab_labels[i],
+                frame_value.tab_labels[@intCast(i)],
                 if (is_active) 0.94 else 0.76,
                 if (is_active) 0.96 else 0.80,
                 if (is_active) 0.99 else 0.86,

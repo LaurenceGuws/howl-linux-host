@@ -200,10 +200,11 @@ fn setTextureParams(comptime c: type) void {
 
 fn hashTabBarState(frame: Layout.Frame) u64 {
     var hasher = std.hash.Wyhash.init(0);
+    const tab_count: @TypeOf(frame.tab_labels.len) = @intCast(frame.tab_count);
     hasher.update(std.mem.asBytes(&frame.term_texture_rect.y));
     hasher.update(std.mem.asBytes(&frame.tab_count));
     hasher.update(std.mem.asBytes(&frame.active_tab));
-    for (frame.tab_labels[0..@min(frame.tab_labels.len, frame.tab_count)]) |label| {
+    for (frame.tab_labels[0..@min(frame.tab_labels.len, tab_count)]) |label| {
         hasher.update(label);
         hasher.update(&[_]u8{0});
     }

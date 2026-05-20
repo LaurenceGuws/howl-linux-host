@@ -74,7 +74,7 @@ const ThreadPrev = struct {
 const ThreadSample = struct {
     tid: u32,
     name: [64]u8,
-    name_len: usize,
+    name_len: u8,
     total_ticks: u64,
 };
 
@@ -207,7 +207,7 @@ fn readThreadSample(tid: u32) !ThreadSample {
     var comm_path_buf: [64:0]u8 = undefined;
     const comm_path = try std.fmt.bufPrintZ(&comm_path_buf, "/proc/self/task/{d}/comm", .{tid});
     var name_buf: [64]u8 = undefined;
-    const name_len = try readTrimmedFile(comm_path, &name_buf);
+    const name_len: u8 = @intCast(try readTrimmedFile(comm_path, &name_buf));
     assert(name_len <= name_buf.len);
 
     var stat_path_buf: [64:0]u8 = undefined;

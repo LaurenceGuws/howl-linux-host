@@ -1,3 +1,5 @@
+const TabIndex = @import("../tab_bar/tab_bar.zig").TabBar.TabIndex;
+
 pub const Rect = struct {
     x: c_int,
     y: c_int,
@@ -19,8 +21,8 @@ pub const Frame = struct {
     term_texture_id: u32,
     term_texture_rect: Rect,
     scrollbar: ScrollbarLayout,
-    tab_count: usize,
-    active_tab: usize,
+    tab_count: TabIndex,
+    active_tab: TabIndex,
     tab_labels: []const []const u8,
 };
 

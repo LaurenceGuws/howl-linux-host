@@ -428,7 +428,7 @@ fn render(app: *App) void {
 
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
     const overlay = tab.panel.overlaySnapshot(texture_rect);
-    var title_buf: [TabBar.max_tabs_count][]const u8 = undefined;
+    var title_buf: [TabBar.max_tabs][]const u8 = undefined;
     const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items, title_buf[0..]));
     std.debug.assert(tab.term_texture.host_surface_id != 0 or term_texture_before == 0);
 
@@ -436,7 +436,7 @@ fn render(app: *App) void {
         .term_texture_id = @intCast(tab.term_texture.host_surface_id),
         .term_texture_rect = texture_rect,
         .scrollbar = overlay.scrollbar,
-        .tab_count = tab_bar_snapshot.labels.len,
+        .tab_count = @intCast(tab_bar_snapshot.labels.len),
         .active_tab = tab_bar_snapshot.active_idx,
         .tab_labels = tab_bar_snapshot.labels,
     });
@@ -493,7 +493,7 @@ fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8,
 
 fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, feed_record_path: ?[]const u8, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
     assert(tabs.items.len <= max_tabs);
-    if (tabs.items.len >= TabBar.max_tabs_count) return;
+    if (tabs.items.len >= TabBar.max_tabs) return;
 
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
