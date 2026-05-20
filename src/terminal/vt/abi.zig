@@ -1,4 +1,5 @@
 const runtime = @import("../runtime/runtime.zig");
+const pty_api = @import("../pty/abi.zig");
 const surface = @import("surface.zig");
 const std = @import("std");
 const log = @import("../../input/window.zig");
@@ -124,7 +125,7 @@ pub fn publishPaste(term: *Term, text: []const u8) !void {
     defer term.mutex.unlock();
     followLiveBottomForInput(term);
     log.logf("host-loop ts_ns={d} stage=transport-publish-paste len={d}", .{ log.nowNs(), text.len });
-    _ = try publishSessionBytes(term.session, try encodePasteLocked(term, text));
+    _ = try pty_api.publishInputBytesLocked(term, try encodePasteLocked(term, text));
 }
 
 pub fn publishInputKey(term: *Term, key: Input.Key, mods: Input.Modifier) !void {
@@ -132,14 +133,14 @@ pub fn publishInputKey(term: *Term, key: Input.Key, mods: Input.Modifier) !void 
     defer term.mutex.unlock();
     followLiveBottomForInput(term);
     log.logf("host-loop ts_ns={d} stage=transport-publish-key key={d} mods={d}", .{ log.nowNs(), key, mods });
-    _ = try publishSessionBytes(term.session, try encodeKeyLocked(term, .{ .key = key, .mods = mods }));
+    _ = try pty_api.publishInputBytesLocked(term, try encodeKeyLocked(term, .{ .key = key, .mods = mods }));
 }
 
 pub fn publishMouseEvent(term: *Term, mouse: Input.MouseEvent) !bool {
     term.mutex.lock();
     defer term.mutex.unlock();
     log.logf("host-loop ts_ns={d} stage=transport-publish-mouse kind={d} button={d}", .{ log.nowNs(), mouse.kind, mouse.button });
-    return try publishSessionBytes(term.session, try encodeMouseLocked(term, mouse));
+    return try pty_api.publishInputBytesLocked(term, try encodeMouseLocked(term, mouse));
 }
 
 pub fn publishInputFocus(term: *Term, focused: bool) !bool {
@@ -278,7 +279,7 @@ fn publishFocusLocked(term: *Term, focused: bool) !bool {
         }
         try requireOk(result.status);
         std.debug.assert(result.written <= term.vt_state.bytes.items.len);
-        return try publishSessionBytes(term.session, term.vt_state.bytes.items[0..@intCast(result.written)]);
+        return try pty_api.publishInputBytesLocked(term, term.vt_state.bytes.items[0..@intCast(result.written)]);
     }
 }
 
@@ -360,7 +361,7 @@ fn drainTerminalReplyLocked(term: *Term) void {
     const pending = pendingOutputLocked(term) catch return;
     if (pending.len == 0) return;
     log.logf("host-loop ts_ns={d} stage=transport-drain-terminal-reply len={d}", .{ log.nowNs(), pending.len });
-    _ = publishSessionBytes(term.session, pending) catch return;
+    _ = pty_api.publishInputBytesLocked(term, pending) catch return;
     runtime.c.howl_vt_terminal_clear_pending_output(term.vt);
 }
 
@@ -381,26 +382,10 @@ fn ensureBytesLocked(term: *Term, needed: usize) ![]u8 {
     return term.vt_state.bytes.items;
 }
 
-fn publishSessionBytes(handle: runtime.c.HowlPtySessionHandle, bytes: []const u8) !bool {
-    if (bytes.len == 0) return false;
-    try requirePtyOk(runtime.c.howl_pty_session_publish_input(handle, bytes.ptr, bytes.len));
-    requirePtyStructOk(runtime.c.howl_pty_session_pump_outbound(handle, 0).status);
-    return true;
-}
-
 pub fn queuedEventCountLocked(term: *Term) u32 {
     const result = runtime.c.howl_vt_terminal_apply(term.vt, 0, null, 0);
     requireStructOk(result.status);
     return @intCast(result.remaining_events);
-}
-
-fn requirePtyOk(status: i32) !void {
-    if (status == runtime.c.HOWL_PTY_CALL_OK) return;
-    return error.PtyCallFailed;
-}
-
-fn requirePtyStructOk(status: i32) void {
-    std.debug.assert(status == runtime.c.HOWL_PTY_CALL_OK);
 }
 
 fn requireResizeOk(status: i32) !void {

@@ -85,7 +85,7 @@ pub fn publishInputBytes(term: *api.Term, bytes: []const u8) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
     log.logf("host-loop ts_ns={d} stage=transport-publish-bytes len={d}", .{ log.nowNs(), bytes.len });
-    _ = try publishEncodedBytes(term, bytes);
+    _ = try publishInputBytesLocked(term, bytes);
 }
 
 pub fn inputBytesApplied(term: *const api.Term) u64 {
@@ -95,7 +95,7 @@ pub fn inputBytesApplied(term: *const api.Term) u64 {
     return c.howl_pty_session_bytes_applied(term.session);
 }
 
-fn publishEncodedBytes(term: *api.Term, encoded: []const u8) !bool {
+pub fn publishInputBytesLocked(term: *api.Term, encoded: []const u8) !bool {
     if (encoded.len == 0) return false;
     log.logf("host-loop ts_ns={d} stage=transport-publish-encoded len={d}", .{ log.nowNs(), encoded.len });
     try ptyPublishInput(term.session, encoded);

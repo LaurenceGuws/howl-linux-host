@@ -37,6 +37,7 @@ pub fn resize(term: *Term, cols: u16, rows: u16) !void {
 pub const waitTransport = session.waitTransport;
 pub const isAlive = session.isAlive;
 pub const hasOutboundInputBacklog = session.hasOutboundInputBacklog;
+pub const publishInputBytesLocked = session.publishInputBytesLocked;
 pub const publishInputBytes = session.publishInputBytes;
 pub const inputBytesApplied = session.inputBytesApplied;
 
