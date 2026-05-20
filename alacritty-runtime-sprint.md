@@ -18,6 +18,18 @@ Parser parity in `howl-vt` is frozen unless an ABI move forces a touch.
 
 This sprint is about the seams around VT, not more internal parser polishing.
 
+## Source Order
+
+For host/runtime work, use this order:
+
+1. Ghostty does it for shared seam or embedding shape.
+2. Alacritty does it for outer-loop runtime shape.
+3. TigerBeetle mandates it for bounds, assertions, simplicity, and proof.
+4. Only the embeddable renderer seam may require invention, and even there the host should stay as
+   close as possible to a simple Alacritty-like implementation.
+
+Anything outside that order is stale debt.
+
 ## Target Runtime Shape
 
 Target pipeline:
