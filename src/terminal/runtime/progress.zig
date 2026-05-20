@@ -1,3 +1,4 @@
+const feed_record = @import("../pty/feed_record.zig");
 const pty_api = @import("../pty/abi.zig");
 const pty_session = @import("../pty/session.zig");
 const vt_api = @import("../vt/abi.zig");
@@ -141,6 +142,7 @@ fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode, max_
         if (chunk_len == 0) break;
         std.debug.assert(chunk_len <= remaining);
         std.debug.assert(bytes_read + chunk_len <= limits.max_bytes);
+        if (!recordChunkLocked(term, scratch[0..chunk_len])) break;
         if (!handleFeedStatusLocked(term, vt_api.feedTransportLocked(term, scratch[0..chunk_len]), chunk_len)) break;
         reads += 1;
         bytes_read += chunk_len;
@@ -176,6 +178,15 @@ fn handleFeedStatusLocked(term: *pty_api.Term, status: i32, chunk_len: u32) bool
     term.pty.lifecycle = .failed;
     log.logf("host-loop ts_ns={d} stage=transport-vt-feed-failed status={d} chunk_len={d}", .{ log.nowNs(), status, chunk_len });
     return false;
+}
+
+fn recordChunkLocked(term: *pty_api.Term, chunk: []const u8) bool {
+    feed_record.writeChunkLocked(term, chunk) catch |err| {
+        term.pty.lifecycle = .failed;
+        log.logf("host-loop ts_ns={d} stage=transport-record-failed err={s} chunk_len={d}", .{ log.nowNs(), @errorName(err), chunk.len });
+        return false;
+    };
+    return true;
 }
 
 test "progress drive stays quiet when nothing changes" {

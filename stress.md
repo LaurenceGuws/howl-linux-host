@@ -80,3 +80,20 @@ Enable Howl telemetry only for diagnostic runs because tracing writes structured
 ```sh
 tools/benchmark_terminals.py --duration 10 --mode ascii --terminals howl --trace-howl
 ```
+
+## PTY To VT Chunk Capture
+
+Capture the exact `PTY -> VT` chunk boundaries that the honest host seam feeds into `howl-vt`.
+
+The parent directory must already exist.
+
+```sh
+mkdir -p artifacts/replay
+zig-out/bin/howl_term --pty-vt-record-path artifacts/replay/lsd-never.hex --duration-ms 4000 --command 'lsd -la --color=never'
+zig-out/bin/howl_term --pty-vt-record-path artifacts/replay/lsd-always.hex --duration-ms 4000 --command 'lsd -la --color=always'
+```
+
+Fixture format:
+
+- first line: `howl-pty-vt-hex-v1`
+- each later non-empty line: one `PTY -> VT` chunk encoded as lowercase hex

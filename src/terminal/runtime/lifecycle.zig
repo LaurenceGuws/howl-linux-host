@@ -2,11 +2,10 @@ const std = @import("std");
 const window = @import("../../window/window.zig");
 const trace = @import("../../input/window.zig");
 const HostInput = @import("../../input/input.zig").Input;
+const feed_record = @import("../pty/feed_record.zig");
 const pty_api = @import("../pty/abi.zig");
 const render_api = @import("../render/abi.zig");
 const runtime = @import("runtime.zig");
-const geometry = @import("../host/geometry.zig");
-const panel_state = @import("../host/panel_state.zig");
 const thread = @import("thread.zig");
 
 pub fn start(self: anytype) !void {
@@ -27,15 +26,16 @@ pub fn start(self: anytype) !void {
     if (!render_api.setFontSizePx(&self.term, @max(self.conf.font_size, 1))) return error.RenderConfigFailed;
     if (!render_api.setPrimaryFontPath(&self.term, self.conf.fonts.primary)) return error.RenderConfigFailed;
     if (!render_api.setFallbackFontPaths(&self.term, font_fallbacks)) return error.RenderConfigFailed;
+    if (try feed_record.start(&self.term, self.io, self.feed_record_path)) trace.logStartup("term-feed-record-ready");
     try pty_api.start(&self.term);
     trace.logStartup("term-session-started");
     const frame_layout = self.frameLayoutSnapshot();
-    try geometry.syncFrameLayout(self, frame_layout);
+    try self.syncFrameLayout(frame_layout);
     trace.logStartupf("stage=term-geometry-synced render_w={d} render_h={d} grid_w={d} grid_h={d}", .{ frame_layout.render_px.width, frame_layout.render_px.height, frame_layout.grid_px.width, frame_layout.grid_px.height });
     if (!pty_api.isAlive(&self.term)) return error.TransportUnavailable;
     trace.logStartup("term-transport-alive");
-    panel_state.refreshTitle(self);
-    panel_state.syncInputFocus(self);
+    self.refreshTitle();
+    self.syncInputFocus();
     self.progress_stop.store(false, .release);
     const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
     setThreadName(progress_thread, "howl-term-host");

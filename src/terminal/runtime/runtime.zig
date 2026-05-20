@@ -1,6 +1,7 @@
 
 const std = @import("std");
 const terminal_c = @import("../c.zig");
+const feed_record = @import("../pty/feed_record.zig");
 const pty_retained = @import("../pty/retained.zig");
 const render_retained = @import("../render/retained.zig");
 const vt_retained = @import("../vt/retained.zig");
@@ -152,6 +153,7 @@ fn syncInitialGeometry(surface_text: c.HowlRenderSurfaceTextHandle, initial_rend
 
 pub fn deinit(term: *Term) void {
     stop(term);
+    feed_record.deinit(term);
     term.render.deinit(term.allocator);
     term.vt_state.deinit(term.allocator);
     c.howl_vt_terminal_deinit(term.vt);

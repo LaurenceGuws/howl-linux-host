@@ -5,6 +5,7 @@ pub const Options = struct {
     command: ?[]const u8 = null,
     shell: ?[]const u8 = null,
     start_path: ?[]const u8 = null,
+    pty_vt_record_path: ?[]const u8 = null,
     duration_ms: ?u64 = null,
     window_title: ?[:0]const u8 = null,
 };
@@ -32,9 +33,28 @@ pub fn parse(args: []const []const u8) !Options {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
             options.duration_ms = try std.fmt.parseInt(u64, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--pty-vt-record-path")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArgs;
+            options.pty_vt_record_path = args[i];
         } else {
             return error.InvalidArgs;
         }
     }
     return options;
+}
+
+test "parse accepts pty vt record path" {
+    const options = try parse(&.{
+        "howl_term",
+        "--pty-vt-record-path",
+        "artifacts/replay/test.hex",
+        "--duration-ms",
+        "100",
+        "--command",
+        "true",
+    });
+    try std.testing.expectEqualStrings("artifacts/replay/test.hex", options.pty_vt_record_path.?);
+    try std.testing.expectEqual(@as(u64, 100), options.duration_ms.?);
+    try std.testing.expectEqualStrings("true", options.command.?);
 }

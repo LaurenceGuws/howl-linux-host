@@ -15,6 +15,7 @@ const TermTextureOps = @import("window/term_texture.zig");
 const Window = @import("window/window.zig");
 
 pub const Options = cli_args.Options;
+const feed_record_path_env = "HOWL_PTY_VT_RECORD_PATH";
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
@@ -175,6 +176,8 @@ const LoopAction = enum {
 
 const App = struct {
     conf: *const Config.State,
+    feed_record_path: ?[]const u8,
+    io: std.Io,
     window: *Window.State,
     tab_bar: *TabBar,
     tabs: *TabList,
@@ -187,10 +190,11 @@ pub fn main(init: std.process.Init) !void {
         error.HelpRequested => return,
         else => |e| return e,
     };
-    try start(options);
+    const feed_record_path = options.pty_vt_record_path orelse if (init.minimal.environ.getPosix(feed_record_path_env)) |value| value[0..value.len] else null;
+    try start(init.io, options, feed_record_path);
 }
 
-fn start(options: Options) !void {
+fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     setCurrentThreadName("howl-main");
     InputWindow.logStartup("app-start");
     try initVideo();
@@ -209,7 +213,7 @@ fn start(options: Options) !void {
     var tabs: TabList = .empty;
     defer destroyTabs(std.heap.c_allocator, &tabs);
     var active_tab_idx: TabIndex = 0;
-    try openTab(std.heap.c_allocator, &conf, &window, &tabs, &active_tab_idx);
+    try openTab(std.heap.c_allocator, io, &conf, feed_record_path, &window, &tabs, &active_tab_idx);
     InputWindow.logStartup("initial-tab-opened");
 
     var perf: PerfLog.State = undefined;
@@ -224,6 +228,8 @@ fn start(options: Options) !void {
 
     var app = App{
         .conf = &conf,
+        .feed_record_path = feed_record_path,
+        .io = io,
         .window = &window,
         .tab_bar = &tab_bar,
         .tabs = &tabs,
@@ -336,7 +342,7 @@ fn applyFocusChange(app: *App) void {
 fn drainBindingActions(app: *App) !void {
     while (true) {
         const action = app.input.drainBindingAction() orelse return;
-        try handleBindingAction(app.conf, app.window, app.tabs, app.active_tab_idx, action);
+        try handleBindingAction(app.conf, app.feed_record_path, app.io, app.window, app.tabs, app.active_tab_idx, action);
     }
 }
 
@@ -470,14 +476,14 @@ fn activePanel(tabs: []AppTab, active_tab_idx: TabIndex) *TerminalPanel {
     return activeTab(tabs, active_tab_idx).panel;
 }
 
-fn handleBindingAction(conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex, action: Input.Bindings.Action) !void {
+fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8, io: std.Io, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex, action: Input.Bindings.Action) !void {
     switch (action) {
         .zoom_in => _ = activePanel(tabs.items, active_tab_idx.*).adjustFontSize(1),
         .zoom_out => _ = activePanel(tabs.items, active_tab_idx.*).adjustFontSize(-1),
         .zoom_reset => _ = activePanel(tabs.items, active_tab_idx.*).resetFontSize(),
         .zoom_stress_toggle => _ = activePanel(tabs.items, active_tab_idx.*).toggleStressFontSize(),
         .terminal_paste => pasteIntoActiveTab(activePanel(tabs.items, active_tab_idx.*)),
-        .terminal_new_tab => try openTab(std.heap.c_allocator, conf, window, tabs, active_tab_idx),
+        .terminal_new_tab => try openTab(std.heap.c_allocator, io, conf, feed_record_path, window, tabs, active_tab_idx),
         .terminal_close_tab => closeActiveTab(window, tabs, active_tab_idx),
         .terminal_next_tab => selectRelative(window, tabs.items, active_tab_idx, 1),
         .terminal_prev_tab => selectRelative(window, tabs.items, active_tab_idx, -1),
@@ -485,13 +491,13 @@ fn handleBindingAction(conf: *const Config.State, window: *Window.State, tabs: *
     }
 }
 
-fn openTab(alloc: std.mem.Allocator, conf: *const Config.State, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
+fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, feed_record_path: ?[]const u8, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
     assert(tabs.items.len <= max_tabs);
     if (tabs.items.len >= TabBar.max_tabs_count) return;
 
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
-    const panel = try TerminalPanel.create(alloc, &conf.term, px.width, px.height, logical.width, logical.height);
+    const panel = try TerminalPanel.create(alloc, io, &conf.term, feed_record_path, px.width, px.height, logical.width, logical.height);
     errdefer panel.destroy(alloc);
     try tabs.append(alloc, AppTab.init(alloc, panel));
     assert(tabs.items.len > 0);
