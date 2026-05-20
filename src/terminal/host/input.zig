@@ -1,7 +1,7 @@
 
 const Input = @import("../../input/input.zig").Input;
 const api = @import("../vt/abi.zig");
-const pty_api = @import("../pty/abi.zig");
+const pty_session = @import("../pty/session.zig");
 const retained = @import("../vt/retained.zig");
 const log = @import("../../input/window.zig");
 const std = @import("std");
@@ -84,7 +84,7 @@ pub fn publishPaste(term: *Term, text: []const u8) !void {
     defer term.mutex.unlock();
     _ = retained.followLiveBottomLocked(term);
     log.logf("host-loop ts_ns={d} stage=transport-publish-paste len={d}", .{ log.nowNs(), text.len });
-    _ = try pty_api.publishInputBytesLocked(term, try encodePasteBytes(term, text));
+    _ = try pty_session.publishInputBytesLocked(term, try encodePasteBytes(term, text));
 }
 
 pub fn publishKey(term: *Term, key_code: TermInput.Key, modifiers: TermInput.Modifier) !void {
@@ -92,14 +92,14 @@ pub fn publishKey(term: *Term, key_code: TermInput.Key, modifiers: TermInput.Mod
     defer term.mutex.unlock();
     _ = retained.followLiveBottomLocked(term);
     log.logf("host-loop ts_ns={d} stage=transport-publish-key key={d} mods={d}", .{ log.nowNs(), key_code, modifiers });
-    _ = try pty_api.publishInputBytesLocked(term, try encodeKeyBytes(term, .{ .key = key_code, .mods = modifiers }));
+    _ = try pty_session.publishInputBytesLocked(term, try encodeKeyBytes(term, .{ .key = key_code, .mods = modifiers }));
 }
 
 pub fn publishMouse(term: *Term, mouse: TermInput.MouseEvent) !bool {
     term.mutex.lock();
     defer term.mutex.unlock();
     log.logf("host-loop ts_ns={d} stage=transport-publish-mouse kind={d} button={d}", .{ log.nowNs(), mouse.kind, mouse.button });
-    return try pty_api.publishInputBytesLocked(term, try encodeMouseBytes(term, mouse));
+    return try pty_session.publishInputBytesLocked(term, try encodeMouseBytes(term, mouse));
 }
 
 pub fn publishFocus(term: *Term, focused: bool) !bool {
@@ -108,7 +108,7 @@ pub fn publishFocus(term: *Term, focused: bool) !bool {
     if (!retained.setFocused(term, focused)) return false;
     _ = retained.followLiveBottomLocked(term);
     log.logf("host-loop ts_ns={d} stage=transport-publish-focus focused={}", .{ log.nowNs(), focused });
-    return try pty_api.publishInputBytesLocked(term, try encodeFocusBytes(term, focused));
+    return try pty_session.publishInputBytesLocked(term, try encodeFocusBytes(term, focused));
 }
 
 fn encodeFocusBytes(term: *Term, focused: bool) ![]const u8 {

@@ -1,7 +1,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const pty_api = @import("../terminal/pty/abi.zig");
+const runtime = @import("../terminal/runtime/runtime.zig");
 const render_api = @import("../terminal/render/abi.zig");
 const window = @import("../window/window.zig");
 
@@ -23,9 +23,9 @@ pub const State = struct {
     wake_sem: ?*window.c_win.SDL_Semaphore,
     thread: ?std.Thread,
     stop: std.atomic.Value(bool),
-    term: *pty_api.Term,
+    term: *runtime.Term,
 
-    pub fn init(self: *State, term: *pty_api.Term, path: ?[*:0]const u8) !void {
+    pub fn init(self: *State, term: *runtime.Term, path: ?[*:0]const u8) !void {
         assert(path == null or path.?[0] != 0);
         const file = c.fopen(path orelse default_log_name, "w") orelse return error.PerfLogOpenFailed;
         errdefer _ = c.fclose(file);

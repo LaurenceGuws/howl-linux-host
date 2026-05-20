@@ -1,4 +1,5 @@
-const pty_api = @import("../pty/abi.zig");
+const pty_session = @import("../pty/session.zig");
+const runtime = @import("runtime.zig");
 const HostInput = @import("../../input/input.zig").Input;
 const log = @import("../../input/window.zig");
 const std = @import("std");
@@ -62,8 +63,8 @@ fn signalWakeAck(self: anytype) void {
 }
 
 const RealOps = struct {
-    fn waitTransport(term: *pty_api.Term, timeout_ms: i32) bool {
-        return pty_api.waitTransport(term, timeout_ms);
+    fn waitTransport(term: *runtime.Term, timeout_ms: i32) bool {
+        return pty_session.waitTransport(term, timeout_ms);
     }
 
     fn waitWakeAck(self: anytype) void {
@@ -71,8 +72,8 @@ const RealOps = struct {
         log.c_win.SDL_WaitSemaphore(sem);
     }
 
-    fn isAlive(term: *const pty_api.Term) bool {
-        return pty_api.isAlive(term);
+    fn isAlive(term: *const runtime.Term) bool {
+        return pty_session.isAlive(term);
     }
 
     fn wakeWindow() void {

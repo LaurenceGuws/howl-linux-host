@@ -1,6 +1,6 @@
 const feed_record = @import("../pty/feed_record.zig");
-const pty_api = @import("../pty/abi.zig");
 const pty_session = @import("../pty/session.zig");
+const runtime = @import("runtime.zig");
 const vt_api = @import("../vt/abi.zig");
 const vt_retained = @import("../vt/retained.zig");
 const vt_surface = @import("../vt/surface.zig");
@@ -11,7 +11,7 @@ const std = @import("std");
 // loop honest by bounding each PTY slice instead of draining hidden backlog in
 // a second runtime phase. Keep Howl on the same shape: one explicit PTY slice
 // per main-thread turn, with VT mutation happening during feed.
-const transport_mode: pty_api.TransportPumpMode = .normal;
+const transport_mode: pty_session.TransportPumpMode = .normal;
 
 pub const Outcome = struct {
     keep: bool,
@@ -27,7 +27,7 @@ const TransportProgress = struct {
     hit_limit: bool,
 };
 
-pub fn driveOnce(term: *pty_api.Term) Outcome {
+pub fn driveOnce(term: *runtime.Term) Outcome {
     return driveOnceWith(term, RealOps);
 }
 
@@ -78,20 +78,20 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
 }
 
 const RealOps = struct {
-    fn pumpTransport(term: *pty_api.Term, mode: pty_api.TransportPumpMode) TransportProgress {
+    fn pumpTransport(term: *runtime.Term, mode: pty_session.TransportPumpMode) TransportProgress {
         return pumpTransportSlice(term, mode);
     }
 
-    fn hasOutboundInputBacklog(term: *const pty_api.Term) bool {
-        return pty_api.hasOutboundInputBacklog(term);
+    fn hasOutboundInputBacklog(term: *const runtime.Term) bool {
+        return pty_session.hasOutboundInputBacklog(term);
     }
 
-    fn isAlive(term: *const pty_api.Term) bool {
-        return pty_api.isAlive(term);
+    fn isAlive(term: *const runtime.Term) bool {
+        return pty_session.isAlive(term);
     }
 };
 
-fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode) TransportProgress {
+fn pumpTransportSlice(term: *runtime.Term, mode: pty_session.TransportPumpMode) TransportProgress {
     const limits = pty_session.transportLimits(mode);
     term.mutex.lock();
     defer term.mutex.unlock();
@@ -132,7 +132,7 @@ fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode) Tran
     };
 }
 
-fn feedTermLocked(term: *pty_api.Term, bytes: []const u8, chunk_len: u32) bool {
+fn feedTermLocked(term: *runtime.Term, bytes: []const u8, chunk_len: u32) bool {
     const history_before = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
     const result = vt_retained.feedLocked(term, bytes);
     if (!vt_api.isCallOk(result.status)) {
@@ -150,7 +150,7 @@ fn feedTermLocked(term: *pty_api.Term, bytes: []const u8, chunk_len: u32) bool {
     return true;
 }
 
-fn recordChunkLocked(term: *pty_api.Term, chunk: []const u8) bool {
+fn recordChunkLocked(term: *runtime.Term, chunk: []const u8) bool {
     feed_record.writeChunkLocked(term, chunk) catch |err| {
         term.pty.lifecycle = .failed;
         log.logf("host-loop ts_ns={d} stage=transport-record-failed err={s} chunk_len={d}", .{ log.nowNs(), @errorName(err), chunk.len });
@@ -159,11 +159,11 @@ fn recordChunkLocked(term: *pty_api.Term, chunk: []const u8) bool {
     return true;
 }
 
-fn drainTerminalReplyLocked(term: *pty_api.Term) void {
+fn drainTerminalReplyLocked(term: *runtime.Term) void {
     const pending = vt_retained.copyPendingOutputLocked(term) catch return;
     if (pending.len == 0) return;
     log.logf("host-loop ts_ns={d} stage=transport-drain-terminal-reply len={d}", .{ log.nowNs(), pending.len });
-    _ = pty_api.publishInputBytesLocked(term, pending) catch return;
+    _ = pty_session.publishInputBytesLocked(term, pending) catch return;
     vt_retained.clearPendingOutputLocked(term);
 }
 
@@ -230,7 +230,7 @@ var fake_state: struct {
 } = .{};
 
 const FakeOps = struct {
-    fn pumpTransport(_: *FakeTerm, _: pty_api.TransportPumpMode) TransportProgress {
+    fn pumpTransport(_: *FakeTerm, _: pty_session.TransportPumpMode) TransportProgress {
         fake_state.pump_calls += 1;
         return .{
             .drained_input_bytes = 0,

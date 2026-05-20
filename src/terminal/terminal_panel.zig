@@ -2,11 +2,12 @@ const std = @import("std");
 const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
 const HostInput = @import("../input/input.zig").Input;
-const pty_api = @import("pty/abi.zig");
+const pty_retained = @import("pty/retained.zig");
+const pty_session = @import("pty/session.zig");
 const render_api = @import("render/abi.zig");
 const vt_retained = @import("vt/retained.zig");
-const HowlTerm = pty_api.Term;
-const LifecycleState = pty_api.LifecycleState;
+const HowlTerm = runtime.Term;
+const LifecycleState = pty_retained.LifecycleState;
 const FrameLayoutRequest = render_api.FrameLayoutRequest;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
@@ -158,7 +159,7 @@ pub const TerminalPanel = struct {
         const sync = try render_api.deriveFrameLayout(&self.term, request);
         if (!sync.changed) return;
         if (sync.grid_changed) {
-            try pty_api.resize(&self.term, sync.layout.cols, sync.layout.rows);
+            try pty_session.resize(&self.term, sync.layout.cols, sync.layout.rows);
             try vt_retained.resize(&self.term, sync.layout.rows, sync.layout.cols);
         }
         render_api.commitFrameLayout(&self.term, sync.layout);
@@ -218,11 +219,11 @@ pub const TerminalPanel = struct {
     }
 
     pub fn lifecycleState(self: *const TerminalPanel) LifecycleState {
-        return pty_api.lifecycleState(&self.term);
+        return pty_session.lifecycleState(&self.term);
     }
 
     pub fn isAlive(self: *const TerminalPanel) bool {
-        return pty_api.isAlive(&self.term);
+        return pty_session.isAlive(&self.term);
     }
 
     pub fn titleSlice(self: *TerminalPanel) []const u8 {
@@ -272,7 +273,7 @@ pub const TerminalPanel = struct {
     }
     fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) void {
         _ = vt_retained.followLiveBottom(&self.term);
-        pty_api.publishInputBytes(&self.term, bytes) catch return;
+        pty_session.publishInputBytes(&self.term, bytes) catch return;
     }
 
     fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) void {

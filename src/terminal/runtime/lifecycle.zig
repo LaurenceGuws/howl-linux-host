@@ -3,7 +3,7 @@ const window = @import("../../window/window.zig");
 const trace = @import("../../input/window.zig");
 const HostInput = @import("../../input/input.zig").Input;
 const feed_record = @import("../pty/feed_record.zig");
-const pty_api = @import("../pty/abi.zig");
+const pty_session = @import("../pty/session.zig");
 const runtime = @import("runtime.zig");
 const thread = @import("thread.zig");
 
@@ -27,7 +27,7 @@ pub fn start(self: anytype) !void {
     });
     self.term_ready = true;
     errdefer {
-        pty_api.deinit(&self.term);
+        runtime.deinit(&self.term);
         self.term_ready = false;
     }
     trace.logStartupf(
@@ -42,9 +42,9 @@ pub fn start(self: anytype) !void {
         },
     );
     if (try feed_record.start(&self.term, self.io, self.feed_record_path)) trace.logStartup("term-feed-record-ready");
-    try pty_api.start(&self.term);
+    try pty_session.start(&self.term);
     trace.logStartup("term-session-started");
-    if (!pty_api.isAlive(&self.term)) return error.TransportUnavailable;
+    if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
     trace.logStartup("term-transport-alive");
     self.refreshTitle();
     self.syncInputFocus();
@@ -62,14 +62,14 @@ pub fn stop(self: anytype) void {
     trace.logStartup("term-stop-begin");
     self.progress.stop.store(true, .release);
     thread.ackWake(self);
-    if (self.term_ready) pty_api.stop(&self.term);
+    if (self.term_ready) pty_session.stop(&self.term);
     trace.logStartup("term-stop-session-ok");
     if (self.progress.thread) |handle| handle.join();
     trace.logStartup("term-stop-thread-joined");
     self.progress.thread = null;
     if (self.link_cursor_active) window.useDefaultCursor();
     self.link_cursor_active = false;
-    if (self.term_ready) pty_api.deinit(&self.term);
+    if (self.term_ready) runtime.deinit(&self.term);
     self.term_ready = false;
     self.progress.deinit();
     trace.logStartup("term-stop-complete");

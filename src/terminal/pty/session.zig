@@ -23,6 +23,38 @@ pub const OutboundProgress = struct {
     pending_input_bytes: u64,
 };
 
+pub fn start(term: *api.Term) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    if (ptySessionStatus(term.session) == c.HOWL_PTY_SESSION_ACTIVE) return error.AlreadyStarted;
+    term.pty.lifecycle = .starting;
+    requireOk(c.howl_pty_session_start(term.session)) catch |err| {
+        term.pty.lifecycle = .failed;
+        return err;
+    };
+    term.pty.lifecycle = .ready;
+}
+
+pub fn stop(term: *api.Term) void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    c.howl_pty_session_stop(term.session);
+    term.pty.lifecycle = .stopped;
+}
+
+pub fn resize(term: *api.Term, cols: u16, rows: u16) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    try requireResizeOk(c.howl_pty_session_resize(term.session, cols, rows));
+}
+
+pub fn lifecycleState(term: *const api.Term) api.LifecycleState {
+    const mut: *api.Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.pty.lifecycle;
+}
+
 pub fn isAlive(term: *const api.Term) bool {
     const mut: *api.Term = @constCast(term);
     mut.mutex.lock();
