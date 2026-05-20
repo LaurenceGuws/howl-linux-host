@@ -164,11 +164,7 @@ fn initTermValue(
         },
         .session = session_handle,
         .vt = vt,
-        .render = .{
-            .frame_layout = frame_layout,
-            .surface_text = surface_text,
-            .font_size_px = font_size_px,
-        },
+        .render = render_retained.State.init(surface_text, frame_layout, font_size_px),
     };
 }
 
@@ -199,19 +195,25 @@ fn applyFallbackFontPaths(surface_text: c.HowlRenderSurfaceTextHandle, paths: []
 
 fn recordRenderFonts(term: *Term, bootstrap: RenderBootstrap) !void {
     if (bootstrap.primary_font_path) |path| {
-        term.render.primary_font_path = try term.allocator.dupeZ(u8, path);
+        const owned = try term.allocator.dupeZ(u8, path);
+        term.render.replacePrimaryFontPathOwned(term.allocator, owned);
     }
     if (bootstrap.fallback_font_paths.len == 0) return;
 
+    var staged: std.ArrayListUnmanaged([:0]u8) = .empty;
+    errdefer {
+        for (staged.items) |path| term.allocator.free(path);
+        staged.deinit(term.allocator);
+    }
     const path_count: u8 = @intCast(bootstrap.fallback_font_paths.len);
-    try term.render.fallback_font_paths.ensureTotalCapacity(term.allocator, path_count);
+    try staged.ensureTotalCapacity(term.allocator, path_count);
     var i: u8 = 0;
     while (i < path_count) : (i += 1) {
-        try term.render.fallback_font_paths.append(
-            term.allocator,
+        staged.appendAssumeCapacity(
             try term.allocator.dupeZ(u8, bootstrap.fallback_font_paths[@intCast(i)]),
         );
     }
+    term.render.replaceFallbackFontPathsOwned(term.allocator, &staged);
 }
 
 fn renderCallOk(status: i32) bool {

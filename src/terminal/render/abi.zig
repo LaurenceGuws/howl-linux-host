@@ -24,11 +24,7 @@ pub const RenderSubmitResult = retained.SubmitResult;
 pub const RenderPhase = retained.Phase;
 pub const RenderCellSize = c.HowlRenderCellSize;
 pub const max_fallback_font_paths: u8 = @intCast(c.HOWL_RENDER_MAX_FALLBACK_FONTS);
-pub const FrameLayoutSync = struct {
-    layout: FrameLayout,
-    changed: bool,
-    grid_changed: bool,
-};
+pub const FrameLayoutSync = retained.FrameLayoutSync;
 
 const ExpectedPreparedSurfaceBuffer = extern struct {
     status: i32,
@@ -74,7 +70,7 @@ pub fn setFontSizePx(term: *Term, font_size_px: u16) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
     if (!renderCallOk(c.howl_render_surface_text_set_font_size_px(term.render.surface_text, font_size_px))) return false;
-    term.render.font_size_px = font_size_px;
+    term.render.setFontSizePx(font_size_px);
     return true;
 }
 
@@ -89,11 +85,11 @@ pub fn setPrimaryFontPath(term: *Term, font_path: ?[:0]const u8) bool {
             term.allocator.free(owned);
             return false;
         }
-        replacePrimaryFontPathLocked(term, owned);
+        term.render.replacePrimaryFontPathOwned(term.allocator, owned);
         return true;
     }
     if (!renderCallOk(c.howl_render_surface_text_set_font_path(term.render.surface_text, null, 0))) return false;
-    replacePrimaryFontPathLocked(term, null);
+    term.render.replacePrimaryFontPathOwned(term.allocator, null);
     return true;
 }
 
@@ -102,13 +98,13 @@ pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) bool {
     defer term.mutex.unlock();
     if (paths.len == 0) {
         if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0))) return false;
-        clearFallbackFontPathsLocked(term);
+        term.render.clearFallbackFontPaths(term.allocator);
         return true;
     }
     // Stage owned fallback paths first so a failed update leaves host and
     // render owner state aligned on the old fallback set.
     var staged: std.ArrayListUnmanaged([:0]u8) = .empty;
-    defer freeOwnedFallbackFontPaths(term, &staged);
+    defer freeStagedFallbackPaths(term.allocator, &staged);
     std.debug.assert(paths.len <= max_fallback_font_paths);
     const path_count: u8 = @intCast(paths.len);
     staged.ensureTotalCapacity(term.allocator, path_count) catch return false;
@@ -120,7 +116,7 @@ pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) bool {
         raw[i] = owned.ptr;
     }
     if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, &raw, path_count))) return false;
-    replaceFallbackFontPathsLocked(term, &staged);
+    term.render.replaceFallbackFontPathsOwned(term.allocator, &staged);
     return true;
 }
 
@@ -128,7 +124,7 @@ pub fn clearFallbackFontPaths(term: *Term) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
     if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0))) return false;
-    clearFallbackFontPathsLocked(term);
+    term.render.clearFallbackFontPaths(term.allocator);
     return true;
 }
 
@@ -152,35 +148,19 @@ pub fn deriveFrameLayout(term: *Term, request: FrameLayoutRequest) !FrameLayoutS
         .rows = grid.rows,
         .cell_px = .{ .width = cell_px.width, .height = cell_px.height },
     };
-    const current = term.render.frame_layout;
-    return .{
-        .layout = next,
-        .changed = frameLayoutChanged(current, next),
-        .grid_changed = current.cols != next.cols or current.rows != next.rows,
-    };
+    return term.render.frameLayoutSync(next);
 }
 
 pub fn commitFrameLayout(term: *Term, layout: FrameLayout) void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    term.render.frame_layout = layout;
+    term.render.commitFrameLayout(layout);
     const geometry = c.howl_render_surface_text_sync_geometry(term.render.surface_text, .{
         .render_px = layout.render_px,
         .grid_px = layout.grid_px,
         .cell_px = layout.cell_px,
     });
     std.debug.assert(geometry.status == c.HOWL_RENDER_CALL_OK);
-}
-
-fn frameLayoutChanged(current: retained.FrameLayout, next: retained.FrameLayout) bool {
-    return current.render_px.width != next.render_px.width or
-        current.render_px.height != next.render_px.height or
-        current.grid_px.width != next.grid_px.width or
-        current.grid_px.height != next.grid_px.height or
-        current.cols != next.cols or
-        current.rows != next.rows or
-        current.cell_px.width != next.cell_px.width or
-        current.cell_px.height != next.cell_px.height;
 }
 
 pub fn renderPhase(term: *const Term) RenderPhase {
@@ -213,13 +193,13 @@ pub fn prepareRender(term: *Term) RenderPrepareResult {
     var request = std.mem.zeroes(c.HowlRenderPrepareRequest);
     switch (c.howl_render_surface_text_take_prepare_request(term.render.surface_text, &request)) {
         c.HOWL_RENDER_PREPARE_IDLE => {
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             term.render.clearInFlight();
             return .idle;
         },
         c.HOWL_RENDER_PREPARE_READY => {},
         else => {
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             term.render.clearInFlight();
             return .failed;
         },
@@ -230,14 +210,14 @@ pub fn prepareRender(term: *Term) RenderPrepareResult {
     std.debug.assert(query.status == c.HOWL_RENDER_CALL_OK);
     return switch (c.howl_render_surface_text_prepare_handle(term.render.surface_text, &vt_surface, request, query, &prepared)) {
         c.HOWL_RENDER_PREPARE_IDLE => blk: {
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             term.render.clearInFlight();
             break :blk .idle;
         },
         c.HOWL_RENDER_PREPARE_READY => blk: {
             var info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo);
             if (c.howl_render_prepared_surface_describe(prepared, &info) != c.HOWL_RENDER_CALL_OK) {
-                releasePreparedSurface(term);
+                term.render.releasePreparedSurface();
                 term.render.clearInFlight();
                 break :blk .failed;
             }
@@ -245,14 +225,14 @@ pub fn prepareRender(term: *Term) RenderPrepareResult {
             std.debug.assert(info.dirty_epoch == request.dirty_epoch);
             std.debug.assert(info.geometry_epoch == request.geometry_epoch);
             std.debug.assert(c.howl_render_surface_text_publish_prepared(term.render.surface_text, preparedFrameFromInfo(info)) == c.HOWL_RENDER_CALL_OK);
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             assertPreparedSurfaceHandle(prepared);
-            term.render.prepared_surface = prepared;
+            term.render.storePreparedSurface(prepared);
             term.render.notePrepared();
             break :blk .prepared;
         },
         else => blk: {
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             term.render.clearInFlight();
             break :blk .failed;
         },
@@ -271,17 +251,17 @@ pub fn submitPrepared(term: *Term, execution: *const SurfaceExecutionInput, feed
         },
         c.HOWL_RENDER_SUBMIT_DECISION_SUBMIT => {},
         c.HOWL_RENDER_SUBMIT_DECISION_STALE => {
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             term.render.clearInFlight();
             return .stale;
         },
         c.HOWL_RENDER_SUBMIT_DECISION_NEEDS_PREPARE => {
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             term.render.noteNeedsPrepare();
             return .needs_prepare;
         },
         else => {
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             term.render.clearInFlight();
             return .failed;
         },
@@ -292,12 +272,12 @@ pub fn submitPrepared(term: *Term, execution: *const SurfaceExecutionInput, feed
             break :blk .idle;
         },
         c.HOWL_RENDER_SUBMIT_STALE => blk: {
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             term.render.clearInFlight();
             break :blk .stale;
         },
         c.HOWL_RENDER_SUBMIT_NEEDS_PREPARE => blk: {
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             term.render.noteNeedsPrepare();
             break :blk .needs_prepare;
         },
@@ -306,11 +286,10 @@ pub fn submitPrepared(term: *Term, execution: *const SurfaceExecutionInput, feed
             std.debug.assert(feedback.surface.width > 0);
             std.debug.assert(feedback.surface.height > 0);
             term.render.noteRendered();
-            releasePreparedSurface(term);
             break :blk .rendered;
         },
         else => blk: {
-            releasePreparedSurface(term);
+            term.render.releasePreparedSurface();
             term.render.clearInFlight();
             break :blk .failed;
         },
@@ -356,9 +335,7 @@ pub fn takeRenderMetrics(term: *Term) RenderMetrics {
 pub fn takeRenderPerf(term: *Term) RenderPerf {
     term.mutex.lock();
     defer term.mutex.unlock();
-    const out = term.render.perf;
-    term.render.perf = .{};
-    return out;
+    return term.render.takePerf();
 }
 
 pub fn markRenderPresented(term: *Term) void {
@@ -387,31 +364,17 @@ pub fn pixelToRow(term: *const Term, pixel_y: i32) i32 {
     return @min(@as(i32, @intCast(row)), @as(i32, frame_layout.rows -| 1));
 }
 
-fn clearFallbackFontPathsLocked(term: *Term) void {
-    freeOwnedFallbackFontPaths(term, &term.render.fallback_font_paths);
-}
-
-fn replacePrimaryFontPathLocked(term: *Term, owned: ?[:0]u8) void {
-    const old = term.render.primary_font_path;
-    term.render.primary_font_path = owned;
-    if (old) |path| term.allocator.free(path);
-}
-
-fn replaceFallbackFontPathsLocked(term: *Term, staged: *std.ArrayListUnmanaged([:0]u8)) void {
-    var old = term.render.fallback_font_paths;
-    term.render.fallback_font_paths = staged.*;
-    staged.* = .empty;
-    freeOwnedFallbackFontPaths(term, &old);
-}
-
-fn freeOwnedFallbackFontPaths(term: *Term, paths: *std.ArrayListUnmanaged([:0]u8)) void {
-    for (paths.items) |path| term.allocator.free(path);
-    paths.deinit(term.allocator);
-    paths.* = .empty;
-}
-
 fn renderCallOk(status: i32) bool {
     return status == c.HOWL_RENDER_CALL_OK;
+}
+
+fn freeStagedFallbackPaths(
+    allocator: std.mem.Allocator,
+    paths: *std.ArrayListUnmanaged([:0]u8),
+) void {
+    for (paths.items) |path| allocator.free(path);
+    paths.deinit(allocator);
+    paths.* = .empty;
 }
 
 fn preparedFrameFromInfo(info: c.HowlRenderPreparedSurfaceInfo) c.HowlRenderPreparedFrame {
@@ -430,9 +393,9 @@ fn submitPreparedSurface(term: *Term, prepared_frame: c.HowlRenderPreparedFrame,
     const prepared = term.render.prepared_surface orelse return c.HOWL_RENDER_SUBMIT_IDLE;
     const result = c.howl_render_surface_text_submit(term.render.surface_text, prepared, prepared_frame, execution, feedback);
     if (result == c.HOWL_RENDER_SUBMIT_RENDERED) {
-        term.render.perf.add(feedback.metrics);
+        term.render.addPerf(feedback.metrics);
         std.debug.assert(c.howl_render_surface_text_accept_submitted(term.render.surface_text, prepared_frame, feedback.surface, 1) == c.HOWL_RENDER_CALL_OK);
-        term.render.prepared_surface = null;
+        term.render.forgetPreparedSurface();
     }
     return result;
 }
@@ -450,10 +413,4 @@ fn assertPreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) void
 
     var diagnostics = std.mem.zeroes(c.HowlRenderPreparedSurfaceDiagnostics);
     std.debug.assert(c.howl_render_prepared_surface_diagnostics(prepared, &diagnostics) == c.HOWL_RENDER_CALL_OK);
-}
-
-fn releasePreparedSurface(term: *Term) void {
-    const prepared = term.render.prepared_surface orelse return;
-    c.howl_render_prepared_surface_release(prepared);
-    term.render.prepared_surface = null;
 }
