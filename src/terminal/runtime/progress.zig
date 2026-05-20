@@ -8,12 +8,14 @@ const std = @import("std");
 // explicit VT apply slice per main-thread turn.
 //
 // The PTY owner already follows Alacritty's 1 MiB burst. Keep the VT slice
-// tiny until Howl is closer to Ghostty's direct VT path: parsed events still
-// queue separately, and style-heavy events still carry fixed-width payloads
-// inline. 256 events is the current fairness gate that lets render and present
-// run between bursts instead of letting one transport read monopolize a turn.
+// explicit and bounded, but the slimmer 24-param VT path no longer needs the
+// old 256-event churn. Current `terminal-benchmark` proof clears roughly 16k
+// CSI events in about 12 ms and 60k scroll events in about 45 ms, so a
+// 1024-event slice stays in the low-millisecond range while cutting host turn
+// churn by 4x. Keep this tied to the current measured VT path and re-derive it
+// if queue shape or host proof changes again.
 const transport_mode: pty_api.TransportPumpMode = .normal;
-const vt_apply_events_per_turn: u32 = 256;
+const vt_apply_events_per_turn: u32 = 1024;
 
 pub const Outcome = struct {
     keep: bool,
