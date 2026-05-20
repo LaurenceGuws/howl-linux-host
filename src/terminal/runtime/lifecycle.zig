@@ -5,8 +5,8 @@ const HostInput = @import("../../input/input.zig").Input;
 const pty_api = @import("../pty/abi.zig");
 const render_api = @import("../render/abi.zig");
 const runtime = @import("runtime.zig");
-const effects = @import("../vt/effects.zig");
 const geometry = @import("../host/geometry.zig");
+const panel_state = @import("../host/panel_state.zig");
 const thread = @import("thread.zig");
 
 pub fn start(self: anytype) !void {
@@ -34,8 +34,8 @@ pub fn start(self: anytype) !void {
     trace.logStartupf("stage=term-geometry-synced render_w={d} render_h={d} grid_w={d} grid_h={d}", .{ frame_layout.render_px.width, frame_layout.render_px.height, frame_layout.grid_px.width, frame_layout.grid_px.height });
     if (!pty_api.isAlive(&self.term)) return error.TransportUnavailable;
     trace.logStartup("term-transport-alive");
-    effects.refreshTitle(self);
-    effects.syncInputFocus(self);
+    panel_state.refreshTitle(self);
+    panel_state.syncInputFocus(self);
     self.progress_stop.store(false, .release);
     const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
     setThreadName(progress_thread, "howl-term-host");

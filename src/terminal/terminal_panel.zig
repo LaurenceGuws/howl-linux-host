@@ -10,9 +10,9 @@ const LifecycleState = pty_api.LifecycleState;
 const FrameLayout = render_api.FrameLayout;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
-const effects = @import("vt/effects.zig");
 const font_size = @import("host/font_size.zig");
 const geometry = @import("host/geometry.zig");
+const panel_state = @import("host/panel_state.zig");
 const term_input = @import("host/input.zig");
 const lifecycle = @import("runtime/lifecycle.zig");
 const scroll = @import("host/scroll.zig");
@@ -185,15 +185,15 @@ pub const TerminalPanel = struct {
     }
 
     pub fn titleSlice(self: *const TerminalPanel) []const u8 {
-        return effects.titleSlice(self);
+        return panel_state.titleSlice(self);
     }
 
     pub fn setWindowFocused(self: *TerminalPanel, focused: bool) void {
-        effects.setWindowFocused(self, focused);
+        panel_state.setWindowFocused(self, focused);
     }
 
     pub fn setWidgetFocused(self: *TerminalPanel, focused: bool) void {
-        effects.setWidgetFocused(self, focused);
+        panel_state.setWidgetFocused(self, focused);
     }
 
     pub fn adjustFontSize(self: *TerminalPanel, delta: i16) bool {

@@ -1,8 +1,8 @@
 
 const std = @import("std");
-const vt_api = @import("abi.zig");
+const vt_api = @import("../vt/abi.zig");
 const window = @import("../../window/window.zig");
-const scroll = @import("../host/scroll.zig");
+const scroll = @import("scroll.zig");
 
 pub fn titleSlice(self: anytype) []const u8 {
     return self.title_buf[0..self.title_len];
