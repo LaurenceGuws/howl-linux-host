@@ -1,6 +1,8 @@
 
 const std = @import("std");
+const pty_api = @import("../pty/abi.zig");
 const render_api = @import("../render/abi.zig");
+const vt_api = @import("abi.zig");
 const window = @import("../../window/window.zig");
 const scroll = @import("../host/scroll.zig");
 
@@ -45,7 +47,17 @@ pub fn maybeCommitGridResize(self: anytype) void {
         self.last_resize_ns = 0;
         break :blk snapshotLocked(self);
     };
-    render_api.syncFrameLayout(&self.term, geom) catch return;
+    syncFrameLayout(self, geom) catch return;
+}
+
+pub fn syncFrameLayout(self: anytype, frame_layout: FrameLayout) !void {
+    const sync = try render_api.deriveFrameLayout(&self.term, frame_layout);
+    if (!sync.changed) return;
+    if (sync.grid_changed) {
+        try pty_api.resize(&self.term, sync.layout.cols, sync.layout.rows);
+        try vt_api.resize(&self.term, sync.layout.rows, sync.layout.cols);
+    }
+    render_api.commitFrameLayout(&self.term, sync.layout);
 }
 
 pub fn snapshot(self: anytype) FrameLayout {

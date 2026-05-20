@@ -1,9 +1,7 @@
 const std = @import("std");
 const runtime = @import("../runtime/runtime.zig");
-const pty_session = @import("../pty/session.zig");
 const retained = @import("retained.zig");
 const surface_owner = @import("../vt/surface.zig");
-const vt_abi = @import("../vt/abi.zig");
 const c = runtime.c;
 
 pub const Term = runtime.Term;
@@ -22,6 +20,11 @@ pub const RenderSubmitResult = retained.SubmitResult;
 pub const RenderPhase = retained.Phase;
 pub const RenderCellSize = c.HowlRenderCellSize;
 pub const max_fallback_font_paths: u8 = @intCast(c.HOWL_RENDER_MAX_FALLBACK_FONTS);
+pub const FrameLayoutSync = struct {
+    layout: retained.FrameLayout,
+    changed: bool,
+    grid_changed: bool,
+};
 
 const ExpectedPreparedSurfaceBuffer = extern struct {
     status: i32,
@@ -125,7 +128,7 @@ pub fn clearFallbackFontPaths(term: *Term) bool {
     return true;
 }
 
-pub fn syncFrameLayout(term: *Term, frame_layout: FrameLayout) !void {
+pub fn deriveFrameLayout(term: *Term, frame_layout: FrameLayout) !FrameLayoutSync {
     std.debug.assert(frame_layout.render_px.width > 0);
     std.debug.assert(frame_layout.render_px.height > 0);
     std.debug.assert(frame_layout.grid_px.width > 0);
@@ -138,36 +141,42 @@ pub fn syncFrameLayout(term: *Term, frame_layout: FrameLayout) !void {
     if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     const grid = layout.grid;
     const cell_px = layout.cell_px;
-    if (term.render.frame_layout.render_px.width != frame_layout.render_px.width or
-        term.render.frame_layout.render_px.height != frame_layout.render_px.height or
-        term.render.frame_layout.grid_px.width != frame_layout.grid_px.width or
-        term.render.frame_layout.grid_px.height != frame_layout.grid_px.height or
-        term.render.frame_layout.cols != grid.cols or
-        term.render.frame_layout.rows != grid.rows or
-        term.render.frame_layout.cell_px.width != cell_px.width or
-        term.render.frame_layout.cell_px.height != cell_px.height)
-    {
-        try pty_session.requireResizeOk(c.howl_pty_session_resize(term.session, grid.cols, grid.rows));
-        try vtRequireResizeOk(c.howl_vt_terminal_resize(term.vt, grid.rows, grid.cols));
-        term.render.frame_layout = .{
-            .render_px = frame_layout.render_px,
-            .grid_px = frame_layout.grid_px,
-            .cols = grid.cols,
-            .rows = grid.rows,
-            .cell_px = .{ .width = cell_px.width, .height = cell_px.height },
-        };
-        const history_count = vt_abi.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
-        term.vt_state.scrollback_offset = @min(term.vt_state.scrollback_offset, history_count);
-        std.debug.assert(term.vt_state.scrollback_offset <= history_count);
-        term.vt_state.epoch +%= 1;
-        vt_abi.noteVisibleChange(term);
-    }
-    const geometry = c.howl_render_surface_text_sync_geometry(term.render.surface_text, .{
+    const next = retained.FrameLayout{
         .render_px = frame_layout.render_px,
         .grid_px = frame_layout.grid_px,
+        .cols = grid.cols,
+        .rows = grid.rows,
         .cell_px = .{ .width = cell_px.width, .height = cell_px.height },
+    };
+    const current = term.render.frame_layout;
+    return .{
+        .layout = next,
+        .changed = frameLayoutChanged(current, next),
+        .grid_changed = current.cols != next.cols or current.rows != next.rows,
+    };
+}
+
+pub fn commitFrameLayout(term: *Term, layout: retained.FrameLayout) void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    term.render.frame_layout = layout;
+    const geometry = c.howl_render_surface_text_sync_geometry(term.render.surface_text, .{
+        .render_px = layout.render_px,
+        .grid_px = layout.grid_px,
+        .cell_px = layout.cell_px,
     });
     std.debug.assert(geometry.status == c.HOWL_RENDER_CALL_OK);
+}
+
+fn frameLayoutChanged(current: retained.FrameLayout, next: retained.FrameLayout) bool {
+    return current.render_px.width != next.render_px.width or
+        current.render_px.height != next.render_px.height or
+        current.grid_px.width != next.grid_px.width or
+        current.grid_px.height != next.grid_px.height or
+        current.cols != next.cols or
+        current.rows != next.rows or
+        current.cell_px.width != next.cell_px.width or
+        current.cell_px.height != next.cell_px.height;
 }
 
 pub fn renderPhase(term: *const Term) RenderPhase {
@@ -443,14 +452,4 @@ fn releasePreparedSurface(term: *Term) void {
     const prepared = term.render.prepared_surface orelse return;
     c.howl_render_prepared_surface_release(prepared);
     term.render.prepared_surface = null;
-}
-
-fn vtCallOk() i32 {
-    return c.HOWL_VT_CALL_OK;
-}
-
-fn vtRequireResizeOk(status: i32) !void {
-    if (status == vtCallOk()) return;
-    if (status == c.HOWL_VT_CALL_INVALID_ARGUMENT) return error.InvalidDimensions;
-    return error.VtCallFailed;
 }

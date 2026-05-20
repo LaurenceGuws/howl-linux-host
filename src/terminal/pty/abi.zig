@@ -5,7 +5,6 @@ const session = @import("session.zig");
 pub const Term = runtime.Term;
 pub const LifecycleState = retained.LifecycleState;
 pub const TransportPumpMode = session.TransportPumpMode;
-pub const TransportProgress = session.TransportProgress;
 pub const PtyLaunchConfig = retained.LaunchConfig;
 
 pub fn deinit(term: *Term) void {
@@ -28,8 +27,14 @@ pub fn start(term: *Term) !void {
     };
     term.pty.lifecycle = .ready;
 }
+
+pub fn resize(term: *Term, cols: u16, rows: u16) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    try session.requireResizeOk(runtime.c.howl_pty_session_resize(term.session, cols, rows));
+}
+
 pub const waitTransport = session.waitTransport;
-pub const pumpTransport = session.pumpTransport;
 pub const isAlive = session.isAlive;
 pub const hasOutboundInputBacklog = session.hasOutboundInputBacklog;
 pub const publishInputBytes = session.publishInputBytes;

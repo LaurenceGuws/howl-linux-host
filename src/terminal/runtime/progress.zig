@@ -1,4 +1,5 @@
 const pty_api = @import("../pty/abi.zig");
+const pty_session = @import("../pty/session.zig");
 const vt_api = @import("../vt/abi.zig");
 const log = @import("../../input/window.zig");
 const std = @import("std");
@@ -22,6 +23,15 @@ pub const Outcome = struct {
     keep: bool,
     should_redraw: bool,
     alive: bool,
+};
+
+const TransportProgress = struct {
+    drained_input_bytes: u64,
+    reads: u32,
+    bytes_read: u32,
+    pending_input_bytes: u64,
+    queued_events: u32,
+    hit_limit: bool,
 };
 
 pub fn driveOnce(term: *pty_api.Term) Outcome {
@@ -86,8 +96,8 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
 }
 
 const RealOps = struct {
-    fn pumpTransport(term: *pty_api.Term, mode: pty_api.TransportPumpMode, max_queued_events: u32) pty_api.TransportProgress {
-        return pty_api.pumpTransport(term, mode, max_queued_events);
+    fn pumpTransport(term: *pty_api.Term, mode: pty_api.TransportPumpMode, max_queued_events: u32) TransportProgress {
+        return pumpTransportSlice(term, mode, max_queued_events);
     }
 
     fn applyPending(term: *pty_api.Term, max_events: u32) vt_api.ApplyProgress {
@@ -102,6 +112,71 @@ const RealOps = struct {
         return pty_api.isAlive(term);
     }
 };
+
+fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode, max_queued_events: u32) TransportProgress {
+    const limits = pty_session.transportLimits(mode);
+    term.mutex.lock();
+    defer term.mutex.unlock();
+
+    const outbound = pty_session.pumpOutboundLocked(term);
+    const queued_before = vt_api.queuedEventCountLocked(term);
+    if (max_queued_events != 0 and queued_before >= max_queued_events) {
+        return .{
+            .drained_input_bytes = outbound.drained_input_bytes,
+            .reads = 0,
+            .bytes_read = 0,
+            .pending_input_bytes = outbound.pending_input_bytes,
+            .queued_events = queued_before,
+            .hit_limit = true,
+        };
+    }
+
+    var scratch: [pty_session.transport_chunk_bytes]u8 = undefined;
+    var reads: u32 = 0;
+    var bytes_read: u32 = 0;
+    var queued_events = queued_before;
+    while (reads < limits.max_reads and bytes_read < limits.max_bytes) {
+        const remaining: usize = @intCast(@min(@as(u32, @intCast(scratch.len)), limits.max_bytes - bytes_read));
+        const chunk_len = pty_session.readTransportLocked(term, scratch[0..remaining]);
+        if (chunk_len == 0) break;
+        std.debug.assert(chunk_len <= remaining);
+        std.debug.assert(bytes_read + chunk_len <= limits.max_bytes);
+        if (!handleFeedStatusLocked(term, vt_api.feedTransportLocked(term, scratch[0..chunk_len]), chunk_len)) break;
+        reads += 1;
+        bytes_read += chunk_len;
+        queued_events = vt_api.queuedEventCountLocked(term);
+        if (max_queued_events != 0 and queued_events >= max_queued_events) break;
+    }
+
+    std.debug.assert(reads <= limits.max_reads);
+    std.debug.assert(bytes_read <= limits.max_bytes);
+    const hit_limit = reads == limits.max_reads or
+        bytes_read == limits.max_bytes or
+        (max_queued_events != 0 and queued_events >= max_queued_events);
+
+    if (reads > 0) {
+        log.logTransportReadStartupf("stage=term-transport-read-first reads={d} read_bytes={d} queued_events={d}", .{
+            reads,
+            bytes_read,
+            queued_events,
+        });
+    }
+    return .{
+        .drained_input_bytes = outbound.drained_input_bytes,
+        .reads = reads,
+        .bytes_read = bytes_read,
+        .pending_input_bytes = pty_session.pendingInputBytesLocked(term),
+        .queued_events = queued_events,
+        .hit_limit = hit_limit,
+    };
+}
+
+fn handleFeedStatusLocked(term: *pty_api.Term, status: i32, chunk_len: u32) bool {
+    if (vt_api.isCallOk(status)) return true;
+    term.pty.lifecycle = .failed;
+    log.logf("host-loop ts_ns={d} stage=transport-vt-feed-failed status={d} chunk_len={d}", .{ log.nowNs(), status, chunk_len });
+    return false;
+}
 
 test "progress drive stays quiet when nothing changes" {
     fake_state = .{};
@@ -181,7 +256,7 @@ var fake_state: struct {
 } = .{};
 
 const FakeOps = struct {
-    fn pumpTransport(_: *FakeTerm, _: pty_api.TransportPumpMode, _: u32) pty_api.TransportProgress {
+    fn pumpTransport(_: *FakeTerm, _: pty_api.TransportPumpMode, _: u32) TransportProgress {
         fake_state.pump_calls += 1;
         return .{
             .drained_input_bytes = 0,

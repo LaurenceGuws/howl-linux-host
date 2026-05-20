@@ -40,6 +40,10 @@ fn callOk() i32 {
     return runtime.c.HOWL_VT_CALL_OK;
 }
 
+pub fn isCallOk(status: i32) bool {
+    return status == callOk();
+}
+
 pub fn callShortBuffer() i32 {
     return runtime.c.HOWL_VT_CALL_SHORT_BUFFER;
 }
@@ -101,6 +105,17 @@ pub fn copyCurrentTitle(term: *const Term, out_buf: []u8) usize {
     const len = @min(out_buf.len, term.vt_state.title.items.len);
     if (len > 0) @memcpy(out_buf[0..len], term.vt_state.title.items[0..len]);
     return len;
+}
+
+pub fn resize(term: *Term, rows: u16, cols: u16) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    try requireResizeOk(runtime.c.howl_vt_terminal_resize(term.vt, rows, cols));
+    const history_count = vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
+    term.vt_state.scrollback_offset = @min(term.vt_state.scrollback_offset, history_count);
+    std.debug.assert(term.vt_state.scrollback_offset <= history_count);
+    term.vt_state.epoch +%= 1;
+    noteVisibleChange(term);
 }
 
 pub fn publishPaste(term: *Term, text: []const u8) !void {
@@ -218,6 +233,11 @@ pub fn vtEnsureCells(term: *Term, needed: usize) ![]runtime.c.HowlVtSurfaceCell 
 
 pub fn vtCopyVisible(term: *Term) !surface.VisibleCopy {
     return surface.vtCopyVisible(term);
+}
+
+pub fn feedTransportLocked(term: *Term, bytes: []const u8) i32 {
+    if (bytes.len == 0) return callOk();
+    return runtime.c.howl_vt_terminal_feed(term.vt, bytes.ptr, bytes.len);
 }
 
 fn applyPendingLocked(term: *Term, max_events: u32) ApplyProgress {
@@ -368,7 +388,7 @@ fn publishSessionBytes(handle: runtime.c.HowlPtySessionHandle, bytes: []const u8
     return true;
 }
 
-fn queuedEventCountLocked(term: *Term) u32 {
+pub fn queuedEventCountLocked(term: *Term) u32 {
     const result = runtime.c.howl_vt_terminal_apply(term.vt, 0, null, 0);
     requireStructOk(result.status);
     return @intCast(result.remaining_events);
@@ -381,4 +401,10 @@ fn requirePtyOk(status: i32) !void {
 
 fn requirePtyStructOk(status: i32) void {
     std.debug.assert(status == runtime.c.HOWL_PTY_CALL_OK);
+}
+
+fn requireResizeOk(status: i32) !void {
+    if (status == callOk()) return;
+    if (status == runtime.c.HOWL_VT_CALL_INVALID_ARGUMENT) return error.InvalidDimensions;
+    return error.VtCallFailed;
 }
