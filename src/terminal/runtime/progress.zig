@@ -1,4 +1,5 @@
 const pty_api = @import("../pty/abi.zig");
+const vt_api = @import("../vt/abi.zig");
 const log = @import("../../input/window.zig");
 const std = @import("std");
 
@@ -89,8 +90,8 @@ const RealOps = struct {
         return pty_api.pumpTransport(term, mode, max_queued_events);
     }
 
-    fn applyPending(term: *pty_api.Term, max_events: u32) pty_api.ApplyProgress {
-        return pty_api.applyPending(term, max_events);
+    fn applyPending(term: *pty_api.Term, max_events: u32) vt_api.ApplyProgress {
+        return vt_api.applyPending(term, max_events);
     }
 
     fn hasOutboundInputBacklog(term: *const pty_api.Term) bool {
@@ -192,7 +193,7 @@ const FakeOps = struct {
         };
     }
 
-    fn applyPending(_: *FakeTerm, max_events: u32) pty_api.ApplyProgress {
+    fn applyPending(_: *FakeTerm, max_events: u32) vt_api.ApplyProgress {
         fake_state.apply_calls += 1;
         fake_state.last_apply_limit = max_events;
         return .{

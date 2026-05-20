@@ -1,8 +1,10 @@
 const std = @import("std");
 const window = @import("../window/window.zig");
+const Layout = @import("../window/layout.zig");
 const HostInput = @import("../input/input.zig").Input;
 const pty_api = @import("pty/abi.zig");
 const render_api = @import("render/abi.zig");
+const vt_api = @import("vt/abi.zig");
 const HowlTerm = pty_api.Term;
 const LifecycleState = pty_api.LifecycleState;
 const FrameLayout = render_api.FrameLayout;
@@ -11,7 +13,7 @@ const TerminalConfig = Config.Terminal;
 const effects = @import("vt/effects.zig");
 const font_size = @import("host/font_size.zig");
 const geometry = @import("vt/geometry.zig");
-const input_flow = @import("pty/flow.zig");
+const term_input = @import("host/input.zig");
 const lifecycle = @import("runtime/lifecycle.zig");
 const scroll = @import("host/scroll.zig");
 
@@ -128,11 +130,31 @@ pub const TerminalPanel = struct {
     }
 
     pub fn paste(self: *TerminalPanel, payload: []const u8) void {
-        input_flow.paste(self, payload);
+        vt_api.publishPaste(&self.term, payload) catch return;
     }
 
     pub fn drainInput(self: *TerminalPanel, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
-        input_flow.drain(self, input_events, origin_x, origin_y, logical_width, logical_height);
+        while (input_events.drainInputEvent()) |event| {
+            switch (event) {
+                .bytes => |bytes| publishTerminalBytes(self, bytes.slice()),
+                .key => |key| publishTerminalKey(self, key),
+                .mouse => |mouse_event| {
+                    if (scroll.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
+                    if (mouse_event.host_only) continue;
+
+                    const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse continue;
+                    const consumed_by_term = publishTerminalMouse(self, local_mouse);
+                    if (!consumed_by_term and local_mouse.kind == .wheel) {
+                        const delta: i32 = switch (local_mouse.button) {
+                            .wheel_up => 3,
+                            .wheel_down => -3,
+                            else => 0,
+                        };
+                        if (delta != 0) scroll.byRows(self, delta);
+                    }
+                },
+            }
+        }
     }
 
     pub fn handleScrollInput(self: *TerminalPanel, input_events: *HostInput) void {
@@ -190,5 +212,28 @@ pub const TerminalPanel = struct {
         const sem = self.progress_wake_sem orelse return;
         window.c_win.SDL_DestroySemaphore(sem);
         self.progress_wake_sem = null;
+    }
+
+    fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) void {
+        _ = vt_api.followLiveBottom(&self.term);
+        pty_api.publishInputBytes(&self.term, bytes) catch return;
+    }
+
+    fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) void {
+        const terminal_key = term_input.key(key.key) orelse return;
+        vt_api.publishInputKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return;
+    }
+
+    fn publishTerminalMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+        return vt_api.publishMouseEvent(&self.term, .{
+            .kind = term_input.mouseKind(mouse_event.kind),
+            .button = term_input.mouseButton(mouse_event.button),
+            .row = render_api.pixelToRow(&self.term, mouse_event.pixel_y),
+            .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
+            .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
+            .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
+            .mods = term_input.mods(mouse_event.mods),
+            .buttons_down = term_input.buttons(mouse_event.buttons_down),
+        }) catch false;
     }
 };

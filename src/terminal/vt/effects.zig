@@ -1,6 +1,6 @@
 
 const std = @import("std");
-const pty_api = @import("../pty/abi.zig");
+const vt_api = @import("abi.zig");
 const window = @import("../../window/window.zig");
 const scroll = @import("../host/scroll.zig");
 
@@ -9,7 +9,7 @@ pub fn titleSlice(self: anytype) []const u8 {
 }
 
 pub fn refreshTitle(self: anytype) void {
-    self.title_len = @intCast(pty_api.copyCurrentTitle(&self.term, self.title_buf[0..]));
+    self.title_len = @intCast(vt_api.copyCurrentTitle(&self.term, self.title_buf[0..]));
     if (self.title_len != 0) return;
     const fallback = self.conf.command orelse self.conf.shell;
     self.title_len = @intCast(@min(fallback.len, self.title_buf.len));
@@ -44,10 +44,10 @@ pub fn serviceMetadata(self: anytype, allocator: std.mem.Allocator) void {
 }
 
 pub fn syncInputFocus(self: anytype) void {
-    _ = pty_api.publishInputFocus(&self.term, self.window_focused and self.widget_focused) catch return;
+    _ = vt_api.publishInputFocus(&self.term, self.window_focused and self.widget_focused) catch return;
 }
 
 fn drainClipboardSet(self: anytype, allocator: std.mem.Allocator) ?[]u8 {
-    const request = (pty_api.drainPendingClipboardSet(&self.term, allocator) catch return null) orelse return null;
+    const request = (vt_api.drainPendingClipboardSet(&self.term, allocator) catch return null) orelse return null;
     return request.text;
 }

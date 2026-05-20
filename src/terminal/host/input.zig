@@ -1,6 +1,6 @@
 
 const Input = @import("../../input/input.zig").Input;
-const api = @import("../pty/abi.zig");
+const api = @import("../vt/abi.zig");
 const c = @cImport({
     @cInclude("howl_vt.h");
 });

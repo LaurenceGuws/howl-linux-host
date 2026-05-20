@@ -4,6 +4,7 @@ const trace = @import("../../input/window.zig");
 const HostInput = @import("../../input/input.zig").Input;
 const pty_api = @import("../pty/abi.zig");
 const render_api = @import("../render/abi.zig");
+const runtime = @import("runtime.zig");
 const effects = @import("../vt/effects.zig");
 const thread = @import("thread.zig");
 
@@ -12,7 +13,7 @@ pub fn start(self: anytype) !void {
     var font_fallbacks_buf: [render_api.max_fallback_font_paths][:0]const u8 = undefined;
     const font_fallbacks = self.conf.fonts.flattenFallbacks(font_fallbacks_buf[0..]);
     // The explicit seam files keep PTY/VT/render ownership visible to the host.
-    self.term = try pty_api.initPty(std.heap.c_allocator, .{
+    self.term = try runtime.init(std.heap.c_allocator, .{
         .shell = self.conf.shell,
         .start_path = self.conf.start_path,
         .command = self.conf.command,
