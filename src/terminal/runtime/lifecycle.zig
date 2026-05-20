@@ -6,7 +6,7 @@ const pty_api = @import("../pty/abi.zig");
 const render_api = @import("../render/abi.zig");
 const runtime = @import("runtime.zig");
 const effects = @import("../vt/effects.zig");
-const geometry = @import("../vt/geometry.zig");
+const geometry = @import("../host/geometry.zig");
 const thread = @import("thread.zig");
 
 pub fn start(self: anytype) !void {

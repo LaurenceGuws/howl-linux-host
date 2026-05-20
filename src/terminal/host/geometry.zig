@@ -2,9 +2,9 @@
 const std = @import("std");
 const pty_api = @import("../pty/abi.zig");
 const render_api = @import("../render/abi.zig");
-const vt_api = @import("abi.zig");
+const vt_api = @import("../vt/abi.zig");
 const window = @import("../../window/window.zig");
-const scroll = @import("../host/scroll.zig");
+const scroll = @import("scroll.zig");
 
 pub const FrameLayout = render_api.FrameLayout;
 
