@@ -5,7 +5,11 @@ const surface_owner = @import("../vt/surface.zig");
 const c = runtime.c;
 
 pub const Term = runtime.Term;
-pub const FrameLayout = c.HowlRenderGeometry;
+pub const FrameLayout = retained.FrameLayout;
+pub const FrameLayoutRequest = struct {
+    render_px: c.HowlRenderPixelSize,
+    grid_px: c.HowlRenderPixelSize,
+};
 pub const RenderSurface = c.HowlRenderSurfaceHandle;
 pub const RenderMetrics = c.HowlRenderQueueMetrics;
 pub const RenderPerf = retained.Perf;
@@ -21,7 +25,7 @@ pub const RenderPhase = retained.Phase;
 pub const RenderCellSize = c.HowlRenderCellSize;
 pub const max_fallback_font_paths: u8 = @intCast(c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 pub const FrameLayoutSync = struct {
-    layout: retained.FrameLayout,
+    layout: FrameLayout,
     changed: bool,
     grid_changed: bool,
 };
@@ -128,22 +132,22 @@ pub fn clearFallbackFontPaths(term: *Term) bool {
     return true;
 }
 
-pub fn deriveFrameLayout(term: *Term, frame_layout: FrameLayout) !FrameLayoutSync {
-    std.debug.assert(frame_layout.render_px.width > 0);
-    std.debug.assert(frame_layout.render_px.height > 0);
-    std.debug.assert(frame_layout.grid_px.width > 0);
-    std.debug.assert(frame_layout.grid_px.height > 0);
+pub fn deriveFrameLayout(term: *Term, request: FrameLayoutRequest) !FrameLayoutSync {
+    std.debug.assert(request.render_px.width > 0);
+    std.debug.assert(request.render_px.height > 0);
+    std.debug.assert(request.grid_px.width > 0);
+    std.debug.assert(request.grid_px.height > 0);
 
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const layout = c.howl_render_surface_text_derive_frame_layout(term.render.surface_text, frame_layout.render_px, frame_layout.grid_px);
+    const layout = c.howl_render_surface_text_derive_frame_layout(term.render.surface_text, request.render_px, request.grid_px);
     if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     const grid = layout.grid;
     const cell_px = layout.cell_px;
-    const next = retained.FrameLayout{
-        .render_px = frame_layout.render_px,
-        .grid_px = frame_layout.grid_px,
+    const next = FrameLayout{
+        .render_px = request.render_px,
+        .grid_px = request.grid_px,
         .cols = grid.cols,
         .rows = grid.rows,
         .cell_px = .{ .width = cell_px.width, .height = cell_px.height },
@@ -156,7 +160,7 @@ pub fn deriveFrameLayout(term: *Term, frame_layout: FrameLayout) !FrameLayoutSyn
     };
 }
 
-pub fn commitFrameLayout(term: *Term, layout: retained.FrameLayout) void {
+pub fn commitFrameLayout(term: *Term, layout: FrameLayout) void {
     term.mutex.lock();
     defer term.mutex.unlock();
     term.render.frame_layout = layout;

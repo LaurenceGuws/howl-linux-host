@@ -259,8 +259,8 @@ pub fn noteVisibleChange(term: anytype) void {
 }
 
 fn defaultSurface() c.HowlVtSurface {
-    var surface = std.mem.zeroes(c.HowlVtSurface);
-    surface.full_damage = 1;
-    surface.cursor.visible = 1;
-    return surface;
+    var value = std.mem.zeroes(c.HowlVtSurface);
+    value.full_damage = 1;
+    value.cursor.visible = 1;
+    return value;
 }

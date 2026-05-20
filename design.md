@@ -48,23 +48,24 @@ classDiagram
 - `src/terminal/vt/retained.zig` owns host-retained VT state such as title, scrollback offset, snapshot sequence, and VT byte scratch.
 - `src/terminal/vt/surface.zig` owns VT surface copy and VT snapshot publication.
 - `src/terminal/host/input.zig` owns host-input publication through VT encoding plus PTY handoff.
-- `src/terminal/render/` owns render ABI calls, frame layout sync, prepared-surface drive, and
-  contract translation between VT-surface input and render-surface output. Retained render queue
-  state, geometry epoch/query state, VT snapshot publication classification, submit validation, and
-  present retirement belong to `howl-render`; the host consumes those steps through the render C
-  ABI. `src/terminal/render/retained.zig` owns host-side render phase state. Host render code does
-  not own host term-texture state.
+- `src/terminal/render/` owns render ABI calls, render-layout requests from host pixel constraints,
+  frame layout sync, prepared-surface drive, and contract translation between VT-surface input and
+  render-surface output. Retained render queue state, geometry epoch/query state, VT snapshot
+  publication classification, submit validation, and present retirement belong to `howl-render`;
+  the host consumes those steps through the render C ABI. `src/terminal/render/retained.zig` owns
+  host-side render phase state. Host render code does not own host term-texture state.
 - `src/terminal/runtime/` owns the shared runtime aggregate state and the bounded host control spine that drives PTY, VT, and render work, including PTY-read slices, VT feed, and VT reply handoff.
 - `main.zig` drives one bounded PTY transport slice with direct VT feed, and one explicit in-flight render-work query per turn when deciding whether to wait, render, present, or wake again. It also owns per-tab term-texture creation, upload, submit execution input, and present acknowledgment.
 - The background progress thread only waits for PTY readiness and wakes the owner thread. It does not pump transport, apply VT work, or mutate render state.
 - `Window` owns the OS window and host chrome presentation. It receives a term-texture handle; it does not infer terminal state.
 - `Input` owns input collection and queueing. Input payload types live under `src/input/`.
-- Hosts send events to PTY-facing owners, sync render geometry, publish VT snapshot metadata into
+- Hosts send events to PTY-facing owners, ask render to derive layout from render and grid pixel
+  constraints, resize PTY and VT from that render-owned layout, publish VT snapshot metadata into
   the render owner, upload the render-owned prepared buffer into host graphics resources as one
   complete realized surface image, submit render-surface execution input using the host-owned
   term-texture, present that term-texture, and then acknowledge the rendered VT dirty generation.
-  They do not mutate scrollback, VT dirty state, reconstruct content from render damage, or own
-  render composition rules.
+  They do not invent cell geometry, mutate scrollback, mutate VT dirty state, reconstruct content
+  from render damage, or own render composition rules.
 
 ## Lifecycle
 

@@ -5,9 +5,7 @@ const pty_api = @import("../pty/abi.zig");
 const retained = @import("../vt/retained.zig");
 const log = @import("../../input/window.zig");
 const std = @import("std");
-const c = @cImport({
-    @cInclude("howl_vt.h");
-});
+const c = @import("../c.zig").c;
 
 const Term = api.Term;
 const TermInput = api.Input;

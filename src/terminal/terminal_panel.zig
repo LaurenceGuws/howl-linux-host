@@ -7,7 +7,7 @@ const render_api = @import("render/abi.zig");
 const vt_retained = @import("vt/retained.zig");
 const HowlTerm = pty_api.Term;
 const LifecycleState = pty_api.LifecycleState;
-const FrameLayout = render_api.FrameLayout;
+const FrameLayoutRequest = render_api.FrameLayoutRequest;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const font_size = @import("host/font_size.zig");
@@ -154,8 +154,8 @@ pub const TerminalPanel = struct {
         self.syncFrameLayout(frame_layout) catch return;
     }
 
-    pub fn syncFrameLayout(self: *TerminalPanel, frame_layout: FrameLayout) !void {
-        const sync = try render_api.deriveFrameLayout(&self.term, frame_layout);
+    pub fn syncFrameLayout(self: *TerminalPanel, request: FrameLayoutRequest) !void {
+        const sync = try render_api.deriveFrameLayout(&self.term, request);
         if (!sync.changed) return;
         if (sync.grid_changed) {
             try pty_api.resize(&self.term, sync.layout.cols, sync.layout.rows);
@@ -164,7 +164,7 @@ pub const TerminalPanel = struct {
         render_api.commitFrameLayout(&self.term, sync.layout);
     }
 
-    pub fn frameLayoutSnapshot(self: *TerminalPanel) FrameLayout {
+    pub fn frameLayoutSnapshot(self: *TerminalPanel) FrameLayoutRequest {
         self.geometry_mutex.lock();
         defer self.geometry_mutex.unlock();
         return snapshotFrameLayoutLocked(self);
@@ -257,15 +257,18 @@ pub const TerminalPanel = struct {
     }
 
     pub fn adjustFontSize(self: *TerminalPanel, delta: i16) bool {
-        return font_size.adjust(self, delta);
+        if (!font_size.adjust(self, delta)) return false;
+        return syncCurrentFrameLayout(self);
     }
 
     pub fn toggleStressFontSize(self: *TerminalPanel) bool {
-        return font_size.toggleStress(self);
+        if (!font_size.toggleStress(self)) return false;
+        return syncCurrentFrameLayout(self);
     }
 
     pub fn resetFontSize(self: *TerminalPanel) bool {
-        return font_size.reset(self);
+        if (!font_size.reset(self)) return false;
+        return syncCurrentFrameLayout(self);
     }
     fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) void {
         _ = vt_retained.followLiveBottom(&self.term);
@@ -290,11 +293,32 @@ pub const TerminalPanel = struct {
         }) catch false;
     }
 
-    fn snapshotFrameLayoutLocked(self: *TerminalPanel) FrameLayout {
+    fn snapshotFrameLayoutLocked(self: *TerminalPanel) FrameLayoutRequest {
         return .{
             .render_px = .{ .width = @as(u16, @intCast(@max(self.render_px_w, 1))), .height = @as(u16, @intCast(@max(self.render_px_h, 1))) },
             .grid_px = .{ .width = @as(u16, @intCast(@max(self.grid_px_w, 1))), .height = @as(u16, @intCast(@max(self.grid_px_h, 1))) },
-            .cell_px = .{ .width = @as(u16, @intCast(@max(self.logical_w, 1))), .height = @as(u16, @intCast(@max(self.logical_h, 1))) },
         };
     }
+
+    fn syncCurrentFrameLayout(self: *TerminalPanel) bool {
+        const request = self.frameLayoutSnapshot();
+        self.syncFrameLayout(request) catch return false;
+        return true;
+    }
 };
+
+test "frame layout request ignores logical size" {
+    var panel: TerminalPanel = undefined;
+    panel.render_px_w = 640;
+    panel.render_px_h = 480;
+    panel.grid_px_w = 600;
+    panel.grid_px_h = 440;
+    panel.logical_w = 321;
+    panel.logical_h = 123;
+
+    const request = TerminalPanel.snapshotFrameLayoutLocked(&panel);
+    try std.testing.expectEqual(@as(u16, 640), request.render_px.width);
+    try std.testing.expectEqual(@as(u16, 480), request.render_px.height);
+    try std.testing.expectEqual(@as(u16, 600), request.grid_px.width);
+    try std.testing.expectEqual(@as(u16, 440), request.grid_px.height);
+}

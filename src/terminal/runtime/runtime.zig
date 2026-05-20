@@ -10,6 +10,7 @@ pub const c = terminal_c.c;
 
 const default_history_capacity: u16 = 4096;
 const default_pending_capacity: u32 = 4096;
+const max_fallback_font_paths: u8 = @intCast(c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
 pub const LifecycleState = pty_retained.LifecycleState;
 pub const Progress = struct {
@@ -53,65 +54,83 @@ pub const Term = struct {
     lifecycle_state: LifecycleState = .stopped,
 };
 
+pub const RenderBootstrap = struct {
+    render_px: c.HowlRenderPixelSize,
+    grid_px: c.HowlRenderPixelSize,
+    font_size_px: u16,
+    primary_font_path: ?[:0]const u8 = null,
+    fallback_font_paths: []const [:0]const u8 = &.{},
+};
+
 pub fn init(
     alloc: std.mem.Allocator,
     launch: pty_retained.LaunchConfig,
-    cols: u16,
-    rows: u16,
-    cell_px: c.HowlRenderCellSize,
+    bootstrap: RenderBootstrap,
 ) !Term {
-    std.debug.assert(cols > 0);
-    std.debug.assert(rows > 0);
-    std.debug.assert(cell_px.width > 0);
-    std.debug.assert(cell_px.height > 0);
+    assertRenderBootstrap(bootstrap);
 
-    const initial_render_px = initialRenderPx(cols, rows, cell_px);
-    const surface_text = initSurfaceText(initial_render_px, cell_px.height) orelse return error.RendererInitFailed;
-    if (surface_text == null) return error.RendererInitFailed;
+    const surface_text = initSurfaceText(bootstrap) orelse return error.RendererInitFailed;
     errdefer c.howl_render_surface_text_deinit(surface_text);
 
-    const initial_layout = try deriveInitialLayout(surface_text, initial_render_px);
-    const initial_grid = initial_layout.grid;
-    const initial_cell_px = initialCellPx(initial_layout);
+    try applyRenderBootstrap(surface_text, bootstrap);
 
-    const session_handle = initSessionHandle(launch, initial_grid.cols, initial_grid.rows);
+    const derived_layout = try deriveInitialLayout(surface_text, bootstrap);
+    const frame_layout = initialFrameLayout(bootstrap, derived_layout);
+
+    const session_handle = initSessionHandle(launch, frame_layout.cols, frame_layout.rows);
     if (session_handle == null) return error.PtyInitFailed;
     errdefer c.howl_pty_session_deinit(session_handle);
 
-    const vt = c.howl_vt_terminal_init(initial_grid.rows, initial_grid.cols, default_history_capacity);
+    const vt = c.howl_vt_terminal_init(frame_layout.rows, frame_layout.cols, default_history_capacity);
     if (vt == null) return error.VtInitFailed;
     errdefer c.howl_vt_terminal_deinit(vt);
 
-    var term = initTermValue(alloc, launch, session_handle, vt, surface_text, initial_render_px, initial_grid, initial_cell_px, cell_px.height);
-    try syncInitialGeometry(surface_text, initial_render_px, initial_cell_px);
+    var term = initTermValue(alloc, launch, session_handle, vt, surface_text, frame_layout, bootstrap.font_size_px);
+    errdefer deinit(&term);
+
+    try syncInitialGeometry(surface_text, frame_layout);
+    try recordRenderFonts(&term, bootstrap);
     try resetTitleFromLaunch(&term);
     return term;
 }
 
-fn initialRenderPx(cols: u16, rows: u16, cell_px: c.HowlRenderCellSize) c.HowlRenderPixelSize {
-    return .{
-        .width = cols * cell_px.width,
-        .height = rows * cell_px.height,
-    };
+fn assertRenderBootstrap(bootstrap: RenderBootstrap) void {
+    std.debug.assert(bootstrap.render_px.width > 0);
+    std.debug.assert(bootstrap.render_px.height > 0);
+    std.debug.assert(bootstrap.grid_px.width > 0);
+    std.debug.assert(bootstrap.grid_px.height > 0);
+    std.debug.assert(bootstrap.font_size_px > 0);
+    std.debug.assert(bootstrap.fallback_font_paths.len <= max_fallback_font_paths);
 }
 
-fn initSurfaceText(initial_render_px: c.HowlRenderPixelSize, font_size_px: u16) ?c.HowlRenderSurfaceTextHandle {
+fn initSurfaceText(bootstrap: RenderBootstrap) ?c.HowlRenderSurfaceTextHandle {
     return c.howl_render_surface_text_init(.{
-        .surface_px = initial_render_px,
-        .font_size_px = font_size_px,
+        .surface_px = bootstrap.render_px,
+        .font_size_px = bootstrap.font_size_px,
     });
 }
 
-fn deriveInitialLayout(surface_text: c.HowlRenderSurfaceTextHandle, initial_render_px: c.HowlRenderPixelSize) !c.HowlRenderFrameLayoutResult {
-    const initial_layout = c.howl_render_surface_text_derive_frame_layout(surface_text, initial_render_px, initial_render_px);
+fn applyRenderBootstrap(surface_text: c.HowlRenderSurfaceTextHandle, bootstrap: RenderBootstrap) !void {
+    if (!applyPrimaryFontPath(surface_text, bootstrap.primary_font_path)) return error.RenderConfigFailed;
+    if (!applyFallbackFontPaths(surface_text, bootstrap.fallback_font_paths)) return error.RenderConfigFailed;
+}
+
+fn deriveInitialLayout(surface_text: c.HowlRenderSurfaceTextHandle, bootstrap: RenderBootstrap) !c.HowlRenderFrameLayoutResult {
+    const initial_layout = c.howl_render_surface_text_derive_frame_layout(surface_text, bootstrap.render_px, bootstrap.grid_px);
     if (initial_layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     return initial_layout;
 }
 
-fn initialCellPx(initial_layout: c.HowlRenderFrameLayoutResult) c.HowlRenderCellSize {
+fn initialFrameLayout(bootstrap: RenderBootstrap, derived_layout: c.HowlRenderFrameLayoutResult) render_retained.FrameLayout {
     return .{
-        .width = initial_layout.cell_px.width,
-        .height = initial_layout.cell_px.height,
+        .render_px = bootstrap.render_px,
+        .grid_px = bootstrap.grid_px,
+        .cols = derived_layout.grid.cols,
+        .rows = derived_layout.grid.rows,
+        .cell_px = .{
+            .width = derived_layout.cell_px.width,
+            .height = derived_layout.cell_px.height,
+        },
     };
 }
 
@@ -135,9 +154,7 @@ fn initTermValue(
     session_handle: c.HowlPtySessionHandle,
     vt: c.HowlVtHandle,
     surface_text: c.HowlRenderSurfaceTextHandle,
-    initial_render_px: c.HowlRenderPixelSize,
-    initial_grid: c.HowlRenderGridSize,
-    initial_cell_px: c.HowlRenderCellSize,
+    frame_layout: render_retained.FrameLayout,
     font_size_px: u16,
 ) Term {
     return .{
@@ -148,26 +165,57 @@ fn initTermValue(
         .session = session_handle,
         .vt = vt,
         .render = .{
-            .frame_layout = .{
-                .render_px = initial_render_px,
-                .grid_px = initial_render_px,
-                .cols = initial_grid.cols,
-                .rows = initial_grid.rows,
-                .cell_px = initial_cell_px,
-            },
+            .frame_layout = frame_layout,
             .surface_text = surface_text,
             .font_size_px = font_size_px,
         },
     };
 }
 
-fn syncInitialGeometry(surface_text: c.HowlRenderSurfaceTextHandle, initial_render_px: c.HowlRenderPixelSize, initial_cell_px: c.HowlRenderCellSize) !void {
+fn syncInitialGeometry(surface_text: c.HowlRenderSurfaceTextHandle, frame_layout: render_retained.FrameLayout) !void {
     const geometry = c.howl_render_surface_text_sync_geometry(surface_text, .{
-        .render_px = initial_render_px,
-        .grid_px = initial_render_px,
-        .cell_px = initial_cell_px,
+        .render_px = frame_layout.render_px,
+        .grid_px = frame_layout.grid_px,
+        .cell_px = frame_layout.cell_px,
     });
     if (geometry.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
+}
+
+fn applyPrimaryFontPath(surface_text: c.HowlRenderSurfaceTextHandle, font_path: ?[:0]const u8) bool {
+    const path = font_path orelse return renderCallOk(c.howl_render_surface_text_set_font_path(surface_text, null, 0));
+    if (path.len == 0) return renderCallOk(c.howl_render_surface_text_set_font_path(surface_text, null, 0));
+    return renderCallOk(c.howl_render_surface_text_set_font_path(surface_text, path.ptr, path.len));
+}
+
+fn applyFallbackFontPaths(surface_text: c.HowlRenderSurfaceTextHandle, paths: []const [:0]const u8) bool {
+    std.debug.assert(paths.len <= max_fallback_font_paths);
+    if (paths.len == 0) return renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(surface_text, null, 0));
+    const path_count: u8 = @intCast(paths.len);
+    var raw: [max_fallback_font_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_fallback_font_paths;
+    var i: u8 = 0;
+    while (i < path_count) : (i += 1) raw[i] = paths[i].ptr;
+    return renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(surface_text, &raw, path_count));
+}
+
+fn recordRenderFonts(term: *Term, bootstrap: RenderBootstrap) !void {
+    if (bootstrap.primary_font_path) |path| {
+        term.render.primary_font_path = try term.allocator.dupeZ(u8, path);
+    }
+    if (bootstrap.fallback_font_paths.len == 0) return;
+
+    const path_count: u8 = @intCast(bootstrap.fallback_font_paths.len);
+    try term.render.fallback_font_paths.ensureTotalCapacity(term.allocator, path_count);
+    var i: u8 = 0;
+    while (i < path_count) : (i += 1) {
+        try term.render.fallback_font_paths.append(
+            term.allocator,
+            try term.allocator.dupeZ(u8, bootstrap.fallback_font_paths[@intCast(i)]),
+        );
+    }
+}
+
+fn renderCallOk(status: i32) bool {
+    return status == c.HOWL_RENDER_CALL_OK;
 }
 
 pub fn deinit(term: *Term) void {

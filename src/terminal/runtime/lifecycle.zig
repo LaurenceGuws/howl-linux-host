@@ -4,34 +4,46 @@ const trace = @import("../../input/window.zig");
 const HostInput = @import("../../input/input.zig").Input;
 const feed_record = @import("../pty/feed_record.zig");
 const pty_api = @import("../pty/abi.zig");
-const render_api = @import("../render/abi.zig");
 const runtime = @import("runtime.zig");
 const thread = @import("thread.zig");
 
 pub fn start(self: anytype) !void {
     trace.logStartup("term-start-begin");
-    var font_fallbacks_buf: [render_api.max_fallback_font_paths][:0]const u8 = undefined;
+    const max_fallback_font_paths = runtime.c.HOWL_RENDER_MAX_FALLBACK_FONTS;
+    var font_fallbacks_buf: [max_fallback_font_paths][:0]const u8 = undefined;
     const font_fallbacks = self.conf.fonts.flattenFallbacks(font_fallbacks_buf[0..]);
+    const frame_request = self.frameLayoutSnapshot();
     // The explicit seam files keep PTY/VT/render ownership visible to the host.
     self.term = try runtime.init(std.heap.c_allocator, .{
         .shell = self.conf.shell,
         .start_path = self.conf.start_path,
         .command = self.conf.command,
-    }, 1, 1, .{ .width = 1, .height = 1 });
+    }, .{
+        .render_px = frame_request.render_px,
+        .grid_px = frame_request.grid_px,
+        .font_size_px = @max(self.conf.font_size, 1),
+        .primary_font_path = self.conf.fonts.primary,
+        .fallback_font_paths = font_fallbacks,
+    });
     self.term_ready = true;
     errdefer {
         pty_api.deinit(&self.term);
         self.term_ready = false;
     }
-    if (!render_api.setFontSizePx(&self.term, @max(self.conf.font_size, 1))) return error.RenderConfigFailed;
-    if (!render_api.setPrimaryFontPath(&self.term, self.conf.fonts.primary)) return error.RenderConfigFailed;
-    if (!render_api.setFallbackFontPaths(&self.term, font_fallbacks)) return error.RenderConfigFailed;
+    trace.logStartupf(
+        "stage=term-geometry-ready render_w={d} render_h={d} grid_w={d} grid_h={d} cols={d} rows={d}",
+        .{
+            self.term.render.frame_layout.render_px.width,
+            self.term.render.frame_layout.render_px.height,
+            self.term.render.frame_layout.grid_px.width,
+            self.term.render.frame_layout.grid_px.height,
+            self.term.render.frame_layout.cols,
+            self.term.render.frame_layout.rows,
+        },
+    );
     if (try feed_record.start(&self.term, self.io, self.feed_record_path)) trace.logStartup("term-feed-record-ready");
     try pty_api.start(&self.term);
     trace.logStartup("term-session-started");
-    const frame_layout = self.frameLayoutSnapshot();
-    try self.syncFrameLayout(frame_layout);
-    trace.logStartupf("stage=term-geometry-synced render_w={d} render_h={d} grid_w={d} grid_h={d}", .{ frame_layout.render_px.width, frame_layout.render_px.height, frame_layout.grid_px.width, frame_layout.grid_px.height });
     if (!pty_api.isAlive(&self.term)) return error.TransportUnavailable;
     trace.logStartup("term-transport-alive");
     self.refreshTitle();
