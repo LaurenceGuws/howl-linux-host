@@ -89,9 +89,12 @@ The parent directory must already exist.
 
 ```sh
 mkdir -p artifacts/replay
-zig-out/bin/howl_term --pty-vt-record-path artifacts/replay/lsd-never.hex --duration-ms 4000 --command 'lsd -la --color=never'
-zig-out/bin/howl_term --pty-vt-record-path artifacts/replay/lsd-always.hex --duration-ms 4000 --command 'lsd -la --color=always'
+zig-out/bin/howl_term --pty-vt-record-path artifacts/replay/capture-1.hex --duration-ms 4000 --command 'your command here'
+zig-out/bin/howl_term --pty-vt-record-path artifacts/replay/capture-2.hex --duration-ms 10000 --command 'another command here'
 ```
+
+`howl-vt` benchmark replay scans every `*.hex` capture under `artifacts/replay/` and derives the
+workload name from the fixture basename.
 
 Fixture format:
 
