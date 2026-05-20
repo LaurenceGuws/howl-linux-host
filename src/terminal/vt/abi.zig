@@ -30,11 +30,6 @@ pub const ScrollState = struct {
 };
 pub const VisibleInfo = surface.VisibleInfo;
 pub const SourceResponse = runtime.c.HowlRenderVtPublishResult;
-pub const ApplyProgress = struct {
-    applied_events: u32,
-    remaining_events: u32,
-    state_changed: bool,
-};
 pub const ClipboardDrainResult = ?struct { text: []u8 };
 
 fn callOk() i32 {
@@ -160,18 +155,6 @@ pub fn drainPendingClipboardSet(term: *Term, allocator: std.mem.Allocator) !Clip
     return if (bytes) |text| .{ .text = text } else null;
 }
 
-pub fn applyReady(term: *Term) ApplyProgress {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return applyPendingLocked(term, queuedEventCountLocked(term));
-}
-
-pub fn applyPending(term: *Term, max_events: u32) ApplyProgress {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return applyPendingLocked(term, max_events);
-}
-
 pub fn publishSource(term: *Term) SourceResponse {
     return surface.publishSource(term);
 }
@@ -238,35 +221,16 @@ pub fn vtCopyVisible(term: *Term) !surface.VisibleCopy {
 
 pub fn feedTransportLocked(term: *Term, bytes: []const u8) i32 {
     if (bytes.len == 0) return callOk();
-    return runtime.c.howl_vt_terminal_feed(term.vt, bytes.ptr, bytes.len);
-}
-
-fn applyPendingLocked(term: *Term, max_events: u32) ApplyProgress {
-    if (max_events == 0) {
-        return .{ .applied_events = 0, .remaining_events = queuedEventCountLocked(term), .state_changed = false };
-    }
-
     const history_before = vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
-    var title_buf: [4096]u8 = undefined;
-    const result = runtime.c.howl_vt_terminal_apply(term.vt, max_events, title_buf[0..].ptr, title_buf.len);
-    requireStructOk(result.status);
-    if (result.applied == 0) {
-        return .{ .applied_events = 0, .remaining_events = @intCast(result.remaining_events), .state_changed = false };
-    }
-    std.debug.assert(result.applied <= max_events);
-    std.debug.assert(result.title_written <= title_buf.len);
-    log.logVtApplyStartupf("stage=term-vt-apply-first applied={d} remaining={d}", .{ result.applied, result.remaining_events });
-
-    if (result.title_written != 0) setCurrentTitleLocked(term, title_buf[0..@intCast(result.title_written)]) catch {};
+    const result = runtime.c.howl_vt_terminal_feed(term.vt, bytes.ptr, bytes.len);
+    if (!isCallOk(result.status)) return result.status;
+    if (result.title_changed != 0) copyTerminalTitleLocked(term) catch {};
     drainTerminalReplyLocked(term);
+    if (result.state_changed == 0) return callOk();
     repairScrollback(term, history_before, true);
     term.vt_state.epoch +%= 1;
     noteVisibleChange(term);
-    return .{
-        .applied_events = @intCast(result.applied),
-        .remaining_events = @intCast(result.remaining_events),
-        .state_changed = true,
-    };
+    return callOk();
 }
 
 fn publishFocusLocked(term: *Term, focused: bool) !bool {
@@ -344,6 +308,18 @@ fn setCurrentTitleLocked(term: *Term, title: []const u8) !void {
     if (title.len > 0) @memcpy(term.vt_state.title.items, title);
 }
 
+fn copyTerminalTitleLocked(term: *Term) !void {
+    var out = try ensureBytesLocked(term, 0);
+    var result = runtime.c.howl_vt_terminal_copy_title(term.vt, out.ptr, out.len);
+    if (result.status == callShortBuffer()) {
+        out = try ensureBytesLocked(term, @intCast(result.needed));
+        result = runtime.c.howl_vt_terminal_copy_title(term.vt, out.ptr, out.len);
+    }
+    try requireOk(result.status);
+    std.debug.assert(result.written <= term.vt_state.bytes.items.len);
+    try setCurrentTitleLocked(term, term.vt_state.bytes.items[0..@intCast(result.written)]);
+}
+
 fn vtDrainClipboardLocked(term: *Term, allocator: std.mem.Allocator) !?[]u8 {
     var out = try ensureBytesLocked(term, 0);
     var result = runtime.c.howl_vt_terminal_drain_pending_clipboard(term.vt, out.ptr, out.len);
@@ -380,12 +356,6 @@ fn pendingOutputLocked(term: *Term) ![]const u8 {
 fn ensureBytesLocked(term: *Term, needed: usize) ![]u8 {
     try term.vt_state.bytes.resize(term.allocator, needed);
     return term.vt_state.bytes.items;
-}
-
-pub fn queuedEventCountLocked(term: *Term) u32 {
-    const result = runtime.c.howl_vt_terminal_apply(term.vt, 0, null, 0);
-    requireStructOk(result.status);
-    return @intCast(result.remaining_events);
 }
 
 fn requireResizeOk(status: i32) !void {

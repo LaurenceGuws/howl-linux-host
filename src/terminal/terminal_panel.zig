@@ -238,7 +238,8 @@ pub const TerminalPanel = struct {
         return pty_api.isAlive(&self.term);
     }
 
-    pub fn titleSlice(self: *const TerminalPanel) []const u8 {
+    pub fn titleSlice(self: *TerminalPanel) []const u8 {
+        self.refreshTitle();
         return self.title_buf[0..self.title_len];
     }
 

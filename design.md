@@ -52,7 +52,7 @@ classDiagram
   ABI. `src/terminal/render/retained.zig` owns host-side render phase state. Host render code does
   not own host term-texture state.
 - `src/terminal/runtime/` owns the shared runtime aggregate state and the bounded host control spine that drives PTY, VT, and render work.
-- `main.zig` drives one bounded PTY transport slice, one bounded VT apply slice, and one explicit in-flight render-work query per turn when deciding whether to wait, render, present, or wake again. It also owns per-tab term-texture creation, upload, submit execution input, and present acknowledgment.
+- `main.zig` drives one bounded PTY transport slice with direct VT feed, and one explicit in-flight render-work query per turn when deciding whether to wait, render, present, or wake again. It also owns per-tab term-texture creation, upload, submit execution input, and present acknowledgment.
 - The background progress thread only waits for PTY readiness and wakes the owner thread. It does not pump transport, apply VT work, or mutate render state.
 - `Window` owns the OS window and host chrome presentation. It receives a term-texture handle; it does not infer terminal state.
 - `Input` owns input collection and queueing. Input payload types live under `src/input/`.
@@ -94,7 +94,7 @@ sequenceDiagram
         Main->>T: drainInput/resize
         T->>P: publish host input
         Main->>P: drive bounded transport slice
-        Main->>V: drive bounded VT apply slice
+        P->>V: feed bytes directly
         Main->>V: publish VT-surface snapshot
         Main->>R: prepare render work
         Main->>R: query prepared render-surface

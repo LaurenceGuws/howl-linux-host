@@ -546,7 +546,7 @@ fn syncTerminalFocus(window: *Window.State, tabs: []AppTab, active_tab_idx: TabI
 
 fn tabTitles(tabs: []AppTab, buf: [][]const u8) []const []const u8 {
     assert(buf.len >= tabs.len);
-    for (tabs, 0..) |tab, i| buf[i] = tab.panel.titleSlice();
+    for (tabs, 0..) |*tab, i| buf[i] = tab.panel.titleSlice();
     return buf[0..tabs.len];
 }
 

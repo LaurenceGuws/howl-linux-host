@@ -6,19 +6,10 @@ const log = @import("../../input/window.zig");
 const std = @import("std");
 
 // Ghostty keeps VT mutation on the owner thread, and Alacritty keeps the outer
-// loop honest by bounding each I/O or parse slice instead of draining work in a
-// hidden helper. Keep Howl on the same shape: one explicit PTY slice and one
-// explicit VT apply slice per main-thread turn.
-//
-// The PTY owner already follows Alacritty's 1 MiB burst. Keep the VT slice
-// explicit and bounded, but the slimmer 24-param VT path no longer needs the
-// old 256-event churn. Current `terminal-benchmark` proof clears roughly 16k
-// CSI events in about 12 ms and 60k scroll events in about 45 ms, so a
-// 1024-event slice stays in the low-millisecond range while cutting host turn
-// churn by 4x. Keep this tied to the current measured VT path and re-derive it
-// if queue shape or host proof changes again.
+// loop honest by bounding each PTY slice instead of draining hidden backlog in
+// a second runtime phase. Keep Howl on the same shape: one explicit PTY slice
+// per main-thread turn, with VT mutation happening during feed.
 const transport_mode: pty_api.TransportPumpMode = .normal;
-const vt_apply_events_per_turn: u32 = 1024;
 
 pub const Outcome = struct {
     keep: bool,
@@ -31,7 +22,6 @@ const TransportProgress = struct {
     reads: u32,
     bytes_read: u32,
     pending_input_bytes: u64,
-    queued_events: u32,
     hit_limit: bool,
 };
 
@@ -40,22 +30,17 @@ pub fn driveOnce(term: *pty_api.Term) Outcome {
 }
 
 fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
-    const transport = Ops.pumpTransport(term, transport_mode, vt_apply_events_per_turn);
-    const applied = Ops.applyPending(term, vt_apply_events_per_turn);
+    const transport = Ops.pumpTransport(term, transport_mode);
     const backlog = Ops.hasOutboundInputBacklog(term);
     const alive = Ops.isAlive(term);
-    const keep = backlog or transport.hit_limit or applied.remaining_events != 0;
-    const should_redraw = transport.reads != 0 or
-        transport.bytes_read != 0 or
-        applied.applied_events != 0 or
-        applied.remaining_events != 0;
+    const keep = backlog or transport.hit_limit;
+    const should_redraw = transport.reads != 0 or transport.bytes_read != 0;
     const wake = should_redraw or !alive;
     log.logProgressDriveStartupf(
-        "stage=progress-drive-first reads={d} read_bytes={d} applied={d} wake={d} keep={} alive={}",
+        "stage=progress-drive-first reads={d} read_bytes={d} wake={d} keep={} alive={}",
         .{
             transport.reads,
             transport.bytes_read,
-            applied.applied_events,
             @intFromBool(wake),
             keep,
             alive,
@@ -63,32 +48,26 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
     );
     if (wake) {
         log.logf(
-            "host-loop ts_ns={d} stage=progress-drive-live drained={d} pending={d} reads={d} read_bytes={d} queued_events={d} applied={d} remaining={d} changed={} wake={} keep={}",
+            "host-loop ts_ns={d} stage=progress-drive-live drained={d} pending={d} reads={d} read_bytes={d} wake={} keep={}",
             .{
                 log.nowNs(),
                 transport.drained_input_bytes,
                 transport.pending_input_bytes,
                 transport.reads,
                 transport.bytes_read,
-                transport.queued_events,
-                applied.applied_events,
-                applied.remaining_events,
-                applied.state_changed,
                 wake,
                 keep,
             },
         );
     }
     log.logFramef(
-        "host-loop ts_ns={d} stage=progress-drive drained={d} pending={d} reads={d} read_bytes={d} queued_events={d} applied_remaining={d} wake={d} keep={}",
+        "host-loop ts_ns={d} stage=progress-drive drained={d} pending={d} reads={d} read_bytes={d} wake={d} keep={}",
         .{
             log.nowNs(),
             transport.drained_input_bytes,
             transport.pending_input_bytes,
             transport.reads,
             transport.bytes_read,
-            transport.queued_events,
-            applied.remaining_events,
             @intFromBool(wake),
             keep,
         },
@@ -97,12 +76,8 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
 }
 
 const RealOps = struct {
-    fn pumpTransport(term: *pty_api.Term, mode: pty_api.TransportPumpMode, max_queued_events: u32) TransportProgress {
-        return pumpTransportSlice(term, mode, max_queued_events);
-    }
-
-    fn applyPending(term: *pty_api.Term, max_events: u32) vt_api.ApplyProgress {
-        return vt_api.applyPending(term, max_events);
+    fn pumpTransport(term: *pty_api.Term, mode: pty_api.TransportPumpMode) TransportProgress {
+        return pumpTransportSlice(term, mode);
     }
 
     fn hasOutboundInputBacklog(term: *const pty_api.Term) bool {
@@ -114,28 +89,16 @@ const RealOps = struct {
     }
 };
 
-fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode, max_queued_events: u32) TransportProgress {
+fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode) TransportProgress {
     const limits = pty_session.transportLimits(mode);
     term.mutex.lock();
     defer term.mutex.unlock();
 
     const outbound = pty_session.pumpOutboundLocked(term);
-    const queued_before = vt_api.queuedEventCountLocked(term);
-    if (max_queued_events != 0 and queued_before >= max_queued_events) {
-        return .{
-            .drained_input_bytes = outbound.drained_input_bytes,
-            .reads = 0,
-            .bytes_read = 0,
-            .pending_input_bytes = outbound.pending_input_bytes,
-            .queued_events = queued_before,
-            .hit_limit = true,
-        };
-    }
 
     var scratch: [pty_session.transport_chunk_bytes]u8 = undefined;
     var reads: u32 = 0;
     var bytes_read: u32 = 0;
-    var queued_events = queued_before;
     while (reads < limits.max_reads and bytes_read < limits.max_bytes) {
         const remaining: usize = @intCast(@min(@as(u32, @intCast(scratch.len)), limits.max_bytes - bytes_read));
         const chunk_len = pty_session.readTransportLocked(term, scratch[0..remaining]);
@@ -146,21 +109,16 @@ fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode, max_
         if (!handleFeedStatusLocked(term, vt_api.feedTransportLocked(term, scratch[0..chunk_len]), chunk_len)) break;
         reads += 1;
         bytes_read += chunk_len;
-        queued_events = vt_api.queuedEventCountLocked(term);
-        if (max_queued_events != 0 and queued_events >= max_queued_events) break;
     }
 
     std.debug.assert(reads <= limits.max_reads);
     std.debug.assert(bytes_read <= limits.max_bytes);
-    const hit_limit = reads == limits.max_reads or
-        bytes_read == limits.max_bytes or
-        (max_queued_events != 0 and queued_events >= max_queued_events);
+    const hit_limit = reads == limits.max_reads or bytes_read == limits.max_bytes;
 
     if (reads > 0) {
-        log.logTransportReadStartupf("stage=term-transport-read-first reads={d} read_bytes={d} queued_events={d}", .{
+        log.logTransportReadStartupf("stage=term-transport-read-first reads={d} read_bytes={d}", .{
             reads,
             bytes_read,
-            queued_events,
         });
     }
     return .{
@@ -168,7 +126,6 @@ fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode, max_
         .reads = reads,
         .bytes_read = bytes_read,
         .pending_input_bytes = pty_session.pendingInputBytesLocked(term),
-        .queued_events = queued_events,
         .hit_limit = hit_limit,
     };
 }
@@ -198,26 +155,15 @@ test "progress drive stays quiet when nothing changes" {
     try std.testing.expect(outcome.alive);
 }
 
-test "progress drive requests redraw on applied vt work" {
+test "progress drive requests redraw on transport read" {
     fake_state = .{};
-    fake_state.applied_events = 1;
+    fake_state.reads = 1;
+    fake_state.read_bytes = 8;
     var term = FakeTerm{};
     const outcome = driveOnceWith(&term, FakeOps);
     try std.testing.expect(!outcome.keep);
     try std.testing.expect(outcome.should_redraw);
     try std.testing.expect(outcome.alive);
-}
-
-test "progress drive keeps work bounded when vt work remains" {
-    fake_state = .{};
-    fake_state.applied_events = 2;
-    fake_state.remaining_events = 1;
-    var term = FakeTerm{};
-    const outcome = driveOnceWith(&term, FakeOps);
-    try std.testing.expect(outcome.keep);
-    try std.testing.expect(outcome.should_redraw);
-    try std.testing.expectEqual(@as(u8, 1), fake_state.apply_calls);
-    try std.testing.expectEqual(@as(u32, vt_apply_events_per_turn), fake_state.last_apply_limit);
 }
 
 test "progress drive keeps work bounded after saturated transport slice" {
@@ -255,37 +201,22 @@ const FakeTerm = struct {};
 
 var fake_state: struct {
     pump_calls: u8 = 0,
-    apply_calls: u8 = 0,
     backlog: bool = false,
     hit_limit: bool = false,
     is_alive: bool = true,
     read_bytes: u32 = 0,
     reads: u32 = 0,
-    remaining_events: u32 = 0,
-    applied_events: u32 = 0,
-    last_apply_limit: u32 = 0,
 } = .{};
 
 const FakeOps = struct {
-    fn pumpTransport(_: *FakeTerm, _: pty_api.TransportPumpMode, _: u32) TransportProgress {
+    fn pumpTransport(_: *FakeTerm, _: pty_api.TransportPumpMode) TransportProgress {
         fake_state.pump_calls += 1;
         return .{
             .drained_input_bytes = 0,
             .reads = fake_state.reads,
             .bytes_read = fake_state.read_bytes,
             .pending_input_bytes = 0,
-            .queued_events = 0,
             .hit_limit = fake_state.hit_limit,
-        };
-    }
-
-    fn applyPending(_: *FakeTerm, max_events: u32) vt_api.ApplyProgress {
-        fake_state.apply_calls += 1;
-        fake_state.last_apply_limit = max_events;
-        return .{
-            .applied_events = fake_state.applied_events,
-            .remaining_events = fake_state.remaining_events,
-            .state_changed = fake_state.applied_events != 0,
         };
     }
 

@@ -16,7 +16,6 @@ var progress_drive_logged = std.atomic.Value(bool).init(false);
 var window_wait_logged = std.atomic.Value(bool).init(false);
 var window_wake_logged = std.atomic.Value(bool).init(false);
 var transport_read_logged = std.atomic.Value(bool).init(false);
-var vt_apply_logged = std.atomic.Value(bool).init(false);
 var source_publish_logged = std.atomic.Value(bool).init(false);
 var loop_turn_logged = std.atomic.Value(bool).init(false);
 var loop_render_check_logged = std.atomic.Value(bool).init(false);
@@ -80,11 +79,6 @@ pub fn logProgressDriveStartupf(comptime fmt: []const u8, args: anytype) void {
 
 pub fn logTransportReadStartupf(comptime fmt: []const u8, args: anytype) void {
     if (transport_read_logged.swap(true, .acq_rel)) return;
-    logStartupf(fmt, args);
-}
-
-pub fn logVtApplyStartupf(comptime fmt: []const u8, args: anytype) void {
-    if (vt_apply_logged.swap(true, .acq_rel)) return;
     logStartupf(fmt, args);
 }
 
