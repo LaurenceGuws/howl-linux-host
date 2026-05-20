@@ -7,7 +7,7 @@ const InputWindow = @import("input/window.zig");
 const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const RenderApi = @import("terminal/render/abi.zig");
-const VtApi = @import("terminal/vt/abi.zig");
+const VtSurface = @import("terminal/vt/surface.zig");
 const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
 const RuntimeProgress = @import("terminal/runtime/progress.zig");
 const RuntimeThread = @import("terminal/runtime/thread.zig");
@@ -402,7 +402,7 @@ fn collectContentFrame(tab: *AppTab) RenderApi.RenderWorkState {
     const bootstrap_surface = tab.term_texture.host_surface_id == 0;
     var work = renderWorkState(tab);
     if (bootstrap_surface or !work.wantsFrame()) {
-        _ = VtApi.publishSource(&tab.panel.term);
+        _ = VtSurface.publishSource(&tab.panel.term);
         work = RenderApi.renderWorkState(&tab.panel.term, bootstrap_surface);
     }
     return work;
@@ -442,7 +442,7 @@ fn render(app: *App) void {
     });
     // Present closes the frame before the host retires VT dirty truth or the
     // render owner's retained base for later partial prepares.
-    VtApi.ackPublishedSource(&tab.panel.term);
+    VtSurface.ackPublishedSource(&tab.panel.term);
     if (render_present_pending) RenderApi.markRenderPresented(&tab.panel.term);
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
 }

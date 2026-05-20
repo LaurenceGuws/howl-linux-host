@@ -3,6 +3,7 @@ const pty_api = @import("../pty/abi.zig");
 const pty_session = @import("../pty/session.zig");
 const vt_api = @import("../vt/abi.zig");
 const vt_retained = @import("../vt/retained.zig");
+const vt_surface = @import("../vt/surface.zig");
 const log = @import("../../input/window.zig");
 const std = @import("std");
 
@@ -132,7 +133,7 @@ fn pumpTransportSlice(term: *pty_api.Term, mode: pty_api.TransportPumpMode) Tran
 }
 
 fn feedTermLocked(term: *pty_api.Term, bytes: []const u8, chunk_len: u32) bool {
-    const history_before = vt_api.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
+    const history_before = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
     const result = vt_retained.feedLocked(term, bytes);
     if (!vt_api.isCallOk(result.status)) {
         term.pty.lifecycle = .failed;
@@ -142,7 +143,7 @@ fn feedTermLocked(term: *pty_api.Term, bytes: []const u8, chunk_len: u32) bool {
     const title = if (result.title_changed != 0) vt_retained.copyTitleLocked(term) catch null else null;
     drainTerminalReplyLocked(term);
     const history_after = if (result.state_changed != 0)
-        vt_api.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count
+        vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count
     else
         history_before;
     vt_retained.finishFeed(term, history_before, history_after, result.state_changed != 0, title);
