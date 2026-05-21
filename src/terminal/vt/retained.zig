@@ -12,8 +12,6 @@ pub const ScrollState = struct {
 pub const State = struct {
     bytes: std.ArrayListUnmanaged(u8) = .empty,
     title: std.ArrayListUnmanaged(u8) = .empty,
-    snapshot_seq: u64 = 1,
-    pending_dirty_generation: u64 = 0,
     scrollback_offset: u32 = 0,
     focused: bool = true,
 
@@ -141,7 +139,6 @@ pub fn setScrollbackOffsetLocked(term: anytype, history_count: u32, offset: u32)
     std.debug.assert(clamped <= history_count);
     if (clamped == term.vt_state.scrollback_offset) return false;
     term.vt_state.scrollback_offset = clamped;
-    noteVisibleChange(term);
     return true;
 }
 
@@ -154,7 +151,6 @@ pub fn followLiveBottom(term: anytype) bool {
 pub fn followLiveBottomLocked(term: anytype) bool {
     if (term.vt_state.scrollback_offset == 0) return false;
     term.vt_state.scrollback_offset = 0;
-    noteVisibleChange(term);
     return true;
 }
 
@@ -169,7 +165,6 @@ pub fn resize(term: anytype, rows: u16, cols: u16) !void {
     defer term.mutex.unlock();
     try requireResizeOk(c.howl_vt_terminal_resize(term.vt, rows, cols));
     clampScrollbackOffset(term, surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count);
-    noteVisibleChange(term);
 }
 
 pub fn setFocused(term: anytype, focused: bool) bool {
@@ -182,12 +177,6 @@ pub fn isAlternateScreen(term: anytype) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
     return surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).is_alternate_screen;
-}
-
-pub fn snapshotEventSeq(term: anytype) u64 {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return term.vt_state.snapshot_seq;
 }
 
 pub fn repairScrollback(term: anytype, history_before: u32, history_after: u32, any_read: bool) void {
@@ -210,7 +199,6 @@ pub fn finishFeed(term: anytype, history_before: u32, history_after: u32, state_
     if (title) |current| setCurrentTitle(term, current) catch {};
     if (!state_changed) return;
     repairScrollback(term, history_before, history_after, true);
-    noteVisibleChange(term);
 }
 
 pub fn drainPendingClipboardSet(term: anytype, allocator: std.mem.Allocator) !?[]u8 {
@@ -227,8 +215,4 @@ pub fn drainPendingClipboardSet(term: anytype, allocator: std.mem.Allocator) !?[
     if (result.written == 0) return null;
     std.debug.assert(result.written <= term.vt_state.bytes.items.len);
     return try allocator.dupe(u8, term.vt_state.bytes.items[0..@intCast(result.written)]);
-}
-
-pub fn noteVisibleChange(term: anytype) void {
-    term.vt_state.snapshot_seq +%= 1;
 }

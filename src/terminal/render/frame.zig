@@ -30,12 +30,12 @@ const PublishOps = struct {
 };
 
 const PresentOps = struct {
-    fn markPresented(term: *runtime.Term) void {
-        render_api.markRenderPresented(term);
+    fn markPresented(term: *runtime.Term) u64 {
+        return render_api.markRenderPresented(term);
     }
 
-    fn ackSource(term: *runtime.Term) void {
-        vt_surface.ackPublishedSource(term);
+    fn ackSource(term: *runtime.Term, snapshot_seq: u64) void {
+        vt_surface.ackPublishedSource(term, snapshot_seq);
     }
 };
 
@@ -128,8 +128,8 @@ fn submitStep(result: render_api.RenderSubmitResult) DriveStep {
 
 fn retirePresentedFrameWith(term: anytype, present_pending: bool, comptime Ops: type) void {
     if (!present_pending) return;
-    Ops.markPresented(term);
-    Ops.ackSource(term);
+    const snapshot_seq = Ops.markPresented(term);
+    Ops.ackSource(term, snapshot_seq);
 }
 
 test "publish source stays explicit around render work query" {
@@ -192,17 +192,19 @@ test "present retirement marks render before vt ack" {
     };
 
     const FakeOps = struct {
-        fn markPresented(term: *FakeTerm) void {
+        fn markPresented(term: *FakeTerm) u64 {
             std.debug.assert(!term.marked);
             std.debug.assert(!term.acked);
             term.marked = true;
             term.order[term.order_len] = 1;
             term.order_len += 1;
+            return 7;
         }
 
-        fn ackSource(term: *FakeTerm) void {
+        fn ackSource(term: *FakeTerm, snapshot_seq: u64) void {
             std.debug.assert(term.marked);
             std.debug.assert(!term.acked);
+            std.debug.assert(snapshot_seq == 7);
             term.acked = true;
             term.order[term.order_len] = 2;
             term.order_len += 1;

@@ -43,6 +43,7 @@ pub const State = struct {
     geometry_epoch: u64 = 0,
     surface_text: c.HowlRenderSurfaceTextHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
+    pending_vt_snapshot_seq: u64 = 0,
     perf: Perf = .{},
 
     pub fn init(
@@ -204,6 +205,12 @@ pub const State = struct {
         c.howl_render_surface_text_mark_presented(self.surface_text);
     }
 
+    pub fn takePendingVtSnapshotSeq(self: *State) u64 {
+        const snapshot_seq = self.pending_vt_snapshot_seq;
+        self.pending_vt_snapshot_seq = 0;
+        return snapshot_seq;
+    }
+
     fn prepareReady(self: *State, request: c.HowlRenderPrepareRequest) PrepareResult {
         var prepared: c.HowlRenderPreparedSurfaceHandle = null;
         return switch (c.howl_render_surface_text_prepare_handle(self.surface_text, request, &prepared)) {
@@ -241,6 +248,7 @@ pub const State = struct {
         if (result == c.HOWL_RENDER_SUBMIT_RENDERED) {
             self.addPerf(feedback.metrics);
             std.debug.assert(c.howl_render_surface_text_accept_submitted(self.surface_text, prepared_frame) == c.HOWL_RENDER_CALL_OK);
+            self.pending_vt_snapshot_seq = prepared_frame.snapshot_seq;
             self.forgetPreparedSurface();
         }
         return result;

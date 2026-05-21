@@ -22,6 +22,7 @@ const OwnedVisibleSource = struct {
     scroll_row: u64 = 0,
     is_alternate_screen: bool = false,
     history_count: u32 = 0,
+    snapshot_seq: u64 = 0,
     dirty_generation: u64 = 0,
     cursor: c.HowlVtCursor = .{ .row = 0, .col = 0, .visible = 1, .shape = 0 },
 
@@ -33,13 +34,13 @@ const OwnedVisibleSource = struct {
         self.* = undefined;
     }
 
-    fn renderSource(self: *const OwnedVisibleSource, snapshot_seq: u64) c.HowlRenderVtSurface {
+    fn renderSource(self: *const OwnedVisibleSource) c.HowlRenderVtSurface {
         return .{
             .cells = .{ .ptr = if (self.cells.len == 0) null else @ptrCast(self.cells.ptr), .len = self.cells.len },
             .cols = self.cols,
             .rows = self.rows,
             .scroll_row = self.scroll_row,
-            .snapshot_seq = snapshot_seq,
+            .snapshot_seq = self.snapshot_seq,
             .is_alternate_screen = @intFromBool(self.is_alternate_screen),
             .dirty_rows = .{ .ptr = if (self.dirty_rows.len == 0) null else self.dirty_rows.ptr, .len = self.dirty_rows.len },
             .dirty_cols_start = .{ .ptr = if (self.dirty_cols_start.len == 0) null else self.dirty_cols_start.ptr, .len = self.dirty_cols_start.len },
@@ -80,12 +81,13 @@ pub const VisibleCopy = struct {
     is_alternate_screen: bool,
     history_count: u32,
     scroll_row: u64,
+    snapshot_seq: u64,
     dirty_generation: u64,
 };
 
 const PublishAckOps = struct {
-    fn ack(handle: c.HowlVtHandle, dirty_generation: u64) i32 {
-        return c.howl_vt_terminal_ack_surface(handle, dirty_generation);
+    fn ack(handle: c.HowlVtHandle, snapshot_seq: u64) i32 {
+        return c.howl_vt_terminal_ack_surface(handle, snapshot_seq);
     }
 };
 
@@ -99,14 +101,15 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.scroll_row <= visible.history_count + visible.rows);
 
-    const typed_response = c.howl_render_surface_text_publish_vt_source(term.render.surface_text, visible.renderSource(term.vt_state.snapshot_seq));
+    const typed_response = c.howl_render_surface_text_publish_vt_source(term.render.surface_text, visible.renderSource());
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
-    recordPendingDirtyGeneration(term, .{
+    recordPublishedSnapshot(.{
         .rows = visible.rows,
         .cols = visible.cols,
         .is_alternate_screen = visible.is_alternate_screen,
         .history_count = visible.history_count,
         .scroll_row = visible.scroll_row,
+        .snapshot_seq = visible.snapshot_seq,
         .dirty_generation = visible.dirty_generation,
     }, typed_response);
     if (typed_response.published != 0) {
@@ -132,21 +135,20 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     return typed_response;
 }
 
-pub fn ackPublishedSource(term: *api.Term) void {
-    ackPublishedSourceWith(term, PublishAckOps);
+pub fn ackPublishedSource(term: *api.Term, snapshot_seq: u64) void {
+    ackPublishedSourceWith(term, snapshot_seq, PublishAckOps);
 }
 
-fn ackPublishedSourceWith(term: anytype, comptime Ops: type) void {
+fn ackPublishedSourceWith(term: anytype, snapshot_seq: u64, comptime Ops: type) void {
+    if (snapshot_seq == 0) return;
     term.mutex.lock();
     defer term.mutex.unlock();
-    const dirty_generation = term.vt_state.pending_dirty_generation;
-    if (dirty_generation == 0) return;
-    vt_abi.requireStructOk(Ops.ack(term.vt, dirty_generation));
-    term.vt_state.pending_dirty_generation = 0;
+    vt_abi.requireStructOk(Ops.ack(term.vt, snapshot_seq));
 }
 
 pub fn sourceRejected(term: *api.Term) c.HowlRenderVtPublishResult {
-    log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d}", .{ log.nowNs(), term.vt_state.snapshot_seq });
+    const info = vtVisibleMeta(term.vt, term.vt_state.scrollback_offset);
+    log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d}", .{ log.nowNs(), info.snapshot_seq });
     std.debug.assert(term.render.geometry_epoch != 0);
     return .{
         .status = c.HOWL_RENDER_CALL_FAILED,
@@ -154,12 +156,26 @@ pub fn sourceRejected(term: *api.Term) c.HowlRenderVtPublishResult {
         .queued = 0,
         .damage_kind = damage_none,
         .reserved0 = 0,
-        .snapshot_seq = term.vt_state.snapshot_seq,
+        .snapshot_seq = info.snapshot_seq,
         .geometry_epoch = term.render.geometry_epoch,
     };
 }
 
 pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
+    const meta = vtVisibleMeta(handle, scrollback_offset);
+    return .{
+        .history_count = meta.history_count,
+        .is_alternate_screen = meta.is_alternate_screen,
+    };
+}
+
+const VisibleMeta = struct {
+    history_count: u32,
+    is_alternate_screen: bool,
+    snapshot_seq: u64,
+};
+
+fn vtVisibleMeta(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
     std.debug.assert(handle != null);
     const view = c.howl_vt_terminal_copy_surface(handle, scrollback_offset, null, 0, null, 0, null, 0, null, 0);
     if (view.status != vt_abi.callShortBuffer()) vt_abi.requireStructOk(view.status);
@@ -167,6 +183,7 @@ pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo
     return .{
         .history_count = @intCast(view.history_count),
         .is_alternate_screen = view.source.is_alternate_screen != 0,
+        .snapshot_seq = view.snapshot_seq,
     };
 }
 
@@ -205,6 +222,7 @@ pub fn vtCopyVisible(term: *api.Term) !OwnedVisibleSource {
         .is_alternate_screen = source.source.is_alternate_screen != 0,
         .history_count = @intCast(source.history_count),
         .scroll_row = source.source.scroll_row,
+        .snapshot_seq = source.snapshot_seq,
         .dirty_generation = source.dirty_generation,
         .cursor = source.source.cursor,
         .cells = visible.cells,
@@ -215,27 +233,24 @@ pub fn vtCopyVisible(term: *api.Term) !OwnedVisibleSource {
     };
 }
 
-fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_response: c.HowlRenderVtPublishResult) void {
+fn recordPublishedSnapshot(visible: VisibleCopy, typed_response: c.HowlRenderVtPublishResult) void {
     if (typed_response.published != 0) {
         std.debug.assert(typed_response.queued != 0);
         std.debug.assert(typed_response.damage_kind != damage_none);
-        term.vt_state.pending_dirty_generation = visible.dirty_generation;
-        return;
+    } else {
+        std.debug.assert(typed_response.damage_kind == damage_none);
     }
-    term.vt_state.pending_dirty_generation = 0;
+    std.debug.assert(typed_response.snapshot_seq == visible.snapshot_seq);
 }
 
-test "publish records dirty generation only for published source" {
-    const FakeTerm = struct {
-        vt_state: struct { pending_dirty_generation: u64 = 0 } = .{},
-    };
-    var term = FakeTerm{};
-    recordPendingDirtyGeneration(&term, .{
+test "publish forwards vt snapshot sequence" {
+    recordPublishedSnapshot(.{
         .rows = 2,
         .cols = 4,
         .is_alternate_screen = false,
         .history_count = 0,
         .scroll_row = 0,
+        .snapshot_seq = 9,
         .dirty_generation = 9,
     }, .{
         .status = c.HOWL_RENDER_CALL_OK,
@@ -243,17 +258,17 @@ test "publish records dirty generation only for published source" {
         .queued = 1,
         .damage_kind = damage_partial,
         .reserved0 = 0,
-        .snapshot_seq = 1,
+        .snapshot_seq = 9,
         .geometry_epoch = 1,
     });
-    try std.testing.expectEqual(@as(u64, 9), term.vt_state.pending_dirty_generation);
 
-    recordPendingDirtyGeneration(&term, .{
+    recordPublishedSnapshot(.{
         .rows = 2,
         .cols = 4,
         .is_alternate_screen = false,
         .history_count = 0,
         .scroll_row = 0,
+        .snapshot_seq = 11,
         .dirty_generation = 11,
     }, .{
         .status = c.HOWL_RENDER_CALL_FAILED,
@@ -261,16 +276,14 @@ test "publish records dirty generation only for published source" {
         .queued = 0,
         .damage_kind = damage_none,
         .reserved0 = 0,
-        .snapshot_seq = 2,
+        .snapshot_seq = 11,
         .geometry_epoch = 1,
     });
-    try std.testing.expectEqual(@as(u64, 0), term.vt_state.pending_dirty_generation);
 }
 
-test "ack clears pending dirty generation only after ack call" {
+test "ack forwards render-owned snapshot sequence" {
     const FakeTerm = struct {
         vt: c.HowlVtHandle = @ptrFromInt(1),
-        vt_state: struct { pending_dirty_generation: u64 = 7 } = .{},
         mutex: struct {
             fn lock(_: *@This()) void {}
             fn unlock(_: *@This()) void {}
@@ -278,26 +291,24 @@ test "ack clears pending dirty generation only after ack call" {
     };
     const FakeOps = struct {
         var ack_calls: u8 = 0;
-        var last_generation: u64 = 0;
+        var last_snapshot_seq: u64 = 0;
 
-        fn ack(_: c.HowlVtHandle, dirty_generation: u64) i32 {
+        fn ack(_: c.HowlVtHandle, snapshot_seq: u64) i32 {
             ack_calls += 1;
-            last_generation = dirty_generation;
+            last_snapshot_seq = snapshot_seq;
             return c.HOWL_VT_CALL_OK;
         }
     };
 
     var term = FakeTerm{};
-    ackPublishedSourceWith(&term, FakeOps);
+    ackPublishedSourceWith(&term, 7, FakeOps);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
-    try std.testing.expectEqual(@as(u64, 7), FakeOps.last_generation);
-    try std.testing.expectEqual(@as(u64, 0), term.vt_state.pending_dirty_generation);
+    try std.testing.expectEqual(@as(u64, 7), FakeOps.last_snapshot_seq);
 }
 
-test "no pending dirty generation means no ack call" {
+test "zero snapshot sequence means no ack call" {
     const FakeTerm = struct {
         vt: c.HowlVtHandle = @ptrFromInt(1),
-        vt_state: struct { pending_dirty_generation: u64 = 0 } = .{},
         mutex: struct {
             fn lock(_: *@This()) void {}
             fn unlock(_: *@This()) void {}
@@ -313,6 +324,6 @@ test "no pending dirty generation means no ack call" {
     };
 
     var term = FakeTerm{};
-    ackPublishedSourceWith(&term, FakeOps);
+    ackPublishedSourceWith(&term, 0, FakeOps);
     try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
 }

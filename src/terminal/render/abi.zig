@@ -128,10 +128,11 @@ pub fn takeRenderPerf(term: *Term) RenderPerf {
     return term.render.takePerf();
 }
 
-pub fn markRenderPresented(term: *Term) void {
+pub fn markRenderPresented(term: *Term) u64 {
     term.mutex.lock();
     defer term.mutex.unlock();
     term.render.markPresented();
+    return term.render.takePendingVtSnapshotSeq();
 }
 
 pub fn pixelToCol(term: *const Term, pixel_x: i32) u16 {
