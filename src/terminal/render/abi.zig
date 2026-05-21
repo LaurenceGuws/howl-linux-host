@@ -162,6 +162,8 @@ pub fn commitFrameLayout(term: *Term, layout: FrameLayout) void {
     std.debug.assert(geometry.status == c.HOWL_RENDER_CALL_OK);
     std.debug.assert(geometry.cell_px.width == layout.cell_px.width);
     std.debug.assert(geometry.cell_px.height == layout.cell_px.height);
+    std.debug.assert(geometry.geometry_epoch != 0);
+    term.render.setGeometryEpoch(geometry.geometry_epoch);
 }
 
 pub fn renderPhase(term: *const Term) RenderPhase {
@@ -314,15 +316,6 @@ pub fn preparedSurfaceDiagnostics(term: *Term, diagnostics_out: *PreparedSurface
     defer term.mutex.unlock();
     const prepared = term.render.prepared_surface orelse return false;
     return c.howl_render_prepared_surface_diagnostics(prepared, diagnostics_out) == c.HOWL_RENDER_CALL_OK;
-}
-
-pub fn surfaceQuery(term: *const Term) c.HowlRenderSurfaceQuery {
-    const mut: *Term = @constCast(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    const query = c.howl_render_surface_text_surface_query(term.render.surface_text);
-    std.debug.assert(query.status == c.HOWL_RENDER_CALL_OK);
-    return query;
 }
 
 pub fn takeRenderMetrics(term: *Term) RenderMetrics {

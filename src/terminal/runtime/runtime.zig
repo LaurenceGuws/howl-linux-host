@@ -88,7 +88,7 @@ pub fn init(
     var term = initTermValue(alloc, launch, session_handle, vt, surface_text, frame_layout, render_init.font_size_px);
     errdefer deinit(&term);
 
-    try syncInitialGeometry(surface_text, frame_layout);
+    try syncInitialGeometry(&term);
     try recordRenderFonts(&term, render_init);
     try resetTitleFromLaunch(&term);
     return term;
@@ -168,14 +168,17 @@ fn initTermValue(
     };
 }
 
-fn syncInitialGeometry(surface_text: c.HowlRenderSurfaceTextHandle, frame_layout: render_retained.FrameLayout) !void {
-    const geometry = c.howl_render_surface_text_sync_geometry(surface_text, .{
+fn syncInitialGeometry(term: *Term) !void {
+    const frame_layout = term.render.frame_layout;
+    const geometry = c.howl_render_surface_text_sync_geometry(term.render.surface_text, .{
         .render_px = frame_layout.render_px,
         .grid_px = frame_layout.grid_px,
     });
     if (geometry.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     std.debug.assert(geometry.cell_px.width == frame_layout.cell_px.width);
     std.debug.assert(geometry.cell_px.height == frame_layout.cell_px.height);
+    std.debug.assert(geometry.geometry_epoch != 0);
+    term.render.setGeometryEpoch(geometry.geometry_epoch);
 }
 
 fn applyPrimaryFontPath(surface_text: c.HowlRenderSurfaceTextHandle, font_path: ?[:0]const u8) bool {

@@ -148,14 +148,13 @@ const AppTab = struct {
         if (!TermTextureOps.ensureSurface(&self.term_texture, info.render_px.width, info.render_px.height)) return .failed;
         if (!TermTextureOps.uploadPreparedBuffer(self.term_texture, pixels)) return .failed;
 
-        const query = RenderApi.surfaceQuery(&self.panel.term);
         var feedback = std.mem.zeroes(RenderApi.RenderSurfaceFeedback);
         const execution = RenderApi.SurfaceExecutionInput{
             .surface = .{
                 .host_surface_id = self.term_texture.host_surface_id,
                 .width = info.render_px.width,
                 .height = info.render_px.height,
-                .epoch = query.epoch,
+                .epoch = info.required_surface_epoch,
             },
             .uploads_committed = buffer.uploads_committed,
             .render_us = @intCast((Window.c_win.SDL_GetTicksNS() - start_ns) / std.time.ns_per_us),

@@ -23,6 +23,7 @@ pub const FrameLayout = struct {
 
 pub const State = struct {
     frame_layout: FrameLayout,
+    geometry_epoch: u64 = 0,
     surface_text: c.HowlRenderSurfaceTextHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
     font_size_px: u16,
@@ -64,6 +65,10 @@ pub const State = struct {
 
     pub fn commitFrameLayout(self: *State, layout: FrameLayout) void {
         self.frame_layout = layout;
+    }
+
+    pub fn setGeometryEpoch(self: *State, geometry_epoch: u64) void {
+        self.geometry_epoch = geometry_epoch;
     }
 
     pub fn setFontSizePx(self: *State, font_size_px: u16) void {

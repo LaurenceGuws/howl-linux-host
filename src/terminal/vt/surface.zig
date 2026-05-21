@@ -119,8 +119,7 @@ fn ackPublishedSourceWith(term: anytype, comptime Ops: type) void {
 
 pub fn sourceRejected(term: *api.Term) c.HowlRenderVtPublishResult {
     log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d} render_phase={s}", .{ log.nowNs(), term.vt_state.snapshot_seq, @tagName(term.render.phase) });
-    const query = c.howl_render_surface_text_surface_query(term.render.surface_text);
-    std.debug.assert(query.status == c.HOWL_RENDER_CALL_OK);
+    std.debug.assert(term.render.geometry_epoch != 0);
     return .{
         .status = c.HOWL_RENDER_CALL_FAILED,
         .published = 0,
@@ -128,7 +127,7 @@ pub fn sourceRejected(term: *api.Term) c.HowlRenderVtPublishResult {
         .damage_kind = damage_none,
         .reserved0 = 0,
         .snapshot_seq = term.vt_state.snapshot_seq,
-        .geometry_epoch = query.epoch,
+        .geometry_epoch = term.render.geometry_epoch,
     };
 }
 
