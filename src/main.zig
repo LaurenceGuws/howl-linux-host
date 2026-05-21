@@ -22,7 +22,7 @@ const max_tabs: TabIndex = TabBar.max_tabs;
 const AppTab = struct {
     allocator: std.mem.Allocator,
     panel: *TerminalPanel,
-    term_texture: RenderApi.RenderSurface = .{ .host_surface_id = 0, .width = 0, .height = 0, .epoch = 0 },
+    term_texture: RenderApi.RenderSurface = .{ .host_surface_id = 0, .width = 0, .height = 0 },
     first_submit_trace_logged: bool = false,
     first_prepare_result_logged: bool = false,
     first_non_idle_submit_logged: bool = false,
@@ -39,7 +39,6 @@ const AppTab = struct {
         Window.deleteTexture(&self.term_texture.host_surface_id);
         self.term_texture.width = 0;
         self.term_texture.height = 0;
-        self.term_texture.epoch = 0;
         self.panel.destroy(self.allocator);
     }
 
@@ -93,7 +92,7 @@ const AppTab = struct {
         }
         if (!self.first_rendered_surface_logged) {
             self.first_rendered_surface_logged = true;
-            InputWindow.logStartupf("stage=term-rendered-surface-first term_texture_id={d} epoch={d}", .{ self.term_texture.host_surface_id, self.term_texture.epoch });
+            InputWindow.logStartupf("stage=term-rendered-surface-first term_texture_id={d}", .{self.term_texture.host_surface_id});
         }
     }
 
@@ -156,11 +155,9 @@ const AppTab = struct {
                 .host_surface_id = self.term_texture.host_surface_id,
                 .width = info.render_px.width,
                 .height = info.render_px.height,
-                .epoch = info.required_surface_epoch,
             },
             .uploads_committed = buffer.uploads_committed,
             .render_us = @intCast((Window.c_win.SDL_GetTicksNS() - start_ns) / std.time.ns_per_us),
-            .content_valid = 1,
         };
         const result = RenderApi.submitPrepared(&self.panel.term, &execution, &feedback);
         if (result == .rendered) self.term_texture = feedback.surface;

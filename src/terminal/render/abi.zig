@@ -347,7 +347,6 @@ fn preparedFrameFromInfo(info: c.HowlRenderPreparedSurfaceInfo) c.HowlRenderPrep
         .geometry_epoch = info.geometry_epoch,
         .damage_base_seq = if (info.damage_kind == c.HOWL_RENDER_DAMAGE_PARTIAL) info.required_base_seq else 0,
         .required_base_seq = info.required_base_seq,
-        .required_target_epoch = info.required_surface_epoch,
         .damage_kind = info.damage_kind,
     };
 }
@@ -357,7 +356,7 @@ fn submitPreparedSurface(term: *Term, prepared_frame: c.HowlRenderPreparedFrame,
     const result = c.howl_render_surface_text_submit(term.render.surface_text, prepared, prepared_frame, execution, feedback);
     if (result == c.HOWL_RENDER_SUBMIT_RENDERED) {
         term.render.addPerf(feedback.metrics);
-        std.debug.assert(c.howl_render_surface_text_accept_submitted(term.render.surface_text, prepared_frame, feedback.surface, 1) == c.HOWL_RENDER_CALL_OK);
+        std.debug.assert(c.howl_render_surface_text_accept_submitted(term.render.surface_text, prepared_frame) == c.HOWL_RENDER_CALL_OK);
         term.render.forgetPreparedSurface();
     }
     return result;
