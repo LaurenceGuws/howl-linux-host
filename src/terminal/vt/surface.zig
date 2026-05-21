@@ -8,6 +8,15 @@ const damage_none: u8 = @intCast(c.HOWL_RENDER_DAMAGE_NONE);
 const damage_partial: u8 = @intCast(c.HOWL_RENDER_DAMAGE_PARTIAL);
 const damage_full: u8 = @intCast(c.HOWL_RENDER_DAMAGE_FULL);
 
+fn cellCount(rows: u16, cols: u16) u32 {
+    return @as(u32, rows) * @as(u32, cols);
+}
+
+fn sliceCount16(items: anytype) u16 {
+    std.debug.assert(items.len <= std.math.maxInt(u16));
+    return @intCast(items.len);
+}
+
 pub const VisibleInfo = struct {
     history_count: u32,
     is_alternate_screen: bool,
@@ -124,10 +133,12 @@ pub fn sourceRejected(term: *api.Term) c.HowlRenderVtPublishResult {
 }
 
 pub fn vtSurfaceOut(term: *api.Term) !c.HowlRenderVtSurface {
-    const cell_count = @as(usize, term.vt_state.surface.rows) * @as(usize, term.vt_state.surface.cols);
+    const cell_count = cellCount(term.vt_state.surface.rows, term.vt_state.surface.cols);
+    // Render ABI spans are architecture-sized, but host-retained VT surface truth stays typed as
+    // u16/u32 until this final export seam.
     if (term.vt_state.surface_cells.items.len < cell_count) return error.InvalidVisibleSnapshot;
     return .{
-        .cells = .{ .ptr = if (cell_count == 0) null else @ptrCast(term.vt_state.surface_cells.items.ptr), .len = cell_count },
+        .cells = .{ .ptr = if (cell_count == 0) null else @ptrCast(term.vt_state.surface_cells.items.ptr), .len = @intCast(cell_count) },
         .cols = term.vt_state.surface.cols,
         .rows = term.vt_state.surface.rows,
         .scroll_row = term.vt_state.surface.scroll_row,
@@ -156,8 +167,10 @@ pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo
     };
 }
 
-pub fn vtEnsureCells(term: *api.Term, needed: usize) ![]c.HowlVtSurfaceCell {
-    try term.vt_state.surface_cells.resize(term.allocator, needed);
+pub fn vtEnsureCells(term: *api.Term, needed: u32) ![]c.HowlVtSurfaceCell {
+    // ArrayList owns architecture-sized lengths. Keep the retained VT surface count typed until
+    // this allocation seam.
+    try term.vt_state.surface_cells.resize(term.allocator, @intCast(needed));
     return term.vt_state.surface_cells.items;
 }
 
@@ -168,6 +181,8 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
     term.vt_state.visible_damage.dirty_cols_end.clearRetainingCapacity();
     var source = c.howl_vt_terminal_copy_surface(term.vt, term.vt_state.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0, null, 0, 0, 0);
     if (source.status == vt_abi.callShortBuffer()) {
+        std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
+        std.debug.assert(source.dirty_needed <= source.source.rows);
         cells = try vtEnsureCells(term, @intCast(source.source.surface_cells.len));
         try term.vt_state.visible_damage.dirty_rows.resize(term.allocator, source.source.rows);
         try term.vt_state.visible_damage.dirty_cols_start.resize(term.allocator, @intCast(source.source.rows));
@@ -196,6 +211,8 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
             0,
         );
         if (source.status == c.HOWL_VT_CALL_OK) {
+            // The VT ABI compacts dirty column bounds over the contiguous dirty-row span.
+            // Expand them immediately into host-retained per-row arrays.
             scatterDirtyCols(term.vt_state.visible_damage.dirty_rows.items, raw_dirty_cols_start, term.vt_state.visible_damage.dirty_cols_start.items);
             scatterDirtyCols(term.vt_state.visible_damage.dirty_rows.items, raw_dirty_cols_end, term.vt_state.visible_damage.dirty_cols_end.items);
         }
@@ -220,10 +237,16 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
 
 fn scatterDirtyCols(dirty_rows: []const u8, compact: []const u16, expanded: []u16) void {
     @memset(expanded, 0);
-    var compact_idx: usize = 0;
-    for (dirty_rows, 0..) |dirty, row_idx| {
+    const row_count = sliceCount16(dirty_rows);
+    const compact_count = sliceCount16(compact);
+    std.debug.assert(expanded.len >= dirty_rows.len);
+    std.debug.assert(compact.len <= dirty_rows.len);
+    var compact_idx: u16 = 0;
+    var row_idx: u16 = 0;
+    while (row_idx < row_count) : (row_idx += 1) {
+        const dirty = dirty_rows[row_idx];
         if (dirty == 0) continue;
-        if (compact_idx >= compact.len or row_idx >= expanded.len) break;
+        if (compact_idx >= compact_count) break;
         expanded[row_idx] = compact[compact_idx];
         compact_idx += 1;
     }
