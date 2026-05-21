@@ -60,6 +60,9 @@ classDiagram
   accumulated render perf counters. Font path ownership and fallback-path copies belong to
   `howl-render`; host render code does not mirror them as retained state, and it does not own host
   term-texture state.
+- `howl-linux-host` owns explicit font override resolution plus bundled fallback-stack assembly
+  before render startup. It passes render one ordered font-path list through the render C ABI;
+  render does not discover fonts on the host's behalf.
 - `src/terminal/runtime/` owns the shared runtime aggregate state and the bounded host control spine that drives PTY, VT, and render work, including PTY-read slices, VT feed, and VT reply handoff.
 - `main.zig` drives one bounded PTY transport slice with direct VT feed, and one explicit in-flight render-work query per turn when deciding whether to wait, render, present, or wake again. It also owns per-tab term-texture creation, upload, submit execution input, and present acknowledgment.
 - The background progress thread only waits for PTY readiness and wakes the owner thread. It does not pump transport, apply VT work, or mutate render state.

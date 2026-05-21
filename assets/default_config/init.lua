@@ -21,9 +21,10 @@ return {
     start_path = "$HOME",
     -- Default font size
     font_size = 16,
-    -- Optional primary font path
+    -- Explicit primary font path. If unset, the bundled default primary is used.
     font_primary = "assets/fonts/IosevkaTermNerdFont-Regular.ttf",
-    -- Ordered fallback stacks (paths)
+    -- Ordered explicit fallback override paths. Bundled symbols and emoji
+    -- coverage still remain behind these entries.
     fallback_mono = {},
     fallback_symbols = {},
     fallback_emoji = {},

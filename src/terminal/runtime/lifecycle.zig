@@ -4,6 +4,7 @@ const trace = @import("../../input/window.zig");
 const HostInput = @import("../../input/input.zig").Input;
 const feed_record = @import("../pty/feed_record.zig");
 const pty_session = @import("../pty/session.zig");
+const fonts_linux = @import("fonts_linux.zig");
 const runtime = @import("runtime.zig");
 const thread = @import("thread.zig");
 
@@ -14,10 +15,9 @@ const child_term_value: [*:0]const u8 = "xterm-256color";
 pub fn start(self: anytype) !void {
     trace.logStartup("term-start-begin");
     applyChildEnvironmentPolicy();
-    const max_fallback_font_paths = runtime.c.HOWL_RENDER_MAX_FALLBACK_FONTS;
-    var font_fallbacks_buf: [max_fallback_font_paths][:0]const u8 = undefined;
-    const font_fallbacks = self.conf.fonts.flattenFallbacks(font_fallbacks_buf[0..]);
     const frame_request = self.frameLayoutSnapshot();
+    var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, self.conf.fonts);
+    defer resolved_fonts.deinit(std.heap.c_allocator);
     // The explicit seam files keep PTY/VT/render ownership visible to the host.
     self.term = try runtime.init(std.heap.c_allocator, .{
         .shell = self.conf.shell,
@@ -27,8 +27,8 @@ pub fn start(self: anytype) !void {
         .render_px = frame_request.render_px,
         .grid_px = frame_request.grid_px,
         .font_size_px = @max(self.conf.font_size, 1),
-        .primary_font_path = self.conf.fonts.primary,
-        .fallback_font_paths = font_fallbacks,
+        .primary_font_path = resolved_fonts.primary,
+        .fallback_font_paths = resolved_fonts.fallbacks,
     });
     self.term_ready = true;
     errdefer {
