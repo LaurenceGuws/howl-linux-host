@@ -77,7 +77,6 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     });
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPendingDirtyGeneration(term, visible, typed_response);
-    term.vt_state.surface.full_damage = @intFromBool(typed_response.damage_kind == damage_full);
     if (typed_response.published != 0) {
         term.render.noteSourcePublished(typed_response.queued != 0);
         log.logf(
@@ -142,7 +141,6 @@ pub fn vtSurfaceOut(term: *api.Term) !c.HowlRenderVtSurface {
         .rows = term.vt_state.surface.rows,
         .scroll_row = term.vt_state.surface.scroll_row,
         .is_alternate_screen = term.vt_state.surface.is_alternate_screen,
-        .full_damage = term.vt_state.surface.full_damage,
         .dirty_rows = .{ .ptr = if (term.vt_state.visible_damage.dirty_rows.items.len == 0) null else term.vt_state.visible_damage.dirty_rows.items.ptr, .len = term.vt_state.visible_damage.dirty_rows.items.len },
         .dirty_cols_start = .{ .ptr = if (term.vt_state.visible_damage.dirty_cols_start.items.len == 0) null else term.vt_state.visible_damage.dirty_cols_start.items.ptr, .len = term.vt_state.visible_damage.dirty_cols_start.items.len },
         .dirty_cols_end = .{ .ptr = if (term.vt_state.visible_damage.dirty_cols_end.items.len == 0) null else term.vt_state.visible_damage.dirty_cols_end.items.ptr, .len = term.vt_state.visible_damage.dirty_cols_end.items.len },
