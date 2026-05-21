@@ -43,34 +43,6 @@ const AppTab = struct {
         self.panel.destroy(self.allocator);
     }
 
-    fn renderStep(self: *AppTab) void {
-        const bootstrap_surface = self.term_texture.host_surface_id == 0;
-        const work = RenderApi.renderWorkState(&self.panel.term, bootstrap_surface);
-        self.noteSubmitPendingEntry(work);
-        if (work.submit_pending) {
-            return switch (self.submitPreparedSurface()) {
-                .rendered => self.noteRenderedStep(),
-                .failed => self.noteFailedStep(),
-                .idle, .stale, .needs_prepare => self.noteIdleStep(),
-            };
-        }
-        if (work.present_pending) return self.noteBlockedPresentStep();
-        if (!(work.source_pending or work.prepare_pending or bootstrap_surface)) return self.noteIdleStep();
-
-        return switch (RenderApi.prepareRender(&self.panel.term)) {
-            .idle => self.notePrepareIdleStep(bootstrap_surface),
-            .failed => self.noteFailedStep(),
-            .prepared => blk: {
-                self.notePreparedStep();
-                break :blk switch (self.submitPreparedSurface()) {
-                    .rendered => self.noteRenderedStep(),
-                    .failed => self.noteFailedStep(),
-                    .idle, .stale, .needs_prepare => self.noteIdleStep(),
-                };
-            },
-        };
-    }
-
     fn noteSubmitPendingEntry(self: *AppTab, work: RenderApi.RenderWorkState) void {
         if (!self.first_submit_work_logged and work.submit_pending) {
             self.first_submit_work_logged = true;
@@ -130,58 +102,6 @@ const AppTab = struct {
             InputWindow.logStartupf("stage=term-prepare-first prepared=true", .{});
         }
         std.debug.assert(work.submit_pending);
-    }
-
-    fn submitPreparedSurface(self: *AppTab) RenderApi.RenderSubmitResult {
-        const start_ns = Window.c_win.SDL_GetTicksNS();
-        var info = std.mem.zeroes(RenderApi.PreparedSurfaceInfo);
-        if (!RenderApi.preparedSurfaceInfo(&self.panel.term, &info)) return .failed;
-
-        var buffer = std.mem.zeroes(RenderApi.PreparedSurfaceBuffer);
-        if (!RenderApi.preparedSurfaceBuffer(&self.panel.term, &buffer)) return .failed;
-        const pixels: []const u8 = if (buffer.rgba_pixels.len == 0)
-            &.{}
-        else
-            buffer.rgba_pixels.ptr[0..buffer.rgba_pixels.len];
-        // Render already composed any partial frame against its retained base.
-        // The host only realizes the complete prepared image it receives here.
-        if (!TermTextureOps.ensureSurface(&self.term_texture, info.render_px.width, info.render_px.height)) return .failed;
-        if (!TermTextureOps.uploadPreparedBuffer(self.term_texture, pixels)) return .failed;
-
-        var feedback = std.mem.zeroes(RenderApi.RenderSurfaceFeedback);
-        const execution = RenderApi.SurfaceExecutionInput{
-            .surface = .{
-                .host_surface_id = self.term_texture.host_surface_id,
-                .width = info.render_px.width,
-                .height = info.render_px.height,
-            },
-            .uploads_committed = buffer.uploads_committed,
-            .render_us = @intCast((Window.c_win.SDL_GetTicksNS() - start_ns) / std.time.ns_per_us),
-        };
-        const result = RenderApi.submitPrepared(&self.panel.term, &execution, &feedback);
-        if (result == .rendered) self.term_texture = feedback.surface;
-        return result;
-    }
-
-    fn renderWorkState(self: *AppTab) RenderApi.RenderWorkState {
-        const bootstrap_surface = self.term_texture.host_surface_id == 0;
-        self.panel.maybeCommitGridResize();
-        return RenderApi.renderWorkState(&self.panel.term, bootstrap_surface);
-    }
-
-    fn collectContentFrame(self: *AppTab) RenderApi.RenderWorkState {
-        const bootstrap_surface = self.term_texture.host_surface_id == 0;
-        var work = self.renderWorkState();
-        if (bootstrap_surface or !work.wantsFrame()) {
-            _ = VtSurface.publishSource(&self.panel.term);
-            work = RenderApi.renderWorkState(&self.panel.term, bootstrap_surface);
-        }
-        return work;
-    }
-
-    fn finishPresent(self: *AppTab, render_present_pending: bool) void {
-        VtSurface.ackPublishedSource(&self.panel.term);
-        if (render_present_pending) RenderApi.markRenderPresented(&self.panel.term);
     }
 };
 
@@ -412,7 +332,7 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
 
 fn render(app: *App) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
-    const work_before_render = tab.collectContentFrame();
+    const work_before_render = collectTabRenderWork(tab);
     InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
         work_before_render.wantsFrame(),
         work_before_render.inFlight(),
@@ -424,7 +344,7 @@ fn render(app: *App) void {
     });
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
     const term_texture_before = tab.term_texture.host_surface_id;
-    if (work_before_render.wantsFrame()) tab.renderStep();
+    if (work_before_render.wantsFrame()) driveTabRenderStep(tab, work_before_render);
     const render_present_pending = RenderApi.renderWorkState(&tab.panel.term, false).present_pending;
 
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
@@ -443,8 +363,78 @@ fn render(app: *App) void {
     });
     // Present closes the frame before the host retires VT dirty truth or the
     // render owner's retained base for later partial prepares.
-    tab.finishPresent(render_present_pending);
+    finishPresentedFrame(tab, render_present_pending);
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
+}
+
+fn collectTabRenderWork(tab: *AppTab) RenderApi.RenderWorkState {
+    const bootstrap_surface = tab.term_texture.host_surface_id == 0;
+    tab.panel.maybeCommitGridResize();
+    var work = RenderApi.renderWorkState(&tab.panel.term, bootstrap_surface);
+    if (bootstrap_surface or !work.wantsFrame()) {
+        _ = VtSurface.publishSource(&tab.panel.term);
+        work = RenderApi.renderWorkState(&tab.panel.term, bootstrap_surface);
+    }
+    return work;
+}
+
+fn driveTabRenderStep(tab: *AppTab, work: RenderApi.RenderWorkState) void {
+    const bootstrap_surface = tab.term_texture.host_surface_id == 0;
+    tab.noteSubmitPendingEntry(work);
+    if (work.submit_pending) return handleRenderSubmit(tab, submitPreparedSurface(tab));
+    if (work.present_pending) return tab.noteBlockedPresentStep();
+    if (!(work.source_pending or work.prepare_pending or bootstrap_surface)) return tab.noteIdleStep();
+
+    switch (RenderApi.prepareRender(&tab.panel.term)) {
+        .idle => tab.notePrepareIdleStep(bootstrap_surface),
+        .failed => tab.noteFailedStep(),
+        .prepared => {
+            tab.notePreparedStep();
+            handleRenderSubmit(tab, submitPreparedSurface(tab));
+        },
+    }
+}
+
+fn handleRenderSubmit(tab: *AppTab, result: RenderApi.RenderSubmitResult) void {
+    switch (result) {
+        .rendered => tab.noteRenderedStep(),
+        .failed => tab.noteFailedStep(),
+        .idle, .stale, .needs_prepare => tab.noteIdleStep(),
+    }
+}
+
+fn submitPreparedSurface(tab: *AppTab) RenderApi.RenderSubmitResult {
+    const start_ns = Window.c_win.SDL_GetTicksNS();
+    var info = std.mem.zeroes(RenderApi.PreparedSurfaceInfo);
+    if (!RenderApi.preparedSurfaceInfo(&tab.panel.term, &info)) return .failed;
+
+    var buffer = std.mem.zeroes(RenderApi.PreparedSurfaceBuffer);
+    if (!RenderApi.preparedSurfaceBuffer(&tab.panel.term, &buffer)) return .failed;
+    const pixels: []const u8 = if (buffer.rgba_pixels.len == 0)
+        &.{}
+    else
+        buffer.rgba_pixels.ptr[0..buffer.rgba_pixels.len];
+    if (!TermTextureOps.ensureSurface(&tab.term_texture, info.render_px.width, info.render_px.height)) return .failed;
+    if (!TermTextureOps.uploadPreparedBuffer(tab.term_texture, pixels)) return .failed;
+
+    var feedback = std.mem.zeroes(RenderApi.RenderSurfaceFeedback);
+    const execution = RenderApi.SurfaceExecutionInput{
+        .surface = .{
+            .host_surface_id = tab.term_texture.host_surface_id,
+            .width = info.render_px.width,
+            .height = info.render_px.height,
+        },
+        .uploads_committed = buffer.uploads_committed,
+        .render_us = @intCast((Window.c_win.SDL_GetTicksNS() - start_ns) / std.time.ns_per_us),
+    };
+    const result = RenderApi.submitPrepared(&tab.panel.term, &execution, &feedback);
+    if (result == .rendered) tab.term_texture = feedback.surface;
+    return result;
+}
+
+fn finishPresentedFrame(tab: *AppTab, render_present_pending: bool) void {
+    VtSurface.ackPublishedSource(&tab.panel.term);
+    if (render_present_pending) RenderApi.markRenderPresented(&tab.panel.term);
 }
 
 fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []AppTab) void {

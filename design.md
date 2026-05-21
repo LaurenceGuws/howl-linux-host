@@ -55,11 +55,12 @@ classDiagram
   frame layout sync, prepared-surface drive, and contract translation between VT-surface input and
   render-surface output. Retained render queue state, geometry epoch/query state, VT snapshot
   publication classification, submit validation, and present retirement belong to `howl-render`;
-  the host consumes those steps through the render C ABI. `src/terminal/render/retained.zig` owns
-  host-side render retained state: frame-layout mirror, prepared-surface handle lifetime, and
-  accumulated render perf counters. Font path ownership and fallback-path copies belong to
-  `howl-render`; host render code does not mirror them as retained state, and it does not own host
-  term-texture state.
+  the host consumes those steps through the render C ABI. `src/terminal/render/abi.zig` translates
+  host calls plus locking only. `src/terminal/render/retained.zig` owns host-side render retained
+  state and render lifecycle mutation: frame-layout mirror, geometry epoch, prepared-surface handle
+  lifetime, submit/present retirement, and accumulated render perf counters. Font path ownership
+  and fallback-path copies belong to `howl-render`; host render code does not mirror them as
+  retained state, and it does not own host term-texture state.
 - `howl-linux-host` owns explicit font override resolution plus bundled fallback-stack assembly
   before render startup. It passes render one ordered font-path list through the render C ABI;
   render does not discover fonts on the host's behalf.
