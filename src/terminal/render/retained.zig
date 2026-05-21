@@ -24,31 +24,21 @@ pub const State = struct {
     geometry_epoch: u64 = 0,
     surface_text: c.HowlRenderSurfaceTextHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
-    font_size_px: u16,
-    primary_font_path: ?[:0]u8 = null,
-    fallback_font_paths: std.ArrayListUnmanaged([:0]u8) = .empty,
     perf: Perf = .{},
 
     pub fn init(
         surface_text: c.HowlRenderSurfaceTextHandle,
         frame_layout: FrameLayout,
-        font_size_px: u16,
     ) State {
         return .{
             .frame_layout = frame_layout,
             .surface_text = surface_text,
-            .font_size_px = font_size_px,
         };
     }
 
-    pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *State) void {
         if (self.prepared_surface) |prepared| c.howl_render_prepared_surface_release(prepared);
         self.prepared_surface = null;
-        if (self.primary_font_path) |path| allocator.free(path);
-        self.primary_font_path = null;
-        for (self.fallback_font_paths.items) |path| allocator.free(path);
-        self.fallback_font_paths.clearRetainingCapacity();
-        self.fallback_font_paths.deinit(allocator);
         c.howl_render_surface_text_deinit(self.surface_text);
     }
 
@@ -66,35 +56,6 @@ pub const State = struct {
 
     pub fn setGeometryEpoch(self: *State, geometry_epoch: u64) void {
         self.geometry_epoch = geometry_epoch;
-    }
-
-    pub fn setFontSizePx(self: *State, font_size_px: u16) void {
-        self.font_size_px = font_size_px;
-    }
-
-    pub fn replacePrimaryFontPathOwned(
-        self: *State,
-        allocator: std.mem.Allocator,
-        owned: ?[:0]u8,
-    ) void {
-        const old = self.primary_font_path;
-        self.primary_font_path = owned;
-        if (old) |path| allocator.free(path);
-    }
-
-    pub fn clearFallbackFontPaths(self: *State, allocator: std.mem.Allocator) void {
-        freeOwnedFallbackFontPaths(self, allocator);
-    }
-
-    pub fn replaceFallbackFontPathsOwned(
-        self: *State,
-        allocator: std.mem.Allocator,
-        staged: *std.ArrayListUnmanaged([:0]u8),
-    ) void {
-        var old = self.fallback_font_paths;
-        self.fallback_font_paths = staged.*;
-        staged.* = .empty;
-        freeOwnedFallbackFontPathsValue(allocator, &old);
     }
 
     pub fn storePreparedSurface(
@@ -134,19 +95,6 @@ fn frameLayoutChanged(current: FrameLayout, next: FrameLayout) bool {
         current.rows != next.rows or
         current.cell_px.width != next.cell_px.width or
         current.cell_px.height != next.cell_px.height;
-}
-
-fn freeOwnedFallbackFontPaths(self: *State, allocator: std.mem.Allocator) void {
-    freeOwnedFallbackFontPathsValue(allocator, &self.fallback_font_paths);
-}
-
-fn freeOwnedFallbackFontPathsValue(
-    allocator: std.mem.Allocator,
-    paths: *std.ArrayListUnmanaged([:0]u8),
-) void {
-    for (paths.items) |path| allocator.free(path);
-    paths.deinit(allocator);
-    paths.* = .empty;
 }
 
 fn testFrameLayout() FrameLayout {
@@ -203,7 +151,7 @@ pub const Perf = struct {
 
 test "frame layout sync reports grid and cell changes" {
     const current = testFrameLayout();
-    var state = State.init(null, current, 16);
+    var state = State.init(null, current);
 
     const same = state.frameLayoutSync(current);
     try std.testing.expect(!same.changed);
@@ -221,38 +169,8 @@ test "frame layout sync reports grid and cell changes" {
     try std.testing.expect(changed.grid_changed);
 }
 
-test "replacePrimaryFontPathOwned frees old path" {
-    var state = State.init(null, testFrameLayout(), 16);
-    const first = try std.testing.allocator.dupeZ(u8, "first");
-    state.replacePrimaryFontPathOwned(std.testing.allocator, first);
-    try std.testing.expectEqualStrings("first", state.primary_font_path.?);
-
-    const second = try std.testing.allocator.dupeZ(u8, "second");
-    state.replacePrimaryFontPathOwned(std.testing.allocator, second);
-    try std.testing.expectEqualStrings("second", state.primary_font_path.?);
-
-    state.replacePrimaryFontPathOwned(std.testing.allocator, null);
-    try std.testing.expect(state.primary_font_path == null);
-}
-
-test "replaceFallbackFontPathsOwned swaps staged paths" {
-    var state = State.init(null, testFrameLayout(), 16);
-    defer state.clearFallbackFontPaths(std.testing.allocator);
-
-    var staged = std.ArrayListUnmanaged([:0]u8).empty;
-    defer freeOwnedFallbackFontPathsValue(std.testing.allocator, &staged);
-    try staged.append(std.testing.allocator, try std.testing.allocator.dupeZ(u8, "mono"));
-    try staged.append(std.testing.allocator, try std.testing.allocator.dupeZ(u8, "emoji"));
-
-    state.replaceFallbackFontPathsOwned(std.testing.allocator, &staged);
-    try std.testing.expect(staged.items.len == 0);
-    try std.testing.expectEqual(@as(u8, 2), @as(u8, @intCast(state.fallback_font_paths.items.len)));
-    try std.testing.expectEqualStrings("mono", state.fallback_font_paths.items[0]);
-    try std.testing.expectEqualStrings("emoji", state.fallback_font_paths.items[1]);
-}
-
 test "takePerf resets retained counters" {
-    var state = State.init(null, testFrameLayout(), 16);
+    var state = State.init(null, testFrameLayout());
     state.addPerf(.{
         .sync_us = 1,
         .copy_us = 2,

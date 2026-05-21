@@ -22,7 +22,6 @@ pub const RenderSurfaceFeedback = c.HowlRenderSurfaceFeedback;
 pub const RenderPrepareResult = retained.PrepareResult;
 pub const RenderSubmitResult = retained.SubmitResult;
 pub const RenderCellSize = c.HowlRenderCellSize;
-pub const max_fallback_font_paths: u8 = @intCast(c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 pub const FrameLayoutSync = retained.FrameLayoutSync;
 
 const ExpectedPreparedSurfaceBuffer = extern struct {
@@ -67,63 +66,7 @@ pub fn setFontSizePx(term: *Term, font_size_px: u16) bool {
     std.debug.assert(font_size_px > 0);
     term.mutex.lock();
     defer term.mutex.unlock();
-    if (!renderCallOk(c.howl_render_surface_text_set_font_size_px(term.render.surface_text, font_size_px))) return false;
-    term.render.setFontSizePx(font_size_px);
-    return true;
-}
-
-pub fn setPrimaryFontPath(term: *Term, font_path: ?[:0]const u8) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    if (font_path) |path| {
-        // Stage the replacement first so allocation failure leaves host and
-        // render owner state aligned on the old path.
-        const owned = term.allocator.dupeZ(u8, path) catch return false;
-        if (!renderCallOk(c.howl_render_surface_text_set_font_path(term.render.surface_text, owned.ptr, owned.len))) {
-            term.allocator.free(owned);
-            return false;
-        }
-        term.render.replacePrimaryFontPathOwned(term.allocator, owned);
-        return true;
-    }
-    if (!renderCallOk(c.howl_render_surface_text_set_font_path(term.render.surface_text, null, 0))) return false;
-    term.render.replacePrimaryFontPathOwned(term.allocator, null);
-    return true;
-}
-
-pub fn setFallbackFontPaths(term: *Term, paths: []const [:0]const u8) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    if (paths.len == 0) {
-        if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0))) return false;
-        term.render.clearFallbackFontPaths(term.allocator);
-        return true;
-    }
-    // Stage owned fallback paths first so a failed update leaves host and
-    // render owner state aligned on the old fallback set.
-    var staged: std.ArrayListUnmanaged([:0]u8) = .empty;
-    defer freeStagedFallbackPaths(term.allocator, &staged);
-    std.debug.assert(paths.len <= max_fallback_font_paths);
-    const path_count: u8 = @intCast(paths.len);
-    staged.ensureTotalCapacity(term.allocator, path_count) catch return false;
-    var raw: [max_fallback_font_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_fallback_font_paths;
-    var i: u8 = 0;
-    while (i < path_count) : (i += 1) {
-        const owned = term.allocator.dupeZ(u8, paths[@intCast(i)]) catch return false;
-        staged.appendAssumeCapacity(owned);
-        raw[i] = owned.ptr;
-    }
-    if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, &raw, path_count))) return false;
-    term.render.replaceFallbackFontPathsOwned(term.allocator, &staged);
-    return true;
-}
-
-pub fn clearFallbackFontPaths(term: *Term) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    if (!renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(term.render.surface_text, null, 0))) return false;
-    term.render.clearFallbackFontPaths(term.allocator);
-    return true;
+    return renderCallOk(c.howl_render_surface_text_set_font_size_px(term.render.surface_text, font_size_px));
 }
 
 pub fn deriveFrameLayout(term: *Term, request: FrameLayoutRequest) !FrameLayoutSync {
@@ -329,15 +272,6 @@ pub fn pixelToRow(term: *const Term, pixel_y: i32) i32 {
 
 fn renderCallOk(status: i32) bool {
     return status == c.HOWL_RENDER_CALL_OK;
-}
-
-fn freeStagedFallbackPaths(
-    allocator: std.mem.Allocator,
-    paths: *std.ArrayListUnmanaged([:0]u8),
-) void {
-    for (paths.items) |path| allocator.free(path);
-    paths.deinit(allocator);
-    paths.* = .empty;
 }
 
 fn preparedFrameFromInfo(info: c.HowlRenderPreparedSurfaceInfo) c.HowlRenderPreparedFrame {

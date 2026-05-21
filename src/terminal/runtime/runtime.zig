@@ -85,11 +85,10 @@ pub fn init(
     if (vt == null) return error.VtInitFailed;
     errdefer c.howl_vt_terminal_deinit(vt);
 
-    var term = initTermValue(alloc, launch, session_handle, vt, surface_text, frame_layout, render_init.font_size_px);
+    var term = initTermValue(alloc, launch, session_handle, vt, surface_text, frame_layout);
     errdefer deinit(&term);
 
     try syncInitialGeometry(&term);
-    try recordRenderFonts(&term, render_init);
     try resetTitleFromLaunch(&term);
     return term;
 }
@@ -155,7 +154,6 @@ fn initTermValue(
     vt: c.HowlVtHandle,
     surface_text: c.HowlRenderSurfaceTextHandle,
     frame_layout: render_retained.FrameLayout,
-    font_size_px: u16,
 ) Term {
     return .{
         .allocator = alloc,
@@ -164,7 +162,7 @@ fn initTermValue(
         },
         .session = session_handle,
         .vt = vt,
-        .render = render_retained.State.init(surface_text, frame_layout, font_size_px),
+        .render = render_retained.State.init(surface_text, frame_layout),
     };
 }
 
@@ -197,29 +195,6 @@ fn applyFallbackFontPaths(surface_text: c.HowlRenderSurfaceTextHandle, paths: []
     return renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(surface_text, &raw, path_count));
 }
 
-fn recordRenderFonts(term: *Term, render_init: RenderInit) !void {
-    if (render_init.primary_font_path) |path| {
-        const owned = try term.allocator.dupeZ(u8, path);
-        term.render.replacePrimaryFontPathOwned(term.allocator, owned);
-    }
-    if (render_init.fallback_font_paths.len == 0) return;
-
-    var staged: std.ArrayListUnmanaged([:0]u8) = .empty;
-    errdefer {
-        for (staged.items) |path| term.allocator.free(path);
-        staged.deinit(term.allocator);
-    }
-    const path_count: u8 = @intCast(render_init.fallback_font_paths.len);
-    try staged.ensureTotalCapacity(term.allocator, path_count);
-    var i: u8 = 0;
-    while (i < path_count) : (i += 1) {
-        staged.appendAssumeCapacity(
-            try term.allocator.dupeZ(u8, render_init.fallback_font_paths[@intCast(i)]),
-        );
-    }
-    term.render.replaceFallbackFontPathsOwned(term.allocator, &staged);
-}
-
 fn renderCallOk(status: i32) bool {
     return status == c.HOWL_RENDER_CALL_OK;
 }
@@ -227,7 +202,7 @@ fn renderCallOk(status: i32) bool {
 pub fn deinit(term: *Term) void {
     stop(term);
     feed_record.deinit(term);
-    term.render.deinit(term.allocator);
+    term.render.deinit();
     term.vt_state.deinit(term.allocator);
     c.howl_vt_terminal_deinit(term.vt);
     c.howl_pty_session_deinit(term.session);
