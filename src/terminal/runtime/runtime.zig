@@ -15,18 +15,20 @@ const max_fallback_font_paths: u8 = @intCast(c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 pub const LifecycleState = pty_retained.LifecycleState;
 pub const Progress = struct {
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    wake_state: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    wake_sem: ?*window.c_win.SDL_Semaphore = null,
+    wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    wake_ack_sem: ?*window.c_win.SDL_Semaphore = null,
     thread: ?std.Thread = null,
 
     pub fn init(self: *Progress) !void {
-        self.wake_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.ProgressSemaphoreUnavailable;
+        self.wake_pending.store(false, .release);
+        self.wake_ack_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.ProgressSemaphoreUnavailable;
     }
 
     pub fn deinit(self: *Progress) void {
-        const sem = self.wake_sem orelse return;
+        const sem = self.wake_ack_sem orelse return;
         window.c_win.SDL_DestroySemaphore(sem);
-        self.wake_sem = null;
+        self.wake_ack_sem = null;
+        self.wake_pending.store(false, .release);
     }
 };
 
@@ -49,7 +51,6 @@ pub const Term = struct {
     vt: c.HowlVtHandle,
     render: render_retained.State,
     vt_state: vt_retained.State = .{},
-    progress: Progress = .{},
     mutex: Mutex = .{},
     lifecycle_state: LifecycleState = .stopped,
 };

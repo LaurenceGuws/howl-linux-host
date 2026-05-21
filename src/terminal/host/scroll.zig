@@ -51,7 +51,7 @@ pub fn wantsPassiveHoverWake(self: anytype, origin_x: i32, origin_y: i32, logica
 }
 
 pub fn layout(self: anytype, texture_rect: window.Rect) window.ScrollbarLayout {
-    return self.scrollbar.layout(texture_rect, scrollbarView(vt_retained.scrollState(&self.term)), self.logical_w, self.logical_h, self.window_focused, window.c_win.SDL_GetTicksNS());
+    return self.scrollbar.layout(texture_rect, scrollbarView(vt_retained.scrollState(&self.term)), self.geometry.logical_w, self.geometry.logical_h, self.window_focused, window.c_win.SDL_GetTicksNS());
 }
 
 fn setOffset(self: anytype, offset: u32) bool {

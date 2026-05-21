@@ -12,22 +12,12 @@ const FrameLayoutRequest = render_api.FrameLayoutRequest;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const font_size = @import("host/font_size.zig");
+const geometry = @import("host/geometry.zig");
 const term_input = @import("host/input.zig");
 const lifecycle = @import("runtime/lifecycle.zig");
 const runtime = @import("runtime/runtime.zig");
+const runtime_session = @import("runtime/session_state.zig");
 const scroll = @import("host/scroll.zig");
-
-const GeometryMutex = struct {
-    state: std.Io.Mutex = .init,
-
-    fn lock(self: *GeometryMutex) void {
-        std.Io.Threaded.mutexLock(&self.state);
-    }
-
-    fn unlock(self: *GeometryMutex) void {
-        std.Io.Threaded.mutexUnlock(&self.state);
-    }
-};
 
 pub const TerminalPanel = struct {
     pub const OverlaySnapshot = struct {
@@ -36,24 +26,14 @@ pub const TerminalPanel = struct {
 
     term: HowlTerm,
     io: std.Io,
-    term_ready: bool,
+    runtime_state: runtime_session.State,
     conf: *const TerminalConfig,
     feed_record_path: ?[]const u8,
     title_buf: [128]u8,
     title_len: u8,
-    render_px_w: c_int,
-    render_px_h: c_int,
-    logical_w: c_int,
-    logical_h: c_int,
-    grid_px_w: c_int,
-    grid_px_h: c_int,
-    pending_grid_px_w: c_int,
-    pending_grid_px_h: c_int,
-    geometry_mutex: GeometryMutex,
+    geometry: geometry.State,
     font_size_px: u16,
     default_font_size_px: u16,
-    last_resize_ns: u64,
-    progress: runtime.Progress,
     window_focused: bool,
     widget_focused: bool,
     scrollbar: scroll.State,
@@ -84,32 +64,18 @@ pub const TerminalPanel = struct {
 
     fn initial(allocator: std.mem.Allocator, io: std.Io, conf: *const TerminalConfig, feed_record_path: ?[]const u8, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) TerminalPanel {
         _ = allocator;
-        const render_w = @max(render_width, 1);
-        const render_h = @max(render_height, 1);
-        const logical_w = @max(logical_width, 1);
-        const logical_h = @max(logical_height, 1);
         const start_font_px = @max(conf.font_size, 1);
         return .{
             .term = undefined,
             .io = io,
-            .term_ready = false,
+            .runtime_state = .{},
             .conf = conf,
             .feed_record_path = feed_record_path,
             .title_buf = undefined,
             .title_len = 0,
-            .render_px_w = render_w,
-            .render_px_h = render_h,
-            .logical_w = logical_w,
-            .logical_h = logical_h,
-            .grid_px_w = render_w,
-            .grid_px_h = render_h,
-            .pending_grid_px_w = render_w,
-            .pending_grid_px_h = render_h,
-            .geometry_mutex = .{},
+            .geometry = geometry.init(render_width, render_height, logical_width, logical_height),
             .font_size_px = start_font_px,
             .default_font_size_px = start_font_px,
-            .last_resize_ns = 0,
-            .progress = .{},
             .window_focused = true,
             .widget_focused = true,
             .scrollbar = .{},
@@ -122,53 +88,19 @@ pub const TerminalPanel = struct {
     }
 
     pub fn resize(self: *TerminalPanel, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
-        const rw = @max(render_width, 1);
-        const rh = @max(render_height, 1);
-        const lw = @max(logical_width, 1);
-        const lh = @max(logical_height, 1);
-        self.geometry_mutex.lock();
-        defer self.geometry_mutex.unlock();
-        if (rw == self.render_px_w and rh == self.render_px_h and rw == self.pending_grid_px_w and rh == self.pending_grid_px_h and lw == self.logical_w and lh == self.logical_h) return;
-        self.render_px_w = rw;
-        self.render_px_h = rh;
-        self.logical_w = lw;
-        self.logical_h = lh;
-        // Keep terminal grid geometry pixel-owned. SDL logical size can change with
-        // scale/reporting quirks without a real framebuffer resize, and feeding that
-        // into the PTY grid can falsely halve the visible row count.
-        self.pending_grid_px_w = rw;
-        self.pending_grid_px_h = rh;
-        self.last_resize_ns = window.c_win.SDL_GetTicksNS();
-        scroll.invalidate(self);
+        geometry.resize(self, render_width, render_height, logical_width, logical_height);
     }
 
     pub fn maybeCommitGridResize(self: *TerminalPanel) void {
-        const frame_layout = blk: {
-            self.geometry_mutex.lock();
-            defer self.geometry_mutex.unlock();
-            if (self.pending_grid_px_w == self.grid_px_w and self.pending_grid_px_h == self.grid_px_h) return;
-            self.grid_px_w = self.pending_grid_px_w;
-            self.grid_px_h = self.pending_grid_px_h;
-            self.last_resize_ns = 0;
-            break :blk snapshotFrameLayoutLocked(self);
-        };
-        self.syncFrameLayout(frame_layout) catch return;
+        geometry.maybeCommitGridResize(self);
     }
 
     pub fn syncFrameLayout(self: *TerminalPanel, request: FrameLayoutRequest) !void {
-        const sync = try render_api.deriveFrameLayout(&self.term, request);
-        if (!sync.changed) return;
-        if (sync.grid_changed) {
-            try pty_session.resize(&self.term, sync.layout.cols, sync.layout.rows);
-            try vt_retained.resize(&self.term, sync.layout.rows, sync.layout.cols);
-        }
-        render_api.commitFrameLayout(&self.term, sync.layout);
+        try geometry.syncFrameLayout(self, request);
     }
 
     pub fn frameLayoutSnapshot(self: *TerminalPanel) FrameLayoutRequest {
-        self.geometry_mutex.lock();
-        defer self.geometry_mutex.unlock();
-        return snapshotFrameLayoutLocked(self);
+        return geometry.frameLayoutSnapshot(self);
     }
 
     pub fn paste(self: *TerminalPanel, payload: []const u8) void {
@@ -184,7 +116,7 @@ pub const TerminalPanel = struct {
                     if (scroll.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
                     if (mouse_event.host_only) continue;
 
-                    const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.render_px_w, self.render_px_h) orelse continue;
+                    const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.geometry.render_px_w, self.geometry.render_px_h) orelse continue;
                     const consumed_by_term = publishTerminalMouse(self, local_mouse);
                     if (!consumed_by_term and local_mouse.kind == .wheel) {
                         const delta: i32 = switch (local_mouse.button) {
@@ -259,17 +191,17 @@ pub const TerminalPanel = struct {
 
     pub fn adjustFontSize(self: *TerminalPanel, delta: i16) bool {
         if (!font_size.adjust(self, delta)) return false;
-        return syncCurrentFrameLayout(self);
+        return geometry.syncCurrentFrameLayout(self);
     }
 
     pub fn toggleStressFontSize(self: *TerminalPanel) bool {
         if (!font_size.toggleStress(self)) return false;
-        return syncCurrentFrameLayout(self);
+        return geometry.syncCurrentFrameLayout(self);
     }
 
     pub fn resetFontSize(self: *TerminalPanel) bool {
         if (!font_size.reset(self)) return false;
-        return syncCurrentFrameLayout(self);
+        return geometry.syncCurrentFrameLayout(self);
     }
     fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) void {
         _ = vt_retained.followLiveBottom(&self.term);
@@ -293,31 +225,21 @@ pub const TerminalPanel = struct {
             .buttons_down = term_input.buttons(mouse_event.buttons_down),
         }) catch false;
     }
-
-    fn snapshotFrameLayoutLocked(self: *TerminalPanel) FrameLayoutRequest {
-        return .{
-            .render_px = .{ .width = @as(u16, @intCast(@max(self.render_px_w, 1))), .height = @as(u16, @intCast(@max(self.render_px_h, 1))) },
-            .grid_px = .{ .width = @as(u16, @intCast(@max(self.grid_px_w, 1))), .height = @as(u16, @intCast(@max(self.grid_px_h, 1))) },
-        };
-    }
-
-    fn syncCurrentFrameLayout(self: *TerminalPanel) bool {
-        const request = self.frameLayoutSnapshot();
-        self.syncFrameLayout(request) catch return false;
-        return true;
-    }
 };
 
 test "frame layout request ignores logical size" {
-    var panel: TerminalPanel = undefined;
-    panel.render_px_w = 640;
-    panel.render_px_h = 480;
-    panel.grid_px_w = 600;
-    panel.grid_px_h = 440;
-    panel.logical_w = 321;
-    panel.logical_h = 123;
+    var state = geometry.State{
+        .render_px_w = 640,
+        .render_px_h = 480,
+        .logical_w = 321,
+        .logical_h = 123,
+        .grid_px_w = 600,
+        .grid_px_h = 440,
+        .pending_grid_px_w = 600,
+        .pending_grid_px_h = 440,
+    };
 
-    const request = TerminalPanel.snapshotFrameLayoutLocked(&panel);
+    const request = geometry.snapshotFrameLayoutLocked(&state);
     try std.testing.expectEqual(@as(u16, 640), request.render_px.width);
     try std.testing.expectEqual(@as(u16, 480), request.render_px.height);
     try std.testing.expectEqual(@as(u16, 600), request.grid_px.width);

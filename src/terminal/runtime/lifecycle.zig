@@ -30,10 +30,10 @@ pub fn start(self: anytype) !void {
         .primary_font_path = resolved_fonts.primary,
         .fallback_font_paths = resolved_fonts.fallbacks,
     });
-    self.term_ready = true;
+    self.runtime_state.ready = true;
     errdefer {
         runtime.deinit(&self.term);
-        self.term_ready = false;
+        self.runtime_state.ready = false;
     }
     trace.logStartupf(
         "stage=term-geometry-ready render_w={d} render_h={d} grid_w={d} grid_h={d} cols={d} rows={d}",
@@ -53,30 +53,30 @@ pub fn start(self: anytype) !void {
     trace.logStartup("term-transport-alive");
     self.refreshTitle();
     self.syncInputFocus();
-    try self.progress.init();
-    errdefer self.progress.deinit();
-    self.progress.stop.store(false, .release);
+    try self.runtime_state.progress.init();
+    errdefer self.runtime_state.progress.deinit();
+    self.runtime_state.progress.stop.store(false, .release);
     const progress_thread = try std.Thread.spawn(.{}, thread.progressThreadMain, .{self});
     setThreadName(progress_thread, "howl-term-host");
-    self.progress.thread = progress_thread;
+    self.runtime_state.progress.thread = progress_thread;
     trace.logStartup("term-progress-thread-started");
     HostInput.requestRedraw();
 }
 
 pub fn stop(self: anytype) void {
     trace.logStartup("term-stop-begin");
-    self.progress.stop.store(true, .release);
+    self.runtime_state.progress.stop.store(true, .release);
     thread.ackWake(self);
-    if (self.term_ready) pty_session.stop(&self.term);
+    if (self.runtime_state.ready) pty_session.stop(&self.term);
     trace.logStartup("term-stop-session-ok");
-    if (self.progress.thread) |handle| handle.join();
+    if (self.runtime_state.progress.thread) |handle| handle.join();
     trace.logStartup("term-stop-thread-joined");
-    self.progress.thread = null;
+    self.runtime_state.progress.thread = null;
     if (self.link_cursor_active) window.useDefaultCursor();
     self.link_cursor_active = false;
-    if (self.term_ready) runtime.deinit(&self.term);
-    self.term_ready = false;
-    self.progress.deinit();
+    if (self.runtime_state.ready) runtime.deinit(&self.term);
+    self.runtime_state.ready = false;
+    self.runtime_state.progress.deinit();
     trace.logStartup("term-stop-complete");
 }
 

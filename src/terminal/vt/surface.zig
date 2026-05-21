@@ -34,10 +34,6 @@ comptime {
 pub const VisibleCopy = struct {
     rows: u16,
     cols: u16,
-    cursor_row: u16,
-    cursor_col: u16,
-    cursor_visible: bool,
-    cursor_shape: u8,
     is_alternate_screen: bool,
     history_count: u32,
     start: u32,
@@ -75,11 +71,10 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     recordPendingDirtyGeneration(term, visible, typed_response);
     if (typed_response.published != 0) {
         log.logf(
-            "host-loop ts_ns={d} stage=surface-publish snapshot_seq={d} vt_epoch={d} queued={} damage={d} rows={d} cols={d} scroll={d}",
+            "host-loop ts_ns={d} stage=surface-publish snapshot_seq={d} queued={} damage={d} rows={d} cols={d} scroll={d}",
             .{
                 log.nowNs(),
                 typed_response.snapshot_seq,
-                term.vt_state.epoch,
                 typed_response.queued != 0,
                 typed_response.damage_kind,
                 visible.rows,
@@ -200,10 +195,6 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
     return .{
         .rows = source.source.rows,
         .cols = source.source.cols,
-        .cursor_row = source.source.cursor.row,
-        .cursor_col = source.source.cursor.col,
-        .cursor_visible = source.source.cursor.visible != 0,
-        .cursor_shape = source.source.cursor.shape,
         .is_alternate_screen = source.source.is_alternate_screen != 0,
         .history_count = @intCast(source.history_count),
         .start = @intCast(source.source.scroll_row),
@@ -229,10 +220,6 @@ test "publish records dirty generation only for published source" {
     recordPendingDirtyGeneration(&term, .{
         .rows = 2,
         .cols = 4,
-        .cursor_row = 0,
-        .cursor_col = 0,
-        .cursor_visible = true,
-        .cursor_shape = 0,
         .is_alternate_screen = false,
         .history_count = 0,
         .start = 0,
@@ -251,10 +238,6 @@ test "publish records dirty generation only for published source" {
     recordPendingDirtyGeneration(&term, .{
         .rows = 2,
         .cols = 4,
-        .cursor_row = 0,
-        .cursor_col = 0,
-        .cursor_visible = true,
-        .cursor_shape = 0,
         .is_alternate_screen = false,
         .history_count = 0,
         .start = 0,

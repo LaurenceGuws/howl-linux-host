@@ -29,7 +29,6 @@ pub const State = struct {
     surface: c.HowlVtSurface = defaultSurface(),
     title: std.ArrayListUnmanaged(u8) = .empty,
     snapshot_seq: u64 = 1,
-    epoch: u64 = 1,
     pending_dirty_generation: u64 = 0,
     scrollback_offset: u32 = 0,
     focused: bool = true,
@@ -188,7 +187,6 @@ pub fn resize(term: anytype, rows: u16, cols: u16) !void {
     defer term.mutex.unlock();
     try requireResizeOk(c.howl_vt_terminal_resize(term.vt, rows, cols));
     clampScrollbackOffset(term, surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count);
-    bumpEpoch(term);
     noteVisibleChange(term);
 }
 
@@ -230,7 +228,6 @@ pub fn finishFeed(term: anytype, history_before: u32, history_after: u32, state_
     if (title) |current| setCurrentTitle(term, current) catch {};
     if (!state_changed) return;
     repairScrollback(term, history_before, history_after, true);
-    bumpEpoch(term);
     noteVisibleChange(term);
 }
 
@@ -248,10 +245,6 @@ pub fn drainPendingClipboardSet(term: anytype, allocator: std.mem.Allocator) !?[
     if (result.written == 0) return null;
     std.debug.assert(result.written <= term.vt_state.bytes.items.len);
     return try allocator.dupe(u8, term.vt_state.bytes.items[0..@intCast(result.written)]);
-}
-
-pub fn bumpEpoch(term: anytype) void {
-    term.vt_state.epoch +%= 1;
 }
 
 pub fn noteVisibleChange(term: anytype) void {

@@ -44,32 +44,30 @@ const AppTab = struct {
 
     fn renderStep(self: *AppTab) void {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
-        var followed_prepare = false;
-        while (true) {
-            const work = RenderApi.renderWorkState(&self.panel.term, bootstrap_surface);
-            self.noteSubmitPendingEntry(work);
-            if (work.submit_pending) {
-                switch (self.submitPreparedSurface()) {
-                    .rendered => return self.noteRenderedStep(),
-                    .failed => return self.noteFailedStep(),
-                    .idle, .stale, .needs_prepare => return self.noteIdleStep(),
-                }
-            }
-            if (work.present_pending) return self.noteBlockedPresentStep();
-            if (work.source_pending or work.prepare_pending or bootstrap_surface) {
-                switch (RenderApi.prepareRender(&self.panel.term)) {
-                    .idle => return self.notePrepareIdleStep(bootstrap_surface),
-                    .failed => return self.noteFailedStep(),
-                    .prepared => {
-                        self.notePreparedStep();
-                        std.debug.assert(!followed_prepare);
-                        followed_prepare = true;
-                        continue;
-                    },
-                }
-            }
-            return self.noteIdleStep();
+        const work = RenderApi.renderWorkState(&self.panel.term, bootstrap_surface);
+        self.noteSubmitPendingEntry(work);
+        if (work.submit_pending) {
+            return switch (self.submitPreparedSurface()) {
+                .rendered => self.noteRenderedStep(),
+                .failed => self.noteFailedStep(),
+                .idle, .stale, .needs_prepare => self.noteIdleStep(),
+            };
         }
+        if (work.present_pending) return self.noteBlockedPresentStep();
+        if (!(work.source_pending or work.prepare_pending or bootstrap_surface)) return self.noteIdleStep();
+
+        return switch (RenderApi.prepareRender(&self.panel.term)) {
+            .idle => self.notePrepareIdleStep(bootstrap_surface),
+            .failed => self.noteFailedStep(),
+            .prepared => blk: {
+                self.notePreparedStep();
+                break :blk switch (self.submitPreparedSurface()) {
+                    .rendered => self.noteRenderedStep(),
+                    .failed => self.noteFailedStep(),
+                    .idle, .stale, .needs_prepare => self.noteIdleStep(),
+                };
+            },
+        };
     }
 
     fn noteSubmitPendingEntry(self: *AppTab, work: RenderApi.RenderWorkState) void {
