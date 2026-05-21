@@ -9,13 +9,14 @@ const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const RenderApi = @import("terminal/render/abi.zig");
 const VtSurface = @import("terminal/vt/surface.zig");
 const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
-const RuntimeProgress = @import("terminal/runtime/progress.zig");
-const RuntimeThread = @import("terminal/runtime/thread.zig");
 const TermTextureOps = @import("window/term_texture.zig");
 const Window = @import("window/window.zig");
 
 pub const Options = cli_args.Options;
 const feed_record_path_env = "HOWL_PTY_VT_RECORD_PATH";
+const child_term_value: [*:0]const u8 = "xterm-256color";
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
@@ -161,6 +162,27 @@ const AppTab = struct {
         if (result == .rendered) self.term_texture = feedback.surface;
         return result;
     }
+
+    fn renderWorkState(self: *AppTab) RenderApi.RenderWorkState {
+        const bootstrap_surface = self.term_texture.host_surface_id == 0;
+        self.panel.maybeCommitGridResize();
+        return RenderApi.renderWorkState(&self.panel.term, bootstrap_surface);
+    }
+
+    fn collectContentFrame(self: *AppTab) RenderApi.RenderWorkState {
+        const bootstrap_surface = self.term_texture.host_surface_id == 0;
+        var work = self.renderWorkState();
+        if (bootstrap_surface or !work.wantsFrame()) {
+            _ = VtSurface.publishSource(&self.panel.term);
+            work = RenderApi.renderWorkState(&self.panel.term, bootstrap_surface);
+        }
+        return work;
+    }
+
+    fn finishPresent(self: *AppTab, render_present_pending: bool) void {
+        VtSurface.ackPublishedSource(&self.panel.term);
+        if (render_present_pending) RenderApi.markRenderPresented(&self.panel.term);
+    }
 };
 
 const TabList = std.ArrayList(AppTab);
@@ -209,6 +231,7 @@ fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     var tabs: TabList = .empty;
     defer destroyTabs(std.heap.c_allocator, &tabs);
     var active_tab_idx: TabIndex = 0;
+    applyChildEnvironmentPolicy();
     try openTab(std.heap.c_allocator, io, &conf, feed_record_path, &window, &tabs, &active_tab_idx);
     InputWindow.logStartup("initial-tab-opened");
 
@@ -280,6 +303,10 @@ fn configureInputPolicies(app: *App) void {
     app.input.setTerminalMousePolicy(.{
         .bypass_mod = app.conf.term.mouse.bypass_mod,
     });
+}
+
+fn applyChildEnvironmentPolicy() void {
+    std.debug.assert(setenv("TERM", child_term_value, 1) == 0);
 }
 
 fn runLoop(app: *App) !void {
@@ -362,12 +389,7 @@ fn driveTerminalProgress(tabs: []AppTab, active_tab_idx: TabIndex) bool {
     var request_next_turn = false;
     for (tabs, 0..) |*tab, i| {
         const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
-        // The active tab owns one bounded PTY/VT turn every loop. Background
-        // tabs only run when their transport thread has an acknowledged wake
-        // pending, so the main thread stays in charge of all terminal turns.
-        if (!is_active and !RuntimeThread.wakePending(tab.panel)) continue;
-        const outcome = RuntimeProgress.driveOnce(&tab.panel.term);
-        RuntimeThread.ackWake(tab.panel);
+        const outcome = tab.panel.driveRuntimeTurn(is_active);
         redraw = redraw or outcome.should_redraw;
         request_next_turn = request_next_turn or outcome.keep;
     }
@@ -388,25 +410,9 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
     tabs.deinit(alloc);
 }
 
-fn renderWorkState(tab: *AppTab) RenderApi.RenderWorkState {
-    const bootstrap_surface = tab.term_texture.host_surface_id == 0;
-    tab.panel.maybeCommitGridResize();
-    return RenderApi.renderWorkState(&tab.panel.term, bootstrap_surface);
-}
-
-fn collectContentFrame(tab: *AppTab) RenderApi.RenderWorkState {
-    const bootstrap_surface = tab.term_texture.host_surface_id == 0;
-    var work = renderWorkState(tab);
-    if (bootstrap_surface or !work.wantsFrame()) {
-        _ = VtSurface.publishSource(&tab.panel.term);
-        work = RenderApi.renderWorkState(&tab.panel.term, bootstrap_surface);
-    }
-    return work;
-}
-
 fn render(app: *App) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
-    const work_before_render = collectContentFrame(tab);
+    const work_before_render = tab.collectContentFrame();
     InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
         work_before_render.wantsFrame(),
         work_before_render.inFlight(),
@@ -437,8 +443,7 @@ fn render(app: *App) void {
     });
     // Present closes the frame before the host retires VT dirty truth or the
     // render owner's retained base for later partial prepares.
-    VtSurface.ackPublishedSource(&tab.panel.term);
-    if (render_present_pending) RenderApi.markRenderPresented(&tab.panel.term);
+    tab.finishPresent(render_present_pending);
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
 }
 
@@ -558,4 +563,11 @@ fn setCurrentThreadName(name: [:0]const u8) void {
 
 fn tabIndexInRange(tabs: []AppTab, idx: TabIndex) bool {
     return idx < tabs.len;
+}
+
+test "child environment policy sets TERM in the app owner" {
+    try std.testing.expect(setenv("TERM", "preexisting-term", 1) == 0);
+    applyChildEnvironmentPolicy();
+    const value = std.c.getenv("TERM") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("xterm-256color", std.mem.span(value));
 }

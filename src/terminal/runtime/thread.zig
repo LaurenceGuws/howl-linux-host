@@ -6,16 +6,35 @@ const std = @import("std");
 
 const transport_wait_timeout_ms: i32 = -1;
 
+pub const State = struct {
+    stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    wake_ack_sem: ?*log.c_win.SDL_Semaphore = null,
+    thread: ?std.Thread = null,
+
+    pub fn init(self: *State) !void {
+        self.wake_pending.store(false, .release);
+        self.wake_ack_sem = log.c_win.SDL_CreateSemaphore(0) orelse return error.ProgressSemaphoreUnavailable;
+    }
+
+    pub fn deinit(self: *State) void {
+        const sem = self.wake_ack_sem orelse return;
+        log.c_win.SDL_DestroySemaphore(sem);
+        self.wake_ack_sem = null;
+        self.wake_pending.store(false, .release);
+    }
+};
+
 pub fn progressThreadMain(self: anytype) void {
     progressThreadMainWith(self, RealOps);
 }
 
 pub fn wakePending(self: anytype) bool {
-    return self.runtime_state.progress.wake_pending.load(.acquire);
+    return self.progress.wake_pending.load(.acquire);
 }
 
 pub fn ackWake(self: anytype) void {
-    if (self.runtime_state.progress.wake_pending.swap(false, .acq_rel)) {
+    if (self.progress.wake_pending.swap(false, .acq_rel)) {
         // The semaphore only releases the blocked transport thread after the
         // owner thread retires the in-flight wake bit.
         signalWakeAck(self);
@@ -23,18 +42,18 @@ pub fn ackWake(self: anytype) void {
 }
 
 fn progressThreadMainWith(self: anytype, comptime Ops: type) void {
-    while (!self.runtime_state.progress.stop.load(.acquire)) {
+    while (!self.progress.stop.load(.acquire)) {
         waitForWakeAck(self, Ops);
-        if (self.runtime_state.progress.stop.load(.acquire)) break;
+        if (self.progress.stop.load(.acquire)) break;
         waitForTransport(self, Ops);
-        if (self.runtime_state.progress.stop.load(.acquire)) break;
+        if (self.progress.stop.load(.acquire)) break;
         signalWake(self, Ops);
         if (!Ops.isAlive(&self.term)) break;
     }
 }
 
 fn waitForWakeAck(self: anytype, comptime Ops: type) void {
-    while (self.runtime_state.progress.wake_pending.load(.acquire) and !self.runtime_state.progress.stop.load(.acquire)) {
+    while (self.progress.wake_pending.load(.acquire) and !self.progress.stop.load(.acquire)) {
         // The atomic bit is the wake truth; the semaphore just parks this
         // thread until the owner thread acknowledges that wake.
         Ops.waitWakeAck(self);
@@ -48,7 +67,7 @@ fn waitForTransport(self: anytype, comptime Ops: type) void {
 }
 
 fn signalWake(self: anytype, comptime Ops: type) void {
-    if (!self.runtime_state.progress.wake_pending.swap(true, .acq_rel)) {
+    if (!self.progress.wake_pending.swap(true, .acq_rel)) {
         // Coalesce transport readiness into one owner-thread wake until the
         // main thread explicitly acks it.
         Ops.wakeWindow();
@@ -56,7 +75,7 @@ fn signalWake(self: anytype, comptime Ops: type) void {
 }
 
 fn signalWakeAck(self: anytype) void {
-    const sem = self.runtime_state.progress.wake_ack_sem orelse return;
+    const sem = self.progress.wake_ack_sem orelse return;
     log.c_win.SDL_SignalSemaphore(sem);
 }
 
@@ -66,7 +85,7 @@ const RealOps = struct {
     }
 
     fn waitWakeAck(self: anytype) void {
-        const sem = self.runtime_state.progress.wake_ack_sem orelse return;
+        const sem = self.progress.wake_ack_sem orelse return;
         log.c_win.SDL_WaitSemaphore(sem);
     }
 
@@ -91,7 +110,7 @@ test "progress thread waits and wakes owner thread once" {
 
 test "ack wake clears pending handoff state" {
     var ctx = FakeCtx{ .term = FakeTerm.init() };
-    ctx.runtime_state.progress.wake_pending.store(true, .release);
+    ctx.progress.wake_pending.store(true, .release);
     try std.testing.expect(wakePending(&ctx));
     ackWake(&ctx);
     try std.testing.expect(!wakePending(&ctx));
@@ -122,12 +141,10 @@ const FakeTerm = struct {
 
 const FakeCtx = struct {
     term: FakeTerm,
-    runtime_state: struct {
-        progress: struct {
-            stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-            wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-            wake_ack_sem: ?*log.c_win.SDL_Semaphore = null,
-        } = .{},
+    progress: struct {
+        stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        wake_ack_sem: ?*log.c_win.SDL_Semaphore = null,
     } = .{},
 };
 

@@ -14,9 +14,11 @@ const TerminalConfig = Config.Terminal;
 const font_size = @import("host/font_size.zig");
 const geometry = @import("host/geometry.zig");
 const term_input = @import("host/input.zig");
-const lifecycle = @import("runtime/lifecycle.zig");
+const feed_record = @import("pty/feed_record.zig");
+const fonts_linux = @import("runtime/fonts_linux.zig");
+const runtime_progress = @import("runtime/progress.zig");
 const runtime = @import("runtime/runtime.zig");
-const runtime_session = @import("runtime/session_state.zig");
+const runtime_thread = @import("runtime/thread.zig");
 const scroll = @import("host/scroll.zig");
 
 pub const TerminalPanel = struct {
@@ -24,9 +26,15 @@ pub const TerminalPanel = struct {
         scrollbar: window.ScrollbarLayout,
     };
 
+    pub const RuntimeTurn = struct {
+        keep: bool,
+        should_redraw: bool,
+    };
+
     term: HowlTerm,
     io: std.Io,
-    runtime_state: runtime_session.State,
+    term_ready: bool,
+    progress: runtime_thread.State,
     conf: *const TerminalConfig,
     feed_record_path: ?[]const u8,
     title_buf: [128]u8,
@@ -53,7 +61,7 @@ pub const TerminalPanel = struct {
         errdefer allocator.destroy(self);
         self.* = initial(allocator, io, conf, feed_record_path, render_width, render_height, logical_width, logical_height);
         errdefer self.deinit();
-        try lifecycle.start(self);
+        try self.startRuntime();
         return self;
     }
 
@@ -68,7 +76,8 @@ pub const TerminalPanel = struct {
         return .{
             .term = undefined,
             .io = io,
-            .runtime_state = .{},
+            .term_ready = false,
+            .progress = .{},
             .conf = conf,
             .feed_record_path = feed_record_path,
             .title_buf = undefined,
@@ -84,7 +93,67 @@ pub const TerminalPanel = struct {
     }
 
     pub fn deinit(self: *TerminalPanel) void {
-        lifecycle.stop(self);
+        self.stopRuntime();
+    }
+
+    fn startRuntime(self: *TerminalPanel) !void {
+        const frame_request = self.frameLayoutSnapshot();
+        var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, self.conf.fonts);
+        defer resolved_fonts.deinit(std.heap.c_allocator);
+        self.term = try runtime.init(std.heap.c_allocator, .{
+            .shell = self.conf.shell,
+            .start_path = self.conf.start_path,
+            .command = self.conf.command,
+        }, .{
+            .render_px = frame_request.render_px,
+            .grid_px = frame_request.grid_px,
+            .font_size_px = @max(self.conf.font_size, 1),
+            .primary_font_path = resolved_fonts.primary,
+            .fallback_font_paths = resolved_fonts.fallbacks,
+        });
+        self.term_ready = true;
+        errdefer {
+            runtime.deinit(&self.term);
+            self.term_ready = false;
+        }
+        _ = try feed_record.start(&self.term, self.io, self.feed_record_path);
+        try pty_session.start(&self.term);
+        if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
+        self.refreshTitle();
+        self.syncInputFocus();
+        try self.progress.init();
+        errdefer self.progress.deinit();
+        self.progress.stop.store(false, .release);
+        const progress_thread = try std.Thread.spawn(.{}, runtime_thread.progressThreadMain, .{self});
+        setThreadName(progress_thread, "howl-term-host");
+        self.progress.thread = progress_thread;
+        HostInput.requestRedraw();
+    }
+
+    fn stopRuntime(self: *TerminalPanel) void {
+        self.progress.stop.store(true, .release);
+        runtime_thread.ackWake(self);
+        if (self.term_ready) pty_session.stop(&self.term);
+        if (self.progress.thread) |handle| handle.join();
+        self.progress.thread = null;
+        if (self.link_cursor_active) window.useDefaultCursor();
+        self.link_cursor_active = false;
+        if (self.term_ready) runtime.deinit(&self.term);
+        self.term_ready = false;
+        self.progress.deinit();
+    }
+
+    fn setThreadName(handle: std.Thread, name: [:0]const u8) void {
+        if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(handle.getHandle(), name.ptr);
+    }
+
+    pub fn driveRuntimeTurn(self: *TerminalPanel, active: bool) RuntimeTurn {
+        if (!active and !runtime_thread.wakePending(self)) {
+            return .{ .keep = false, .should_redraw = false };
+        }
+        const outcome = runtime_progress.driveOnce(&self.term);
+        runtime_thread.ackWake(self);
+        return .{ .keep = outcome.keep, .should_redraw = outcome.should_redraw };
     }
 
     pub fn resize(self: *TerminalPanel, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {

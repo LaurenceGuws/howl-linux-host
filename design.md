@@ -63,8 +63,11 @@ classDiagram
 - `howl-linux-host` owns explicit font override resolution plus bundled fallback-stack assembly
   before render startup. It passes render one ordered font-path list through the render C ABI;
   render does not discover fonts on the host's behalf.
-- `src/terminal/runtime/` owns the shared runtime aggregate state and the bounded host control spine that drives PTY, VT, and render work, including PTY-read slices, VT feed, and VT reply handoff.
+- `src/terminal/terminal_panel.zig` owns terminal runtime lifetime plus host-retained wake-thread state for one panel.
+- `src/terminal/runtime/progress.zig` owns one bounded PTY/VT progress turn, including PTY-read slices, VT feed, and VT reply handoff.
+- `src/terminal/runtime/thread.zig` owns the background wait-only wake thread for PTY readiness. It does not own PTY pumping, VT mutation, or render work.
 - `main.zig` drives one bounded PTY transport slice with direct VT feed, and one explicit in-flight render-work query per turn when deciding whether to wait, render, present, or wake again. It also owns per-tab term-texture creation, upload, submit execution input, and present acknowledgment.
+- `main.zig` also owns process-global child environment policy such as `TERM`, because that state is process-global on the current PTY launch path.
 - The background progress thread only waits for PTY readiness and wakes the owner thread. It does not pump transport, apply VT work, or mutate render state.
 - `Window` owns the OS window and host chrome presentation. It receives a term-texture handle; it does not infer terminal state.
 - `Input` owns input collection and queueing. Input payload types live under `src/input/`.
