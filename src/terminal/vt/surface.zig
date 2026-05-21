@@ -60,9 +60,7 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const prior_surface = term.vt_state.surface;
     const visible = vtCopyVisible(term) catch return sourceRejected(term);
-    const viewport_moved = prior_surface.scroll_row != term.vt_state.surface.scroll_row;
 
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.start <= visible.history_count + visible.rows);
@@ -70,10 +68,10 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     const typed_response = c.howl_render_surface_text_publish_vt_snapshot(term.render.surface_text, .{
         .cols = visible.cols,
         .rows = visible.rows,
-        .scrollback_offset = term.vt_state.scrollback_offset,
+        .scroll_row = visible.start,
         .snapshot_seq = term.vt_state.snapshot_seq,
         .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
-        .damage_kind = sourceDamageKind(viewport_moved, term.vt_state.surface, term.vt_state.visible_damage),
+        .damage_kind = sourceDamageKind(visible.rows, visible.cols, term.vt_state.visible_damage),
     });
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPendingDirtyGeneration(term, visible, typed_response);
@@ -257,11 +255,11 @@ fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_respo
     term.vt_state.pending_dirty_generation = 0;
 }
 
-fn sourceDamageKind(viewport_moved: bool, current: c.HowlVtSurface, damage: anytype) u8 {
+fn sourceDamageKind(rows: u16, cols: u16, damage: anytype) u8 {
     var any_dirty = false;
-    var all_rows_dirty = current.rows != 0;
+    var all_rows_dirty = rows != 0;
     for (damage.dirty_rows.items, 0..) |dirty, row_idx| {
-        if (row_idx >= current.rows) break;
+        if (row_idx >= rows) break;
         if (dirty == 0) {
             all_rows_dirty = false;
             continue;
@@ -271,27 +269,22 @@ fn sourceDamageKind(viewport_moved: bool, current: c.HowlVtSurface, damage: anyt
             all_rows_dirty = false;
             continue;
         }
-        if (damage.dirty_cols_start.items[row_idx] != 0 or damage.dirty_cols_end.items[row_idx] != current.cols -| 1) {
+        if (damage.dirty_cols_start.items[row_idx] != 0 or damage.dirty_cols_end.items[row_idx] != cols -| 1) {
             all_rows_dirty = false;
         }
     }
     if (!any_dirty) return damage_none;
-    if (viewport_moved) return damage_full;
     if (all_rows_dirty) return damage_full;
     return damage_partial;
 }
 
-test "viewport move damage becomes full" {
-    var current = std.mem.zeroes(c.HowlVtSurface);
-    current.cols = 5;
-    current.rows = 4;
-    current.scroll_row = 2;
+test "full row damage becomes full" {
     const damage = .{
         .dirty_rows = .{ .items = &[_]u8{ 0, 0, 1, 1 } },
         .dirty_cols_start = .{ .items = &[_]u16{ 0, 0, 0, 0 } },
         .dirty_cols_end = .{ .items = &[_]u16{ 0, 0, 4, 4 } },
     };
-    try std.testing.expectEqual(damage_full, sourceDamageKind(true, current, damage));
+    try std.testing.expectEqual(damage_full, sourceDamageKind(4, 5, damage));
 }
 
 test "publish records dirty generation only for published source" {
