@@ -74,16 +74,14 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPendingDirtyGeneration(term, visible, typed_response);
     if (typed_response.published != 0) {
-        term.render.noteSourcePublished(typed_response.queued != 0);
         log.logf(
-            "host-loop ts_ns={d} stage=surface-publish snapshot_seq={d} vt_epoch={d} queued={} damage={d} render_phase={s} rows={d} cols={d} scroll={d}",
+            "host-loop ts_ns={d} stage=surface-publish snapshot_seq={d} vt_epoch={d} queued={} damage={d} rows={d} cols={d} scroll={d}",
             .{
                 log.nowNs(),
                 typed_response.snapshot_seq,
                 term.vt_state.epoch,
                 typed_response.queued != 0,
                 typed_response.damage_kind,
-                @tagName(term.render.phase),
                 visible.rows,
                 visible.cols,
                 visible.start,
@@ -113,7 +111,7 @@ fn ackPublishedSourceWith(term: anytype, comptime Ops: type) void {
 }
 
 pub fn sourceRejected(term: *api.Term) c.HowlRenderVtPublishResult {
-    log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d} render_phase={s}", .{ log.nowNs(), term.vt_state.snapshot_seq, @tagName(term.render.phase) });
+    log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d}", .{ log.nowNs(), term.vt_state.snapshot_seq });
     std.debug.assert(term.render.geometry_epoch != 0);
     return .{
         .status = c.HOWL_RENDER_CALL_FAILED,

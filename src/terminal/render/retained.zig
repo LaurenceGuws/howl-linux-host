@@ -1,8 +1,6 @@
 const std = @import("std");
 const c = @import("../c.zig").c;
 
-pub const Phase = enum(u8) { idle, prepare, submit, present };
-
 pub const PrepareResult = enum { idle, prepared, failed };
 
 pub const SubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
@@ -29,7 +27,6 @@ pub const State = struct {
     font_size_px: u16,
     primary_font_path: ?[:0]u8 = null,
     fallback_font_paths: std.ArrayListUnmanaged([:0]u8) = .empty,
-    phase: Phase = .idle,
     perf: Perf = .{},
 
     pub fn init(
@@ -125,30 +122,6 @@ pub const State = struct {
         const out = self.perf;
         self.perf = .{};
         return out;
-    }
-
-    pub fn clearInFlight(self: *State) void {
-        self.phase = .idle;
-    }
-
-    pub fn noteNeedsPrepare(self: *State) void {
-        self.phase = .prepare;
-    }
-
-    pub fn notePrepared(self: *State) void {
-        self.phase = .submit;
-    }
-
-    pub fn noteRendered(self: *State) void {
-        self.phase = .present;
-    }
-
-    pub fn notePresented(self: *State) void {
-        self.phase = .idle;
-    }
-
-    pub fn noteSourcePublished(self: *State, queued: bool) void {
-        self.phase = if (queued) .prepare else .idle;
     }
 };
 

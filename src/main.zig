@@ -27,7 +27,7 @@ const AppTab = struct {
     first_prepare_result_logged: bool = false,
     first_non_idle_submit_logged: bool = false,
     first_rendered_surface_logged: bool = false,
-    first_submit_phase_logged: bool = false,
+    first_submit_work_logged: bool = false,
     first_blocked_present_logged: bool = false,
     first_idle_render_logged: bool = false,
 
@@ -45,41 +45,44 @@ const AppTab = struct {
 
     fn renderStep(self: *AppTab) void {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
-        var phase = RenderApi.renderPhase(&self.panel.term);
         var followed_prepare = false;
         while (true) {
-            self.noteSubmitPhaseEntry(phase);
-            switch (phase) {
-                .submit => switch (self.submitPreparedSurface()) {
+            const work = RenderApi.renderWorkState(&self.panel.term, bootstrap_surface);
+            self.noteSubmitPendingEntry(work);
+            if (work.submit_pending) {
+                switch (self.submitPreparedSurface()) {
                     .rendered => return self.noteRenderedStep(),
                     .failed => return self.noteFailedStep(),
                     .idle, .stale, .needs_prepare => return self.noteIdleStep(),
-                },
-                .present => return self.noteBlockedPresentStep(phase),
-                .idle, .prepare => switch (if (phase == .prepare or bootstrap_surface) RenderApi.prepareRender(&self.panel.term) else .idle) {
+                }
+            }
+            if (work.present_pending) return self.noteBlockedPresentStep();
+            if (work.source_pending or work.prepare_pending or bootstrap_surface) {
+                switch (RenderApi.prepareRender(&self.panel.term)) {
                     .idle => return self.notePrepareIdleStep(bootstrap_surface),
                     .failed => return self.noteFailedStep(),
                     .prepared => {
-                        phase = self.notePreparedStep();
+                        self.notePreparedStep();
                         std.debug.assert(!followed_prepare);
                         followed_prepare = true;
                         continue;
                     },
-                },
+                }
             }
+            return self.noteIdleStep();
         }
     }
 
-    fn noteSubmitPhaseEntry(self: *AppTab, phase: RenderApi.RenderPhase) void {
-        if (!self.first_submit_phase_logged and phase == .submit) {
-            self.first_submit_phase_logged = true;
-            InputWindow.logStartup("term-submit-phase-enter");
+    fn noteSubmitPendingEntry(self: *AppTab, work: RenderApi.RenderWorkState) void {
+        if (!self.first_submit_work_logged and work.submit_pending) {
+            self.first_submit_work_logged = true;
+            InputWindow.logStartup("term-submit-work-first");
         }
     }
 
     fn noteRenderedStep(self: *AppTab) void {
-        const next_phase = RenderApi.renderPhase(&self.panel.term);
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=rendered phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(next_phase), self.term_texture.host_surface_id });
+        const work = RenderApi.renderWorkState(&self.panel.term, false);
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=rendered present_pending={} term_texture_id={d}", .{ InputWindow.nowNs(), work.present_pending, self.term_texture.host_surface_id });
         if (!self.first_submit_trace_logged) {
             self.first_submit_trace_logged = true;
             InputWindow.logStartupf("stage=term-submit-first result=rendered", .{});
@@ -95,17 +98,17 @@ const AppTab = struct {
     }
 
     fn noteFailedStep(self: *AppTab) void {
-        const next_phase = RenderApi.renderPhase(&self.panel.term);
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=failed phase={s}", .{ InputWindow.nowNs(), @tagName(next_phase) });
+        const work = RenderApi.renderWorkState(&self.panel.term, false);
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=failed source_pending={} prepare_pending={} submit_pending={} present_pending={}", .{ InputWindow.nowNs(), work.source_pending, work.prepare_pending, work.submit_pending, work.present_pending });
     }
 
     fn noteIdleStep(self: *AppTab) void {
-        const next_phase = RenderApi.renderPhase(&self.panel.term);
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(next_phase), self.term_texture.host_surface_id });
+        const work = RenderApi.renderWorkState(&self.panel.term, false);
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{ InputWindow.nowNs(), work.source_pending, work.prepare_pending, work.submit_pending, work.present_pending, self.term_texture.host_surface_id });
     }
 
-    fn noteBlockedPresentStep(self: *AppTab, phase: RenderApi.RenderPhase) void {
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=blocked_present phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(phase), self.term_texture.host_surface_id });
+    fn noteBlockedPresentStep(self: *AppTab) void {
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=blocked_present term_texture_id={d}", .{ InputWindow.nowNs(), self.term_texture.host_surface_id });
         if (!self.first_blocked_present_logged) {
             self.first_blocked_present_logged = true;
             InputWindow.logStartup("term-present-blocked-first");
@@ -113,23 +116,22 @@ const AppTab = struct {
     }
 
     fn notePrepareIdleStep(self: *AppTab, bootstrap_surface: bool) void {
-        const next_phase = RenderApi.renderPhase(&self.panel.term);
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle phase={s} term_texture_id={d}", .{ InputWindow.nowNs(), @tagName(next_phase), self.term_texture.host_surface_id });
+        const work = RenderApi.renderWorkState(&self.panel.term, bootstrap_surface);
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{ InputWindow.nowNs(), work.source_pending, work.prepare_pending, work.submit_pending, work.present_pending, self.term_texture.host_surface_id });
         if (!self.first_idle_render_logged) {
             self.first_idle_render_logged = true;
-            InputWindow.logStartupf("stage=term-render-idle-first phase={s} bootstrap={} term_texture_id={d}", .{ @tagName(next_phase), bootstrap_surface, self.term_texture.host_surface_id });
+            InputWindow.logStartupf("stage=term-render-idle-first bootstrap={} term_texture_id={d}", .{ bootstrap_surface, self.term_texture.host_surface_id });
         }
     }
 
-    fn notePreparedStep(self: *AppTab) RenderApi.RenderPhase {
-        const next_phase = RenderApi.renderPhase(&self.panel.term);
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=prepared phase={s}", .{ InputWindow.nowNs(), @tagName(next_phase) });
+    fn notePreparedStep(self: *AppTab) void {
+        const work = RenderApi.renderWorkState(&self.panel.term, false);
+        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=prepared submit_pending={} present_pending={}", .{ InputWindow.nowNs(), work.submit_pending, work.present_pending });
         if (!self.first_prepare_result_logged) {
             self.first_prepare_result_logged = true;
             InputWindow.logStartupf("stage=term-prepare-first prepared=true", .{});
         }
-        std.debug.assert(next_phase == .submit);
-        return next_phase;
+        std.debug.assert(work.submit_pending);
     }
 
     fn submitPreparedSurface(self: *AppTab) RenderApi.RenderSubmitResult {
@@ -410,9 +412,8 @@ fn collectContentFrame(tab: *AppTab) RenderApi.RenderWorkState {
 fn render(app: *App) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
     const work_before_render = collectContentFrame(tab);
-    InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} render_phase={s} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
+    InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
         work_before_render.wantsFrame(),
-        @tagName(work_before_render.phase),
         work_before_render.inFlight(),
         work_before_render.source_pending,
         work_before_render.prepare_pending,
@@ -423,7 +424,7 @@ fn render(app: *App) void {
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
     const term_texture_before = tab.term_texture.host_surface_id;
     if (work_before_render.wantsFrame()) tab.renderStep();
-    const render_present_pending = RenderApi.renderPhase(&tab.panel.term) == .present;
+    const render_present_pending = RenderApi.renderWorkState(&tab.panel.term, false).present_pending;
 
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
     const overlay = tab.panel.overlaySnapshot(texture_rect);

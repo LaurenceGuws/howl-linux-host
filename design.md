@@ -53,7 +53,7 @@ classDiagram
   render-surface output. Retained render queue state, geometry epoch/query state, VT snapshot
   publication classification, submit validation, and present retirement belong to `howl-render`;
   the host consumes those steps through the render C ABI. `src/terminal/render/retained.zig` owns
-  host-side render retained state: phase, frame-layout mirror, prepared-surface handle lifetime,
+  host-side render retained state: frame-layout mirror, prepared-surface handle lifetime,
   owned font-path copies, and accumulated render perf counters. Host render code does not own host
   term-texture state.
 - `src/terminal/runtime/` owns the shared runtime aggregate state and the bounded host control spine that drives PTY, VT, and render work, including PTY-read slices, VT feed, and VT reply handoff.
