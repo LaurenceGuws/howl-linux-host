@@ -11,11 +11,6 @@ fn cellCount(rows: u16, cols: u16) u32 {
     return @as(u32, rows) * @as(u32, cols);
 }
 
-fn sliceCount16(items: anytype) u16 {
-    std.debug.assert(items.len <= std.math.maxInt(u16));
-    return @intCast(items.len);
-}
-
 pub const VisibleInfo = struct {
     history_count: u32,
     is_alternate_screen: bool,
@@ -180,7 +175,6 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
     var source = c.howl_vt_terminal_copy_surface(term.vt, term.vt_state.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0, null, 0);
     if (source.status == vt_abi.callShortBuffer()) {
         std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
-        std.debug.assert(source.dirty_needed <= source.source.rows);
         cells = try vtEnsureCells(term, @intCast(source.source.surface_cells.len));
         try term.vt_state.visible_damage.dirty_rows.resize(term.allocator, source.source.rows);
         try term.vt_state.visible_damage.dirty_cols_start.resize(term.allocator, @intCast(source.source.rows));
@@ -188,12 +182,6 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
         @memset(term.vt_state.visible_damage.dirty_rows.items, 0);
         @memset(term.vt_state.visible_damage.dirty_cols_start.items, 0);
         @memset(term.vt_state.visible_damage.dirty_cols_end.items, 0);
-        const raw_dirty_cols_start = try term.allocator.alloc(u16, @intCast(source.dirty_needed));
-        defer term.allocator.free(raw_dirty_cols_start);
-        const raw_dirty_cols_end = try term.allocator.alloc(u16, @intCast(source.dirty_needed));
-        defer term.allocator.free(raw_dirty_cols_end);
-        @memset(raw_dirty_cols_start, 0);
-        @memset(raw_dirty_cols_end, 0);
         source = c.howl_vt_terminal_copy_surface(
             term.vt,
             term.vt_state.scrollback_offset,
@@ -201,17 +189,11 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
             cells.len,
             if (term.vt_state.visible_damage.dirty_rows.items.len == 0) null else term.vt_state.visible_damage.dirty_rows.items.ptr,
             term.vt_state.visible_damage.dirty_rows.items.len,
-            if (raw_dirty_cols_start.len == 0) null else raw_dirty_cols_start.ptr,
-            raw_dirty_cols_start.len,
-            if (raw_dirty_cols_end.len == 0) null else raw_dirty_cols_end.ptr,
-            raw_dirty_cols_end.len,
+            if (term.vt_state.visible_damage.dirty_cols_start.items.len == 0) null else term.vt_state.visible_damage.dirty_cols_start.items.ptr,
+            term.vt_state.visible_damage.dirty_cols_start.items.len,
+            if (term.vt_state.visible_damage.dirty_cols_end.items.len == 0) null else term.vt_state.visible_damage.dirty_cols_end.items.ptr,
+            term.vt_state.visible_damage.dirty_cols_end.items.len,
         );
-        if (source.status == c.HOWL_VT_CALL_OK) {
-            // The VT ABI compacts dirty column bounds over the contiguous dirty-row span.
-            // Expand them immediately into host-retained per-row arrays.
-            scatterDirtyCols(term.vt_state.visible_damage.dirty_rows.items, raw_dirty_cols_start, term.vt_state.visible_damage.dirty_cols_start.items);
-            scatterDirtyCols(term.vt_state.visible_damage.dirty_rows.items, raw_dirty_cols_end, term.vt_state.visible_damage.dirty_cols_end.items);
-        }
     }
     try vt_abi.requireOk(source.status);
     term.vt_state.surface = source.source;
@@ -229,23 +211,6 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
         .start = @intCast(source.source.scroll_row),
         .dirty_generation = source.dirty_generation,
     };
-}
-
-fn scatterDirtyCols(dirty_rows: []const u8, compact: []const u16, expanded: []u16) void {
-    @memset(expanded, 0);
-    const row_count = sliceCount16(dirty_rows);
-    const compact_count = sliceCount16(compact);
-    std.debug.assert(expanded.len >= dirty_rows.len);
-    std.debug.assert(compact.len <= dirty_rows.len);
-    var compact_idx: u16 = 0;
-    var row_idx: u16 = 0;
-    while (row_idx < row_count) : (row_idx += 1) {
-        const dirty = dirty_rows[row_idx];
-        if (dirty == 0) continue;
-        if (compact_idx >= compact_count) break;
-        expanded[row_idx] = compact[compact_idx];
-        compact_idx += 1;
-    }
 }
 
 fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_response: c.HowlRenderVtPublishResult) void {
