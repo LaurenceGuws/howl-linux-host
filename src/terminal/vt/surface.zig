@@ -6,7 +6,6 @@ const log = @import("../../input/window.zig");
 
 const damage_none: u8 = @intCast(c.HOWL_RENDER_DAMAGE_NONE);
 const damage_partial: u8 = @intCast(c.HOWL_RENDER_DAMAGE_PARTIAL);
-const damage_full: u8 = @intCast(c.HOWL_RENDER_DAMAGE_FULL);
 
 fn cellCount(rows: u16, cols: u16) u32 {
     return @as(u32, rows) * @as(u32, cols);
@@ -68,10 +67,14 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     const typed_response = c.howl_render_surface_text_publish_vt_snapshot(term.render.surface_text, .{
         .cols = visible.cols,
         .rows = visible.rows,
+        .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
+        .reserved0 = 0,
+        .reserved1 = 0,
         .scroll_row = visible.start,
         .snapshot_seq = term.vt_state.snapshot_seq,
-        .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
-        .damage_kind = sourceDamageKind(visible.rows, visible.cols, term.vt_state.visible_damage),
+        .dirty_rows = .{ .ptr = if (term.vt_state.visible_damage.dirty_rows.items.len == 0) null else term.vt_state.visible_damage.dirty_rows.items.ptr, .len = term.vt_state.visible_damage.dirty_rows.items.len },
+        .dirty_cols_start = .{ .ptr = if (term.vt_state.visible_damage.dirty_cols_start.items.len == 0) null else term.vt_state.visible_damage.dirty_cols_start.items.ptr, .len = term.vt_state.visible_damage.dirty_cols_start.items.len },
+        .dirty_cols_end = .{ .ptr = if (term.vt_state.visible_damage.dirty_cols_end.items.len == 0) null else term.vt_state.visible_damage.dirty_cols_end.items.ptr, .len = term.vt_state.visible_damage.dirty_cols_end.items.len },
     });
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPendingDirtyGeneration(term, visible, typed_response);
@@ -253,38 +256,6 @@ fn recordPendingDirtyGeneration(term: anytype, visible: VisibleCopy, typed_respo
         return;
     }
     term.vt_state.pending_dirty_generation = 0;
-}
-
-fn sourceDamageKind(rows: u16, cols: u16, damage: anytype) u8 {
-    var any_dirty = false;
-    var all_rows_dirty = rows != 0;
-    for (damage.dirty_rows.items, 0..) |dirty, row_idx| {
-        if (row_idx >= rows) break;
-        if (dirty == 0) {
-            all_rows_dirty = false;
-            continue;
-        }
-        any_dirty = true;
-        if (row_idx >= damage.dirty_cols_start.items.len or row_idx >= damage.dirty_cols_end.items.len) {
-            all_rows_dirty = false;
-            continue;
-        }
-        if (damage.dirty_cols_start.items[row_idx] != 0 or damage.dirty_cols_end.items[row_idx] != cols -| 1) {
-            all_rows_dirty = false;
-        }
-    }
-    if (!any_dirty) return damage_none;
-    if (all_rows_dirty) return damage_full;
-    return damage_partial;
-}
-
-test "full row damage becomes full" {
-    const damage = .{
-        .dirty_rows = .{ .items = &[_]u8{ 0, 0, 1, 1 } },
-        .dirty_cols_start = .{ .items = &[_]u16{ 0, 0, 0, 0 } },
-        .dirty_cols_end = .{ .items = &[_]u16{ 0, 0, 4, 4 } },
-    };
-    try std.testing.expectEqual(damage_full, sourceDamageKind(4, 5, damage));
 }
 
 test "publish records dirty generation only for published source" {
