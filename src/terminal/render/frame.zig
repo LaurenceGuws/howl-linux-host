@@ -4,6 +4,7 @@ const runtime = @import("../runtime/runtime.zig");
 const TerminalPanel = @import("../terminal_panel.zig").TerminalPanel;
 const vt_surface = @import("../vt/surface.zig");
 const term_texture = @import("../../window/term_texture.zig");
+const window = @import("../../window/window.zig");
 
 pub const DriveStep = enum {
     idle_prepare,
@@ -82,7 +83,7 @@ fn submitPrepared(
     term: *runtime.Term,
     surface: *render_api.RenderSurface,
 ) render_api.RenderSubmitResult {
-    const start_ns = std.time.nanoTimestamp();
+    const start_ns = window.c_win.SDL_GetTicksNS();
 
     var info = std.mem.zeroes(render_api.PreparedSurfaceInfo);
     if (!render_api.preparedSurfaceInfo(term, &info)) return .failed;
@@ -112,10 +113,9 @@ fn submitPrepared(
     return result;
 }
 
-fn renderUs(start_ns: i128) u64 {
-    const elapsed_ns: i128 = std.time.nanoTimestamp() - start_ns;
-    std.debug.assert(elapsed_ns >= 0);
-    return @intCast(@divTrunc(elapsed_ns, std.time.ns_per_us));
+fn renderUs(start_ns: u64) u64 {
+    const elapsed_ns = window.c_win.SDL_GetTicksNS() - start_ns;
+    return elapsed_ns / std.time.ns_per_us;
 }
 
 fn submitStep(result: render_api.RenderSubmitResult) DriveStep {

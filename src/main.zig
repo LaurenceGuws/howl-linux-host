@@ -100,7 +100,7 @@ const AppTab = struct {
             self.first_prepare_result_logged = true;
             InputWindow.logStartupf("stage=term-prepare-first prepared=true", .{});
         }
-        std.debug.assert(work.submit_pending);
+        std.debug.assert(work.submit_pending or work.present_pending);
     }
 
     fn wantsFrame(self: *AppTab) bool {
