@@ -2,19 +2,6 @@ const std = @import("std");
 const c = @import("../c.zig").c;
 const surface = @import("surface.zig");
 
-pub const VisibleDamage = struct {
-    dirty_rows: std.ArrayListUnmanaged(u8) = .empty,
-    dirty_cols_start: std.ArrayListUnmanaged(u16) = .empty,
-    dirty_cols_end: std.ArrayListUnmanaged(u16) = .empty,
-
-    pub fn deinit(self: *VisibleDamage, allocator: std.mem.Allocator) void {
-        self.dirty_rows.deinit(allocator);
-        self.dirty_cols_start.deinit(allocator);
-        self.dirty_cols_end.deinit(allocator);
-        self.* = .{};
-    }
-};
-
 pub const ScrollState = struct {
     visible_rows: u16,
     scrollback_count: u32,
@@ -23,10 +10,7 @@ pub const ScrollState = struct {
 };
 
 pub const State = struct {
-    visible_damage: VisibleDamage = .{},
-    surface_cells: std.ArrayListUnmanaged(c.HowlVtSurfaceCell) = .empty,
     bytes: std.ArrayListUnmanaged(u8) = .empty,
-    surface: c.HowlVtSurface = defaultSurface(),
     title: std.ArrayListUnmanaged(u8) = .empty,
     snapshot_seq: u64 = 1,
     pending_dirty_generation: u64 = 0,
@@ -35,9 +19,7 @@ pub const State = struct {
 
     pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
         self.title.deinit(allocator);
-        self.visible_damage.deinit(allocator);
         self.bytes.deinit(allocator);
-        self.surface_cells.deinit(allocator);
     }
 };
 
@@ -249,10 +231,4 @@ pub fn drainPendingClipboardSet(term: anytype, allocator: std.mem.Allocator) !?[
 
 pub fn noteVisibleChange(term: anytype) void {
     term.vt_state.snapshot_seq +%= 1;
-}
-
-fn defaultSurface() c.HowlVtSurface {
-    var value = std.mem.zeroes(c.HowlVtSurface);
-    value.cursor.visible = 1;
-    return value;
 }

@@ -49,14 +49,14 @@ classDiagram
   shell prompt or terminal capability environment state itself.
 - `src/terminal/vt/abi.zig` owns VT C ABI call translation only.
 - `src/terminal/vt/retained.zig` owns host-retained VT state such as title, scrollback offset, snapshot sequence, and VT byte scratch.
-- `src/terminal/vt/surface.zig` owns VT surface copy and VT snapshot publication.
+- `src/terminal/vt/surface.zig` owns one-shot VT source copy and VT source publication.
 - `src/terminal/host/input.zig` owns host-input publication through VT encoding plus PTY handoff.
 - `src/terminal/render/` owns render ABI calls, render-layout requests from host pixel constraints,
   frame layout sync, the host-side render turn, and contract translation between VT-surface input
   and render-surface output. That owner publishes VT source when eligible, drives prepare/query,
   fetches prepared buffers, uploads the realized surface image into the host texture, submits the
   prepared frame, and retires present before VT dirty ack. Retained render queue state, geometry
-  epoch/query state, VT snapshot publication classification, submit validation, and present
+  epoch/query state, VT source publication classification, submit validation, and present
   retirement belong to `howl-render`; the host consumes those steps through the render C ABI.
   `src/terminal/render/abi.zig` translates host calls plus locking only.
   `src/terminal/render/frame.zig` owns the host render-turn sequence around that ABI.
@@ -77,9 +77,9 @@ classDiagram
 - `Window` owns the OS window and host chrome presentation. It receives a term-texture handle; it does not infer terminal state.
 - `Input` owns input collection and queueing. Input payload types live under `src/input/`.
 - Hosts send events to PTY-facing owners, ask render to derive layout from render and grid pixel
-  constraints, resize PTY and VT from that render-owned layout, publish VT snapshot metadata into
-  the render owner, upload the render-owned prepared buffer into host graphics resources as one
-  complete realized surface image, submit render-surface execution input using the host-owned
+  constraints, resize PTY and VT from that render-owned layout, publish one full VT source into the
+  render owner, upload the render-owned prepared buffer into host graphics resources as one complete
+  realized surface image, submit render-surface execution input using the host-owned
   term-texture, present that term-texture, and then acknowledge the rendered VT dirty generation.
   They do not invent cell geometry, mutate scrollback, mutate VT dirty state, reconstruct content
   from render damage, or own render composition rules.
@@ -131,7 +131,7 @@ sequenceDiagram
 - `main.zig` owns per-tab term-texture state and window presentation. `src/terminal/render/frame.zig` consumes that term-texture state for the upload/submit handoff and owns the post-present retire-then-ack sequence.
 - PTY, VT, and render seam owners are failure-aware. Recoverable backend failures return `false` or error unions and move lifecycle state to `failed`; host code should not panic from normal render or wake failure paths.
 - `Window.present` draws static host chrome and places the active term-texture. It owns platform presentation only; it does not own terminal logic or render composition semantics.
-- VT dirty retirement is tied to rendered-frame retirement. The host acknowledges the dirty generation reported by the published VT surface only on the same post-present path that retires render-present state, and that retirement happens before VT dirty ack.
+- VT dirty retirement is tied to rendered-frame retirement. The host acknowledges the dirty generation reported by the published VT source only on the same post-present path that retires render-present state, and that retirement happens before VT dirty ack.
 
 ## Non-Goals
 

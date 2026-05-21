@@ -129,14 +129,14 @@ pub const State = struct {
         return out;
     }
 
-    pub fn prepare(self: *State, vt_surface: *c.HowlRenderVtSurface) PrepareResult {
+    pub fn prepare(self: *State) PrepareResult {
         var request = std.mem.zeroes(c.HowlRenderPrepareRequest);
         switch (c.howl_render_surface_text_take_prepare_request(self.surface_text, &request)) {
             c.HOWL_RENDER_PREPARE_IDLE => {
                 self.releasePreparedSurface();
                 return .idle;
             },
-            c.HOWL_RENDER_PREPARE_READY => return self.prepareReady(vt_surface, request),
+            c.HOWL_RENDER_PREPARE_READY => return self.prepareReady(request),
             else => {
                 self.releasePreparedSurface();
                 return .failed;
@@ -204,9 +204,9 @@ pub const State = struct {
         c.howl_render_surface_text_mark_presented(self.surface_text);
     }
 
-    fn prepareReady(self: *State, vt_surface: *c.HowlRenderVtSurface, request: c.HowlRenderPrepareRequest) PrepareResult {
+    fn prepareReady(self: *State, request: c.HowlRenderPrepareRequest) PrepareResult {
         var prepared: c.HowlRenderPreparedSurfaceHandle = null;
-        return switch (c.howl_render_surface_text_prepare_handle(self.surface_text, vt_surface, request, &prepared)) {
+        return switch (c.howl_render_surface_text_prepare_handle(self.surface_text, request, &prepared)) {
             c.HOWL_RENDER_PREPARE_IDLE => blk: {
                 self.releasePreparedSurface();
                 break :blk .idle;

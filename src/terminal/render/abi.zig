@@ -1,7 +1,6 @@
 const std = @import("std");
 const runtime = @import("../runtime/runtime.zig");
 const retained = @import("retained.zig");
-const surface_owner = @import("../vt/surface.zig");
 const c = runtime.c;
 
 pub const Term = runtime.Term;
@@ -90,8 +89,7 @@ pub fn renderWorkState(term: *const Term, bootstrap_surface: bool) RenderWorkSta
 pub fn prepareRender(term: *Term) RenderPrepareResult {
     term.mutex.lock();
     defer term.mutex.unlock();
-    var vt_surface = surface_owner.vtSurfaceOut(term) catch return .failed;
-    return term.render.prepare(&vt_surface);
+    return term.render.prepare();
 }
 
 pub fn submitPrepared(term: *Term, execution: *const SurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) RenderSubmitResult {
