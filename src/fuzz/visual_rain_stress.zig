@@ -10,6 +10,9 @@ const default_cols: u16 = 120;
 const default_rows: u16 = 40;
 const default_frames: u32 = 20_000;
 
+const SampleCount = u32;
+const DropCount = u32;
+
 const Config = struct {
     cols: ?u16 = null,
     rows: ?u16 = null,
@@ -36,6 +39,16 @@ fn monotonicNs() u64 {
     return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
 }
 
+fn argCount(args: []const []const u8) u16 {
+    std.debug.assert(args.len <= std.math.maxInt(u16));
+    return @intCast(args.len);
+}
+
+fn sampleCount(samples: []const u64) SampleCount {
+    std.debug.assert(samples.len <= std.math.maxInt(SampleCount));
+    return @intCast(samples.len);
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const args = try init.minimal.args.toSlice(allocator);
@@ -56,9 +69,9 @@ pub fn main(init: std.process.Init) !void {
     var rows = config.rows.?;
     var drops = try createDrops(allocator, random, cols, rows);
 
-    const max_samples = @min(@as(usize, config.frames), 1_000_000);
-    const frame_samples = try allocator.alloc(u64, if (config.metrics) max_samples else 0);
-    var sample_len: usize = 0;
+    const max_samples: SampleCount = @min(config.frames, 1_000_000);
+    const frame_samples = try allocator.alloc(u64, if (config.metrics) @intCast(max_samples) else 0);
+    var sample_len: SampleCount = 0;
     const run_start_ns = monotonicNs();
 
     try out.writeAll("\x1b[?1049h\x1b[?25l\x1b[0m\x1b[2J\x1b[H");
@@ -88,52 +101,53 @@ pub fn main(init: std.process.Init) !void {
         try out.flush();
 
         if (config.metrics and sample_len < frame_samples.len) {
-            frame_samples[sample_len] = @divTrunc(monotonicNs() - frame_start_ns, std.time.ns_per_us);
+            frame_samples[@intCast(sample_len)] = @divTrunc(monotonicNs() - frame_start_ns, std.time.ns_per_us);
             sample_len += 1;
             const completed = frame + 1;
             if (config.metrics_every != 0 and @mod(completed, config.metrics_every) == 0) {
-                try reportMetrics(err, frame_samples[0..sample_len], completed, run_start_ns, false);
+                try reportMetrics(err, frame_samples[0..@intCast(sample_len)], completed, run_start_ns, false);
             }
         }
     }
 
-    if (config.metrics) try reportMetrics(err, frame_samples[0..sample_len], frame, run_start_ns, true);
+    if (config.metrics) try reportMetrics(err, frame_samples[0..@intCast(sample_len)], frame, run_start_ns, true);
     try err.flush();
 }
 
 fn parseArgs(args: []const []const u8) !Config {
     var config = Config{};
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    const argc = argCount(args);
+    var i: u16 = 1;
+    while (i < argc) : (i += 1) {
+        const arg = args[@intCast(i)];
         if (std.mem.eql(u8, arg, "--metrics")) {
             config.metrics = true;
         } else if (std.mem.eql(u8, arg, "--cols")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.cols = try parseU16(args[i]);
+            if (i >= argc) return error.InvalidArgs;
+            config.cols = try parseU16(args[@intCast(i)]);
             config.fixed_cols = true;
         } else if (std.mem.eql(u8, arg, "--rows")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.rows = try parseU16(args[i]);
+            if (i >= argc) return error.InvalidArgs;
+            config.rows = try parseU16(args[@intCast(i)]);
             config.fixed_rows = true;
         } else if (std.mem.eql(u8, arg, "--frames")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.frames = try std.fmt.parseInt(u32, args[i], 10);
+            if (i >= argc) return error.InvalidArgs;
+            config.frames = try std.fmt.parseInt(u32, args[@intCast(i)], 10);
         } else if (std.mem.eql(u8, arg, "--seed")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.seed = try std.fmt.parseInt(u64, args[i], 0);
+            if (i >= argc) return error.InvalidArgs;
+            config.seed = try std.fmt.parseInt(u64, args[@intCast(i)], 0);
         } else if (std.mem.eql(u8, arg, "--metrics-every")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.metrics_every = try std.fmt.parseInt(u32, args[i], 10);
+            if (i >= argc) return error.InvalidArgs;
+            config.metrics_every = try std.fmt.parseInt(u32, args[@intCast(i)], 10);
         } else if (std.mem.eql(u8, arg, "--duration-ms")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.duration_ms = try std.fmt.parseInt(u64, args[i], 10);
+            if (i >= argc) return error.InvalidArgs;
+            config.duration_ms = try std.fmt.parseInt(u64, args[@intCast(i)], 10);
         } else if (std.mem.eql(u8, arg, "--help")) {
             usage();
             return error.HelpRequested;
@@ -197,9 +211,9 @@ fn slowerDrops(cols: u16, rows: u16) bool {
     return (rows < 20 and cols > 100) or (cols < 100 and rows < 40);
 }
 
-fn dropCount(cols: u16, rows: u16) usize {
-    if (slowerDrops(cols, rows)) return (@as(usize, cols) * 3) / 4;
-    return (@as(usize, cols) * 3) / 2;
+fn dropCount(cols: u16, rows: u16) DropCount {
+    if (slowerDrops(cols, rows)) return (@as(DropCount, cols) * 3) / 4;
+    return (@as(DropCount, cols) * 3) / 2;
 }
 
 fn createDrop(random: std.Random, cols: u16, rows: u16, slower: bool) Drop {
@@ -219,7 +233,7 @@ fn createDrop(random: std.Random, cols: u16, rows: u16, slower: bool) Drop {
 
 fn createDrops(allocator: std.mem.Allocator, random: std.Random, cols: u16, rows: u16) ![]Drop {
     const slower = slowerDrops(cols, rows);
-    const drops = try allocator.alloc(Drop, dropCount(cols, rows));
+    const drops = try allocator.alloc(Drop, @intCast(dropCount(cols, rows)));
     for (drops) |*drop| drop.* = createDrop(random, cols, rows, slower);
     return drops;
 }
@@ -272,13 +286,14 @@ fn reportMetrics(err: anytype, samples: []u64, frames: u32, start_ns: u64, final
 
 fn percentile(sorted_samples: []const u64, pct: u32) u64 {
     if (sorted_samples.len == 0) return 0;
-    const idx = (@as(usize, pct) * (sorted_samples.len - 1)) / 100;
-    return sorted_samples[idx];
+    const last = sampleCount(sorted_samples) - 1;
+    const idx = (pct * last) / 100;
+    return sorted_samples[@intCast(idx)];
 }
 
 test "drop count follows ascii rain sizing" {
-    try std.testing.expectEqual(@as(usize, 60), dropCount(80, 24));
-    try std.testing.expectEqual(@as(usize, 180), dropCount(120, 40));
+    try std.testing.expectEqual(@as(DropCount, 60), dropCount(80, 24));
+    try std.testing.expectEqual(@as(DropCount, 180), dropCount(120, 40));
 }
 
 test "parse visual rain args" {

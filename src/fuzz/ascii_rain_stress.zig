@@ -9,6 +9,8 @@ const default_rows: u16 = 80;
 const default_frames: u32 = 20_000;
 const burst_bytes = 256 * 1024;
 
+const SampleCount = u32;
+
 const GlyphMode = enum {
     ascii,
     mixed,
@@ -33,6 +35,16 @@ fn monotonicNs() u64 {
     return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
 }
 
+fn argCount(args: []const []const u8) u16 {
+    std.debug.assert(args.len <= std.math.maxInt(u16));
+    return @intCast(args.len);
+}
+
+fn sampleCount(samples: []const u64) SampleCount {
+    std.debug.assert(samples.len <= std.math.maxInt(SampleCount));
+    return @intCast(samples.len);
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.arena.allocator();
     const args = try init.minimal.args.toSlice(allocator);
@@ -46,9 +58,9 @@ pub fn main(init: std.process.Init) !void {
     var stderr_writer = std.Io.File.stderr().writer(init.io, &stderr_buffer);
     const err = &stderr_writer.interface;
 
-    const max_samples = @min(@as(usize, config.frames), 1_000_000);
-    const frame_samples = try allocator.alloc(u64, if (config.metrics) max_samples else 0);
-    var sample_len: usize = 0;
+    const max_samples: SampleCount = @min(config.frames, 1_000_000);
+    const frame_samples = try allocator.alloc(u64, if (config.metrics) @intCast(max_samples) else 0);
+    var sample_len: SampleCount = 0;
     const run_start_ns = monotonicNs();
 
     var prng = std.Random.DefaultPrng.init(config.seed);
@@ -70,24 +82,25 @@ pub fn main(init: std.process.Init) !void {
         try emitFrame(out, random, config, frame);
         if (config.flush_every != 0 and @mod(frame, config.flush_every) == 0) try out.flush();
         if (config.metrics and sample_len < frame_samples.len) {
-            frame_samples[sample_len] = @divTrunc(monotonicNs() - frame_start_ns, std.time.ns_per_us);
+            frame_samples[@intCast(sample_len)] = @divTrunc(monotonicNs() - frame_start_ns, std.time.ns_per_us);
             sample_len += 1;
             const completed = frame + 1;
             if (config.metrics_every != 0 and @mod(completed, config.metrics_every) == 0) {
-                try reportMetrics(err, frame_samples[0..sample_len], completed, run_start_ns, false);
+                try reportMetrics(err, frame_samples[0..@intCast(sample_len)], completed, run_start_ns, false);
             }
         }
     }
     try out.flush();
-    if (config.metrics) try reportMetrics(err, frame_samples[0..sample_len], frame, run_start_ns, true);
+    if (config.metrics) try reportMetrics(err, frame_samples[0..@intCast(sample_len)], frame, run_start_ns, true);
     try err.flush();
 }
 
 fn parseArgs(args: []const []const u8) !Config {
     var config = Config{};
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        const arg = args[i];
+    const argc = argCount(args);
+    var i: u16 = 1;
+    while (i < argc) : (i += 1) {
+        const arg = args[@intCast(i)];
         if (std.mem.eql(u8, arg, "--ascii")) {
             config.glyph_mode = .ascii;
         } else if (std.mem.eql(u8, arg, "--mixed")) {
@@ -98,32 +111,32 @@ fn parseArgs(args: []const []const u8) !Config {
             config.metrics = true;
         } else if (std.mem.eql(u8, arg, "--cols")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.cols = try parseU16(args[i]);
+            if (i >= argc) return error.InvalidArgs;
+            config.cols = try parseU16(args[@intCast(i)]);
         } else if (std.mem.eql(u8, arg, "--rows")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.rows = try parseU16(args[i]);
+            if (i >= argc) return error.InvalidArgs;
+            config.rows = try parseU16(args[@intCast(i)]);
         } else if (std.mem.eql(u8, arg, "--frames")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.frames = try std.fmt.parseInt(u32, args[i], 10);
+            if (i >= argc) return error.InvalidArgs;
+            config.frames = try std.fmt.parseInt(u32, args[@intCast(i)], 10);
         } else if (std.mem.eql(u8, arg, "--seed")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.seed = try std.fmt.parseInt(u64, args[i], 0);
+            if (i >= argc) return error.InvalidArgs;
+            config.seed = try std.fmt.parseInt(u64, args[@intCast(i)], 0);
         } else if (std.mem.eql(u8, arg, "--metrics-every")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.metrics_every = try std.fmt.parseInt(u32, args[i], 10);
+            if (i >= argc) return error.InvalidArgs;
+            config.metrics_every = try std.fmt.parseInt(u32, args[@intCast(i)], 10);
         } else if (std.mem.eql(u8, arg, "--flush-every")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.flush_every = try std.fmt.parseInt(u32, args[i], 10);
+            if (i >= argc) return error.InvalidArgs;
+            config.flush_every = try std.fmt.parseInt(u32, args[@intCast(i)], 10);
         } else if (std.mem.eql(u8, arg, "--duration-ms")) {
             i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            config.duration_ms = try std.fmt.parseInt(u64, args[i], 10);
+            if (i >= argc) return error.InvalidArgs;
+            config.duration_ms = try std.fmt.parseInt(u64, args[@intCast(i)], 10);
         } else if (std.mem.eql(u8, arg, "--help")) {
             usage();
             return error.HelpRequested;
@@ -177,8 +190,9 @@ fn reportMetrics(err: anytype, samples: []u64, frames: u32, start_ns: u64, final
 
 fn percentile(sorted_samples: []const u64, pct: u32) u64 {
     if (sorted_samples.len == 0) return 0;
-    const idx = (@as(usize, pct) * (sorted_samples.len - 1)) / 100;
-    return sorted_samples[idx];
+    const last = sampleCount(sorted_samples) - 1;
+    const idx = (pct * last) / 100;
+    return sorted_samples[@intCast(idx)];
 }
 
 fn emitFrame(out: anytype, random: std.Random, config: Config, frame: u32) !void {
@@ -255,8 +269,8 @@ fn emitGlyph(out: anytype, random: std.Random, mode: GlyphMode) !void {
 fn emitLongLine(out: anytype, random: std.Random, config: Config, frame: u32) !void {
     const row = 1 + @mod(frame, @as(u32, config.rows));
     try out.print("\x1b[{d};1H\x1b[0m", .{row});
-    const len: usize = @as(usize, config.cols) * 8;
-    var i: usize = 0;
+    const len: u32 = @as(u32, config.cols) * 8;
+    var i: u32 = 0;
     while (i < len) : (i += 1) {
         if ((i & 0x1f) == 0) try emitSgr(out, random);
         try emitGlyph(out, random, config.glyph_mode);
