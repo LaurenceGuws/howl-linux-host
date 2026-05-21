@@ -73,6 +73,7 @@ pub fn init(
     errdefer c.howl_render_surface_text_deinit(surface_text);
 
     try applyRenderInit(surface_text, render_init);
+    if (!renderFontValid(surface_text)) return error.RenderConfigFailed;
 
     const derived_layout = try deriveInitialLayout(surface_text, render_init);
     const frame_layout = initialFrameLayout(render_init, derived_layout);
@@ -197,6 +198,10 @@ fn applyFallbackFontPaths(surface_text: c.HowlRenderSurfaceTextHandle, paths: []
 
 fn renderCallOk(status: i32) bool {
     return status == c.HOWL_RENDER_CALL_OK;
+}
+
+fn renderFontValid(surface_text: c.HowlRenderSurfaceTextHandle) bool {
+    return renderCallOk(c.howl_render_surface_text_is_valid_font(surface_text));
 }
 
 pub fn deinit(term: *Term) void {
