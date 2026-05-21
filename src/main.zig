@@ -120,9 +120,41 @@ const LoopPending = struct {
     input: bool,
     progress_wake: bool,
     active_frame: bool,
+};
 
-    fn waitForWindow(self: LoopPending) bool {
-        return !(self.input or self.progress_wake or self.active_frame);
+const LoopState = struct {
+    wait_for_window: bool,
+    render_frame: bool,
+
+    fn init(pending: LoopPending) LoopState {
+        return .{
+            .wait_for_window = !(pending.input or pending.progress_wake or pending.active_frame),
+            .render_frame = false,
+        };
+    }
+
+    fn finish(self: *LoopState, progress_redraw: bool, redraw_requested: bool, active_frame: bool) void {
+        self.render_frame = progress_redraw or redraw_requested or active_frame;
+    }
+};
+
+const PublishSourceOps = struct {
+    fn maybeCommitGridResize(tab: *AppTab) void {
+        tab.panel.maybeCommitGridResize();
+    }
+
+    fn publishSource(tab: *AppTab) void {
+        _ = VtSurface.publishSource(&tab.panel.term);
+    }
+};
+
+const PresentRetireOps = struct {
+    fn markPresented(tab: *AppTab) void {
+        RenderApi.markRenderPresented(&tab.panel.term);
+    }
+
+    fn ackSource(tab: *AppTab) void {
+        VtSurface.ackPublishedSource(&tab.panel.term);
     }
 };
 
@@ -257,7 +289,8 @@ fn runLoopTurn(app: *App) !LoopAction {
     if (quitRequested()) |action| return action;
 
     const pending = collectLoopPending(app);
-    const event_action = pumpWindowEvents(app, pending.waitForWindow());
+    var loop = LoopState.init(pending);
+    const event_action = pumpWindowEvents(app, loop.wait_for_window);
     if (event_action == .quit) return .quit;
 
     applyFocusChange(app);
@@ -269,7 +302,12 @@ fn runLoopTurn(app: *App) !LoopAction {
     const progress_redraw = driveTerminalProgress(app.tabs.items, app.active_tab_idx.*);
     try ensureActiveTabHealthy(app);
 
-    if (!shouldRender(app, progress_redraw)) return .continue_running;
+    loop.finish(
+        progress_redraw,
+        app.input.drainRedrawRequested(),
+        activeTab(app.tabs.items, app.active_tab_idx.*).wantsFrame(),
+    );
+    if (!loop.render_frame) return .continue_running;
 
     render(app);
     if (quitRequested()) |action| return action;
@@ -290,12 +328,6 @@ fn tabsHavePendingWake(tabs: []AppTab) bool {
         if (tab.panel.hasPendingWake()) return true;
     }
     return false;
-}
-
-fn shouldRender(app: *App, progress_redraw: bool) bool {
-    if (progress_redraw) return true;
-    if (app.input.drainRedrawRequested()) return true;
-    return activeTab(app.tabs.items, app.active_tab_idx.*).wantsFrame();
 }
 
 fn quitRequested() ?LoopAction {
@@ -368,7 +400,9 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
 
 fn render(app: *App) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
-    const work_before_render = collectTabRenderWork(tab);
+    const bootstrap_surface = tab.term_texture.host_surface_id == 0;
+    maybePublishTabRenderSource(tab, bootstrap_surface, PublishSourceOps);
+    const work_before_render = RenderApi.renderWorkState(&tab.panel.term, bootstrap_surface);
     InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
         work_before_render.wantsFrame(),
         work_before_render.inFlight(),
@@ -403,15 +437,8 @@ fn render(app: *App) void {
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
 }
 
-fn collectTabRenderWork(tab: *AppTab) RenderApi.RenderWorkState {
-    const bootstrap_surface = tab.term_texture.host_surface_id == 0;
-    tab.panel.maybeCommitGridResize();
-    var work = RenderApi.renderWorkState(&tab.panel.term, bootstrap_surface);
-    if (bootstrap_surface or !work.wantsFrame()) {
-        _ = VtSurface.publishSource(&tab.panel.term);
-        work = RenderApi.renderWorkState(&tab.panel.term, bootstrap_surface);
-    }
-    return work;
+fn maybePublishTabRenderSource(tab: anytype, bootstrap_surface: bool, comptime Ops: type) void {
+    maybePublishTabRenderSourceWith(tab, bootstrap_surface, RenderApi.renderWorkState(&tab.panel.term, bootstrap_surface), Ops);
 }
 
 fn driveTabRenderStep(tab: *AppTab, work: RenderApi.RenderWorkState) void {
@@ -469,9 +496,164 @@ fn submitPreparedSurface(tab: *AppTab) RenderApi.RenderSubmitResult {
 }
 
 fn finishPresentedFrame(tab: *AppTab, render_present_pending: bool) void {
+    retirePresentedFrame(tab, render_present_pending, PresentRetireOps);
+}
+
+fn retirePresentedFrame(tab: anytype, render_present_pending: bool, comptime Ops: type) void {
     if (!render_present_pending) return;
-    RenderApi.markRenderPresented(&tab.panel.term);
-    VtSurface.ackPublishedSource(&tab.panel.term);
+    Ops.markPresented(tab);
+    Ops.ackSource(tab);
+}
+
+test "loop state waits only without host or frame work" {
+    var loop = LoopState.init(.{
+        .input = false,
+        .progress_wake = false,
+        .active_frame = false,
+    });
+    try std.testing.expect(loop.wait_for_window);
+    try std.testing.expect(!loop.render_frame);
+
+    loop.finish(false, false, false);
+    try std.testing.expect(!loop.render_frame);
+}
+
+test "loop state polls and renders when any owner requests work" {
+    const pending_cases = [_]LoopPending{
+        .{ .input = true, .progress_wake = false, .active_frame = false },
+        .{ .input = false, .progress_wake = true, .active_frame = false },
+        .{ .input = false, .progress_wake = false, .active_frame = true },
+    };
+    for (pending_cases) |pending| {
+        const loop = LoopState.init(pending);
+        try std.testing.expect(!loop.wait_for_window);
+    }
+
+    var render_from_progress = LoopState.init(.{
+        .input = false,
+        .progress_wake = false,
+        .active_frame = false,
+    });
+    render_from_progress.finish(true, false, false);
+    try std.testing.expect(render_from_progress.render_frame);
+
+    var render_from_redraw = LoopState.init(.{
+        .input = false,
+        .progress_wake = false,
+        .active_frame = false,
+    });
+    render_from_redraw.finish(false, true, false);
+    try std.testing.expect(render_from_redraw.render_frame);
+
+    var render_from_frame = LoopState.init(.{
+        .input = false,
+        .progress_wake = false,
+        .active_frame = false,
+    });
+    render_from_frame.finish(false, false, true);
+    try std.testing.expect(render_from_frame.render_frame);
+}
+
+test "publish source stays explicit around render work query" {
+    const FakeTab = struct {
+        work: RenderApi.RenderWorkState,
+        commit_count: u8 = 0,
+        publish_count: u8 = 0,
+    };
+
+    const FakeOps = struct {
+        fn maybeCommitGridResize(tab: *FakeTab) void {
+            tab.commit_count += 1;
+        }
+
+        fn publishSource(tab: *FakeTab) void {
+            tab.publish_count += 1;
+        }
+    };
+
+    const fake_render = struct {
+        fn state(tab: *FakeTab) RenderApi.RenderWorkState {
+            return tab.work;
+        }
+    };
+
+    var bootstrap = FakeTab{ .work = .{
+        .source_pending = false,
+        .prepare_pending = false,
+        .submit_pending = false,
+        .present_pending = false,
+        .bootstrap_surface = true,
+    } };
+    maybePublishTabRenderSourceWith(&bootstrap, true, fake_render.state(&bootstrap), FakeOps);
+    try std.testing.expectEqual(@as(u8, 1), bootstrap.commit_count);
+    try std.testing.expectEqual(@as(u8, 1), bootstrap.publish_count);
+
+    var idle = FakeTab{ .work = .{
+        .source_pending = false,
+        .prepare_pending = false,
+        .submit_pending = false,
+        .present_pending = false,
+        .bootstrap_surface = false,
+    } };
+    maybePublishTabRenderSourceWith(&idle, false, fake_render.state(&idle), FakeOps);
+    try std.testing.expectEqual(@as(u8, 1), idle.commit_count);
+    try std.testing.expectEqual(@as(u8, 1), idle.publish_count);
+
+    var in_flight = FakeTab{ .work = .{
+        .source_pending = true,
+        .prepare_pending = false,
+        .submit_pending = false,
+        .present_pending = false,
+        .bootstrap_surface = false,
+    } };
+    maybePublishTabRenderSourceWith(&in_flight, false, fake_render.state(&in_flight), FakeOps);
+    try std.testing.expectEqual(@as(u8, 1), in_flight.commit_count);
+    try std.testing.expectEqual(@as(u8, 0), in_flight.publish_count);
+}
+
+fn maybePublishTabRenderSourceWith(tab: anytype, bootstrap_surface: bool, work: RenderApi.RenderWorkState, comptime Ops: type) void {
+    Ops.maybeCommitGridResize(tab);
+    if (bootstrap_surface or !work.wantsFrame()) Ops.publishSource(tab);
+}
+
+test "present retirement marks render before vt ack" {
+    const FakeTab = struct {
+        marked: bool = false,
+        acked: bool = false,
+        order: [2]u8 = .{ 0, 0 },
+        order_len: u8 = 0,
+    };
+
+    const FakeOps = struct {
+        fn markPresented(tab: *FakeTab) void {
+            std.debug.assert(!tab.marked);
+            std.debug.assert(!tab.acked);
+            tab.marked = true;
+            tab.order[tab.order_len] = 1;
+            tab.order_len += 1;
+        }
+
+        fn ackSource(tab: *FakeTab) void {
+            std.debug.assert(tab.marked);
+            std.debug.assert(!tab.acked);
+            tab.acked = true;
+            tab.order[tab.order_len] = 2;
+            tab.order_len += 1;
+        }
+    };
+
+    var tab = FakeTab{};
+    retirePresentedFrame(&tab, true, FakeOps);
+    try std.testing.expect(tab.marked);
+    try std.testing.expect(tab.acked);
+    try std.testing.expectEqual(@as(u8, 2), tab.order_len);
+    try std.testing.expectEqual(@as(u8, 1), tab.order[0]);
+    try std.testing.expectEqual(@as(u8, 2), tab.order[1]);
+
+    var idle = FakeTab{};
+    retirePresentedFrame(&idle, false, FakeOps);
+    try std.testing.expect(!idle.marked);
+    try std.testing.expect(!idle.acked);
 }
 
 fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []AppTab) void {
