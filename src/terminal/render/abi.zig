@@ -207,9 +207,7 @@ pub fn prepareRender(term: *Term) RenderPrepareResult {
     }
     var prepared: c.HowlRenderPreparedSurfaceHandle = null;
     var vt_surface = surface_owner.vtSurfaceOut(term) catch return .failed;
-    const query = c.howl_render_surface_text_surface_query(term.render.surface_text);
-    std.debug.assert(query.status == c.HOWL_RENDER_CALL_OK);
-    return switch (c.howl_render_surface_text_prepare_handle(term.render.surface_text, &vt_surface, request, query, &prepared)) {
+    return switch (c.howl_render_surface_text_prepare_handle(term.render.surface_text, &vt_surface, request, &prepared)) {
         c.HOWL_RENDER_PREPARE_IDLE => blk: {
             term.render.releasePreparedSurface();
             term.render.clearInFlight();
