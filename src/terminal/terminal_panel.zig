@@ -156,6 +156,10 @@ pub const TerminalPanel = struct {
         return .{ .keep = outcome.keep, .should_redraw = outcome.should_redraw };
     }
 
+    pub fn hasPendingWake(self: *const TerminalPanel) bool {
+        return runtime_thread.wakePending(self);
+    }
+
     pub fn resize(self: *TerminalPanel, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
         geometry.resize(self, render_width, render_height, logical_width, logical_height);
     }

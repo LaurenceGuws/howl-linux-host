@@ -134,6 +134,16 @@ pub const Input = struct {
         return self.input_len != 0 or self.scroll_pages != 0;
     }
 
+    pub fn hasPendingLoopWork(self: *const Input) bool {
+        return self.input_len != 0 or
+            self.scroll_pages != 0 or
+            self.binding_len != 0 or
+            self.redraw_requested or
+            self.window_geometry_changed or
+            self.window_focus_changed != null or
+            window.redrawRequested();
+    }
+
     pub fn drainWindowGeometryChanged(self: *Input) bool {
         const changed = self.window_geometry_changed;
         if (changed) window.logf("host-loop ts_ns={d} stage=dequeue-window-geometry", .{window.nowNs()});

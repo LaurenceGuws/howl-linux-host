@@ -103,6 +103,10 @@ const AppTab = struct {
         }
         std.debug.assert(work.submit_pending);
     }
+
+    fn wantsFrame(self: *AppTab) bool {
+        return RenderApi.renderWorkState(&self.panel.term, self.term_texture.host_surface_id == 0).wantsFrame();
+    }
 };
 
 const TabList = std.ArrayList(AppTab);
@@ -110,6 +114,16 @@ const TabList = std.ArrayList(AppTab);
 const LoopAction = enum {
     continue_running,
     quit,
+};
+
+const LoopPending = struct {
+    input: bool,
+    progress_wake: bool,
+    active_frame: bool,
+
+    fn waitForWindow(self: LoopPending) bool {
+        return !(self.input or self.progress_wake or self.active_frame);
+    }
 };
 
 const App = struct {
@@ -242,7 +256,8 @@ fn runLoop(app: *App) !void {
 fn runLoopTurn(app: *App) !LoopAction {
     if (quitRequested()) |action| return action;
 
-    const event_action = pumpWindowEvents(app, true);
+    const pending = collectLoopPending(app);
+    const event_action = pumpWindowEvents(app, pending.waitForWindow());
     if (event_action == .quit) return .quit;
 
     applyFocusChange(app);
@@ -254,12 +269,33 @@ fn runLoopTurn(app: *App) !LoopAction {
     const progress_redraw = driveTerminalProgress(app.tabs.items, app.active_tab_idx.*);
     try ensureActiveTabHealthy(app);
 
-    if (!progress_redraw and !app.input.drainRedrawRequested()) return .continue_running;
+    if (!shouldRender(app, progress_redraw)) return .continue_running;
 
     render(app);
     if (quitRequested()) |action| return action;
     try ensureActiveTabHealthy(app);
     return .continue_running;
+}
+
+fn collectLoopPending(app: *App) LoopPending {
+    return .{
+        .input = app.input.hasPendingLoopWork(),
+        .progress_wake = tabsHavePendingWake(app.tabs.items),
+        .active_frame = activeTab(app.tabs.items, app.active_tab_idx.*).wantsFrame(),
+    };
+}
+
+fn tabsHavePendingWake(tabs: []AppTab) bool {
+    for (tabs) |*tab| {
+        if (tab.panel.hasPendingWake()) return true;
+    }
+    return false;
+}
+
+fn shouldRender(app: *App, progress_redraw: bool) bool {
+    if (progress_redraw) return true;
+    if (app.input.drainRedrawRequested()) return true;
+    return activeTab(app.tabs.items, app.active_tab_idx.*).wantsFrame();
 }
 
 fn quitRequested() ?LoopAction {
@@ -433,8 +469,9 @@ fn submitPreparedSurface(tab: *AppTab) RenderApi.RenderSubmitResult {
 }
 
 fn finishPresentedFrame(tab: *AppTab, render_present_pending: bool) void {
+    if (!render_present_pending) return;
+    RenderApi.markRenderPresented(&tab.panel.term);
     VtSurface.ackPublishedSource(&tab.panel.term);
-    if (render_present_pending) RenderApi.markRenderPresented(&tab.panel.term);
 }
 
 fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []AppTab) void {

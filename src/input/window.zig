@@ -135,6 +135,10 @@ pub fn requestRedraw() void {
     }
 }
 
+pub fn redrawRequested() bool {
+    return redraw_event_pending.load(.acquire);
+}
+
 pub fn isWakeEventType(event_type: u32) bool {
     return wake_event_type != 0 and event_type == wake_event_type;
 }

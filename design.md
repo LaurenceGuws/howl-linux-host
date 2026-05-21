@@ -67,7 +67,7 @@ classDiagram
 - `src/terminal/terminal_panel.zig` owns terminal runtime lifetime plus host-retained wake-thread state for one panel.
 - `src/terminal/runtime/progress.zig` owns one bounded PTY/VT progress turn, including PTY-read slices, VT feed, and VT reply handoff.
 - `src/terminal/runtime/thread.zig` owns the background wait-only wake thread for PTY readiness. It does not own PTY pumping, VT mutation, or render work.
-- `main.zig` drives one bounded PTY transport slice with direct VT feed, and one explicit in-flight render-work query per turn when deciding whether to wait, render, present, or wake again. It also owns per-tab term-texture creation, upload, submit execution input, and present acknowledgment.
+- `main.zig` drives one bounded PTY transport slice with direct VT feed, and one explicit in-flight render-work plus host-pending query per turn when deciding whether to wait, poll, render, present, or wake again. It also owns per-tab term-texture creation, upload, submit execution input, and present acknowledgment.
 - `main.zig` also owns process-global child environment policy such as `TERM`, because that state is process-global on the current PTY launch path.
 - The background progress thread only waits for PTY readiness and wakes the owner thread. It does not pump transport, apply VT work, or mutate render state.
 - `Window` owns the OS window and host chrome presentation. It receives a term-texture handle; it does not infer terminal state.
@@ -107,6 +107,7 @@ sequenceDiagram
     Main->>I: init/bind
     Main->>T: create(...)
     loop event loop
+        Main->>Main: decide wait vs poll from input/runtime/render pending
         Main->>I: poll/wait/drain
         Main->>T: drainInput/resize
         T->>P: publish host input
@@ -117,6 +118,7 @@ sequenceDiagram
         Main->>R: query prepared render-surface
         Main->>W: upload term-texture / present(frame)
         Main->>R: submit render-surface execution input
+        Main->>R: retire presented render frame
         Main->>V: acknowledge rendered dirty generation
     end
 ```
@@ -129,7 +131,7 @@ sequenceDiagram
 - `main.zig` owns per-tab term-texture state and uses the terminal/render ABIs to prepare, upload, submit, present, and acknowledge.
 - PTY, VT, and render seam owners are failure-aware. Recoverable backend failures return `false` or error unions and move lifecycle state to `failed`; host code should not panic from normal render or wake failure paths.
 - `Window.present` draws static host chrome and places the active term-texture. It owns platform presentation only; it does not own terminal logic or render composition semantics.
-- VT dirty retirement is tied to the rendered base. The host acknowledges the dirty generation reported by the published VT surface only after present.
+- VT dirty retirement is tied to rendered-frame retirement. The host acknowledges the dirty generation reported by the published VT surface only on the same post-present path that retires render-present state.
 
 ## Non-Goals
 
