@@ -155,7 +155,7 @@ pub fn vtSurfaceOut(term: *api.Term) !c.HowlRenderVtSurface {
 
 pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
     std.debug.assert(handle != null);
-    const view = c.howl_vt_terminal_copy_surface(handle, scrollback_offset, null, 0, null, 0, null, 0, null, 0, 0, 0);
+    const view = c.howl_vt_terminal_copy_surface(handle, scrollback_offset, null, 0, null, 0, null, 0, null, 0);
     if (view.status != vt_abi.callShortBuffer()) vt_abi.requireStructOk(view.status);
     std.debug.assert(scrollback_offset <= view.history_count);
     return .{
@@ -176,7 +176,7 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
     term.vt_state.visible_damage.dirty_rows.clearRetainingCapacity();
     term.vt_state.visible_damage.dirty_cols_start.clearRetainingCapacity();
     term.vt_state.visible_damage.dirty_cols_end.clearRetainingCapacity();
-    var source = c.howl_vt_terminal_copy_surface(term.vt, term.vt_state.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0, null, 0, 0, 0);
+    var source = c.howl_vt_terminal_copy_surface(term.vt, term.vt_state.scrollback_offset, cells.ptr, cells.len, null, 0, null, 0, null, 0);
     if (source.status == vt_abi.callShortBuffer()) {
         std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
         std.debug.assert(source.dirty_needed <= source.source.rows);
@@ -204,8 +204,6 @@ pub fn vtCopyVisible(term: *api.Term) !VisibleCopy {
             raw_dirty_cols_start.len,
             if (raw_dirty_cols_end.len == 0) null else raw_dirty_cols_end.ptr,
             raw_dirty_cols_end.len,
-            0,
-            0,
         );
         if (source.status == c.HOWL_VT_CALL_OK) {
             // The VT ABI compacts dirty column bounds over the contiguous dirty-row span.
