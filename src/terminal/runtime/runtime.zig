@@ -172,9 +172,10 @@ fn syncInitialGeometry(surface_text: c.HowlRenderSurfaceTextHandle, frame_layout
     const geometry = c.howl_render_surface_text_sync_geometry(surface_text, .{
         .render_px = frame_layout.render_px,
         .grid_px = frame_layout.grid_px,
-        .cell_px = frame_layout.cell_px,
     });
     if (geometry.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
+    std.debug.assert(geometry.cell_px.width == frame_layout.cell_px.width);
+    std.debug.assert(geometry.cell_px.height == frame_layout.cell_px.height);
 }
 
 fn applyPrimaryFontPath(surface_text: c.HowlRenderSurfaceTextHandle, font_path: ?[:0]const u8) bool {

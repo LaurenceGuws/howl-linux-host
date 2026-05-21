@@ -158,9 +158,10 @@ pub fn commitFrameLayout(term: *Term, layout: FrameLayout) void {
     const geometry = c.howl_render_surface_text_sync_geometry(term.render.surface_text, .{
         .render_px = layout.render_px,
         .grid_px = layout.grid_px,
-        .cell_px = layout.cell_px,
     });
     std.debug.assert(geometry.status == c.HOWL_RENDER_CALL_OK);
+    std.debug.assert(geometry.cell_px.width == layout.cell_px.width);
+    std.debug.assert(geometry.cell_px.height == layout.cell_px.height);
 }
 
 pub fn renderPhase(term: *const Term) RenderPhase {
