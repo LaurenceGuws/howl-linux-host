@@ -7,8 +7,13 @@ const pty_session = @import("../pty/session.zig");
 const runtime = @import("runtime.zig");
 const thread = @import("thread.zig");
 
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
+const child_term_value: [*:0]const u8 = "xterm-256color";
+
 pub fn start(self: anytype) !void {
     trace.logStartup("term-start-begin");
+    applyChildEnvironmentPolicy();
     const max_fallback_font_paths = runtime.c.HOWL_RENDER_MAX_FALLBACK_FONTS;
     var font_fallbacks_buf: [max_fallback_font_paths][:0]const u8 = undefined;
     const font_fallbacks = self.conf.fonts.flattenFallbacks(font_fallbacks_buf[0..]);
@@ -77,4 +82,17 @@ pub fn stop(self: anytype) void {
 
 fn setThreadName(handle: std.Thread, name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(handle.getHandle(), name.ptr);
+}
+
+fn applyChildEnvironmentPolicy() void {
+    // Host runtime owns terminal capability advertisement for launched child
+    // processes. PTY transport must only inherit and exec that environment.
+    std.debug.assert(setenv("TERM", child_term_value, 1) == 0);
+}
+
+test "child environment policy sets TERM in the host owner" {
+    try std.testing.expect(setenv("TERM", "preexisting-term", 1) == 0);
+    applyChildEnvironmentPolicy();
+    const value = std.c.getenv("TERM") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("xterm-256color", std.mem.span(value));
 }

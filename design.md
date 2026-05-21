@@ -44,6 +44,9 @@ classDiagram
 - `main.zig` owns app entry, app-owned config, tab lifecycle, event-loop orchestration, and per-tab term-texture ownership.
 - `src/terminal/terminal_panel.zig` owns one terminal panel boundary: input translation, focus, scrollbar interaction, tab label snapshot, and terminal runtime lifetime. It does not own host term-texture state or GL upload.
 - `src/terminal/pty/` owns PTY transport calls and child/session lifecycle at the host seam.
+- `howl-linux-host` owns child environment policy for launched terminal processes, including terminal
+  capability advertisement such as `TERM`. PTY transport inherits that policy; it does not invent
+  shell prompt or terminal capability environment state itself.
 - `src/terminal/vt/abi.zig` owns VT C ABI call translation only.
 - `src/terminal/vt/retained.zig` owns host-retained VT state such as title, scrollback offset, snapshot sequence, and VT byte scratch.
 - `src/terminal/vt/surface.zig` owns VT surface copy and VT snapshot publication.
