@@ -3,10 +3,7 @@ const api = @import("../runtime/runtime.zig");
 const c = api.c;
 const log = @import("../../input/window.zig");
 
-// Alacritty caps locked terminal parsing at roughly 64 KiB. Howl rounds that
-// to one 64 KiB scratch chunk so the host can cover the PTY owner's 1 MiB
-// burst in sixteen equal reads without adding a second host byte budget.
-pub const transport_chunk_bytes = 64 * 1024;
+pub const transport_chunk_bytes = c.HOWL_PTY_TRANSPORT_CHUNK_BYTES;
 
 pub const TransportPumpMode = enum(u8) {
     normal = c.HOWL_PTY_TRANSPORT_PUMP_NORMAL,
@@ -14,6 +11,7 @@ pub const TransportPumpMode = enum(u8) {
 };
 
 pub const TransportLimits = struct {
+    chunk_bytes: u32,
     max_reads: u32,
     max_bytes: u32,
 };
@@ -103,9 +101,10 @@ pub fn readTransportLocked(term: *api.Term, out: []u8) u32 {
 pub fn transportLimits(mode: TransportPumpMode) TransportLimits {
     const result = c.howl_pty_transport_pump_limits(@intFromEnum(mode));
     ptyRequireStructOk(result.status);
+    std.debug.assert(result.chunk_bytes > 0);
     std.debug.assert(result.max_reads > 0);
     std.debug.assert(result.max_bytes > 0);
-    return .{ .max_reads = result.max_reads, .max_bytes = result.max_bytes };
+    return .{ .chunk_bytes = result.chunk_bytes, .max_reads = result.max_reads, .max_bytes = result.max_bytes };
 }
 
 pub fn pendingInputBytesLocked(term: *api.Term) u64 {

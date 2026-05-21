@@ -93,6 +93,7 @@ const RealOps = struct {
 
 fn pumpTransportSlice(term: *runtime.Term, mode: pty_session.TransportPumpMode) TransportProgress {
     const limits = pty_session.transportLimits(mode);
+    std.debug.assert(limits.chunk_bytes == pty_session.transport_chunk_bytes);
     term.mutex.lock();
     defer term.mutex.unlock();
 
