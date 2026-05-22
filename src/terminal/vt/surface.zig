@@ -21,6 +21,7 @@ comptime {
     std.debug.assert(@sizeOf(c.HowlVtColor) == @sizeOf(c.HowlRenderColor));
     std.debug.assert(@sizeOf(c.HowlVtSurfaceCellAttrs) == @sizeOf(c.HowlRenderCellAttrs));
     std.debug.assert(@sizeOf(c.HowlVtSurfaceCell) == @sizeOf(c.HowlRenderCell));
+    std.debug.assert(@sizeOf(c.HowlVtCursor) == @sizeOf(c.HowlRenderCursor));
     std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "codepoint") == @offsetOf(c.HowlRenderCell, "codepoint"));
     std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "flags") == @offsetOf(c.HowlRenderCell, "flags"));
     std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "fg_color") == @offsetOf(c.HowlRenderCell, "fg_color"));
@@ -29,6 +30,10 @@ comptime {
     std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "underline_style") == @offsetOf(c.HowlRenderCell, "underline_style"));
     std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "attrs") == @offsetOf(c.HowlRenderCell, "attrs"));
     std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "link_id") == @offsetOf(c.HowlRenderCell, "link_id"));
+    std.debug.assert(@offsetOf(c.HowlVtCursor, "row") == @offsetOf(c.HowlRenderCursor, "row"));
+    std.debug.assert(@offsetOf(c.HowlVtCursor, "col") == @offsetOf(c.HowlRenderCursor, "col"));
+    std.debug.assert(@offsetOf(c.HowlVtCursor, "visible") == @offsetOf(c.HowlRenderCursor, "visible"));
+    std.debug.assert(@offsetOf(c.HowlVtCursor, "shape") == @offsetOf(c.HowlRenderCursor, "shape"));
 }
 
 pub const VisibleCopy = struct {
@@ -71,7 +76,7 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
         .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
         .reserved0 = 0,
         .reserved1 = 0,
-        .cursor = visible.cursor,
+        .cursor = renderCursorFromVt(visible.cursor),
     });
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPublishedSnapshot(.{
@@ -212,6 +217,15 @@ fn vtCopyVisibleIntoSlot(term: *api.Term, meta: VisibleMeta, slot: ReservedPubli
         .scroll_row = source.source.scroll_row,
         .snapshot_seq = source.snapshot_seq,
         .cursor = source.source.cursor,
+    };
+}
+
+fn renderCursorFromVt(cursor: c.HowlVtCursor) c.HowlRenderCursor {
+    return .{
+        .row = cursor.row,
+        .col = cursor.col,
+        .visible = cursor.visible,
+        .shape = cursor.shape,
     };
 }
 
