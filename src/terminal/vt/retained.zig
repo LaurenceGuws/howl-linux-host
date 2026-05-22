@@ -51,8 +51,9 @@ pub fn setCurrentTitle(term: anytype, title: []const u8) !void {
 }
 
 pub fn scrollState(term: anytype) ScrollState {
-    term.mutex.lock();
-    defer term.mutex.unlock();
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
     return scrollStateLocked(term);
 }
 
@@ -138,8 +139,9 @@ pub fn clampScrollbackOffset(term: anytype, history_count: u32) void {
 }
 
 pub fn setScrollbackOffset(term: anytype, offset: u32) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
     const history_count = surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
     return setScrollbackOffsetLocked(term, history_count, offset);
 }
@@ -153,9 +155,14 @@ pub fn setScrollbackOffsetLocked(term: anytype, history_count: u32, offset: u32)
 }
 
 pub fn followLiveBottom(term: anytype) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
     return followLiveBottomLocked(term);
+}
+
+fn mutableTerm(term: anytype) *@TypeOf(term.*) {
+    return @constCast(term);
 }
 
 pub fn followLiveBottomLocked(term: anytype) bool {
