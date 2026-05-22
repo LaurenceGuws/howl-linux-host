@@ -12,15 +12,6 @@ pub const FrameLayoutRequest = struct {
 pub const RenderSurface = c.HowlRenderSurfaceHandle;
 pub const RenderMetrics = c.HowlRenderQueueMetrics;
 pub const RenderPerf = retained.Perf;
-pub const PreparedSurfaceHandle = c.HowlRenderPreparedSurfaceHandle;
-pub const PreparedSurfaceInfo = c.HowlRenderPreparedSurfaceInfo;
-pub const PreparedSurfaceBuffer = c.HowlRenderPreparedSurfaceBuffer;
-pub const PreparedSurfaceDiagnostics = c.HowlRenderPreparedSurfaceDiagnostics;
-pub const SurfaceExecutionInput = c.HowlRenderSurfaceExecutionInput;
-pub const RenderSurfaceFeedback = c.HowlRenderSurfaceFeedback;
-pub const RenderPrepareResult = retained.PrepareResult;
-pub const RenderSubmitResult = retained.SubmitResult;
-pub const RenderWorkState = retained.WorkState;
 pub const RenderCellSize = c.HowlRenderCellSize;
 pub const FrameLayoutSync = retained.FrameLayoutSync;
 
@@ -79,43 +70,6 @@ pub fn commitFrameLayout(term: *Term, layout: FrameLayout) void {
     term.render.syncFrameLayout(layout);
 }
 
-pub fn renderWorkState(term: *const Term, bootstrap_surface: bool) RenderWorkState {
-    const mut: *Term = @constCast(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    return term.render.pending(bootstrap_surface);
-}
-
-pub fn prepareRender(term: *Term) RenderPrepareResult {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return term.render.prepare();
-}
-
-pub fn submitPrepared(term: *Term, execution: *const SurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) RenderSubmitResult {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return term.render.submit(execution, feedback);
-}
-
-pub fn preparedSurfaceInfo(term: *Term, info_out: *PreparedSurfaceInfo) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return term.render.preparedInfo(info_out);
-}
-
-pub fn preparedSurfaceBuffer(term: *Term, buffer_out: *PreparedSurfaceBuffer) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return term.render.preparedBuffer(buffer_out);
-}
-
-pub fn preparedSurfaceDiagnostics(term: *Term, diagnostics_out: *PreparedSurfaceDiagnostics) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return term.render.preparedDiagnostics(diagnostics_out);
-}
-
 pub fn takeRenderMetrics(term: *Term) RenderMetrics {
     var metrics = std.mem.zeroes(RenderMetrics);
     std.debug.assert(c.howl_render_surface_text_take_queue_metrics(term.render.surface_text, &metrics) == c.HOWL_RENDER_CALL_OK);
@@ -126,13 +80,6 @@ pub fn takeRenderPerf(term: *Term) RenderPerf {
     term.mutex.lock();
     defer term.mutex.unlock();
     return term.render.takePerf();
-}
-
-pub fn markRenderPresented(term: *Term) u64 {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    term.render.markPresented();
-    return term.render.takePendingVtSnapshotSeq();
 }
 
 pub fn pixelToCol(term: *const Term, pixel_x: i32) u16 {

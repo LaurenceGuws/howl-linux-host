@@ -1,10 +1,16 @@
 const std = @import("std");
-const render_api = @import("abi.zig");
 const runtime = @import("../runtime/runtime.zig");
 const TerminalPanel = @import("../terminal_panel.zig").TerminalPanel;
+const retained = @import("retained.zig");
+const vt_abi = @import("../vt/abi.zig");
 const vt_surface = @import("../vt/surface.zig");
 const term_texture = @import("../../window/term_texture.zig");
 const window = @import("../../window/window.zig");
+
+const c = runtime.c;
+
+pub const RenderWorkState = retained.WorkState;
+const PreparedUpload = retained.PreparedUpload;
 
 pub const DriveStep = enum {
     idle_prepare,
@@ -29,25 +35,22 @@ const PublishOps = struct {
     }
 };
 
-const PresentOps = struct {
-    fn markPresented(term: *runtime.Term) u64 {
-        return render_api.markRenderPresented(term);
-    }
-
-    fn ackSource(term: *runtime.Term, snapshot_seq: u64) void {
-        vt_surface.ackPublishedSource(term, snapshot_seq);
-    }
-};
-
 pub fn maybePublish(panel: *TerminalPanel, bootstrap_surface: bool) void {
-    const work = render_api.renderWorkState(&panel.term, bootstrap_surface);
+    const work = workState(&panel.term, bootstrap_surface);
     maybePublishWith(panel, bootstrap_surface, work, PublishOps);
+}
+
+pub fn workState(term: *const runtime.Term, bootstrap_surface: bool) RenderWorkState {
+    const mut: *runtime.Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return term.render.pending(bootstrap_surface);
 }
 
 pub fn drive(
     term: *runtime.Term,
-    surface: *render_api.RenderSurface,
-    work: render_api.RenderWorkState,
+    surface: *c.HowlRenderSurfaceHandle,
+    work: RenderWorkState,
 ) DriveResult {
     const bootstrap_surface = surface.host_surface_id == 0;
     std.debug.assert(work.bootstrap_surface == bootstrap_surface);
@@ -57,7 +60,7 @@ pub fn drive(
         return .{ .prepared = false, .step = .idle_submit };
     }
 
-    return switch (render_api.prepareRender(term)) {
+    return switch (prepare(term)) {
         .idle => .{ .prepared = false, .step = .idle_prepare },
         .failed => .{ .prepared = false, .step = .failed },
         .prepared => .{ .prepared = true, .step = submitStep(submitPrepared(term, surface)) },
@@ -65,52 +68,74 @@ pub fn drive(
 }
 
 pub fn finishPresent(term: *runtime.Term) void {
-    const present_pending = render_api.renderWorkState(term, false).present_pending;
-    retirePresentedFrameWith(term, present_pending, PresentOps);
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    const snapshot_seq = term.render.retirePresented();
+    if (snapshot_seq == 0) return;
+    vt_abi.requireStructOk(c.howl_vt_terminal_ack_surface(term.vt, snapshot_seq));
 }
 
 fn maybePublishWith(
     panel: anytype,
     bootstrap_surface: bool,
-    work: render_api.RenderWorkState,
+    work: RenderWorkState,
     comptime Ops: type,
 ) void {
     Ops.maybeCommitGridResize(panel);
     if (bootstrap_surface or !work.wantsFrame()) Ops.publishSource(panel);
 }
 
+fn prepare(term: *runtime.Term) retained.PrepareResult {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return term.render.prepare();
+}
+
+fn takePreparedUpload(term: *runtime.Term, upload_out: *PreparedUpload) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return term.render.preparedUpload(upload_out);
+}
+
 fn submitPrepared(
     term: *runtime.Term,
-    surface: *render_api.RenderSurface,
-) render_api.RenderSubmitResult {
+    surface: *c.HowlRenderSurfaceHandle,
+) retained.SubmitResult {
     const start_ns = window.c_win.SDL_GetTicksNS();
 
-    var info = std.mem.zeroes(render_api.PreparedSurfaceInfo);
-    if (!render_api.preparedSurfaceInfo(term, &info)) return .failed;
+    var upload = std.mem.zeroes(PreparedUpload);
+    if (!takePreparedUpload(term, &upload)) return .failed;
 
-    var buffer = std.mem.zeroes(render_api.PreparedSurfaceBuffer);
-    if (!render_api.preparedSurfaceBuffer(term, &buffer)) return .failed;
-
-    const pixels: []const u8 = if (buffer.rgba_pixels.len == 0)
+    const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
         &.{}
     else
-        buffer.rgba_pixels.ptr[0..buffer.rgba_pixels.len];
-    if (!term_texture.ensureSurface(surface, info.render_px.width, info.render_px.height)) return .failed;
+        upload.buffer.rgba_pixels.ptr[0..upload.buffer.rgba_pixels.len];
+    if (!term_texture.ensureSurface(surface, upload.info.render_px.width, upload.info.render_px.height)) return .failed;
     if (!term_texture.uploadPreparedBuffer(surface.*, pixels)) return .failed;
 
-    var feedback = std.mem.zeroes(render_api.RenderSurfaceFeedback);
-    const execution = render_api.SurfaceExecutionInput{
+    var feedback = std.mem.zeroes(c.HowlRenderSurfaceFeedback);
+    const execution = c.HowlRenderSurfaceExecutionInput{
         .surface = .{
             .host_surface_id = surface.host_surface_id,
-            .width = info.render_px.width,
-            .height = info.render_px.height,
+            .width = upload.info.render_px.width,
+            .height = upload.info.render_px.height,
         },
-        .uploads_committed = buffer.uploads_committed,
+        .uploads_committed = upload.buffer.uploads_committed,
         .render_us = renderUs(start_ns),
     };
-    const result = render_api.submitPrepared(term, &execution, &feedback);
+    const result = submit(term, &execution, &feedback);
     if (result == .rendered) surface.* = feedback.surface;
     return result;
+}
+
+fn submit(
+    term: *runtime.Term,
+    execution: *const c.HowlRenderSurfaceExecutionInput,
+    feedback: *c.HowlRenderSurfaceFeedback,
+) retained.SubmitResult {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return term.render.submit(execution, feedback);
 }
 
 fn renderUs(start_ns: u64) u64 {
@@ -118,7 +143,7 @@ fn renderUs(start_ns: u64) u64 {
     return elapsed_ns / std.time.ns_per_us;
 }
 
-fn submitStep(result: render_api.RenderSubmitResult) DriveStep {
+fn submitStep(result: retained.SubmitResult) DriveStep {
     return switch (result) {
         .rendered => .rendered,
         .failed => .failed,
@@ -126,15 +151,9 @@ fn submitStep(result: render_api.RenderSubmitResult) DriveStep {
     };
 }
 
-fn retirePresentedFrameWith(term: anytype, present_pending: bool, comptime Ops: type) void {
-    if (!present_pending) return;
-    const snapshot_seq = Ops.markPresented(term);
-    Ops.ackSource(term, snapshot_seq);
-}
-
 test "publish source stays explicit around render work query" {
     const FakePanel = struct {
-        work: render_api.RenderWorkState,
+        work: RenderWorkState,
         commit_count: u8 = 0,
         publish_count: u8 = 0,
     };
@@ -181,46 +200,4 @@ test "publish source stays explicit around render work query" {
     maybePublishWith(&in_flight, false, in_flight.work, FakeOps);
     try std.testing.expectEqual(@as(u8, 1), in_flight.commit_count);
     try std.testing.expectEqual(@as(u8, 0), in_flight.publish_count);
-}
-
-test "present retirement marks render before vt ack" {
-    const FakeTerm = struct {
-        marked: bool = false,
-        acked: bool = false,
-        order: [2]u8 = .{ 0, 0 },
-        order_len: u8 = 0,
-    };
-
-    const FakeOps = struct {
-        fn markPresented(term: *FakeTerm) u64 {
-            std.debug.assert(!term.marked);
-            std.debug.assert(!term.acked);
-            term.marked = true;
-            term.order[term.order_len] = 1;
-            term.order_len += 1;
-            return 7;
-        }
-
-        fn ackSource(term: *FakeTerm, snapshot_seq: u64) void {
-            std.debug.assert(term.marked);
-            std.debug.assert(!term.acked);
-            std.debug.assert(snapshot_seq == 7);
-            term.acked = true;
-            term.order[term.order_len] = 2;
-            term.order_len += 1;
-        }
-    };
-
-    var term = FakeTerm{};
-    retirePresentedFrameWith(&term, true, FakeOps);
-    try std.testing.expect(term.marked);
-    try std.testing.expect(term.acked);
-    try std.testing.expectEqual(@as(u8, 2), term.order_len);
-    try std.testing.expectEqual(@as(u8, 1), term.order[0]);
-    try std.testing.expectEqual(@as(u8, 2), term.order[1]);
-
-    var idle = FakeTerm{};
-    retirePresentedFrameWith(&idle, false, FakeOps);
-    try std.testing.expect(!idle.marked);
-    try std.testing.expect(!idle.acked);
 }

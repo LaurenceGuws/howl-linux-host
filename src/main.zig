@@ -6,8 +6,8 @@ const Input = @import("input/input.zig").Input;
 const InputWindow = @import("input/window.zig");
 const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
-const RenderApi = @import("terminal/render/abi.zig");
 const RenderFrame = @import("terminal/render/frame.zig");
+const RenderApi = @import("terminal/render/abi.zig");
 const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
 const Window = @import("window/window.zig");
 
@@ -42,7 +42,7 @@ const AppTab = struct {
         self.panel.destroy(self.allocator);
     }
 
-    fn noteSubmitPendingEntry(self: *AppTab, work: RenderApi.RenderWorkState) void {
+    fn noteSubmitPendingEntry(self: *AppTab, work: RenderFrame.RenderWorkState) void {
         if (!self.first_submit_work_logged and work.submit_pending) {
             self.first_submit_work_logged = true;
             InputWindow.logStartup("term-submit-work-first");
@@ -50,7 +50,7 @@ const AppTab = struct {
     }
 
     fn noteRenderedStep(self: *AppTab) void {
-        const work = RenderApi.renderWorkState(&self.panel.term, false);
+        const work = RenderFrame.workState(&self.panel.term, false);
         InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=rendered present_pending={} term_texture_id={d}", .{ InputWindow.nowNs(), work.present_pending, self.term_texture.host_surface_id });
         if (!self.first_submit_trace_logged) {
             self.first_submit_trace_logged = true;
@@ -67,12 +67,12 @@ const AppTab = struct {
     }
 
     fn noteFailedStep(self: *AppTab) void {
-        const work = RenderApi.renderWorkState(&self.panel.term, false);
+        const work = RenderFrame.workState(&self.panel.term, false);
         InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=failed source_pending={} prepare_pending={} submit_pending={} present_pending={}", .{ InputWindow.nowNs(), work.source_pending, work.prepare_pending, work.submit_pending, work.present_pending });
     }
 
     fn noteIdleStep(self: *AppTab) void {
-        const work = RenderApi.renderWorkState(&self.panel.term, false);
+        const work = RenderFrame.workState(&self.panel.term, false);
         InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{ InputWindow.nowNs(), work.source_pending, work.prepare_pending, work.submit_pending, work.present_pending, self.term_texture.host_surface_id });
     }
 
@@ -85,7 +85,7 @@ const AppTab = struct {
     }
 
     fn notePrepareIdleStep(self: *AppTab, bootstrap_surface: bool) void {
-        const work = RenderApi.renderWorkState(&self.panel.term, bootstrap_surface);
+        const work = RenderFrame.workState(&self.panel.term, bootstrap_surface);
         InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{ InputWindow.nowNs(), work.source_pending, work.prepare_pending, work.submit_pending, work.present_pending, self.term_texture.host_surface_id });
         if (!self.first_idle_render_logged) {
             self.first_idle_render_logged = true;
@@ -94,7 +94,7 @@ const AppTab = struct {
     }
 
     fn notePreparedStep(self: *AppTab) void {
-        const work = RenderApi.renderWorkState(&self.panel.term, false);
+        const work = RenderFrame.workState(&self.panel.term, false);
         InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=prepared submit_pending={} present_pending={}", .{ InputWindow.nowNs(), work.submit_pending, work.present_pending });
         if (!self.first_prepare_result_logged) {
             self.first_prepare_result_logged = true;
@@ -104,7 +104,7 @@ const AppTab = struct {
     }
 
     fn wantsFrame(self: *AppTab) bool {
-        return RenderApi.renderWorkState(&self.panel.term, self.term_texture.host_surface_id == 0).wantsFrame();
+        return RenderFrame.workState(&self.panel.term, self.term_texture.host_surface_id == 0).wantsFrame();
     }
 };
 
@@ -381,7 +381,7 @@ fn render(app: *App) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
     const bootstrap_surface = tab.term_texture.host_surface_id == 0;
     RenderFrame.maybePublish(tab.panel, bootstrap_surface);
-    const work_before_render = RenderApi.renderWorkState(&tab.panel.term, bootstrap_surface);
+    const work_before_render = RenderFrame.workState(&tab.panel.term, bootstrap_surface);
     InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
         work_before_render.wantsFrame(),
         work_before_render.inFlight(),
@@ -415,7 +415,7 @@ fn render(app: *App) void {
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
 }
 
-fn driveTabRenderStep(tab: *AppTab, work: RenderApi.RenderWorkState) void {
+fn driveTabRenderStep(tab: *AppTab, work: RenderFrame.RenderWorkState) void {
     tab.noteSubmitPendingEntry(work);
     const bootstrap_surface = tab.term_texture.host_surface_id == 0;
     const result = RenderFrame.drive(&tab.panel.term, &tab.term_texture, work);

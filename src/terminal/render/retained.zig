@@ -38,6 +38,11 @@ pub const FrameLayout = struct {
     cell_px: c.HowlRenderCellSize,
 };
 
+pub const PreparedUpload = struct {
+    info: c.HowlRenderPreparedSurfaceInfo,
+    buffer: c.HowlRenderPreparedSurfaceBuffer,
+};
+
 pub const State = struct {
     frame_layout: FrameLayout,
     geometry_epoch: u64 = 0,
@@ -196,6 +201,15 @@ pub const State = struct {
         return c.howl_render_prepared_surface_buffer(prepared, buffer_out) == c.HOWL_RENDER_CALL_OK;
     }
 
+    pub fn preparedUpload(self: *const State, upload_out: *PreparedUpload) bool {
+        upload_out.* = .{
+            .info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo),
+            .buffer = std.mem.zeroes(c.HowlRenderPreparedSurfaceBuffer),
+        };
+        if (!self.preparedInfo(&upload_out.info)) return false;
+        return self.preparedBuffer(&upload_out.buffer);
+    }
+
     pub fn preparedDiagnostics(self: *const State, diagnostics_out: *c.HowlRenderPreparedSurfaceDiagnostics) bool {
         const prepared = self.prepared_surface orelse return false;
         return c.howl_render_prepared_surface_diagnostics(prepared, diagnostics_out) == c.HOWL_RENDER_CALL_OK;
@@ -203,6 +217,14 @@ pub const State = struct {
 
     pub fn markPresented(self: *State) void {
         c.howl_render_surface_text_mark_presented(self.surface_text);
+    }
+
+    pub fn retirePresented(self: *State) u64 {
+        var state = std.mem.zeroes(c.HowlRenderPendingState);
+        std.debug.assert(c.howl_render_surface_text_pending_state(self.surface_text, &state) == c.HOWL_RENDER_CALL_OK);
+        if (state.present_pending == 0) return 0;
+        self.markPresented();
+        return self.takePendingVtSnapshotSeq();
     }
 
     pub fn takePendingVtSnapshotSeq(self: *State) u64 {

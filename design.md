@@ -58,11 +58,12 @@ classDiagram
   prepared frame, and retires present before VT dirty ack. Retained render queue state, geometry
   epoch/query state, VT source publication classification, submit validation, and present
   retirement belong to `howl-render`; the host consumes those steps through the render C ABI.
-  `src/terminal/render/abi.zig` translates host calls plus locking only.
-  `src/terminal/render/frame.zig` owns the host render-turn sequence around that ABI.
+  `src/terminal/render/abi.zig` translates host geometry, font, metric, and pixel-space calls only.
+  `src/terminal/render/frame.zig` is the host render control spine. It owns render-work queries,
+  prepared-upload intake, upload/submit ordering, and present retirement plus VT ack ordering.
   `src/terminal/render/retained.zig` owns host-side render retained state and render lifecycle
   mutation: frame-layout mirror, geometry epoch, prepared-surface handle lifetime,
-  submit/present retirement, and accumulated render perf counters. Font path ownership and
+  submit/present retirement, prepared-upload snapshots, and accumulated render perf counters. Font path ownership and
   fallback-path copies belong to `howl-render`; host render code does not mirror them as retained
   state, and it does not own host term-texture state outside the active upload/submit handoff.
 - `howl-linux-host` owns explicit font override resolution plus bundled fallback-stack assembly
@@ -128,7 +129,7 @@ sequenceDiagram
 - `TerminalPanel.create` starts one terminal panel and hides seam-owner field construction from `main.zig`.
 - `TerminalPanel.destroy` is the matching lifetime close; app code must not manually deinit seam internals.
 - `TerminalPanel` does not own or export concrete backend resources.
-- `main.zig` owns per-tab term-texture state and window presentation. `src/terminal/render/frame.zig` consumes that term-texture state for the upload/submit handoff and owns the post-present retire-then-ack sequence.
+- `main.zig` owns per-tab term-texture state and window presentation. `src/terminal/render/frame.zig` consumes that term-texture state for the upload/submit handoff and owns the post-present retire-then-ack sequence plus render-work queries for the active tab.
 - PTY, VT, and render seam owners are failure-aware. Recoverable backend failures return `false` or error unions and move lifecycle state to `failed`; host code should not panic from normal render or wake failure paths.
 - `Window.present` draws static host chrome and places the active term-texture. It owns platform presentation only; it does not own terminal logic or render composition semantics.
 - VT dirty retirement is tied to rendered-frame retirement. The host forwards the VT-published `snapshot_seq` through render, retires render-present state first, and then acknowledges that same VT publication identity on the post-present path.
