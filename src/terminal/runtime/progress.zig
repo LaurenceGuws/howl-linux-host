@@ -7,10 +7,6 @@ const vt_surface = @import("../vt/surface.zig");
 const log = @import("../../input/window.zig");
 const std = @import("std");
 
-// Ghostty keeps VT mutation on the owner thread, and Alacritty keeps the outer
-// loop honest by bounding each PTY slice instead of draining hidden backlog in
-// a second runtime phase. Keep Howl on the same shape: one explicit PTY slice
-// per main-thread turn, with VT mutation happening during feed.
 const transport_mode: pty_session.TransportPumpMode = .normal;
 
 pub const Outcome = struct {

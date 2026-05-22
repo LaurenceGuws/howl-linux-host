@@ -4,9 +4,6 @@ const mouse = @import("mouse.zig");
 const window = @import("window.zig");
 
 const c = window.c_win;
-// Bound queued host input to one SDL drain-sized burst so the main thread can
-// flush all captured terminal input in a single batching turn without creating
-// a second unbounded queue tier behind the window event loop.
 const max_input_events = 256;
 
 pub const Input = struct {

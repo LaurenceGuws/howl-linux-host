@@ -2,10 +2,8 @@
 const std = @import("std");
 const mouse = @import("mouse.zig");
 
-/// Maximum encoded byte length accepted for one host key/text event.
 pub const max_event_bytes: usize = 32;
 
-/// Physical key names used by SDL translation and key binding matching.
 pub const Key = enum {
     a,
     b,
@@ -124,24 +122,20 @@ pub const Key = enum {
     kp_nine,
 };
 
-/// Bounded UTF-8 input payload queued from SDL text input.
 pub const ByteInput = struct {
     len: u8,
     buf: [max_event_bytes]u8,
 
-    /// Returns the initialized bytes in this queued input payload.
     pub fn slice(self: *const ByteInput) []const u8 {
         return self.buf[0..self.len];
     }
 };
 
-/// Physical key event with host modifier state.
 pub const Event = struct {
     key: Key,
     mods: mouse.Mod,
 };
 
-/// Parses config-facing key labels into host key names.
 pub fn parseLabel(raw: []const u8) ?Key {
     const text = std.mem.trim(u8, raw, " \t\r\n");
     inline for (std.meta.fields(Key)) |field| {
@@ -181,16 +175,13 @@ pub fn parseLabel(raw: []const u8) ?Key {
     return null;
 }
 
-/// Returns the canonical config label for a key.
 pub fn label(key: Key) []const u8 {
     return @tagName(key);
 }
 
-/// Host key bindings and resolution policy.
 pub const Bindings = struct {
     bindings: []const Binding,
 
-    /// Host UX action selected by a key binding.
     pub const Action = enum {
         zoom_in,
         zoom_out,
@@ -212,7 +203,6 @@ pub const Bindings = struct {
         terminal_focus_tab_9,
     };
 
-    /// One key/modifier tuple bound to a host UX action.
     pub const Binding = struct {
         action: Action,
         key: Key,
@@ -221,18 +211,15 @@ pub const Bindings = struct {
         alt: bool = false,
     };
 
-    /// Config field name and action for a group of key bindings.
     pub const Spec = struct {
         field: []const u8,
         action: Action,
     };
 
-    /// Releases the owned binding slice.
     pub fn deinit(self: *Bindings, alloc: std.mem.Allocator) void {
         alloc.free(self.bindings);
     }
 
-    /// Parse one config key binding such as `ctrl+shift+t`.
     pub fn parse(raw: []const u8, action: Action) !Binding {
         var binding = Binding{ .action = action, .key = undefined };
         var parts = std.mem.splitScalar(u8, raw, '+');
@@ -264,14 +251,12 @@ pub const Bindings = struct {
     var window_bindings: []const Binding = &.{};
     var tab_bar_bindings: []const Binding = &.{};
 
-    /// Sets the active key bindings from parsed host config.
     pub fn setConfigBindings(conf: anytype) void {
         term_bindings = conf.term.bindings.bindings;
         window_bindings = conf.window.bindings.bindings;
         tab_bar_bindings = conf.tab_bar.bindings.bindings;
     }
 
-    /// Resolves a key/modifier tuple against window, terminal, and tab-bar bindings.
     pub fn resolve(key: Key, ctrl: bool, shift: bool, alt: bool) ?Action {
         if (matchBinding(window_bindings, key, ctrl, shift, alt)) |action| return action;
         if (matchBinding(term_bindings, key, ctrl, shift, alt)) |action| return action;
@@ -279,7 +264,6 @@ pub const Bindings = struct {
         return null;
     }
 
-    /// Returns whether repeated keydown events should repeat the action.
     pub fn isRepeatable(action: Action) bool {
         return switch (action) {
             .zoom_in, .zoom_out, .zoom_stress_toggle, .terminal_next_tab, .terminal_prev_tab => true,
@@ -287,7 +271,6 @@ pub const Bindings = struct {
         };
     }
 
-    /// Converts fixed tab-focus actions to zero-based tab indexes.
     pub fn focusTabIndex(action: Action) ?u8 {
         return switch (action) {
             .terminal_focus_tab_1 => 0,

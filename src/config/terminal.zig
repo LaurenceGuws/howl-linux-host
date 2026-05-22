@@ -54,7 +54,6 @@ pub const LinkOpenPolicy = enum {
     system,
 };
 
-/// Host-owned behavior for presenting hovered hyperlinks.
 pub const LinkHoverPolicy = enum {
     off,
     underline,
@@ -62,7 +61,6 @@ pub const LinkHoverPolicy = enum {
     underline_and_cursor,
 };
 
-/// Host-owned underline style for hovered hyperlinks.
 pub const LinkUnderlineStyle = enum {
     straight,
     curly,
@@ -162,7 +160,6 @@ fn parseLinkOpenPolicy(raw: []const u8) LinkOpenPolicy {
     return .disabled;
 }
 
-/// Parse host hyperlink hover presentation policy from Lua config text.
 fn parseLinkHoverPolicy(raw: []const u8) LinkHoverPolicy {
     if (std.ascii.eqlIgnoreCase(raw, "underline")) return .underline;
     if (std.ascii.eqlIgnoreCase(raw, "cursor")) return .cursor;
@@ -170,7 +167,6 @@ fn parseLinkHoverPolicy(raw: []const u8) LinkHoverPolicy {
     return .off;
 }
 
-/// Parse host hyperlink hover underline style from Lua config text.
 fn parseLinkUnderlineStyle(raw: []const u8) LinkUnderlineStyle {
     if (std.ascii.eqlIgnoreCase(raw, "curly")) return .curly;
     if (std.ascii.eqlIgnoreCase(raw, "dotted")) return .dotted;

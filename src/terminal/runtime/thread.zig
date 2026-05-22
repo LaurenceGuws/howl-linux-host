@@ -35,8 +35,6 @@ pub fn wakePending(self: anytype) bool {
 
 pub fn ackWake(self: anytype) void {
     if (self.progress.wake_pending.swap(false, .acq_rel)) {
-        // The semaphore only releases the blocked transport thread after the
-        // owner thread retires the in-flight wake bit.
         signalWakeAck(self);
     }
 }
@@ -54,8 +52,6 @@ fn progressThreadMainWith(self: anytype, comptime Ops: type) void {
 
 fn waitForWakeAck(self: anytype, comptime Ops: type) void {
     while (self.progress.wake_pending.load(.acquire) and !self.progress.stop.load(.acquire)) {
-        // The atomic bit is the wake truth; the semaphore just parks this
-        // thread until the owner thread acknowledges that wake.
         Ops.waitWakeAck(self);
     }
 }
@@ -82,8 +78,6 @@ fn termRef(self: anytype) TermRef(@TypeOf(self.term)) {
 
 fn signalWake(self: anytype, comptime Ops: type) void {
     if (!self.progress.wake_pending.swap(true, .acq_rel)) {
-        // Coalesce transport readiness into one owner-thread wake until the
-        // main thread explicitly acks it.
         Ops.wakeWindow();
     }
 }

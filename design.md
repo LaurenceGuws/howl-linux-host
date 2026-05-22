@@ -73,12 +73,12 @@ classDiagram
   render does not discover fonts on the host's behalf.
 - `main.zig` owns per-tab terminal construction, teardown, runtime lifetime, the tab-owned `src/terminal/term.zig` state, and host-retained wake-thread state for each tab.
 - `src/terminal/runtime/progress.zig` owns one bounded PTY/VT progress turn, including PTY-read slices, VT feed, and VT reply handoff.
-- `src/terminal/runtime/thread.zig` owns the background wait-only wake thread for PTY readiness. It does not own PTY pumping, VT mutation, or render work.
+- `src/terminal/runtime/thread.zig` owns the background wait-only wake thread for PTY readiness. It waits in bounded slices, and it does not own PTY pumping, VT mutation, or render work.
 - `main.zig` drives one bounded PTY/VT progress turn for each tab at the host-selected cadence, and asks render for one bounded active-tab render-turn result per frame when deciding whether to wait, poll, render, present, or wake again. It keeps app cadence, tab selection, window orchestration, per-tab runtime lifetime, and the actual `Window.present(...)` call. It presents only for an actual host chrome redraw or a real render frame/present-pending reason. The render owner drives VT publish, prepare/query, upload/submit, and post-present retirement ordering.
 - `main.zig` also owns process-global child environment policy such as `TERM`, because that state is process-global on the current PTY launch path.
 - The background progress thread only waits for PTY readiness and wakes the owner thread. It does not pump transport, apply VT work, or mutate render state.
 - `Window` owns the OS window and host chrome presentation. It receives a term-texture handle; it does not infer terminal state.
-- `Input` owns input collection and queueing. Input payload types live under `src/input/`.
+- `Input` owns input collection and queueing. It drains one bounded SDL event burst per host turn. Input payload types live under `src/input/`.
 - Hosts send events to PTY-facing owners, ask render to derive layout from render and grid pixel
   constraints, resize PTY and VT from that render-owned layout, reserve a render-owned publish slot,
   fill that slot directly from VT visible truth, commit it into the render owner, upload the

@@ -206,12 +206,10 @@ pub fn deleteTexture(surface_id: *u64) void {
     surface_id.* = 0;
 }
 
-/// Select the default desktop cursor.
 pub fn useDefaultCursor() void {
     _ = c.SDL_SetCursor(c.SDL_GetDefaultCursor());
 }
 
-/// Select the desktop pointer cursor normally used for clickable links.
 pub fn usePointerCursor() bool {
     if (pointer_cursor == null) {
         pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER) orelse return false;
