@@ -7,6 +7,7 @@ const window = @import("../window/window.zig");
 const c = @cImport({
     @cInclude("dirent.h");
     @cInclude("stdio.h");
+    @cInclude("sys/resource.h");
     @cInclude("time.h");
     @cInclude("unistd.h");
 });
@@ -21,6 +22,10 @@ pub const State = struct {
     stop: std.atomic.Value(bool),
     term: *terminal_term.Term,
     file_mutex: std.Io.Mutex,
+    prev_threads: []ThreadPrev,
+    prev_threads_count: usize,
+    thread_samples: []ThreadSample,
+    thread_samples_count: usize,
 
     pub fn init(self: *State, term: *terminal_term.Term, path: ?[*:0]const u8) !void {
         assert(path == null or path.?[0] != 0);
@@ -28,6 +33,11 @@ pub const State = struct {
         errdefer _ = c.fclose(file);
         const sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.PerfSemaphoreUnavailable;
         errdefer window.c_win.SDL_DestroySemaphore(sem);
+        const thread_capacity = try threadCapacityMax();
+        const prev_threads = try std.heap.c_allocator.alloc(ThreadPrev, thread_capacity);
+        errdefer std.heap.c_allocator.free(prev_threads);
+        const thread_samples = try std.heap.c_allocator.alloc(ThreadSample, thread_capacity);
+        errdefer std.heap.c_allocator.free(thread_samples);
 
         self.* = .{
             .file = file,
@@ -36,6 +46,10 @@ pub const State = struct {
             .stop = std.atomic.Value(bool).init(false),
             .term = term,
             .file_mutex = .init,
+            .prev_threads = prev_threads,
+            .prev_threads_count = 0,
+            .thread_samples = thread_samples,
+            .thread_samples_count = 0,
         };
 
         const thread = try std.Thread.spawn(.{}, threadMain, .{self});
@@ -76,6 +90,12 @@ pub const State = struct {
         self.wake_sem = null;
         if (self.file) |file| _ = c.fclose(file);
         self.file = null;
+        std.heap.c_allocator.free(self.thread_samples);
+        self.thread_samples = &.{};
+        self.thread_samples_count = 0;
+        std.heap.c_allocator.free(self.prev_threads);
+        self.prev_threads = &.{};
+        self.prev_threads_count = 0;
     }
 
     fn lockFile(self: *State) void {
@@ -102,16 +122,13 @@ const ThreadSample = struct {
 fn threadMain(self: *State) void {
     assert(self.file != null);
     assert(self.wake_sem != null);
-    var prev_threads: std.ArrayList(ThreadPrev) = .empty;
-    defer prev_threads.deinit(std.heap.c_allocator);
-
     var last_sample_ns = monoNs();
     while (true) {
         if (stopRequested(self)) return;
         waitForWake(self);
         if (stopRequested(self)) return;
         const now_ns = monoNs();
-        sample(self, &prev_threads, &last_sample_ns, now_ns) catch return;
+        sample(self, &last_sample_ns, now_ns) catch return;
     }
 }
 
@@ -124,7 +141,7 @@ fn waitForWake(self: *State) void {
     _ = window.c_win.SDL_WaitSemaphoreTimeout(sem, sample_interval_ms);
 }
 
-fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns: *u64, now_ns: u64) !void {
+fn sample(self: *State, last_sample_ns: *u64, now_ns: u64) !void {
     assert(self.file != null);
     assert(last_sample_ns.* <= now_ns);
     const elapsed_ns = now_ns - last_sample_ns.*;
@@ -139,15 +156,15 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
     const task_dir = c.opendir("/proc/self/task") orelse return error.TaskDirOpenFailed;
     defer _ = c.closedir(task_dir);
 
-    var threads: std.ArrayList(ThreadSample) = .empty;
-    defer threads.deinit(std.heap.c_allocator);
+    self.thread_samples_count = 0;
     while (c.readdir(task_dir)) |entry| {
         const name = std.mem.span(@as([*:0]const u8, @ptrCast(&entry.*.d_name)));
         if (name.len == 0 or name[0] == '.') continue;
         const tid = std.fmt.parseInt(u32, name, 10) catch continue;
-        try threads.append(std.heap.c_allocator, try readThreadSample(tid));
+        const slot = try threadSamplePush(self);
+        slot.* = try readThreadSample(tid);
     }
-    assert(threads.items.len > 0);
+    assert(self.thread_samples_count > 0);
 
     const file = self.file orelse return error.PerfLogClosed;
     self.lockFile();
@@ -173,8 +190,8 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
         @as(c_ulonglong, render_metrics.presents),
     ) < 0) return error.PerfLogWriteFailed;
 
-    for (threads.items, 0..) |thread, idx| {
-        const prev_ticks = previousTicks(prev_threads.items, thread.tid);
+    for (threadSamples(self), 0..) |thread, idx| {
+        const prev_ticks = previousTicks(prevThreads(self), thread.tid);
         const cpu_percent = if (prev_ticks) |ticks|
             @as(f64, @floatFromInt(thread.total_ticks -| ticks)) * 100.0 * @as(f64, std.time.ns_per_s) /
                 (@as(f64, @floatFromInt(ticks_per_second)) * @as(f64, @floatFromInt(elapsed_ns)))
@@ -185,9 +202,61 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
     }
     if (c.fprintf(file, "]}\n") < 0 or c.fflush(file) != 0) return error.PerfLogWriteFailed;
 
-    try prev_threads.resize(std.heap.c_allocator, threads.items.len);
-    for (threads.items, 0..) |thread, idx| prev_threads.items[idx] = .{ .tid = thread.tid, .total_ticks = thread.total_ticks };
+    assert(self.thread_samples_count <= self.prev_threads.len);
+    self.prev_threads_count = self.thread_samples_count;
+    for (threadSamples(self), 0..) |thread, idx| {
+        self.prev_threads[idx] = .{ .tid = thread.tid, .total_ticks = thread.total_ticks };
+    }
     last_sample_ns.* = now_ns;
+}
+
+fn threadCapacityMax() !usize {
+    // Linux counts threads against RLIMIT_NPROC, and `/proc/self/task` cannot exceed
+    // the kernel task ceilings exported through `threads-max` and `pid_max`.
+    // Pick the smallest non-zero owner-visible limit once at init so sampling never
+    // grows storage on the hot path.
+    const user_limit = try userThreadLimit();
+    const kernel_threads_max = try kernelThreadLimit("/proc/sys/kernel/threads-max");
+    const kernel_pid_max = try kernelThreadLimit("/proc/sys/kernel/pid_max");
+    const thread_capacity = minNonZero(user_limit, minNonZero(kernel_threads_max, kernel_pid_max));
+    if (thread_capacity == 0) return error.PerfThreadBoundUnavailable;
+    return thread_capacity;
+}
+
+fn userThreadLimit() !usize {
+    var limit: c.struct_rlimit = undefined;
+    if (c.getrlimit(c.RLIMIT_NPROC, &limit) != 0) return error.PerfThreadBoundUnavailable;
+    if (limit.rlim_cur == c.RLIM_INFINITY) return 0;
+    if (limit.rlim_cur == 0) return error.PerfThreadBoundUnavailable;
+    return @intCast(limit.rlim_cur);
+}
+
+fn kernelThreadLimit(path: [:0]const u8) !usize {
+    var buf: [32]u8 = undefined;
+    const len = try readTrimmedFile(path, &buf);
+    if (len == 0) return error.PerfThreadBoundUnavailable;
+    return std.fmt.parseInt(usize, buf[0..len], 10) catch error.PerfThreadBoundUnavailable;
+}
+
+fn minNonZero(a: usize, b: usize) usize {
+    if (a == 0) return b;
+    if (b == 0) return a;
+    return @min(a, b);
+}
+
+fn prevThreads(self: *const State) []const ThreadPrev {
+    return self.prev_threads[0..self.prev_threads_count];
+}
+
+fn threadSamples(self: *const State) []const ThreadSample {
+    return self.thread_samples[0..self.thread_samples_count];
+}
+
+fn threadSamplePush(self: *State) !*ThreadSample {
+    if (self.thread_samples_count >= self.thread_samples.len) return error.PerfThreadBoundExceeded;
+    const slot = &self.thread_samples[self.thread_samples_count];
+    self.thread_samples_count += 1;
+    return slot;
 }
 
 fn readThreadSample(tid: u32) !ThreadSample {

@@ -2,6 +2,18 @@ const std = @import("std");
 const c = @import("../c.zig").c;
 const surface = @import("surface.zig");
 
+const title_max_bytes = @as(usize, c.HOWL_VT_TITLE_MAX_BYTES);
+const output_max_bytes = @as(usize, c.HOWL_VT_PENDING_OUTPUT_MAX_BYTES);
+const clipboard_max_bytes = @as(usize, c.HOWL_VT_CLIPBOARD_SCRATCH_MAX_BYTES);
+const input_max_bytes = @as(usize, c.HOWL_VT_INPUT_ENCODE_MAX_BYTES);
+
+comptime {
+    std.debug.assert(title_max_bytes > 0);
+    std.debug.assert(output_max_bytes > 0);
+    std.debug.assert(clipboard_max_bytes > 0);
+    std.debug.assert(input_max_bytes > 0);
+}
+
 pub const ScrollState = struct {
     visible_rows: u16,
     scrollback_count: u32,
@@ -10,15 +22,15 @@ pub const ScrollState = struct {
 };
 
 pub const State = struct {
-    bytes: std.ArrayListUnmanaged(u8) = .empty,
-    title: std.ArrayListUnmanaged(u8) = .empty,
+    title_buf: [title_max_bytes]u8 = undefined,
+    title_len: u16 = 0,
+    output_scratch: [output_max_bytes]u8 = undefined,
+    clipboard_scratch: [clipboard_max_bytes]u8 = undefined,
+    input_scratch: [input_max_bytes]u8 = undefined,
     scrollback_offset: u32 = 0,
     focused: bool = true,
 
-    pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
-        self.title.deinit(allocator);
-        self.bytes.deinit(allocator);
-    }
+    pub fn deinit(_: *State, _: std.mem.Allocator) void {}
 };
 
 pub fn resetTitleFromLaunch(term: anytype) !void {
@@ -27,8 +39,7 @@ pub fn resetTitleFromLaunch(term: anytype) !void {
         if (trimmed.len > 0) break :blk trimmed;
         break :blk std.mem.trim(u8, std.fs.path.basename(term.pty.launch.shell), " \t\r\n");
     } else std.mem.trim(u8, std.fs.path.basename(term.pty.launch.shell), " \t\r\n");
-    try term.vt_state.title.resize(term.allocator, title.len);
-    if (title.len > 0) @memcpy(term.vt_state.title.items, title);
+    setCurrentTitle(term, title);
 }
 
 pub fn copyCurrentTitle(term: anytype, out_buf: []u8) u32 {
@@ -38,16 +49,20 @@ pub fn copyCurrentTitle(term: anytype, out_buf: []u8) u32 {
 }
 
 pub fn copyCurrentTitleLocked(term: anytype, out_buf: []u8) u32 {
-    const len_usize = @min(out_buf.len, term.vt_state.title.items.len);
+    const len_usize = @min(out_buf.len, currentTitle(term).len);
     std.debug.assert(len_usize <= std.math.maxInt(u32));
     const len: u32 = @intCast(len_usize);
-    if (len != 0) @memcpy(out_buf[0..@intCast(len)], term.vt_state.title.items[0..@intCast(len)]);
+    if (len != 0) @memcpy(out_buf[0..@intCast(len)], currentTitle(term)[0..@intCast(len)]);
     return len;
 }
 
-pub fn setCurrentTitle(term: anytype, title: []const u8) !void {
-    try term.vt_state.title.resize(term.allocator, title.len);
-    if (title.len > 0) @memcpy(term.vt_state.title.items, title);
+pub fn setCurrentTitle(term: anytype, title: []const u8) void {
+    const written = @min(title.len, title_max_bytes);
+    std.debug.assert(written <= std.math.maxInt(u16));
+    if (written != 0) {
+        std.mem.copyForwards(u8, term.vt_state.title_buf[0..written], title[0..written]);
+    }
+    term.vt_state.title_len = @intCast(written);
 }
 
 pub fn scrollState(term: anytype) ScrollState {
@@ -86,9 +101,8 @@ pub fn scrollStateLocked(term: anytype) ScrollState {
     };
 }
 
-pub fn ensureBytes(term: anytype, needed: u32) ![]u8 {
-    try term.vt_state.bytes.resize(term.allocator, @intCast(needed));
-    return term.vt_state.bytes.items;
+pub fn inputScratch(term: anytype) []u8 {
+    return term.vt_state.input_scratch[0..];
 }
 
 pub fn feedLocked(term: anytype, bytes: []const u8) c.HowlVtFeedResult {
@@ -104,29 +118,19 @@ pub fn feedLocked(term: anytype, bytes: []const u8) c.HowlVtFeedResult {
 }
 
 pub fn copyTitleLocked(term: anytype) ![]const u8 {
-    var out = try ensureBytes(term, 0);
-    var result = c.howl_vt_terminal_copy_title(term.vt, out.ptr, out.len);
-    if (result.status == callShortBuffer()) {
-        std.debug.assert(result.needed <= std.math.maxInt(u32));
-        out = try ensureBytes(term, @intCast(result.needed));
-        result = c.howl_vt_terminal_copy_title(term.vt, out.ptr, out.len);
-    }
+    const result = c.howl_vt_terminal_copy_title(term.vt, &term.vt_state.title_buf, term.vt_state.title_buf.len);
+    if (result.status == callShortBuffer()) return error.HostBufferTooSmall;
     try requireOk(result.status);
-    std.debug.assert(result.written <= term.vt_state.bytes.items.len);
-    return term.vt_state.bytes.items[0..@intCast(result.written)];
+    std.debug.assert(result.written <= term.vt_state.title_buf.len);
+    std.debug.assert(result.written <= std.math.maxInt(u16));
+    term.vt_state.title_len = @intCast(result.written);
+    return currentTitle(term);
 }
 
 pub fn copyPendingOutputLocked(term: anytype) ![]const u8 {
-    var out = try ensureBytes(term, 0);
-    var result = c.howl_vt_terminal_copy_pending_output(term.vt, out.ptr, out.len);
-    if (result.status == callShortBuffer()) {
-        std.debug.assert(result.needed <= std.math.maxInt(u32));
-        out = try ensureBytes(term, @intCast(result.needed));
-        result = c.howl_vt_terminal_copy_pending_output(term.vt, out.ptr, out.len);
-    }
-    try requireOk(result.status);
-    std.debug.assert(result.written <= term.vt_state.bytes.items.len);
-    return term.vt_state.bytes.items[0..@intCast(result.written)];
+    const out = term.vt_state.output_scratch[0..];
+    const result = c.howl_vt_terminal_copy_pending_output(term.vt, out.ptr, out.len);
+    return copyBoundedBytes(out, result);
 }
 
 pub fn clearPendingOutputLocked(term: anytype) void {
@@ -213,7 +217,7 @@ pub fn repairScrollback(term: anytype, history_before: u32, history_after: u32, 
 }
 
 pub fn finishFeed(term: anytype, history_before: u32, history_after: u32, state_changed: bool, title: ?[]const u8) void {
-    if (title) |current| setCurrentTitle(term, current) catch {};
+    if (title) |current| setCurrentTitle(term, current);
     if (!state_changed) return;
     repairScrollback(term, history_before, history_after, true);
 }
@@ -221,15 +225,33 @@ pub fn finishFeed(term: anytype, history_before: u32, history_after: u32, state_
 pub fn drainPendingClipboardSet(term: anytype, allocator: std.mem.Allocator) !?[]u8 {
     term.mutex.lock();
     defer term.mutex.unlock();
-    var out = try ensureBytes(term, 0);
-    var result = c.howl_vt_terminal_drain_pending_clipboard(term.vt, out.ptr, out.len);
-    if (result.status == callShortBuffer()) {
-        std.debug.assert(result.needed <= std.math.maxInt(u32));
-        out = try ensureBytes(term, @intCast(result.needed));
-        result = c.howl_vt_terminal_drain_pending_clipboard(term.vt, out.ptr, out.len);
-    }
+    const out = term.vt_state.clipboard_scratch[0..];
+    const bytes = try copyBoundedBytes(out, c.howl_vt_terminal_drain_pending_clipboard(term.vt, out.ptr, out.len));
+    if (bytes.len == 0) return null;
+    return try allocator.dupe(u8, bytes);
+}
+
+fn currentTitle(term: anytype) []const u8 {
+    return term.vt_state.title_buf[0..term.vt_state.title_len];
+}
+
+fn copyBoundedBytes(out: []u8, result: c.HowlVtBytesResult) ![]const u8 {
+    if (result.status == callShortBuffer()) return error.HostBufferTooSmall;
     try requireOk(result.status);
-    if (result.written == 0) return null;
-    std.debug.assert(result.written <= term.vt_state.bytes.items.len);
-    return try allocator.dupe(u8, term.vt_state.bytes.items[0..@intCast(result.written)]);
+    std.debug.assert(result.written <= out.len);
+    return out[0..@intCast(result.written)];
+}
+
+test "setCurrentTitle accepts aliased current title slice" {
+    const FakeTerm = struct {
+        vt_state: State = .{},
+    };
+
+    var term = FakeTerm{};
+    setCurrentTitle(&term, "hello");
+    const aliased = currentTitle(&term);
+    setCurrentTitle(&term, aliased);
+
+    try std.testing.expectEqual(@as(u16, 5), term.vt_state.title_len);
+    try std.testing.expectEqualStrings("hello", currentTitle(&term));
 }
