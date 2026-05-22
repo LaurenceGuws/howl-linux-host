@@ -17,7 +17,7 @@ It owns app/window/input/chrome orchestration. It does not own terminal semantic
 
 - `Config`: loads typed host config.
 - `Input`: owns the SDL input queue and exposes typed input/window/key binding events.
-- `Window`: owns SDL window lifecycle, clipboard/URL helpers, and frame presentation.
+- `Window`: owns SDL window lifecycle and frame presentation.
 - `TerminalPanel`: owns one host terminal panel/tab boundary.
 - `src/terminal/`: owns the host term owner plus the PTY, VT, render, and runtime seam owners used by the panel.
 

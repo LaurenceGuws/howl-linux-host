@@ -96,12 +96,6 @@ pub fn publishSource(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
     return typed_response;
 }
 
-pub fn ackPublishedSource(term: *terminal_term.Term, snapshot_seq: u64) void {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    ackPublishedSourceLockedWith(term, snapshot_seq, PublishAckOps);
-}
-
 pub fn ackPublishedSourceLocked(term: *terminal_term.Term, snapshot_seq: u64) void {
     ackPublishedSourceLockedWith(term, snapshot_seq, PublishAckOps);
 }

@@ -20,7 +20,6 @@ pub const FrameLayoutRequest = struct {
 };
 pub const RenderSurface = c.HowlRenderSurfaceHandle;
 pub const RenderMetrics = c.HowlRenderQueueMetrics;
-pub const RenderPerf = retained.Perf;
 pub const RenderCellSize = c.HowlRenderCellSize;
 pub const FrameLayoutSync = retained.FrameLayoutSync;
 
@@ -108,12 +107,6 @@ pub fn takeRenderMetrics(term: *Term) RenderMetrics {
     var metrics = std.mem.zeroes(RenderMetrics);
     std.debug.assert(c.howl_render_surface_text_take_queue_metrics(term.render.surface_text, &metrics) == c.HOWL_RENDER_CALL_OK);
     return metrics;
-}
-
-pub fn takeRenderPerf(term: *Term) RenderPerf {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return term.render.takePerf();
 }
 
 pub fn pixelToCol(term: *const Term, pixel_x: i32) u16 {

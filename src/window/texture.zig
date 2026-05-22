@@ -3,7 +3,7 @@ pub fn drawRect(comptime c: type, fb_w: c_int, fb_h: c_int, texture_id: u32, x: 
     drawSubRect(c, fb_w, fb_h, texture_id, x, y, width, height, 0, 0, width, height, width, height);
 }
 
-pub fn drawSubRect(
+fn drawSubRect(
     comptime c: type,
     fb_w: c_int,
     fb_h: c_int,

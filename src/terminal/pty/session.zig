@@ -145,13 +145,6 @@ pub fn publishInputBytes(term: *terminal_term.Term, bytes: []const u8) !void {
     _ = try publishInputBytesLocked(term, bytes);
 }
 
-pub fn inputBytesApplied(term: *const terminal_term.Term) u64 {
-    const mut: *terminal_term.Term = @constCast(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    return c.howl_pty_session_bytes_applied(term.session);
-}
-
 pub fn publishInputBytesLocked(term: *terminal_term.Term, encoded: []const u8) !bool {
     if (encoded.len == 0) return false;
     log.logf("host-loop ts_ns={d} stage=transport-publish-encoded len={d}", .{ log.nowNs(), encoded.len });

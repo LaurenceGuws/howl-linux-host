@@ -24,8 +24,6 @@ pub const ScrollbarLayout = Layout.ScrollbarLayout;
 pub const Frame = Layout.Frame;
 pub const PresentState = Present.State(c);
 
-var pointer_cursor: ?*c.SDL_Cursor = null;
-
 pub const State = struct {
     handle: Ptr,
     present_state: PresentState,
@@ -126,10 +124,6 @@ pub fn initVideo() bool {
 }
 
 pub fn quit() void {
-    if (pointer_cursor) |cursor| {
-        c.SDL_DestroyCursor(cursor);
-        pointer_cursor = null;
-    }
     c.SDL_Quit();
 }
 
@@ -142,40 +136,40 @@ pub fn createWindow(title: [*:0]const u8, width: c_int, height: c_int, flags: Fl
     return handle;
 }
 
-pub fn destroyWindow(handle: Ptr) void {
+fn destroyWindow(handle: Ptr) void {
     _ = c.SDL_StopTextInput(handle);
     c.SDL_DestroyWindow(handle);
 }
 
-pub fn windowFlags() Flags {
+fn windowFlags() Flags {
     return Present.flags(c);
 }
 
-pub fn initPresent(state: *PresentState, handle: Ptr) !void {
+fn initPresent(state: *PresentState, handle: Ptr) !void {
     log.logStartupf("stage=present-init-begin window={*}", .{handle});
     try Present.init(c, state, handle);
     log.logStartup("stage=present-init-ok");
 }
 
-pub fn deinitPresent(state: *PresentState) void {
+fn deinitPresent(state: *PresentState) void {
     Present.deinit(c, state);
 }
 
-pub fn windowSize(handle: Ptr) Size {
+fn windowSize(handle: Ptr) Size {
     var width: c_int = 0;
     var height: c_int = 0;
     _ = c.SDL_GetWindowSizeInPixels(handle, &width, &height);
     return .{ .width = width, .height = height };
 }
 
-pub fn windowLogicalSize(handle: Ptr) Size {
+fn windowLogicalSize(handle: Ptr) Size {
     var width: c_int = 0;
     var height: c_int = 0;
     _ = c.SDL_GetWindowSize(handle, &width, &height);
     return .{ .width = width, .height = height };
 }
 
-pub fn hasInputFocus(handle: Ptr) bool {
+fn hasInputFocus(handle: Ptr) bool {
     return (c.SDL_GetWindowFlags(handle) & c.SDL_WINDOW_INPUT_FOCUS) != 0;
 }
 
@@ -183,20 +177,6 @@ pub fn getClipboardText(allocator: std.mem.Allocator) !?[]u8 {
     const text_z = c.SDL_GetClipboardText() orelse return null;
     defer c.SDL_free(text_z);
     return try allocator.dupe(u8, std.mem.span(text_z));
-}
-
-pub fn setClipboardText(text: []const u8) bool {
-    const z = std.heap.c_allocator.allocSentinel(u8, text.len, 0) catch return false;
-    defer std.heap.c_allocator.free(z);
-    @memcpy(z[0..text.len], text);
-    return c.SDL_SetClipboardText(z.ptr) == true;
-}
-
-pub fn openUrl(uri: []const u8) bool {
-    const z = std.heap.c_allocator.allocSentinel(u8, uri.len, 0) catch return false;
-    defer std.heap.c_allocator.free(z);
-    @memcpy(z[0..uri.len], uri);
-    return c.SDL_OpenURL(z.ptr) == true;
 }
 
 pub fn deleteTexture(surface_id: *u64) void {
@@ -208,15 +188,4 @@ pub fn deleteTexture(surface_id: *u64) void {
 
 pub fn useDefaultCursor() void {
     _ = c.SDL_SetCursor(c.SDL_GetDefaultCursor());
-}
-
-pub fn usePointerCursor() bool {
-    if (pointer_cursor == null) {
-        pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER) orelse return false;
-    }
-    return c.SDL_SetCursor(pointer_cursor.?) == true;
-}
-
-pub fn lastError() [*:0]const u8 {
-    return c.SDL_GetError();
 }

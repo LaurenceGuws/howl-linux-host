@@ -4,13 +4,11 @@ const surface = @import("surface.zig");
 
 const title_max_bytes = @as(usize, c.HOWL_VT_TITLE_MAX_BYTES);
 const output_max_bytes = @as(usize, c.HOWL_VT_PENDING_OUTPUT_MAX_BYTES);
-const clipboard_max_bytes = @as(usize, c.HOWL_VT_CLIPBOARD_SCRATCH_MAX_BYTES);
 const input_max_bytes = @as(usize, c.HOWL_VT_INPUT_ENCODE_MAX_BYTES);
 
 comptime {
     std.debug.assert(title_max_bytes > 0);
     std.debug.assert(output_max_bytes > 0);
-    std.debug.assert(clipboard_max_bytes > 0);
     std.debug.assert(input_max_bytes > 0);
 }
 
@@ -25,7 +23,6 @@ pub const State = struct {
     title_buf: [title_max_bytes]u8 = undefined,
     title_len: u16 = 0,
     output_scratch: [output_max_bytes]u8 = undefined,
-    clipboard_scratch: [clipboard_max_bytes]u8 = undefined,
     input_scratch: [input_max_bytes]u8 = undefined,
     scrollback_offset: u32 = 0,
     focused: bool = true,
@@ -48,7 +45,7 @@ pub fn copyCurrentTitle(term: anytype, out_buf: []u8) u32 {
     return copyCurrentTitleLocked(term, out_buf);
 }
 
-pub fn copyCurrentTitleLocked(term: anytype, out_buf: []u8) u32 {
+fn copyCurrentTitleLocked(term: anytype, out_buf: []u8) u32 {
     const len_usize = @min(out_buf.len, currentTitle(term).len);
     std.debug.assert(len_usize <= std.math.maxInt(u32));
     const len: u32 = @intCast(len_usize);
@@ -56,7 +53,7 @@ pub fn copyCurrentTitleLocked(term: anytype, out_buf: []u8) u32 {
     return len;
 }
 
-pub fn setCurrentTitle(term: anytype, title: []const u8) void {
+fn setCurrentTitle(term: anytype, title: []const u8) void {
     const written = @min(title.len, title_max_bytes);
     std.debug.assert(written <= std.math.maxInt(u16));
     if (written != 0) {
@@ -91,7 +88,7 @@ fn requireResizeOk(status: i32) !void {
     return error.VtCallFailed;
 }
 
-pub fn scrollStateLocked(term: anytype) ScrollState {
+fn scrollStateLocked(term: anytype) ScrollState {
     const info = surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset);
     return .{
         .visible_rows = term.render.frame_layout.rows,
@@ -137,7 +134,7 @@ pub fn clearPendingOutputLocked(term: anytype) void {
     c.howl_vt_terminal_clear_pending_output(term.vt);
 }
 
-pub fn clampScrollbackOffset(term: anytype, history_count: u32) void {
+fn clampScrollbackOffset(term: anytype, history_count: u32) void {
     term.vt_state.scrollback_offset = @min(term.vt_state.scrollback_offset, history_count);
     std.debug.assert(term.vt_state.scrollback_offset <= history_count);
 }
@@ -150,7 +147,7 @@ pub fn setScrollbackOffset(term: anytype, offset: u32) bool {
     return setScrollbackOffsetLocked(term, history_count, offset);
 }
 
-pub fn setScrollbackOffsetLocked(term: anytype, history_count: u32, offset: u32) bool {
+fn setScrollbackOffsetLocked(term: anytype, history_count: u32, offset: u32) bool {
     const clamped = @min(offset, history_count);
     std.debug.assert(clamped <= history_count);
     if (clamped == term.vt_state.scrollback_offset) return false;
@@ -175,12 +172,6 @@ pub fn followLiveBottomLocked(term: anytype) bool {
     return true;
 }
 
-pub fn visibleRows(term: anytype) u16 {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return term.render.frame_layout.rows;
-}
-
 pub fn resize(term: anytype, rows: u16, cols: u16) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
@@ -194,13 +185,7 @@ pub fn setFocused(term: anytype, focused: bool) bool {
     return true;
 }
 
-pub fn isAlternateScreen(term: anytype) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).is_alternate_screen;
-}
-
-pub fn repairScrollback(term: anytype, history_before: u32, history_after: u32, any_read: bool) void {
+fn repairScrollback(term: anytype, history_before: u32, history_after: u32, any_read: bool) void {
     if (history_after > history_before) {
         if (term.vt_state.scrollback_offset > 0) {
             const delta = history_after - history_before;
@@ -220,15 +205,6 @@ pub fn finishFeed(term: anytype, history_before: u32, history_after: u32, state_
     if (title) |current| setCurrentTitle(term, current);
     if (!state_changed) return;
     repairScrollback(term, history_before, history_after, true);
-}
-
-pub fn drainPendingClipboardSet(term: anytype, allocator: std.mem.Allocator) !?[]u8 {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    const out = term.vt_state.clipboard_scratch[0..];
-    const bytes = try copyBoundedBytes(out, c.howl_vt_terminal_drain_pending_clipboard(term.vt, out.ptr, out.len));
-    if (bytes.len == 0) return null;
-    return try allocator.dupe(u8, bytes);
 }
 
 fn currentTitle(term: anytype) []const u8 {

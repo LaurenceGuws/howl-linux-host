@@ -151,13 +151,6 @@ pub fn stopQuitTimer(timer: c_win.SDL_TimerID) void {
     _ = c_win.SDL_RemoveTimer(timer);
 }
 
-pub fn isQuitEventType(event_type: u32) bool {
-    return event_type == c_win.SDL_EVENT_QUIT or
-        event_type == c_win.SDL_EVENT_TERMINATING or
-        event_type == c_win.SDL_EVENT_WINDOW_CLOSE_REQUESTED or
-        event_type == c_win.SDL_EVENT_WINDOW_DESTROYED;
-}
-
 fn quitTimer(_: ?*anyopaque, _: c_win.SDL_TimerID, _: u32) callconv(.c) u32 {
     var event: c_win.SDL_Event = std.mem.zeroes(c_win.SDL_Event);
     event.type = c_win.SDL_EVENT_QUIT;

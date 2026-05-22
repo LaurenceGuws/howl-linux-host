@@ -183,7 +183,7 @@ pub const Geometry = struct {
     }
 };
 
-pub fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, focus_t: f32) Geometry {
+fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, focus_t: f32) Geometry {
     const width_delta = max_width_logical - min_width_logical;
     const width = min_width_logical + @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(width_delta)) * focus_t)));
     return .{
@@ -194,20 +194,20 @@ pub fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height:
     };
 }
 
-pub fn thumb(y: c_int, height: c_int, rows: u32, total_lines: u32, scrollback_offset: u32) struct { y: c_int, height: c_int } {
+fn thumb(y: c_int, height: c_int, rows: u32, total_lines: u32, scrollback_offset: u32) struct { y: c_int, height: c_int } {
     const geometry = Geometry{ .x = 0, .y = y, .width = max_width_logical, .height = height };
     const model = Model{ .visible = true, .rows = rows, .total_lines = total_lines, .scrollback_offset = scrollback_offset };
     return .{ .y = geometry.thumbY(model), .height = geometry.thumbHeight(model) };
 }
 
-pub fn pointInTrack(mouse_x: i32, mouse_y: i32, geometry: Geometry) bool {
+fn pointInTrack(mouse_x: i32, mouse_y: i32, geometry: Geometry) bool {
     return mouse_x >= geometry.x - hit_margin_logical and
         mouse_x <= geometry.x + geometry.width + hit_margin_logical and
         mouse_y >= geometry.y and
         mouse_y <= geometry.y + geometry.height;
 }
 
-pub fn pointInThumb(mouse_x: i32, mouse_y: i32, geometry: Geometry, model: Model) bool {
+fn pointInThumb(mouse_x: i32, mouse_y: i32, geometry: Geometry, model: Model) bool {
     const thumb_y = geometry.thumbY(model);
     return mouse_x >= geometry.x - hit_margin_logical and
         mouse_x <= geometry.x + geometry.width + hit_margin_logical and
