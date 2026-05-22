@@ -11,50 +11,6 @@ fn cellCount(rows: u16, cols: u16) u32 {
     return @as(u32, rows) * @as(u32, cols);
 }
 
-const OwnedVisibleSource = struct {
-    allocator: std.mem.Allocator,
-    cells: []c.HowlVtSurfaceCell = &.{},
-    dirty_rows: []u8 = &.{},
-    dirty_cols_start: []u16 = &.{},
-    dirty_cols_end: []u16 = &.{},
-    rows: u16 = 0,
-    cols: u16 = 0,
-    scroll_row: u64 = 0,
-    is_alternate_screen: bool = false,
-    history_count: u32 = 0,
-    snapshot_seq: u64 = 0,
-    dirty_generation: u64 = 0,
-    cursor: c.HowlVtCursor = .{ .row = 0, .col = 0, .visible = 1, .shape = 0 },
-
-    fn deinit(self: *OwnedVisibleSource) void {
-        if (self.cells.len > 0) self.allocator.free(self.cells);
-        if (self.dirty_rows.len > 0) self.allocator.free(self.dirty_rows);
-        if (self.dirty_cols_start.len > 0) self.allocator.free(self.dirty_cols_start);
-        if (self.dirty_cols_end.len > 0) self.allocator.free(self.dirty_cols_end);
-        self.* = undefined;
-    }
-
-    fn renderSource(self: *const OwnedVisibleSource) c.HowlRenderVtSurface {
-        return .{
-            .cells = .{ .ptr = if (self.cells.len == 0) null else @ptrCast(self.cells.ptr), .len = self.cells.len },
-            .cols = self.cols,
-            .rows = self.rows,
-            .scroll_row = self.scroll_row,
-            .snapshot_seq = self.snapshot_seq,
-            .is_alternate_screen = @intFromBool(self.is_alternate_screen),
-            .dirty_rows = .{ .ptr = if (self.dirty_rows.len == 0) null else self.dirty_rows.ptr, .len = self.dirty_rows.len },
-            .dirty_cols_start = .{ .ptr = if (self.dirty_cols_start.len == 0) null else self.dirty_cols_start.ptr, .len = self.dirty_cols_start.len },
-            .dirty_cols_end = .{ .ptr = if (self.dirty_cols_end.len == 0) null else self.dirty_cols_end.ptr, .len = self.dirty_cols_end.len },
-            .cursor = .{
-                .row = self.cursor.row,
-                .col = self.cursor.col,
-                .visible = self.cursor.visible,
-                .shape = self.cursor.shape,
-            },
-        };
-    }
-};
-
 pub const VisibleInfo = struct {
     history_count: u32,
     is_alternate_screen: bool,
@@ -82,7 +38,13 @@ pub const VisibleCopy = struct {
     history_count: u32,
     scroll_row: u64,
     snapshot_seq: u64,
-    dirty_generation: u64,
+};
+
+const ReservedPublishSlot = struct {
+    cells: []c.HowlRenderCell,
+    dirty_rows: []u8,
+    dirty_cols_start: []u16,
+    dirty_cols_end: []u16,
 };
 
 const PublishAckOps = struct {
@@ -95,13 +57,22 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    var visible = vtCopyVisible(term) catch return sourceRejected(term);
-    defer visible.deinit();
+    const meta = vtVisibleMeta(term.vt, term.vt_state.scrollback_offset);
+    const slot = reservePublishSlot(term.render.surface_text, meta.cols, meta.rows) catch return sourceRejected(term);
+    errdefer c.howl_render_surface_text_cancel_publish_slot(term.render.surface_text);
 
+    const visible = vtCopyVisibleIntoSlot(term, meta, slot) catch return sourceRejected(term);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.scroll_row <= visible.history_count + visible.rows);
 
-    const typed_response = c.howl_render_surface_text_publish_vt_source(term.render.surface_text, visible.renderSource());
+    const typed_response = c.howl_render_surface_text_commit_publish_slot(term.render.surface_text, .{
+        .scroll_row = visible.scroll_row,
+        .snapshot_seq = visible.snapshot_seq,
+        .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .cursor = visible.cursor,
+    });
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPublishedSnapshot(.{
         .rows = visible.rows,
@@ -110,7 +81,6 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
         .history_count = visible.history_count,
         .scroll_row = visible.scroll_row,
         .snapshot_seq = visible.snapshot_seq,
-        .dirty_generation = visible.dirty_generation,
     }, typed_response);
     if (typed_response.published != 0) {
         log.logf(
@@ -170,6 +140,8 @@ pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo
 }
 
 const VisibleMeta = struct {
+    rows: u16,
+    cols: u16,
     history_count: u32,
     is_alternate_screen: bool,
     snapshot_seq: u64,
@@ -181,39 +153,55 @@ fn vtVisibleMeta(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
     if (view.status != vt_abi.callShortBuffer()) vt_abi.requireStructOk(view.status);
     std.debug.assert(scrollback_offset <= view.history_count);
     return .{
+        .rows = view.source.rows,
+        .cols = view.source.cols,
         .history_count = @intCast(view.history_count),
         .is_alternate_screen = view.source.is_alternate_screen != 0,
         .snapshot_seq = view.snapshot_seq,
     };
 }
 
-pub fn vtCopyVisible(term: *api.Term) !OwnedVisibleSource {
-    var visible = OwnedVisibleSource{ .allocator = term.allocator };
-    errdefer visible.deinit();
-    var source = c.howl_vt_terminal_copy_surface(term.vt, term.vt_state.scrollback_offset, null, 0, null, 0, null, 0, null, 0);
-    if (source.status == vt_abi.callShortBuffer()) {
-        std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
-        visible.cells = try term.allocator.alloc(c.HowlVtSurfaceCell, @intCast(source.source.surface_cells.len));
-        visible.dirty_rows = try term.allocator.alloc(u8, source.source.rows);
-        visible.dirty_cols_start = try term.allocator.alloc(u16, source.source.rows);
-        visible.dirty_cols_end = try term.allocator.alloc(u16, source.source.rows);
-        @memset(visible.dirty_rows, 0);
-        @memset(visible.dirty_cols_start, 0);
-        @memset(visible.dirty_cols_end, 0);
-        source = c.howl_vt_terminal_copy_surface(
-            term.vt,
-            term.vt_state.scrollback_offset,
-            visible.cells.ptr,
-            visible.cells.len,
-            visible.dirty_rows.ptr,
-            visible.dirty_rows.len,
-            visible.dirty_cols_start.ptr,
-            visible.dirty_cols_start.len,
-            visible.dirty_cols_end.ptr,
-            visible.dirty_cols_end.len,
-        );
-    }
+fn reservePublishSlot(handle: c.HowlRenderSurfaceTextHandle, cols: u16, rows: u16) !ReservedPublishSlot {
+    var slot = std.mem.zeroes(c.HowlRenderPublishSlot);
+    try renderCallOk(c.howl_render_surface_text_reserve_publish_slot(handle, cols, rows, &slot));
+    const cell_count = cellCount(rows, cols);
+    if (slot.cells.ptr == null or slot.cells.len != cell_count) return error.InvalidPublishSlot;
+    if (slot.dirty_rows.ptr == null or slot.dirty_rows.len != rows) return error.InvalidPublishSlot;
+    if (slot.dirty_cols_start.ptr == null or slot.dirty_cols_start.len != rows) return error.InvalidPublishSlot;
+    if (slot.dirty_cols_end.ptr == null or slot.dirty_cols_end.len != rows) return error.InvalidPublishSlot;
+    return .{
+        .cells = slot.cells.ptr[0..slot.cells.len],
+        .dirty_rows = slot.dirty_rows.ptr[0..slot.dirty_rows.len],
+        .dirty_cols_start = slot.dirty_cols_start.ptr[0..slot.dirty_cols_start.len],
+        .dirty_cols_end = slot.dirty_cols_end.ptr[0..slot.dirty_cols_end.len],
+    };
+}
+
+fn vtCopyVisibleIntoSlot(term: *api.Term, meta: VisibleMeta, slot: ReservedPublishSlot) !struct {
+    rows: u16,
+    cols: u16,
+    is_alternate_screen: bool,
+    history_count: u32,
+    scroll_row: u64,
+    snapshot_seq: u64,
+    cursor: c.HowlVtCursor,
+} {
+    const source = c.howl_vt_terminal_copy_surface(
+        term.vt,
+        term.vt_state.scrollback_offset,
+        @ptrCast(slot.cells.ptr),
+        slot.cells.len,
+        slot.dirty_rows.ptr,
+        slot.dirty_rows.len,
+        slot.dirty_cols_start.ptr,
+        slot.dirty_cols_start.len,
+        slot.dirty_cols_end.ptr,
+        slot.dirty_cols_end.len,
+    );
     try vt_abi.requireOk(source.status);
+    std.debug.assert(source.source.rows == meta.rows);
+    std.debug.assert(source.source.cols == meta.cols);
+    std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
     std.debug.assert(source.source.scroll_row <= source.history_count + source.source.rows);
     std.debug.assert(term.vt_state.scrollback_offset <= source.history_count);
     return .{
@@ -223,14 +211,12 @@ pub fn vtCopyVisible(term: *api.Term) !OwnedVisibleSource {
         .history_count = @intCast(source.history_count),
         .scroll_row = source.source.scroll_row,
         .snapshot_seq = source.snapshot_seq,
-        .dirty_generation = source.dirty_generation,
         .cursor = source.source.cursor,
-        .cells = visible.cells,
-        .dirty_rows = visible.dirty_rows,
-        .dirty_cols_start = visible.dirty_cols_start,
-        .dirty_cols_end = visible.dirty_cols_end,
-        .allocator = term.allocator,
     };
+}
+
+fn renderCallOk(status: i32) !void {
+    if (status != c.HOWL_RENDER_CALL_OK) return error.RenderCallFailed;
 }
 
 fn recordPublishedSnapshot(visible: VisibleCopy, typed_response: c.HowlRenderVtPublishResult) void {
@@ -251,7 +237,6 @@ test "publish forwards vt snapshot sequence" {
         .history_count = 0,
         .scroll_row = 0,
         .snapshot_seq = 9,
-        .dirty_generation = 9,
     }, .{
         .status = c.HOWL_RENDER_CALL_OK,
         .published = 1,
@@ -269,7 +254,6 @@ test "publish forwards vt snapshot sequence" {
         .history_count = 0,
         .scroll_row = 0,
         .snapshot_seq = 11,
-        .dirty_generation = 11,
     }, .{
         .status = c.HOWL_RENDER_CALL_FAILED,
         .published = 0,
