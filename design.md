@@ -50,7 +50,8 @@ classDiagram
 - `src/terminal/vt/abi.zig` owns VT C ABI call translation only.
 - `src/terminal/vt/retained.zig` owns host-retained VT state such as title, scrollback offset, and VT byte scratch.
 - `src/terminal/vt/surface.zig` owns explicit VT-visible meta queries, direct VT copy into a render-owned
-  publish slot typed as VT ABI cells/cursor, and VT source publication.
+  publish slot typed as VT ABI cells/cursor, VT source publication, and VT snapshot acknowledgment after
+  render retirement.
 - `src/terminal/host/input.zig` owns host-input publication through VT encoding plus PTY handoff.
 - `src/terminal/render/` owns render ABI calls, render-layout requests from host pixel constraints,
   and host-side render retained state. `src/terminal/render/abi.zig` translates host geometry,
@@ -127,7 +128,7 @@ sequenceDiagram
 - `TerminalPanel` owns the per-instance term-texture handle used for render upload/submit, but it does not own `Window.present(...)` or host chrome composition policy.
 - PTY, VT, and render seam owners are failure-aware. Recoverable backend failures return `false` or error unions and move lifecycle state to `failed`; host code should not panic from normal render or wake failure paths.
 - `Window.present` draws static host chrome and places the active term-texture. It owns platform presentation only; it does not own terminal logic or render composition semantics.
-- VT dirty retirement is tied to rendered-frame retirement. After `Window.present(...)`, the host performs one render retire call, receives the VT `snapshot_seq` from render-owned present state, and then acknowledges that same publication through `howl_vt_terminal_ack_surface`.
+- VT dirty retirement is tied to rendered-frame retirement. After `Window.present(...)`, the host performs one render retire call, receives the VT `snapshot_seq` from render-owned present state, and then routes that acknowledgment back through `src/terminal/vt/surface.zig`.
 
 ## Non-Goals
 

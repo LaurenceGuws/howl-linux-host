@@ -303,8 +303,7 @@ pub const TerminalPanel = struct {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
         const retired_snapshot_seq = self.term.render.retirePresented();
-        if (retired_snapshot_seq == 0) return;
-        vt_api.requireStructOk(terminal_c.howl_vt_terminal_ack_surface(self.term.vt, retired_snapshot_seq));
+        vt_surface.ackPublishedSourceLocked(&self.term, retired_snapshot_seq);
     }
 
     pub fn noteRenderTurn(self: *TerminalPanel, turn: TurnResult) void {

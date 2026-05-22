@@ -94,13 +94,17 @@ pub fn publishSource(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
 }
 
 pub fn ackPublishedSource(term: *terminal_term.Term, snapshot_seq: u64) void {
-    ackPublishedSourceWith(term, snapshot_seq, PublishAckOps);
-}
-
-fn ackPublishedSourceWith(term: anytype, snapshot_seq: u64, comptime Ops: type) void {
-    if (snapshot_seq == 0) return;
     term.mutex.lock();
     defer term.mutex.unlock();
+    ackPublishedSourceLockedWith(term, snapshot_seq, PublishAckOps);
+}
+
+pub fn ackPublishedSourceLocked(term: *terminal_term.Term, snapshot_seq: u64) void {
+    ackPublishedSourceLockedWith(term, snapshot_seq, PublishAckOps);
+}
+
+fn ackPublishedSourceLockedWith(term: anytype, snapshot_seq: u64, comptime Ops: type) void {
+    if (snapshot_seq == 0) return;
     vt_abi.requireStructOk(Ops.ack(term.vt, snapshot_seq));
 }
 
@@ -274,7 +278,7 @@ test "ack forwards render-owned snapshot sequence" {
     };
 
     var term = FakeTerm{};
-    ackPublishedSourceWith(&term, 7, FakeOps);
+    ackPublishedSourceLockedWith(&term, 7, FakeOps);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
     try std.testing.expectEqual(@as(u64, 7), FakeOps.last_snapshot_seq);
 }
@@ -297,6 +301,6 @@ test "zero snapshot sequence means no ack call" {
     };
 
     var term = FakeTerm{};
-    ackPublishedSourceWith(&term, 0, FakeOps);
+    ackPublishedSourceLockedWith(&term, 0, FakeOps);
     try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
 }
