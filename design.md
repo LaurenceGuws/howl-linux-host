@@ -50,7 +50,7 @@ classDiagram
 - `src/terminal/vt/abi.zig` owns VT C ABI call translation only.
 - `src/terminal/vt/retained.zig` owns host-retained VT state such as title, scrollback offset, and VT byte scratch.
 - `src/terminal/vt/surface.zig` owns VT-visible meta queries, direct VT copy into a render-owned
-  publish slot, and VT source publication.
+  publish slot typed as VT ABI cells/cursor, and VT source publication.
 - `src/terminal/host/input.zig` owns host-input publication through VT encoding plus PTY handoff.
 - `src/terminal/render/` owns render ABI calls, render-layout requests from host pixel constraints,
   and host-side render retained state. `src/terminal/render/abi.zig` translates host geometry,
@@ -71,7 +71,8 @@ classDiagram
 - `Input` owns input collection and queueing. It drains one bounded SDL event burst per host turn. Input payload types live under `src/input/`.
 - Hosts send events to PTY-facing owners, ask render to derive layout from render and grid pixel
   constraints, resize PTY and VT from that render-owned layout, reserve a render-owned publish slot,
-  fill that slot directly from VT visible truth, commit it into the render owner, upload the
+  fill that slot directly from VT visible truth, commit it into the render owner through the render-
+  owned VT seam, upload the
   render-owned prepared buffer into host graphics resources as one complete realized surface image,
   submit render-surface execution input using the host-owned
   term-texture, present that term-texture, and then acknowledge the rendered VT dirty generation.

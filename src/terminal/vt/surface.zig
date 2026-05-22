@@ -16,26 +16,6 @@ pub const VisibleInfo = struct {
     is_alternate_screen: bool,
 };
 
-comptime {
-    std.debug.assert(@sizeOf(c.HowlVtSurfaceCellFlags) == @sizeOf(c.HowlRenderCellFlags));
-    std.debug.assert(@sizeOf(c.HowlVtColor) == @sizeOf(c.HowlRenderColor));
-    std.debug.assert(@sizeOf(c.HowlVtSurfaceCellAttrs) == @sizeOf(c.HowlRenderCellAttrs));
-    std.debug.assert(@sizeOf(c.HowlVtSurfaceCell) == @sizeOf(c.HowlRenderCell));
-    std.debug.assert(@sizeOf(c.HowlVtCursor) == @sizeOf(c.HowlRenderCursor));
-    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "codepoint") == @offsetOf(c.HowlRenderCell, "codepoint"));
-    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "flags") == @offsetOf(c.HowlRenderCell, "flags"));
-    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "fg_color") == @offsetOf(c.HowlRenderCell, "fg_color"));
-    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "bg_color") == @offsetOf(c.HowlRenderCell, "bg_color"));
-    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "underline_color") == @offsetOf(c.HowlRenderCell, "underline_color"));
-    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "underline_style") == @offsetOf(c.HowlRenderCell, "underline_style"));
-    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "attrs") == @offsetOf(c.HowlRenderCell, "attrs"));
-    std.debug.assert(@offsetOf(c.HowlVtSurfaceCell, "link_id") == @offsetOf(c.HowlRenderCell, "link_id"));
-    std.debug.assert(@offsetOf(c.HowlVtCursor, "row") == @offsetOf(c.HowlRenderCursor, "row"));
-    std.debug.assert(@offsetOf(c.HowlVtCursor, "col") == @offsetOf(c.HowlRenderCursor, "col"));
-    std.debug.assert(@offsetOf(c.HowlVtCursor, "visible") == @offsetOf(c.HowlRenderCursor, "visible"));
-    std.debug.assert(@offsetOf(c.HowlVtCursor, "shape") == @offsetOf(c.HowlRenderCursor, "shape"));
-}
-
 pub const VisibleCopy = struct {
     rows: u16,
     cols: u16,
@@ -46,7 +26,7 @@ pub const VisibleCopy = struct {
 };
 
 const ReservedPublishSlot = struct {
-    cells: []c.HowlRenderCell,
+    cells: []c.HowlVtSurfaceCell,
     dirty_rows: []u8,
     dirty_cols_start: []u16,
     dirty_cols_end: []u16,
@@ -76,7 +56,7 @@ pub fn publishSource(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
         .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
         .reserved0 = 0,
         .reserved1 = 0,
-        .cursor = renderCursorFromVt(visible.cursor),
+        .cursor = visible.cursor,
     });
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPublishedSnapshot(.{
@@ -194,7 +174,7 @@ fn vtCopyVisibleIntoSlot(term: *terminal_term.Term, meta: VisibleMeta, slot: Res
     const source = c.howl_vt_terminal_copy_surface(
         term.vt,
         term.vt_state.scrollback_offset,
-        @ptrCast(slot.cells.ptr),
+        slot.cells.ptr,
         slot.cells.len,
         slot.dirty_rows.ptr,
         slot.dirty_rows.len,
@@ -217,15 +197,6 @@ fn vtCopyVisibleIntoSlot(term: *terminal_term.Term, meta: VisibleMeta, slot: Res
         .scroll_row = source.source.scroll_row,
         .snapshot_seq = source.snapshot_seq,
         .cursor = source.source.cursor,
-    };
-}
-
-fn renderCursorFromVt(cursor: c.HowlVtCursor) c.HowlRenderCursor {
-    return .{
-        .row = cursor.row,
-        .col = cursor.col,
-        .visible = cursor.visible,
-        .shape = cursor.shape,
     };
 }
 
