@@ -44,39 +44,6 @@ const TabRuntime = struct {
         allocator.destroy(self);
     }
 
-    fn start(self: *TabRuntime, io: std.Io, panel: *TerminalPanel, feed_record_path: ?[]const u8) !void {
-        const frame_request = panel.frameLayoutSnapshot();
-        var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, panel.conf.fonts);
-        defer resolved_fonts.deinit(std.heap.c_allocator);
-
-        self.term.* = try runtime.init(std.heap.c_allocator, .{
-            .shell = panel.conf.shell,
-            .start_path = panel.conf.start_path,
-            .command = panel.conf.command,
-        }, .{
-            .render_px = frame_request.render_px,
-            .grid_px = frame_request.grid_px,
-            .font_size_px = @max(panel.conf.font_size, 1),
-            .primary_font_path = resolved_fonts.primary,
-            .fallback_font_paths = resolved_fonts.fallbacks,
-        });
-        self.live = true;
-        errdefer self.stop();
-
-        _ = try feed_record.start(self.term, io, feed_record_path);
-        try pty_session.start(self.term);
-        if (!pty_session.isAlive(self.term)) return error.TransportUnavailable;
-
-        panel.refreshTitle();
-        panel.syncInputFocus();
-        try self.progress.init();
-        self.progress.stop.store(false, .release);
-        const progress_thread = try std.Thread.spawn(.{}, runtime_thread.progressThreadMain, .{self});
-        setThreadName(progress_thread, "howl-term-host");
-        self.progress.thread = progress_thread;
-        Input.requestRedraw();
-    }
-
     fn stop(self: *TabRuntime) void {
         self.progress.stop.store(true, .release);
         runtime_thread.ackWake(self);
@@ -643,7 +610,38 @@ fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, feed
     errdefer panel.destroy(alloc);
     var tab = try AppTab.init(alloc, panel);
     errdefer tab.deinit();
-    try tab.runtime.start(io, panel, feed_record_path);
+
+    const frame_request = panel.frameLayoutSnapshot();
+    var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, panel.conf.fonts);
+    defer resolved_fonts.deinit(std.heap.c_allocator);
+
+    tab.runtime.term.* = try runtime.init(std.heap.c_allocator, .{
+        .shell = panel.conf.shell,
+        .start_path = panel.conf.start_path,
+        .command = panel.conf.command,
+    }, .{
+        .render_px = frame_request.render_px,
+        .grid_px = frame_request.grid_px,
+        .font_size_px = @max(panel.conf.font_size, 1),
+        .primary_font_path = resolved_fonts.primary,
+        .fallback_font_paths = resolved_fonts.fallbacks,
+    });
+    tab.runtime.live = true;
+    errdefer tab.runtime.stop();
+
+    _ = try feed_record.start(tab.runtime.term, io, feed_record_path);
+    try pty_session.start(tab.runtime.term);
+    if (!pty_session.isAlive(tab.runtime.term)) return error.TransportUnavailable;
+
+    panel.refreshTitle();
+    panel.syncInputFocus();
+    try tab.runtime.progress.init();
+    tab.runtime.progress.stop.store(false, .release);
+    const progress_thread = try std.Thread.spawn(.{}, runtime_thread.progressThreadMain, .{tab.runtime});
+    setThreadName(progress_thread, "howl-term-host");
+    tab.runtime.progress.thread = progress_thread;
+    Input.requestRedraw();
+
     try tabs.append(alloc, tab);
     assert(tabs.items.len > 0);
     assert(tabs.items.len <= max_tabs);
