@@ -116,15 +116,18 @@ const LoopPending = struct {
 const LoopState = struct {
     wait_for_window: bool,
     render_frame: bool,
+    chrome_present: bool,
 
     fn init(pending: LoopPending) LoopState {
         return .{
             .wait_for_window = !(pending.input or pending.progress_wake or pending.active_frame),
             .render_frame = false,
+            .chrome_present = false,
         };
     }
 
     fn finish(self: *LoopState, progress_redraw: bool, redraw_requested: bool, active_frame: bool) void {
+        self.chrome_present = redraw_requested;
         self.render_frame = progress_redraw or redraw_requested or active_frame;
     }
 };
@@ -280,7 +283,7 @@ fn runLoopTurn(app: *App) !LoopAction {
     );
     if (!loop.render_frame) return .continue_running;
 
-    render(app);
+    render(app, loop.chrome_present);
     if (quitRequested()) |action| return action;
     try ensureActiveTabHealthy(app);
     return .continue_running;
@@ -374,7 +377,7 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
     tabs.deinit(alloc);
 }
 
-fn render(app: *App) void {
+fn render(app: *App, chrome_present: bool) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
     const turn = RenderFrame.renderTurn(tab.panel, &tab.term_texture);
     InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
@@ -396,7 +399,7 @@ fn render(app: *App) void {
     const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items, title_buf[0..]));
     std.debug.assert(tab.term_texture.host_surface_id != 0 or term_texture_before == 0);
 
-    const should_present = true;
+    const should_present = shouldPresent(turn.step, chrome_present);
     if (should_present) {
         app.window.present(.{
             .term_texture_id = @intCast(tab.term_texture.host_surface_id),
@@ -411,6 +414,14 @@ fn render(app: *App) void {
         RenderFrame.finishPresent(tab.panel);
     }
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
+}
+
+fn shouldPresent(step: RenderFrame.TurnStep, chrome_present: bool) bool {
+    if (chrome_present) return true;
+    return switch (step) {
+        .rendered, .blocked_present => true,
+        .no_frame, .idle_prepare, .idle_submit, .failed => false,
+    };
 }
 
 fn driveTabRenderStep(tab: *AppTab, turn: RenderFrame.TurnResult) void {
@@ -439,9 +450,11 @@ test "loop state waits only without host or frame work" {
     });
     try std.testing.expect(loop.wait_for_window);
     try std.testing.expect(!loop.render_frame);
+    try std.testing.expect(!loop.chrome_present);
 
     loop.finish(false, false, false);
     try std.testing.expect(!loop.render_frame);
+    try std.testing.expect(!loop.chrome_present);
 }
 
 test "loop state polls and renders when any owner requests work" {
@@ -462,6 +475,7 @@ test "loop state polls and renders when any owner requests work" {
     });
     render_from_progress.finish(true, false, false);
     try std.testing.expect(render_from_progress.render_frame);
+    try std.testing.expect(!render_from_progress.chrome_present);
 
     var render_from_redraw = LoopState.init(.{
         .input = false,
@@ -470,6 +484,7 @@ test "loop state polls and renders when any owner requests work" {
     });
     render_from_redraw.finish(false, true, false);
     try std.testing.expect(render_from_redraw.render_frame);
+    try std.testing.expect(render_from_redraw.chrome_present);
 
     var render_from_frame = LoopState.init(.{
         .input = false,
@@ -478,6 +493,17 @@ test "loop state polls and renders when any owner requests work" {
     });
     render_from_frame.finish(false, false, true);
     try std.testing.expect(render_from_frame.render_frame);
+    try std.testing.expect(!render_from_frame.chrome_present);
+}
+
+test "present cadence stays tied to frame or chrome work" {
+    try std.testing.expect(!shouldPresent(.no_frame, false));
+    try std.testing.expect(!shouldPresent(.idle_prepare, false));
+    try std.testing.expect(!shouldPresent(.idle_submit, false));
+    try std.testing.expect(!shouldPresent(.failed, false));
+    try std.testing.expect(shouldPresent(.rendered, false));
+    try std.testing.expect(shouldPresent(.blocked_present, false));
+    try std.testing.expect(shouldPresent(.no_frame, true));
 }
 
 fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []AppTab) void {

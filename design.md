@@ -74,7 +74,7 @@ classDiagram
 - `src/terminal/terminal_panel.zig` owns terminal runtime lifetime plus host-retained wake-thread state for one panel.
 - `src/terminal/runtime/progress.zig` owns one bounded PTY/VT progress turn, including PTY-read slices, VT feed, and VT reply handoff.
 - `src/terminal/runtime/thread.zig` owns the background wait-only wake thread for PTY readiness. It does not own PTY pumping, VT mutation, or render work.
-- `main.zig` drives one bounded PTY transport slice with direct VT feed, and asks render for one bounded active-tab render-turn result per frame when deciding whether to wait, poll, render, present, or wake again. It keeps app cadence, tab selection, window orchestration, and the actual `Window.present(...)` call. The render owner drives VT publish, prepare/query, upload/submit, and post-present retirement ordering.
+- `main.zig` drives one bounded PTY transport slice with direct VT feed, and asks render for one bounded active-tab render-turn result per frame when deciding whether to wait, poll, render, present, or wake again. It keeps app cadence, tab selection, window orchestration, and the actual `Window.present(...)` call. It presents only for an actual host chrome redraw or a real render frame/present-pending reason. The render owner drives VT publish, prepare/query, upload/submit, and post-present retirement ordering.
 - `main.zig` also owns process-global child environment policy such as `TERM`, because that state is process-global on the current PTY launch path.
 - The background progress thread only waits for PTY readiness and wakes the owner thread. It does not pump transport, apply VT work, or mutate render state.
 - `Window` owns the OS window and host chrome presentation. It receives a term-texture handle; it does not infer terminal state.
@@ -132,7 +132,7 @@ sequenceDiagram
 - `TerminalPanel.create` starts one terminal panel and hides seam-owner field construction from `main.zig`.
 - `TerminalPanel.destroy` is the matching lifetime close; app code must not manually deinit seam internals.
 - `TerminalPanel` does not own or export concrete backend resources.
-- `main.zig` owns per-tab term-texture state and window presentation. `src/terminal/render/frame.zig` consumes that term-texture state for the upload/submit handoff and owns the post-present retire-then-ack sequence plus render-work queries for the active tab.
+- `main.zig` owns per-tab term-texture state and window presentation. `src/terminal/render/frame.zig` consumes that term-texture state for the upload/submit handoff and owns the post-present retire-then-ack sequence plus render-work queries for the active tab. `RenderFrame.finishPresent` stays behind an actual `Window.present(...)` call.
 - PTY, VT, and render seam owners are failure-aware. Recoverable backend failures return `false` or error unions and move lifecycle state to `failed`; host code should not panic from normal render or wake failure paths.
 - `Window.present` draws static host chrome and places the active term-texture. It owns platform presentation only; it does not own terminal logic or render composition semantics.
 - VT dirty retirement is tied to rendered-frame retirement. The host forwards the VT-published `snapshot_seq` through render, retires render-present state first, and then acknowledges that same VT publication identity on the post-present path.
