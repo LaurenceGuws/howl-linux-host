@@ -98,9 +98,6 @@ const AppTab = struct {
         std.debug.assert(work.submit_pending or work.present_pending);
     }
 
-    fn wantsFrame(self: *AppTab) bool {
-        return RenderFrame.workState(&self.panel.term, self.term_texture.host_surface_id == 0).wantsFrame();
-    }
 };
 
 const TabList = std.ArrayList(AppTab);
@@ -279,7 +276,7 @@ fn runLoopTurn(app: *App) !LoopAction {
     loop.finish(
         progress_redraw,
         app.input.drainRedrawRequested(),
-        activeTab(app.tabs.items, app.active_tab_idx.*).wantsFrame(),
+        activeTabNeedsRenderTurn(app.tabs.items, app.active_tab_idx.*),
     );
     if (!loop.render_frame) return .continue_running;
 
@@ -293,8 +290,13 @@ fn collectLoopPending(app: *App) LoopPending {
     return .{
         .input = app.input.hasPendingLoopWork(),
         .progress_wake = tabsHavePendingWake(app.tabs.items),
-        .active_frame = activeTab(app.tabs.items, app.active_tab_idx.*).wantsFrame(),
+        .active_frame = activeTabNeedsRenderTurn(app.tabs.items, app.active_tab_idx.*),
     };
+}
+
+fn activeTabNeedsRenderTurn(tabs: []AppTab, active_tab_idx: TabIndex) bool {
+    const tab = activeTab(tabs, active_tab_idx);
+    return RenderFrame.wantsTurn(tab.panel, tab.term_texture);
 }
 
 fn tabsHavePendingWake(tabs: []AppTab) bool {

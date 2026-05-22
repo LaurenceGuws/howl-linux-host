@@ -45,14 +45,21 @@ pub fn workState(term: *const runtime.Term, bootstrap_surface: bool) RenderWorkS
     return term.render.pending(bootstrap_surface);
 }
 
+pub fn wantsTurn(
+    panel: *const TerminalPanel,
+    surface: c.HowlRenderSurfaceHandle,
+) bool {
+    return queryWorkState(panel, surface).wantsFrame();
+}
+
 pub fn renderTurn(
     panel: *TerminalPanel,
     surface: *c.HowlRenderSurfaceHandle,
 ) TurnResult {
     const bootstrap_surface = surface.host_surface_id == 0;
-    const publish_work = workState(&panel.term, bootstrap_surface);
+    const publish_work = queryWorkState(panel, surface.*);
     maybePublishWith(panel, bootstrap_surface, publish_work, PublishOps);
-    const work_before = workState(&panel.term, bootstrap_surface);
+    const work_before = queryWorkState(panel, surface.*);
     if (!work_before.wantsFrame()) {
         return .{
             .work_before = work_before,
@@ -69,6 +76,13 @@ pub fn renderTurn(
         .prepared = drive_result.prepared,
         .step = drive_result.step,
     };
+}
+
+fn queryWorkState(
+    panel: *const TerminalPanel,
+    surface: c.HowlRenderSurfaceHandle,
+) RenderWorkState {
+    return workState(&panel.term, surface.host_surface_id == 0);
 }
 
 const DriveResult = struct {
