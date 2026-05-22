@@ -1,9 +1,9 @@
 const std = @import("std");
-const api = @import("../runtime/runtime.zig");
+const terminal_term = @import("../term.zig");
 
 const record_header = "howl-pty-vt-hex-v1\n";
 
-pub fn start(term: *api.Term, io: std.Io, path: ?[]const u8) !bool {
+pub fn start(term: *terminal_term.Term, io: std.Io, path: ?[]const u8) !bool {
     if (term.pty.feed_record_file != null) return true;
     const value = path orelse return false;
     if (value.len == 0) return false;
@@ -15,14 +15,14 @@ pub fn start(term: *api.Term, io: std.Io, path: ?[]const u8) !bool {
     return true;
 }
 
-pub fn deinit(term: *api.Term) void {
+pub fn deinit(term: *terminal_term.Term) void {
     const file = term.pty.feed_record_file orelse return;
     file.close(term.pty.feed_record_io orelse unreachable);
     term.pty.feed_record_file = null;
     term.pty.feed_record_io = null;
 }
 
-pub fn writeChunkLocked(term: *api.Term, bytes: []const u8) !void {
+pub fn writeChunkLocked(term: *terminal_term.Term, bytes: []const u8) !void {
     if (bytes.len == 0) return;
     const file = term.pty.feed_record_file orelse return;
     const io = term.pty.feed_record_io orelse unreachable;

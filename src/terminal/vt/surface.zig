@@ -1,6 +1,6 @@
 const std = @import("std");
-const api = @import("../runtime/runtime.zig");
-const c = api.c;
+const c = @import("../c.zig").c;
+const terminal_term = @import("../term.zig");
 const vt_abi = @import("abi.zig");
 const log = @import("../../input/window.zig");
 
@@ -58,7 +58,7 @@ const PublishAckOps = struct {
     }
 };
 
-pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
+pub fn publishSource(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
     term.mutex.lock();
     defer term.mutex.unlock();
 
@@ -110,7 +110,7 @@ pub fn publishSource(term: *api.Term) c.HowlRenderVtPublishResult {
     return typed_response;
 }
 
-pub fn ackPublishedSource(term: *api.Term, snapshot_seq: u64) void {
+pub fn ackPublishedSource(term: *terminal_term.Term, snapshot_seq: u64) void {
     ackPublishedSourceWith(term, snapshot_seq, PublishAckOps);
 }
 
@@ -121,7 +121,7 @@ fn ackPublishedSourceWith(term: anytype, snapshot_seq: u64, comptime Ops: type) 
     vt_abi.requireStructOk(Ops.ack(term.vt, snapshot_seq));
 }
 
-pub fn sourceRejected(term: *api.Term) c.HowlRenderVtPublishResult {
+pub fn sourceRejected(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
     const info = vtVisibleMeta(term.vt, term.vt_state.scrollback_offset);
     log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d}", .{ log.nowNs(), info.snapshot_seq });
     std.debug.assert(term.render.geometry_epoch != 0);
@@ -182,7 +182,7 @@ fn reservePublishSlot(handle: c.HowlRenderSurfaceTextHandle, cols: u16, rows: u1
     };
 }
 
-fn vtCopyVisibleIntoSlot(term: *api.Term, meta: VisibleMeta, slot: ReservedPublishSlot) !struct {
+fn vtCopyVisibleIntoSlot(term: *terminal_term.Term, meta: VisibleMeta, slot: ReservedPublishSlot) !struct {
     rows: u16,
     cols: u16,
     is_alternate_screen: bool,

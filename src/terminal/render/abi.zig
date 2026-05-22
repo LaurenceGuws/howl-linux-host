@@ -1,11 +1,11 @@
 const std = @import("std");
-const runtime = @import("../runtime/runtime.zig");
+const c = @import("../c.zig").c;
 const retained = @import("retained.zig");
-const c = runtime.c;
+const terminal_term = @import("../term.zig");
 
 const max_fallback_font_paths: u8 = @intCast(c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
-pub const Term = runtime.Term;
+pub const Term = terminal_term.Term;
 pub const FrameLayout = retained.FrameLayout;
 pub const RenderInit = struct {
     render_px: c.HowlRenderPixelSize,

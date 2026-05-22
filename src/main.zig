@@ -12,9 +12,10 @@ const pty_retained = @import("terminal/pty/retained.zig");
 const RenderFrame = @import("terminal/render/frame.zig");
 const RenderApi = @import("terminal/render/abi.zig");
 const fonts_linux = @import("terminal/runtime/fonts_linux.zig");
-const runtime = @import("terminal/runtime/runtime.zig");
+const terminal_c = @import("terminal/c.zig").c;
 const runtime_progress = @import("terminal/runtime/progress.zig");
 const runtime_thread = @import("terminal/runtime/thread.zig");
+const terminal_term = @import("terminal/term.zig");
 const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
 const vt_api = @import("terminal/vt/abi.zig");
 const vt_retained = @import("terminal/vt/retained.zig");
@@ -28,7 +29,7 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
-const HowlTerm = runtime.Term;
+const HowlTerm = terminal_term.Term;
 
 const AppTab = struct {
     allocator: std.mem.Allocator,
@@ -619,7 +620,7 @@ fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, feed
         .fallback_font_paths = resolved_fonts.fallbacks,
     };
     var surface_text = try RenderApi.initSurfaceText(render_init);
-    errdefer if (surface_text) |handle| runtime.c.howl_render_surface_text_deinit(handle);
+    errdefer if (surface_text) |handle| terminal_c.howl_render_surface_text_deinit(handle);
     const frame_layout = try RenderApi.initFrameLayout(surface_text, render_init);
     var session_handle = try pty_session.initHandle(launch, frame_layout.cols, frame_layout.rows);
     errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);

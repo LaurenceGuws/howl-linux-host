@@ -1,9 +1,8 @@
 const std = @import("std");
-const terminal_c = @import("../c.zig");
-const pty_retained = @import("../pty/retained.zig");
-const render_retained = @import("../render/retained.zig");
-const vt_retained = @import("../vt/retained.zig");
-pub const c = terminal_c.c;
+const c = @import("c.zig").c;
+const pty_retained = @import("pty/retained.zig");
+const render_retained = @import("render/retained.zig");
+const vt_retained = @import("vt/retained.zig");
 
 pub const LifecycleState = pty_retained.LifecycleState;
 
@@ -27,5 +26,4 @@ pub const Term = struct {
     render: render_retained.State,
     vt_state: vt_retained.State = .{},
     mutex: Mutex = .{},
-    lifecycle_state: LifecycleState = .stopped,
 };

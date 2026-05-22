@@ -1,13 +1,12 @@
 const std = @import("std");
-const runtime = @import("../runtime/runtime.zig");
+const c = @import("../c.zig").c;
 const TerminalPanel = @import("../terminal_panel.zig").TerminalPanel;
+const terminal_term = @import("../term.zig");
 const retained = @import("retained.zig");
 const vt_abi = @import("../vt/abi.zig");
 const vt_surface = @import("../vt/surface.zig");
 const term_texture = @import("../../window/term_texture.zig");
 const window = @import("../../window/window.zig");
-
-const c = runtime.c;
 
 pub const RenderWorkState = retained.WorkState;
 const PreparedUpload = retained.PreparedUpload;
@@ -38,8 +37,8 @@ const PublishOps = struct {
     }
 };
 
-pub fn workState(term: *const runtime.Term, bootstrap_surface: bool) RenderWorkState {
-    const mut: *runtime.Term = @constCast(term);
+pub fn workState(term: *const terminal_term.Term, bootstrap_surface: bool) RenderWorkState {
+    const mut: *terminal_term.Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return term.render.pending(bootstrap_surface);
@@ -91,7 +90,7 @@ const DriveResult = struct {
 };
 
 fn drive(
-    term: *runtime.Term,
+    term: *terminal_term.Term,
     surface: *c.HowlRenderSurfaceHandle,
     work: RenderWorkState,
 ) DriveResult {
@@ -128,20 +127,20 @@ fn maybePublishWith(
     if (bootstrap_surface or !work.wantsFrame()) Ops.publishSource(panel);
 }
 
-fn prepare(term: *runtime.Term) retained.PrepareResult {
+fn prepare(term: *terminal_term.Term) retained.PrepareResult {
     term.mutex.lock();
     defer term.mutex.unlock();
     return term.render.prepare();
 }
 
-fn takePreparedUpload(term: *runtime.Term, upload_out: *PreparedUpload) bool {
+fn takePreparedUpload(term: *terminal_term.Term, upload_out: *PreparedUpload) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
     return term.render.preparedUpload(upload_out);
 }
 
 fn submitPrepared(
-    term: *runtime.Term,
+    term: *terminal_term.Term,
     surface: *c.HowlRenderSurfaceHandle,
 ) retained.SubmitResult {
     const start_ns = window.c_win.SDL_GetTicksNS();
@@ -172,7 +171,7 @@ fn submitPrepared(
 }
 
 fn submit(
-    term: *runtime.Term,
+    term: *terminal_term.Term,
     execution: *const c.HowlRenderSurfaceExecutionInput,
     feedback: *c.HowlRenderSurfaceFeedback,
 ) retained.SubmitResult {

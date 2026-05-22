@@ -1,6 +1,6 @@
 const feed_record = @import("../pty/feed_record.zig");
 const pty_session = @import("../pty/session.zig");
-const runtime = @import("runtime.zig");
+const terminal_term = @import("../term.zig");
 const vt_api = @import("../vt/abi.zig");
 const vt_retained = @import("../vt/retained.zig");
 const vt_surface = @import("../vt/surface.zig");
@@ -27,7 +27,7 @@ const TransportProgress = struct {
     hit_limit: bool,
 };
 
-pub fn driveOnce(term: *runtime.Term) Outcome {
+pub fn driveOnce(term: *terminal_term.Term) Outcome {
     return driveOnceWith(term, RealOps);
 }
 
@@ -78,20 +78,20 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
 }
 
 const RealOps = struct {
-    fn pumpTransport(term: *runtime.Term, mode: pty_session.TransportPumpMode) TransportProgress {
+    fn pumpTransport(term: *terminal_term.Term, mode: pty_session.TransportPumpMode) TransportProgress {
         return pumpTransportSlice(term, mode);
     }
 
-    fn hasOutboundInputBacklog(term: *const runtime.Term) bool {
+    fn hasOutboundInputBacklog(term: *const terminal_term.Term) bool {
         return pty_session.hasOutboundInputBacklog(term);
     }
 
-    fn isAlive(term: *const runtime.Term) bool {
+    fn isAlive(term: *const terminal_term.Term) bool {
         return pty_session.isAlive(term);
     }
 };
 
-fn pumpTransportSlice(term: *runtime.Term, mode: pty_session.TransportPumpMode) TransportProgress {
+fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPumpMode) TransportProgress {
     const limits = pty_session.transportLimits(mode);
     std.debug.assert(limits.chunk_bytes == pty_session.transport_chunk_bytes);
     term.mutex.lock();
@@ -133,7 +133,7 @@ fn pumpTransportSlice(term: *runtime.Term, mode: pty_session.TransportPumpMode) 
     };
 }
 
-fn feedTermLocked(term: *runtime.Term, bytes: []const u8, chunk_len: u32) bool {
+fn feedTermLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u32) bool {
     const history_before = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
     const result = vt_retained.feedLocked(term, bytes);
     if (!vt_api.isCallOk(result.status)) {
@@ -151,7 +151,7 @@ fn feedTermLocked(term: *runtime.Term, bytes: []const u8, chunk_len: u32) bool {
     return true;
 }
 
-fn recordChunkLocked(term: *runtime.Term, chunk: []const u8) bool {
+fn recordChunkLocked(term: *terminal_term.Term, chunk: []const u8) bool {
     feed_record.writeChunkLocked(term, chunk) catch |err| {
         term.pty.lifecycle = .failed;
         log.logf("host-loop ts_ns={d} stage=transport-record-failed err={s} chunk_len={d}", .{ log.nowNs(), @errorName(err), chunk.len });
@@ -160,7 +160,7 @@ fn recordChunkLocked(term: *runtime.Term, chunk: []const u8) bool {
     return true;
 }
 
-fn drainTerminalReplyLocked(term: *runtime.Term) void {
+fn drainTerminalReplyLocked(term: *terminal_term.Term) void {
     const pending = vt_retained.copyPendingOutputLocked(term) catch return;
     if (pending.len == 0) return;
     log.logf("host-loop ts_ns={d} stage=transport-drain-terminal-reply len={d}", .{ log.nowNs(), pending.len });

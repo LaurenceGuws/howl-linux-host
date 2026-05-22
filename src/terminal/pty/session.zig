@@ -1,7 +1,7 @@
 const std = @import("std");
-const api = @import("../runtime/runtime.zig");
+const c = @import("../c.zig").c;
 const retained = @import("retained.zig");
-const c = api.c;
+const terminal_term = @import("../term.zig");
 const log = @import("../../input/window.zig");
 
 const default_pending_capacity: u32 = 4096;
@@ -47,7 +47,7 @@ pub fn deinitHandle(handle: c.HowlPtySessionHandle) void {
     c.howl_pty_session_deinit(handle);
 }
 
-pub fn start(term: *api.Term) !void {
+pub fn start(term: *terminal_term.Term) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
     if (ptySessionStatus(term.session) == c.HOWL_PTY_SESSION_ACTIVE) return error.AlreadyStarted;
@@ -59,28 +59,28 @@ pub fn start(term: *api.Term) !void {
     term.pty.lifecycle = .ready;
 }
 
-pub fn stop(term: *api.Term) void {
+pub fn stop(term: *terminal_term.Term) void {
     term.mutex.lock();
     defer term.mutex.unlock();
     c.howl_pty_session_stop(term.session);
     term.pty.lifecycle = .stopped;
 }
 
-pub fn resize(term: *api.Term, cols: u16, rows: u16) !void {
+pub fn resize(term: *terminal_term.Term, cols: u16, rows: u16) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
     try requireResizeOk(c.howl_pty_session_resize(term.session, cols, rows));
 }
 
-pub fn lifecycleState(term: *const api.Term) api.LifecycleState {
-    const mut: *api.Term = @constCast(term);
+pub fn lifecycleState(term: *const terminal_term.Term) terminal_term.LifecycleState {
+    const mut: *terminal_term.Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return term.pty.lifecycle;
 }
 
-pub fn isAlive(term: *const api.Term) bool {
-    const mut: *api.Term = @constCast(term);
+pub fn isAlive(term: *const terminal_term.Term) bool {
+    const mut: *terminal_term.Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return ptySessionStatus(term.session) == c.HOWL_PTY_SESSION_ACTIVE;
@@ -96,18 +96,18 @@ pub fn requireOk(status: i32) !void {
     return ptyRequireOk(status);
 }
 
-pub fn hasOutboundInputBacklog(term: *const api.Term) bool {
-    const mut: *api.Term = @constCast(term);
+pub fn hasOutboundInputBacklog(term: *const terminal_term.Term) bool {
+    const mut: *terminal_term.Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return ptySessionPendingBytes(term.session) != 0;
 }
 
-pub fn waitTransport(term: *api.Term, timeout_ms: i32) bool {
+pub fn waitTransport(term: *terminal_term.Term, timeout_ms: i32) bool {
     return c.howl_pty_session_wait_readable(term.session, timeout_ms) != 0;
 }
 
-pub fn pumpOutboundLocked(term: *api.Term) OutboundProgress {
+pub fn pumpOutboundLocked(term: *terminal_term.Term) OutboundProgress {
     const outbound = c.howl_pty_session_pump_outbound(term.session, 0);
     ptyRequireStructOk(outbound.status);
     return .{
@@ -116,7 +116,7 @@ pub fn pumpOutboundLocked(term: *api.Term) OutboundProgress {
     };
 }
 
-pub fn readTransportLocked(term: *api.Term, out: []u8) u32 {
+pub fn readTransportLocked(term: *terminal_term.Term, out: []u8) u32 {
     if (out.len == 0) return 0;
     const read = c.howl_pty_session_read(term.session, out.ptr, out.len);
     ptyRequireStructOk(read.status);
@@ -133,11 +133,11 @@ pub fn transportLimits(mode: TransportPumpMode) TransportLimits {
     return .{ .chunk_bytes = result.chunk_bytes, .max_reads = result.max_reads, .max_bytes = result.max_bytes };
 }
 
-pub fn pendingInputBytesLocked(term: *api.Term) u64 {
+pub fn pendingInputBytesLocked(term: *terminal_term.Term) u64 {
     return ptySessionPendingBytes(term.session);
 }
 
-pub fn publishInputBytes(term: *api.Term, bytes: []const u8) !void {
+pub fn publishInputBytes(term: *terminal_term.Term, bytes: []const u8) !void {
     if (bytes.len == 0) return;
     term.mutex.lock();
     defer term.mutex.unlock();
@@ -145,14 +145,14 @@ pub fn publishInputBytes(term: *api.Term, bytes: []const u8) !void {
     _ = try publishInputBytesLocked(term, bytes);
 }
 
-pub fn inputBytesApplied(term: *const api.Term) u64 {
-    const mut: *api.Term = @constCast(term);
+pub fn inputBytesApplied(term: *const terminal_term.Term) u64 {
+    const mut: *terminal_term.Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return c.howl_pty_session_bytes_applied(term.session);
 }
 
-pub fn publishInputBytesLocked(term: *api.Term, encoded: []const u8) !bool {
+pub fn publishInputBytesLocked(term: *terminal_term.Term, encoded: []const u8) !bool {
     if (encoded.len == 0) return false;
     log.logf("host-loop ts_ns={d} stage=transport-publish-encoded len={d}", .{ log.nowNs(), encoded.len });
     try ptyPublishInput(term.session, encoded);
