@@ -8,6 +8,7 @@ const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const feed_record = @import("terminal/pty/feed_record.zig");
 const pty_session = @import("terminal/pty/session.zig");
+const pty_retained = @import("terminal/pty/retained.zig");
 const RenderFrame = @import("terminal/render/frame.zig");
 const RenderApi = @import("terminal/render/abi.zig");
 const fonts_linux = @import("terminal/runtime/fonts_linux.zig");
@@ -15,6 +16,8 @@ const runtime = @import("terminal/runtime/runtime.zig");
 const runtime_progress = @import("terminal/runtime/progress.zig");
 const runtime_thread = @import("terminal/runtime/thread.zig");
 const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
+const vt_api = @import("terminal/vt/abi.zig");
+const vt_retained = @import("terminal/vt/retained.zig");
 const Window = @import("window/window.zig");
 
 pub const Options = cli_args.Options;
@@ -62,7 +65,13 @@ const AppTab = struct {
         if (self.runtime.live) pty_session.stop(self.runtime.term);
         if (self.runtime.progress.thread) |handle| handle.join();
         self.runtime.progress.thread = null;
-        if (self.runtime.live) runtime.deinit(self.runtime.term);
+        if (self.runtime.live) {
+            feed_record.deinit(self.runtime.term);
+            self.runtime.term.render.deinit();
+            self.runtime.term.vt_state.deinit(self.runtime.term.allocator);
+            vt_api.deinit(self.runtime.term.vt);
+            pty_session.deinitHandle(self.runtime.term.session);
+        }
         self.runtime.live = false;
         self.runtime.progress.deinit();
         self.allocator.destroy(self.runtime);
@@ -600,35 +609,47 @@ fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, feed
     var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, panel.conf.fonts);
     defer resolved_fonts.deinit(std.heap.c_allocator);
 
-    tab.runtime.term.* = try runtime.init(std.heap.c_allocator, .{
+    const launch: pty_retained.LaunchConfig = .{
         .shell = panel.conf.shell,
         .start_path = panel.conf.start_path,
         .command = panel.conf.command,
-    }, .{
+    };
+    const render_init: RenderApi.RenderInit = .{
         .render_px = frame_request.render_px,
         .grid_px = frame_request.grid_px,
         .font_size_px = @max(panel.conf.font_size, 1),
         .primary_font_path = resolved_fonts.primary,
         .fallback_font_paths = resolved_fonts.fallbacks,
-    });
-    tab.runtime.live = true;
-    errdefer {
-        tab.runtime.progress.stop.store(true, .release);
-        runtime_thread.ackWake(tab.runtime);
-        if (tab.runtime.live) pty_session.stop(tab.runtime.term);
-        if (tab.runtime.progress.thread) |handle| handle.join();
-        tab.runtime.progress.thread = null;
-        if (tab.runtime.live) runtime.deinit(tab.runtime.term);
-        tab.runtime.live = false;
-        tab.runtime.progress.deinit();
-    }
+    };
+    var surface_text = try RenderApi.initSurfaceText(render_init);
+    errdefer if (surface_text) |handle| runtime.c.howl_render_surface_text_deinit(handle);
+    const frame_layout = try RenderApi.initFrameLayout(surface_text, render_init);
+    var session_handle = try pty_session.initHandle(launch, frame_layout.cols, frame_layout.rows);
+    errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
+    var vt = try vt_api.init(frame_layout.rows, frame_layout.cols);
+    errdefer if (vt) |handle| vt_api.deinit(handle);
 
+    tab.runtime.term.* = .{
+        .allocator = std.heap.c_allocator,
+        .pty = .{
+            .launch = launch,
+        },
+        .session = session_handle,
+        .vt = vt,
+        .render = .init(surface_text, frame_layout),
+    };
+    surface_text = null;
+    session_handle = null;
+    vt = null;
+    tab.runtime.live = true;
+
+    tab.runtime.term.render.syncFrameLayout(frame_layout);
+    try vt_retained.resetTitleFromLaunch(tab.runtime.term);
     _ = try feed_record.start(tab.runtime.term, io, feed_record_path);
     try pty_session.start(tab.runtime.term);
     if (!pty_session.isAlive(tab.runtime.term)) return error.TransportUnavailable;
-
-    panel.refreshTitle();
-    panel.syncInputFocus();
+    tab.panel.refreshTitle();
+    tab.panel.syncInputFocus();
     try tab.runtime.progress.init();
     tab.runtime.progress.stop.store(false, .release);
     const progress_thread = try std.Thread.spawn(.{}, runtime_thread.progressThreadMain, .{tab.runtime});

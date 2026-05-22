@@ -1,7 +1,10 @@
 const std = @import("std");
 const api = @import("../runtime/runtime.zig");
+const retained = @import("retained.zig");
 const c = api.c;
 const log = @import("../../input/window.zig");
+
+const default_pending_capacity: u32 = 4096;
 
 pub const transport_chunk_bytes = c.HOWL_PTY_TRANSPORT_CHUNK_BYTES;
 
@@ -20,6 +23,29 @@ pub const OutboundProgress = struct {
     drained_input_bytes: u64,
     pending_input_bytes: u64,
 };
+
+pub fn initHandle(launch: retained.LaunchConfig, cols: u16, rows: u16) !c.HowlPtySessionHandle {
+    const command_len: c_ulong = if (launch.command) |value| @intCast(value.len) else 0;
+    const start_path_len: c_ulong = if (launch.start_path) |value| @intCast(value.len) else 0;
+    const handle = c.howl_pty_session_init(
+        launch.shell.ptr,
+        launch.shell.len,
+        optBytesPtr(launch.command),
+        command_len,
+        optBytesPtr(launch.start_path),
+        start_path_len,
+        cols,
+        rows,
+        default_pending_capacity,
+    );
+    if (handle == null) return error.PtyInitFailed;
+    return handle;
+}
+
+pub fn deinitHandle(handle: c.HowlPtySessionHandle) void {
+    std.debug.assert(handle != null);
+    c.howl_pty_session_deinit(handle);
+}
 
 pub fn start(term: *api.Term) !void {
     term.mutex.lock();
@@ -160,4 +186,10 @@ fn ptySessionPendingBytes(handle: c.HowlPtySessionHandle) u64 {
 
 fn ptyCallOk() i32 {
     return c.HOWL_PTY_CALL_OK;
+}
+
+fn optBytesPtr(bytes: ?[]const u8) ?[*]const u8 {
+    const value = bytes orelse return null;
+    if (value.len == 0) return null;
+    return value.ptr;
 }

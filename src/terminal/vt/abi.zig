@@ -1,6 +1,8 @@
 const runtime = @import("../runtime/runtime.zig");
 const std = @import("std");
 
+const default_history_capacity: u16 = 4096;
+
 pub const Term = runtime.Term;
 pub const Input = struct {
     pub const Key = u32;
@@ -38,4 +40,17 @@ pub fn requireOk(status: i32) !void {
 
 pub fn requireStructOk(status: i32) void {
     std.debug.assert(status == callOk());
+}
+
+pub fn init(rows: u16, cols: u16) !runtime.c.HowlVtHandle {
+    std.debug.assert(rows > 0);
+    std.debug.assert(cols > 0);
+    const handle = runtime.c.howl_vt_terminal_init(rows, cols, default_history_capacity);
+    if (handle == null) return error.VtInitFailed;
+    return handle;
+}
+
+pub fn deinit(handle: runtime.c.HowlVtHandle) void {
+    std.debug.assert(handle != null);
+    runtime.c.howl_vt_terminal_deinit(handle);
 }

@@ -21,6 +21,16 @@ pub const State = struct {
     }
 };
 
+pub fn resetTitleFromLaunch(term: anytype) !void {
+    const title = if (term.pty.launch.command) |command| blk: {
+        const trimmed = std.mem.trim(u8, command, " \t\r\n");
+        if (trimmed.len > 0) break :blk trimmed;
+        break :blk std.mem.trim(u8, std.fs.path.basename(term.pty.launch.shell), " \t\r\n");
+    } else std.mem.trim(u8, std.fs.path.basename(term.pty.launch.shell), " \t\r\n");
+    try term.vt_state.title.resize(term.allocator, title.len);
+    if (title.len > 0) @memcpy(term.vt_state.title.items, title);
+}
+
 pub fn copyCurrentTitle(term: anytype, out_buf: []u8) u32 {
     term.mutex.lock();
     defer term.mutex.unlock();
