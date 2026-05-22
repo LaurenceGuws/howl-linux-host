@@ -48,7 +48,7 @@ fn progressThreadMainWith(self: anytype, comptime Ops: type) void {
         waitForTransport(self, Ops);
         if (self.progress.stop.load(.acquire)) break;
         signalWake(self, Ops);
-        if (!Ops.isAlive(&self.term)) break;
+        if (!Ops.isAlive(termRef(self))) break;
     }
 }
 
@@ -62,8 +62,22 @@ fn waitForWakeAck(self: anytype, comptime Ops: type) void {
 
 fn waitForTransport(self: anytype, comptime Ops: type) void {
     log.logProgressWaitStartup();
-    _ = Ops.waitTransport(&self.term, transport_wait_timeout_ms);
+    _ = Ops.waitTransport(termRef(self), transport_wait_timeout_ms);
     log.logProgressWakeStartup();
+}
+
+fn TermRef(comptime TermField: type) type {
+    return switch (@typeInfo(TermField)) {
+        .pointer => TermField,
+        else => *TermField,
+    };
+}
+
+fn termRef(self: anytype) TermRef(@TypeOf(self.term)) {
+    return switch (@typeInfo(@TypeOf(self.term))) {
+        .pointer => self.term,
+        else => &self.term,
+    };
 }
 
 fn signalWake(self: anytype, comptime Ops: type) void {
