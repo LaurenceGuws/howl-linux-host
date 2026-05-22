@@ -27,9 +27,23 @@ fn set(self: anytype, next: u16) bool {
 
 fn setWith(self: anytype, next: u16, comptime Ops: type) bool {
     if (next == self.font_size_px) return false;
-    if (!Ops.setFontSizePx(&self.term, next)) return false;
+    if (!Ops.setFontSizePx(termRef(self), next)) return false;
     self.font_size_px = next;
     return true;
+}
+
+fn TermRef(comptime TermField: type) type {
+    return switch (@typeInfo(TermField)) {
+        .pointer => TermField,
+        else => *TermField,
+    };
+}
+
+fn termRef(self: anytype) TermRef(@TypeOf(self.term)) {
+    return switch (@typeInfo(@TypeOf(self.term))) {
+        .pointer => self.term,
+        else => &self.term,
+    };
 }
 
 const RealOps = struct {

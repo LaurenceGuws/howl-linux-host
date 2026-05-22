@@ -30,16 +30,12 @@ const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
 const HowlTerm = runtime.Term;
 
-const TabRuntime = struct {
-    term: *HowlTerm,
-    progress: runtime_thread.State = .{},
-    live: bool = false,
-};
-
 const AppTab = struct {
     allocator: std.mem.Allocator,
-    panel: *TerminalPanel,
-    runtime: *TabRuntime,
+    term: HowlTerm = undefined,
+    panel: ?*TerminalPanel = null,
+    progress: runtime_thread.State = .{},
+    live: bool = false,
     term_texture: RenderApi.RenderSurface = .{ .host_surface_id = 0, .width = 0, .height = 0 },
     first_submit_trace_logged: bool = false,
     first_prepare_result_logged: bool = false,
@@ -49,33 +45,33 @@ const AppTab = struct {
     first_blocked_present_logged: bool = false,
     first_idle_render_logged: bool = false,
 
-    fn init(allocator: std.mem.Allocator, panel: *TerminalPanel) !AppTab {
-        const tab_runtime = try allocator.create(TabRuntime);
-        errdefer allocator.destroy(tab_runtime);
-        tab_runtime.* = .{ .term = &panel.term };
-        return .{ .allocator = allocator, .panel = panel, .runtime = tab_runtime };
+    fn init(allocator: std.mem.Allocator) !*AppTab {
+        const self = try allocator.create(AppTab);
+        self.* = .{ .allocator = allocator };
+        return self;
     }
 
     fn deinit(self: *AppTab) void {
         Window.deleteTexture(&self.term_texture.host_surface_id);
         self.term_texture.width = 0;
         self.term_texture.height = 0;
-        self.runtime.progress.stop.store(true, .release);
-        runtime_thread.ackWake(self.runtime);
-        if (self.runtime.live) pty_session.stop(self.runtime.term);
-        if (self.runtime.progress.thread) |handle| handle.join();
-        self.runtime.progress.thread = null;
-        if (self.runtime.live) {
-            feed_record.deinit(self.runtime.term);
-            self.runtime.term.render.deinit();
-            self.runtime.term.vt_state.deinit(self.runtime.term.allocator);
-            vt_api.deinit(self.runtime.term.vt);
-            pty_session.deinitHandle(self.runtime.term.session);
+        self.progress.stop.store(true, .release);
+        runtime_thread.ackWake(self);
+        if (self.live) pty_session.stop(&self.term);
+        if (self.progress.thread) |handle| handle.join();
+        self.progress.thread = null;
+        if (self.live) {
+            feed_record.deinit(&self.term);
+            self.term.render.deinit();
+            self.term.vt_state.deinit(self.term.allocator);
+            vt_api.deinit(self.term.vt);
+            pty_session.deinitHandle(self.term.session);
         }
-        self.runtime.live = false;
-        self.runtime.progress.deinit();
-        self.allocator.destroy(self.runtime);
-        self.panel.destroy(self.allocator);
+        self.live = false;
+        self.progress.deinit();
+        if (self.panel) |panel| panel.destroy(self.allocator);
+        self.panel = null;
+        self.allocator.destroy(self);
     }
 
     fn noteSubmitPendingEntry(self: *AppTab, work: RenderFrame.RenderWorkState) void {
@@ -135,7 +131,7 @@ const AppTab = struct {
     }
 };
 
-const TabList = std.ArrayList(AppTab);
+const TabList = std.ArrayList(*AppTab);
 
 const LoopAction = enum {
     continue_running,
@@ -211,7 +207,7 @@ fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     InputWindow.logStartup("initial-tab-opened");
 
     var perf: PerfLog.State = undefined;
-    try initPerf(&perf, activePanel(tabs.items, active_tab_idx));
+    try initPerf(&perf, activeTab(tabs.items, active_tab_idx));
     defer perf.stopAndDeinit();
     InputWindow.logStartup("perf-ready");
 
@@ -258,7 +254,7 @@ fn createWindow(conf: *const Config.State, options: Options) !Window.State {
     return window;
 }
 
-fn initPerf(perf: *PerfLog.State, tab: *TerminalPanel) !void {
+fn initPerf(perf: *PerfLog.State, tab: *AppTab) !void {
     try perf.init(&tab.term, std.c.getenv("HOWL_RUNTIME_LOG_PATH"));
 }
 
@@ -332,14 +328,14 @@ fn collectLoopPending(app: *App) LoopPending {
     };
 }
 
-fn activeTabNeedsRenderTurn(tabs: []AppTab, active_tab_idx: TabIndex) bool {
+fn activeTabNeedsRenderTurn(tabs: []*AppTab, active_tab_idx: TabIndex) bool {
     const tab = activeTab(tabs, active_tab_idx);
-    return RenderFrame.wantsTurn(tab.panel, tab.term_texture);
+    return RenderFrame.wantsTurn(tab.panel.?, tab.term_texture);
 }
 
-fn tabsHavePendingWake(tabs: []AppTab) bool {
-    for (tabs) |*tab| {
-        if (runtime_thread.wakePending(tab.runtime)) return true;
+fn tabsHavePendingWake(tabs: []*AppTab) bool {
+    for (tabs) |tab| {
+        if (runtime_thread.wakePending(tab)) return true;
     }
     return false;
 }
@@ -386,12 +382,12 @@ fn applyWindowResize(app: *App) bool {
     return true;
 }
 
-fn driveTerminalProgress(tabs: []AppTab, active_tab_idx: TabIndex) bool {
+fn driveTerminalProgress(tabs: []*AppTab, active_tab_idx: TabIndex) bool {
     var redraw = false;
     var request_next_turn = false;
-    for (tabs, 0..) |*tab, i| {
+    for (tabs, 0..) |tab, i| {
         const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
-        const outcome = driveTabRuntimeTurn(tab.runtime, is_active);
+        const outcome = driveTabRuntimeTurn(tab, is_active);
         redraw = redraw or outcome.should_redraw;
         request_next_turn = request_next_turn or outcome.keep;
     }
@@ -399,12 +395,12 @@ fn driveTerminalProgress(tabs: []AppTab, active_tab_idx: TabIndex) bool {
     return redraw;
 }
 
-fn driveTabRuntimeTurn(tab_runtime: *TabRuntime, active: bool) runtime_progress.Outcome {
-    if (!active and !runtime_thread.wakePending(tab_runtime)) {
-        return .{ .keep = false, .should_redraw = false, .alive = pty_session.isAlive(tab_runtime.term) };
+fn driveTabRuntimeTurn(tab: *AppTab, active: bool) runtime_progress.Outcome {
+    if (!active and !runtime_thread.wakePending(tab)) {
+        return .{ .keep = false, .should_redraw = false, .alive = pty_session.isAlive(&tab.term) };
     }
-    const outcome = runtime_progress.driveOnce(tab_runtime.term);
-    runtime_thread.ackWake(tab_runtime);
+    const outcome = runtime_progress.driveOnce(&tab.term);
+    runtime_thread.ackWake(tab);
     return outcome;
 }
 
@@ -417,13 +413,14 @@ fn ensureActiveTabHealthy(app: *App) !void {
 }
 
 fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
-    for (tabs.items) |*tab| tab.deinit();
+    for (tabs.items) |tab| tab.deinit();
     tabs.deinit(alloc);
 }
 
 fn render(app: *App, chrome_present: bool) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
-    const turn = RenderFrame.renderTurn(tab.panel, &tab.term_texture);
+    const panel = tab.panel.?;
+    const turn = RenderFrame.renderTurn(panel, &tab.term_texture);
     InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
         turn.work_before.wantsFrame(),
         turn.work_before.inFlight(),
@@ -438,7 +435,7 @@ fn render(app: *App, chrome_present: bool) void {
     driveTabRenderStep(tab, turn);
 
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
-    const overlay = tab.panel.overlaySnapshot(texture_rect);
+    const overlay = panel.overlaySnapshot(texture_rect);
     var title_buf: [TabBar.max_tabs][]const u8 = undefined;
     const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items, title_buf[0..]));
     std.debug.assert(tab.term_texture.host_surface_id != 0 or term_texture_before == 0);
@@ -455,7 +452,7 @@ fn render(app: *App, chrome_present: bool) void {
         });
         // Present closes the frame before the host retires render-present state and
         // then acknowledges the published VT dirty generation.
-        RenderFrame.finishPresent(tab.panel);
+        RenderFrame.finishPresent(panel);
     }
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
 }
@@ -550,33 +547,33 @@ test "present cadence stays tied to frame or chrome work" {
     try std.testing.expect(shouldPresent(.no_frame, true));
 }
 
-fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []AppTab) void {
+fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*AppTab) void {
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
-    for (tabs) |*tab| tab.panel.resize(px.width, px.height, logical.width, logical.height);
+    for (tabs) |tab| tab.panel.?.resize(px.width, px.height, logical.width, logical.height);
 }
 
-fn setWindowFocused(window: *Window.State, tabs: []AppTab, active_tab_idx: TabIndex, focused: bool) void {
+fn setWindowFocused(window: *Window.State, tabs: []*AppTab, active_tab_idx: TabIndex, focused: bool) void {
     assert(tabIndexInRange(tabs, active_tab_idx));
     _ = window.setFocused(focused);
     syncTerminalFocus(window, tabs, active_tab_idx);
 }
 
-fn activeTabFailed(tabs: []AppTab, active_tab_idx: TabIndex) bool {
+fn activeTabFailed(tabs: []*AppTab, active_tab_idx: TabIndex) bool {
     if (tabs.len == 0) return true;
     const tab = activePanel(tabs, active_tab_idx);
     if (!tab.isAlive()) return true;
     return tab.lifecycleState() == .failed;
 }
 
-fn activeTab(tabs: []AppTab, active_tab_idx: TabIndex) *AppTab {
+fn activeTab(tabs: []*AppTab, active_tab_idx: TabIndex) *AppTab {
     assert(tabs.len > 0);
     assert(tabIndexInRange(tabs, active_tab_idx));
-    return &tabs[@intCast(active_tab_idx)];
+    return tabs[@intCast(active_tab_idx)];
 }
 
-fn activePanel(tabs: []AppTab, active_tab_idx: TabIndex) *TerminalPanel {
-    return activeTab(tabs, active_tab_idx).panel;
+fn activePanel(tabs: []*AppTab, active_tab_idx: TabIndex) *TerminalPanel {
+    return activeTab(tabs, active_tab_idx).panel.?;
 }
 
 fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8, io: std.Io, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex, action: Input.Bindings.Action) !void {
@@ -600,11 +597,11 @@ fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, feed
 
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
-    const panel = try TerminalPanel.create(alloc, &conf.term, px.width, px.height, logical.width, logical.height);
-    errdefer panel.destroy(alloc);
-    var tab = try AppTab.init(alloc, panel);
+    const tab = try AppTab.init(alloc);
     errdefer tab.deinit();
+    tab.panel = try TerminalPanel.create(alloc, &tab.term, &conf.term, px.width, px.height, logical.width, logical.height);
 
+    const panel = tab.panel.?;
     const frame_request = panel.frameLayoutSnapshot();
     var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, panel.conf.fonts);
     defer resolved_fonts.deinit(std.heap.c_allocator);
@@ -629,7 +626,7 @@ fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, feed
     var vt = try vt_api.init(frame_layout.rows, frame_layout.cols);
     errdefer if (vt) |handle| vt_api.deinit(handle);
 
-    tab.runtime.term.* = .{
+    tab.term = .{
         .allocator = std.heap.c_allocator,
         .pty = .{
             .launch = launch,
@@ -641,20 +638,20 @@ fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, feed
     surface_text = null;
     session_handle = null;
     vt = null;
-    tab.runtime.live = true;
+    tab.live = true;
 
-    tab.runtime.term.render.syncFrameLayout(frame_layout);
-    try vt_retained.resetTitleFromLaunch(tab.runtime.term);
-    _ = try feed_record.start(tab.runtime.term, io, feed_record_path);
-    try pty_session.start(tab.runtime.term);
-    if (!pty_session.isAlive(tab.runtime.term)) return error.TransportUnavailable;
-    tab.panel.refreshTitle();
-    tab.panel.syncInputFocus();
-    try tab.runtime.progress.init();
-    tab.runtime.progress.stop.store(false, .release);
-    const progress_thread = try std.Thread.spawn(.{}, runtime_thread.progressThreadMain, .{tab.runtime});
+    tab.term.render.syncFrameLayout(frame_layout);
+    try vt_retained.resetTitleFromLaunch(&tab.term);
+    _ = try feed_record.start(&tab.term, io, feed_record_path);
+    try pty_session.start(&tab.term);
+    if (!pty_session.isAlive(&tab.term)) return error.TransportUnavailable;
+    panel.refreshTitle();
+    panel.syncInputFocus();
+    try tab.progress.init();
+    tab.progress.stop.store(false, .release);
+    const progress_thread = try std.Thread.spawn(.{}, runtime_thread.progressThreadMain, .{tab});
     setThreadName(progress_thread, "howl-term-host");
-    tab.runtime.progress.thread = progress_thread;
+    tab.progress.thread = progress_thread;
     Input.requestRedraw();
 
     try tabs.append(alloc, tab);
@@ -671,14 +668,13 @@ fn closeActiveTab(window: *Window.State, tabs: *TabList, active_tab_idx: *TabInd
     const idx: TabIndex = active_tab_idx.*;
     const tab = tabs.items[idx];
     _ = tabs.orderedRemove(idx);
-    var owned = tab;
-    owned.deinit();
+    tab.deinit();
     if (!tabIndexInRange(tabs.items, active_tab_idx.*)) active_tab_idx.* = @intCast(tabs.items.len - 1);
     assert(tabIndexInRange(tabs.items, active_tab_idx.*));
     syncTerminalFocus(window, tabs.items, active_tab_idx.*);
 }
 
-fn selectRelative(window: *Window.State, tabs: []AppTab, active_tab_idx: *TabIndex, delta: i32) void {
+fn selectRelative(window: *Window.State, tabs: []*AppTab, active_tab_idx: *TabIndex, delta: i32) void {
     if (tabs.len <= 1) return;
     const len_i: i32 = @intCast(tabs.len);
     var idx: i32 = @intCast(active_tab_idx.*);
@@ -686,7 +682,7 @@ fn selectRelative(window: *Window.State, tabs: []AppTab, active_tab_idx: *TabInd
     selectTab(window, tabs, active_tab_idx, @intCast(idx));
 }
 
-fn selectTab(window: *Window.State, tabs: []AppTab, active_tab_idx: *TabIndex, idx: TabIndex) void {
+fn selectTab(window: *Window.State, tabs: []*AppTab, active_tab_idx: *TabIndex, idx: TabIndex) void {
     if (!tabIndexInRange(tabs, idx)) return;
     if (idx == active_tab_idx.*) return;
     active_tab_idx.* = idx;
@@ -694,17 +690,17 @@ fn selectTab(window: *Window.State, tabs: []AppTab, active_tab_idx: *TabIndex, i
     syncTerminalFocus(window, tabs, active_tab_idx.*);
 }
 
-fn syncTerminalFocus(window: *Window.State, tabs: []AppTab, active_tab_idx: TabIndex) void {
+fn syncTerminalFocus(window: *Window.State, tabs: []*AppTab, active_tab_idx: TabIndex) void {
     assert(tabIndexInRange(tabs, active_tab_idx));
-    for (tabs, 0..) |*tab, i| {
-        tab.panel.setWindowFocused(window.focused);
-        tab.panel.setWidgetFocused(i == active_tab_idx);
+    for (tabs, 0..) |tab, i| {
+        tab.panel.?.setWindowFocused(window.focused);
+        tab.panel.?.setWidgetFocused(i == active_tab_idx);
     }
 }
 
-fn tabTitles(tabs: []AppTab, buf: [][]const u8) []const []const u8 {
+fn tabTitles(tabs: []*AppTab, buf: [][]const u8) []const []const u8 {
     assert(buf.len >= tabs.len);
-    for (tabs, 0..) |*tab, i| buf[i] = tab.panel.titleSlice();
+    for (tabs, 0..) |tab, i| buf[i] = tab.panel.?.titleSlice();
     return buf[0..tabs.len];
 }
 
@@ -723,7 +719,7 @@ fn setThreadName(handle: std.Thread, name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(handle.getHandle(), name.ptr);
 }
 
-fn tabIndexInRange(tabs: []AppTab, idx: TabIndex) bool {
+fn tabIndexInRange(tabs: []*AppTab, idx: TabIndex) bool {
     return idx < tabs.len;
 }
 

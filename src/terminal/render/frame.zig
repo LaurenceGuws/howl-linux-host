@@ -34,7 +34,7 @@ const PublishOps = struct {
     }
 
     fn publishSource(panel: *TerminalPanel) void {
-        _ = vt_surface.publishSource(&panel.term);
+        _ = vt_surface.publishSource(panel.term);
     }
 };
 
@@ -69,10 +69,10 @@ pub fn renderTurn(
         };
     }
 
-    const drive_result = drive(&panel.term, surface, work_before);
+    const drive_result = drive(panel.term, surface, work_before);
     return .{
         .work_before = work_before,
-        .work_after = workState(&panel.term, bootstrap_surface),
+        .work_after = workState(panel.term, bootstrap_surface),
         .prepared = drive_result.prepared,
         .step = drive_result.step,
     };
@@ -82,7 +82,7 @@ fn queryWorkState(
     panel: *const TerminalPanel,
     surface: c.HowlRenderSurfaceHandle,
 ) RenderWorkState {
-    return workState(&panel.term, surface.host_surface_id == 0);
+    return workState(panel.term, surface.host_surface_id == 0);
 }
 
 const DriveResult = struct {

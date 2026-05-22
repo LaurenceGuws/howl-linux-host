@@ -82,13 +82,13 @@ pub fn maybeCommitGridResize(panel: anytype) void {
 }
 
 pub fn syncFrameLayout(panel: anytype, request: render_api.FrameLayoutRequest) !void {
-    const sync = try render_api.deriveFrameLayout(&panel.term, request);
+    const sync = try render_api.deriveFrameLayout(panel.term, request);
     if (!sync.changed) return;
     if (sync.grid_changed) {
-        try pty_session.resize(&panel.term, sync.layout.cols, sync.layout.rows);
-        try vt_retained.resize(&panel.term, sync.layout.rows, sync.layout.cols);
+        try pty_session.resize(panel.term, sync.layout.cols, sync.layout.rows);
+        try vt_retained.resize(panel.term, sync.layout.rows, sync.layout.cols);
     }
-    render_api.commitFrameLayout(&panel.term, sync.layout);
+    render_api.commitFrameLayout(panel.term, sync.layout);
 }
 
 pub fn frameLayoutSnapshot(panel: anytype) render_api.FrameLayoutRequest {

@@ -22,7 +22,7 @@ pub const TerminalPanel = struct {
         scrollbar: window.ScrollbarLayout,
     };
 
-    term: HowlTerm,
+    term: *HowlTerm,
     conf: *const TerminalConfig,
     title_buf: [128]u8,
     title_len: u8,
@@ -36,6 +36,7 @@ pub const TerminalPanel = struct {
 
     pub fn create(
         allocator: std.mem.Allocator,
+        term: *HowlTerm,
         conf: *const TerminalConfig,
         render_width: c_int,
         render_height: c_int,
@@ -44,7 +45,7 @@ pub const TerminalPanel = struct {
     ) !*TerminalPanel {
         const self = try allocator.create(TerminalPanel);
         errdefer allocator.destroy(self);
-        self.* = initial(conf, render_width, render_height, logical_width, logical_height);
+        self.* = initial(term, conf, render_width, render_height, logical_width, logical_height);
         return self;
     }
 
@@ -53,10 +54,10 @@ pub const TerminalPanel = struct {
         allocator.destroy(self);
     }
 
-    fn initial(conf: *const TerminalConfig, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) TerminalPanel {
+    fn initial(term: *HowlTerm, conf: *const TerminalConfig, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) TerminalPanel {
         const start_font_px = @max(conf.font_size, 1);
         return .{
-            .term = undefined,
+            .term = term,
             .conf = conf,
             .title_buf = undefined,
             .title_len = 0,
@@ -92,7 +93,7 @@ pub const TerminalPanel = struct {
     }
 
     pub fn paste(self: *TerminalPanel, payload: []const u8) void {
-        term_input.publishPaste(&self.term, payload) catch return;
+        term_input.publishPaste(self.term, payload) catch return;
     }
 
     pub fn drainInput(self: *TerminalPanel, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
@@ -139,11 +140,11 @@ pub const TerminalPanel = struct {
     }
 
     pub fn lifecycleState(self: *const TerminalPanel) LifecycleState {
-        return pty_session.lifecycleState(&self.term);
+        return pty_session.lifecycleState(self.term);
     }
 
     pub fn isAlive(self: *const TerminalPanel) bool {
-        return pty_session.isAlive(&self.term);
+        return pty_session.isAlive(self.term);
     }
 
     pub fn titleSlice(self: *TerminalPanel) []const u8 {
@@ -152,7 +153,7 @@ pub const TerminalPanel = struct {
     }
 
     pub fn refreshTitle(self: *TerminalPanel) void {
-        self.title_len = @intCast(vt_retained.copyCurrentTitle(&self.term, self.title_buf[0..]));
+        self.title_len = @intCast(vt_retained.copyCurrentTitle(self.term, self.title_buf[0..]));
         if (self.title_len != 0) return;
         const fallback = self.conf.command orelse self.conf.shell;
         self.title_len = @intCast(@min(fallback.len, self.title_buf.len));
@@ -174,7 +175,7 @@ pub const TerminalPanel = struct {
     }
 
     pub fn syncInputFocus(self: *TerminalPanel) void {
-        _ = term_input.publishFocus(&self.term, self.window_focused and self.widget_focused) catch return;
+        _ = term_input.publishFocus(self.term, self.window_focused and self.widget_focused) catch return;
     }
 
     pub fn adjustFontSize(self: *TerminalPanel, delta: i16) bool {
@@ -192,21 +193,21 @@ pub const TerminalPanel = struct {
         return geometry.syncCurrentFrameLayout(self);
     }
     fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) void {
-        _ = vt_retained.followLiveBottom(&self.term);
-        pty_session.publishInputBytes(&self.term, bytes) catch return;
+        _ = vt_retained.followLiveBottom(self.term);
+        pty_session.publishInputBytes(self.term, bytes) catch return;
     }
 
     fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) void {
         const terminal_key = term_input.key(key.key) orelse return;
-        term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return;
+        term_input.publishKey(self.term, terminal_key, term_input.mods(key.mods)) catch return;
     }
 
     fn publishTerminalMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
-        return term_input.publishMouse(&self.term, .{
+        return term_input.publishMouse(self.term, .{
             .kind = term_input.mouseKind(mouse_event.kind),
             .button = term_input.mouseButton(mouse_event.button),
-            .row = render_api.pixelToRow(&self.term, mouse_event.pixel_y),
-            .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
+            .row = render_api.pixelToRow(self.term, mouse_event.pixel_y),
+            .col = render_api.pixelToCol(self.term, mouse_event.pixel_x),
             .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
             .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
             .mods = term_input.mods(mouse_event.mods),
