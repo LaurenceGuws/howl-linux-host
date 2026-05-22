@@ -47,10 +47,9 @@ pub fn publishSource(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
     defer term.mutex.unlock();
 
     const meta = vtVisibleMeta(term.vt, term.vt_state.scrollback_offset);
-    const slot = reservePublishSlot(term.render.surface_text, meta.cols, meta.rows) catch return sourceRejected(term);
-    errdefer c.howl_render_surface_text_cancel_publish_slot(term.render.surface_text);
+    const slot = reservePublishSlot(term.render.surface_text, meta.cols, meta.rows) catch return rejectPublishSource(term.render.surface_text, meta.snapshot_seq);
 
-    const visible = vtCopyVisibleIntoSlot(term, meta, slot) catch return sourceRejected(term);
+    const visible = vtCopyVisibleIntoSlot(term, meta, slot) catch return rejectPublishSource(term.render.surface_text, meta.snapshot_seq);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.scroll_row <= visible.history_count + visible.rows);
 
@@ -105,19 +104,14 @@ fn ackPublishedSourceWith(term: anytype, snapshot_seq: u64, comptime Ops: type) 
     vt_abi.requireStructOk(Ops.ack(term.vt, snapshot_seq));
 }
 
-pub fn sourceRejected(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
-    const info = vtVisibleMeta(term.vt, term.vt_state.scrollback_offset);
-    log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d}", .{ log.nowNs(), info.snapshot_seq });
-    std.debug.assert(term.render.geometry_epoch != 0);
-    return .{
-        .status = c.HOWL_RENDER_CALL_FAILED,
-        .published = 0,
-        .queued = 0,
-        .damage_kind = damage_none,
-        .reserved0 = 0,
-        .snapshot_seq = info.snapshot_seq,
-        .geometry_epoch = term.render.geometry_epoch,
-    };
+fn rejectPublishSource(handle: c.HowlRenderSurfaceTextHandle, snapshot_seq: u64) c.HowlRenderVtPublishResult {
+    const result = c.howl_render_surface_text_reject_publish_slot(handle, snapshot_seq);
+    std.debug.assert(result.status == c.HOWL_RENDER_CALL_FAILED);
+    std.debug.assert(result.published == 0);
+    std.debug.assert(result.queued == 0);
+    std.debug.assert(result.damage_kind == damage_none);
+    log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d}", .{ log.nowNs(), result.snapshot_seq });
+    return result;
 }
 
 pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {

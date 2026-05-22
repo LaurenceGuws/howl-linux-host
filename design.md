@@ -72,7 +72,7 @@ classDiagram
 - Hosts send events to PTY-facing owners, ask render to derive layout from render and grid pixel
   constraints, resize PTY and VT from that render-owned layout, reserve a render-owned publish slot,
   fill that slot directly from VT visible truth, commit it into the render owner through the render-
-  owned VT seam, upload the
+  owned VT seam, or reject that reserved publish through the render-owned failure seam, upload the
   render-owned prepared buffer into host graphics resources as one complete realized surface image,
   submit render-surface execution input using the host-owned
   term-texture, present that term-texture, and then acknowledge the rendered VT dirty generation.
