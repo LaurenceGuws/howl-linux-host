@@ -31,29 +31,6 @@ const TabRuntime = struct {
     term: *HowlTerm,
     progress: runtime_thread.State = .{},
     live: bool = false,
-
-    fn create(allocator: std.mem.Allocator, term: *HowlTerm) !*TabRuntime {
-        const self = try allocator.create(TabRuntime);
-        errdefer allocator.destroy(self);
-        self.* = .{ .term = term };
-        return self;
-    }
-
-    fn destroy(self: *TabRuntime, allocator: std.mem.Allocator) void {
-        self.stop();
-        allocator.destroy(self);
-    }
-
-    fn stop(self: *TabRuntime) void {
-        self.progress.stop.store(true, .release);
-        runtime_thread.ackWake(self);
-        if (self.live) pty_session.stop(self.term);
-        if (self.progress.thread) |handle| handle.join();
-        self.progress.thread = null;
-        if (self.live) runtime.deinit(self.term);
-        self.live = false;
-        self.progress.deinit();
-    }
 };
 
 const AppTab = struct {
@@ -70,8 +47,9 @@ const AppTab = struct {
     first_idle_render_logged: bool = false,
 
     fn init(allocator: std.mem.Allocator, panel: *TerminalPanel) !AppTab {
-        const tab_runtime = try TabRuntime.create(allocator, &panel.term);
-        errdefer tab_runtime.destroy(allocator);
+        const tab_runtime = try allocator.create(TabRuntime);
+        errdefer allocator.destroy(tab_runtime);
+        tab_runtime.* = .{ .term = &panel.term };
         return .{ .allocator = allocator, .panel = panel, .runtime = tab_runtime };
     }
 
@@ -79,7 +57,15 @@ const AppTab = struct {
         Window.deleteTexture(&self.term_texture.host_surface_id);
         self.term_texture.width = 0;
         self.term_texture.height = 0;
-        self.runtime.destroy(self.allocator);
+        self.runtime.progress.stop.store(true, .release);
+        runtime_thread.ackWake(self.runtime);
+        if (self.runtime.live) pty_session.stop(self.runtime.term);
+        if (self.runtime.progress.thread) |handle| handle.join();
+        self.runtime.progress.thread = null;
+        if (self.runtime.live) runtime.deinit(self.runtime.term);
+        self.runtime.live = false;
+        self.runtime.progress.deinit();
+        self.allocator.destroy(self.runtime);
         self.panel.destroy(self.allocator);
     }
 
@@ -138,7 +124,6 @@ const AppTab = struct {
         }
         std.debug.assert(work.submit_pending or work.present_pending);
     }
-
 };
 
 const TabList = std.ArrayList(AppTab);
@@ -627,7 +612,16 @@ fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, feed
         .fallback_font_paths = resolved_fonts.fallbacks,
     });
     tab.runtime.live = true;
-    errdefer tab.runtime.stop();
+    errdefer {
+        tab.runtime.progress.stop.store(true, .release);
+        runtime_thread.ackWake(tab.runtime);
+        if (tab.runtime.live) pty_session.stop(tab.runtime.term);
+        if (tab.runtime.progress.thread) |handle| handle.join();
+        tab.runtime.progress.thread = null;
+        if (tab.runtime.live) runtime.deinit(tab.runtime.term);
+        tab.runtime.live = false;
+        tab.runtime.progress.deinit();
+    }
 
     _ = try feed_record.start(tab.runtime.term, io, feed_record_path);
     try pty_session.start(tab.runtime.term);
