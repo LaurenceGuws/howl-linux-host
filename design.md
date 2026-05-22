@@ -75,7 +75,8 @@ classDiagram
   owned VT seam, or reject that reserved publish through the render-owned failure seam, upload the
   render-owned prepared buffer into host graphics resources as one complete realized surface image,
   submit render-surface execution input using the host-owned
-  term-texture, present that term-texture, and then acknowledge the rendered VT dirty generation.
+  term-texture through render-owned prepared handles, present that term-texture, and then
+  acknowledge the rendered VT dirty generation.
   They do not invent cell geometry, mutate scrollback, mutate VT dirty state, reconstruct content
   from render damage, or own render composition rules.
 

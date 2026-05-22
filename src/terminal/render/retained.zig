@@ -150,8 +150,8 @@ pub const State = struct {
     }
 
     pub fn submit(self: *State, execution: *const c.HowlRenderSurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) SubmitResult {
-        var prepared_frame = std.mem.zeroes(c.HowlRenderPreparedFrame);
-        switch (c.howl_render_surface_text_take_submit_decision(self.surface_text, &prepared_frame)) {
+        var prepared: c.HowlRenderPreparedSurfaceHandle = null;
+        switch (c.howl_render_surface_text_take_submit_handle(self.surface_text, &prepared)) {
             c.HOWL_RENDER_SUBMIT_DECISION_IDLE => return .idle,
             c.HOWL_RENDER_SUBMIT_DECISION_SUBMIT => {},
             c.HOWL_RENDER_SUBMIT_DECISION_STALE => {
@@ -167,7 +167,7 @@ pub const State = struct {
                 return .failed;
             },
         }
-        return switch (self.submitHandle(prepared_frame, execution, feedback)) {
+        return switch (self.submitHandle(prepared, execution, feedback)) {
             c.HOWL_RENDER_SUBMIT_IDLE => .idle,
             c.HOWL_RENDER_SUBMIT_STALE => blk: {
                 self.releasePreparedSurface();
@@ -245,19 +245,19 @@ pub const State = struct {
         std.debug.assert(info.snapshot_seq == request.snapshot_seq);
         std.debug.assert(info.dirty_epoch == request.dirty_epoch);
         std.debug.assert(info.geometry_epoch == request.geometry_epoch);
-        std.debug.assert(c.howl_render_surface_text_publish_prepared(self.surface_text, preparedFrameFromInfo(info)) == c.HOWL_RENDER_CALL_OK);
+        std.debug.assert(c.howl_render_surface_text_publish_prepared_handle(self.surface_text, prepared) == c.HOWL_RENDER_CALL_OK);
         self.releasePreparedSurface();
         assertPreparedSurfaceHandle(prepared);
         self.storePreparedSurface(prepared);
         return .prepared;
     }
 
-    fn submitHandle(self: *State, prepared_frame: c.HowlRenderPreparedFrame, execution: *const c.HowlRenderSurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) c.HowlRenderSubmitStatus {
-        const prepared = self.prepared_surface orelse return c.HOWL_RENDER_SUBMIT_IDLE;
-        const result = c.howl_render_surface_text_submit(self.surface_text, prepared, prepared_frame, execution, feedback);
+    fn submitHandle(self: *State, prepared: c.HowlRenderPreparedSurfaceHandle, execution: *const c.HowlRenderSurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) c.HowlRenderSubmitStatus {
+        const current = self.prepared_surface orelse return c.HOWL_RENDER_SUBMIT_IDLE;
+        std.debug.assert(prepared == current);
+        const result = c.howl_render_surface_text_submit_handle(self.surface_text, prepared, execution, feedback);
         if (result == c.HOWL_RENDER_SUBMIT_RENDERED) {
             self.addPerf(feedback.metrics);
-            std.debug.assert(c.howl_render_surface_text_accept_submitted(self.surface_text, prepared_frame) == c.HOWL_RENDER_CALL_OK);
             self.forgetPreparedSurface();
         }
         return result;
@@ -326,17 +326,6 @@ pub const Perf = struct {
         self.missing_glyphs +%= metrics.missing_glyphs;
     }
 };
-
-fn preparedFrameFromInfo(info: c.HowlRenderPreparedSurfaceInfo) c.HowlRenderPreparedFrame {
-    return .{
-        .snapshot_seq = info.snapshot_seq,
-        .dirty_epoch = info.dirty_epoch,
-        .geometry_epoch = info.geometry_epoch,
-        .damage_base_seq = if (info.damage_kind == c.HOWL_RENDER_DAMAGE_PARTIAL) info.required_base_seq else 0,
-        .required_base_seq = info.required_base_seq,
-        .damage_kind = info.damage_kind,
-    };
-}
 
 fn assertPreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) void {
     if (prepared == null) return;
