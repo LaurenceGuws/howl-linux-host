@@ -11,9 +11,15 @@ pub const State = struct {
     wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_ack_sem: ?*log.c_win.SDL_Semaphore = null,
     thread: ?std.Thread = null,
+    wake_input: ?*HostInput = null,
+    progress_wait_logged: bool = false,
+    progress_wake_logged: bool = false,
 
-    pub fn init(self: *State) !void {
+    pub fn init(self: *State, wake_input: *HostInput) !void {
         self.wake_pending.store(false, .release);
+        self.wake_input = wake_input;
+        self.progress_wait_logged = false;
+        self.progress_wake_logged = false;
         self.wake_ack_sem = log.c_win.SDL_CreateSemaphore(0) orelse return error.ProgressSemaphoreUnavailable;
     }
 
@@ -21,6 +27,7 @@ pub const State = struct {
         const sem = self.wake_ack_sem orelse return;
         log.c_win.SDL_DestroySemaphore(sem);
         self.wake_ack_sem = null;
+        self.wake_input = null;
         self.wake_pending.store(false, .release);
     }
 };
@@ -57,9 +64,15 @@ fn waitForWakeAck(self: anytype, comptime Ops: type) void {
 }
 
 fn waitForTransport(self: anytype, comptime Ops: type) void {
-    log.logProgressWaitStartup();
+    if (!self.progress.progress_wait_logged) {
+        self.progress.progress_wait_logged = true;
+        log.logStartup("progress-wait-enter");
+    }
     _ = Ops.waitTransport(termRef(self), transport_wait_timeout_ms);
-    log.logProgressWakeStartup();
+    if (!self.progress.progress_wake_logged) {
+        self.progress.progress_wake_logged = true;
+        log.logStartup("progress-wait-return");
+    }
 }
 
 fn TermRef(comptime TermField: type) type {
@@ -78,7 +91,7 @@ fn termRef(self: anytype) TermRef(@TypeOf(self.term)) {
 
 fn signalWake(self: anytype, comptime Ops: type) void {
     if (!self.progress.wake_pending.swap(true, .acq_rel)) {
-        Ops.wakeWindow();
+        Ops.wakeWindow(self);
     }
 }
 
@@ -101,8 +114,9 @@ const RealOps = struct {
         return pty_session.isAlive(term);
     }
 
-    fn wakeWindow() void {
-        HostInput.wakeWindow();
+    fn wakeWindow(self: anytype) void {
+        const input = self.progress.wake_input orelse return;
+        input.wakeWindow();
     }
 };
 
@@ -153,6 +167,9 @@ const FakeCtx = struct {
         stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         wake_ack_sem: ?*log.c_win.SDL_Semaphore = null,
+        wake_input: ?*HostInput = null,
+        progress_wait_logged: bool = false,
+        progress_wake_logged: bool = false,
     } = .{},
 };
 
@@ -177,7 +194,7 @@ const FakeOps = struct {
         return fake_state.is_alive;
     }
 
-    fn wakeWindow() void {
+    fn wakeWindow(_: anytype) void {
         fake_state.wake_calls += 1;
     }
 };

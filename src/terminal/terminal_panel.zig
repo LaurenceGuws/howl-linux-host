@@ -53,6 +53,7 @@ pub const TerminalPanel = struct {
     live: bool,
     term_texture: render_api.RenderSurface,
     conf: *const TerminalConfig,
+    input: *HostInput,
     title_buf: [128]u8,
     title_len: u8,
     geometry: geometry.State,
@@ -73,6 +74,7 @@ pub const TerminalPanel = struct {
     pub fn create(
         allocator: std.mem.Allocator,
         io: std.Io,
+        input: *HostInput,
         feed_record_path: ?[]const u8,
         conf: *const TerminalConfig,
         render_width: c_int,
@@ -82,7 +84,7 @@ pub const TerminalPanel = struct {
     ) !*TerminalPanel {
         const self = try allocator.create(TerminalPanel);
         errdefer allocator.destroy(self);
-        self.* = initial(conf, render_width, render_height, logical_width, logical_height);
+        self.* = initial(conf, input, render_width, render_height, logical_width, logical_height);
         errdefer self.deinit();
         try self.initTerm();
         try self.startRuntime(io, feed_record_path);
@@ -94,13 +96,14 @@ pub const TerminalPanel = struct {
         allocator.destroy(self);
     }
 
-    fn initial(conf: *const TerminalConfig, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) TerminalPanel {
+    fn initial(conf: *const TerminalConfig, input: *HostInput, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) TerminalPanel {
         const start_font_px = @max(conf.font_size, 1);
         return .{
             .term = undefined,
             .live = false,
             .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
             .conf = conf,
+            .input = input,
             .title_buf = undefined,
             .title_len = 0,
             .geometry = geometry.init(render_width, render_height, logical_width, logical_height),
@@ -350,7 +353,7 @@ pub const TerminalPanel = struct {
         if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
         self.refreshTitle();
         self.syncInputFocus();
-        try self.progress.init();
+        try self.progress.init(self.input);
         self.progress.stop.store(false, .release);
         const progress_thread = try std.Thread.spawn(.{}, runtime_thread.progressThreadMain, .{self});
         if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(progress_thread.getHandle(), "howl-term-host");

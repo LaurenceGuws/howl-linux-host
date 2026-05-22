@@ -5,42 +5,121 @@ const Window = @import("../window/window.zig");
 pub const c_win = Window.c_win;
 const assert = std.debug.assert;
 
-var quit_requested = std.atomic.Value(bool).init(false);
-var wake_event_type: u32 = 0;
-var redraw_event_type: u32 = 0;
-var redraw_event_pending = std.atomic.Value(bool).init(false);
-var frame_trace_cached: enum { unknown, disabled, enabled } = .unknown;
-var progress_wait_logged = std.atomic.Value(bool).init(false);
-var progress_wake_logged = std.atomic.Value(bool).init(false);
-var progress_drive_logged = std.atomic.Value(bool).init(false);
-var window_wait_logged = std.atomic.Value(bool).init(false);
-var window_wake_logged = std.atomic.Value(bool).init(false);
-var transport_read_logged = std.atomic.Value(bool).init(false);
-var source_publish_logged = std.atomic.Value(bool).init(false);
-var loop_turn_logged = std.atomic.Value(bool).init(false);
-var loop_render_check_logged = std.atomic.Value(bool).init(false);
-
 pub const EventSignal = enum {
     none,
     quit,
 };
 
-pub fn clearQuitRequest() void {
-    quit_requested.store(false, .release);
-    redraw_event_pending.store(false, .release);
-}
+pub const FrameTraceState = enum {
+    unknown,
+    disabled,
+    enabled,
+};
 
-pub fn initEventTypes() void {
-    if (wake_event_type != 0) return;
-    const event_base = c_win.SDL_RegisterEvents(2);
-    assert(event_base != std.math.maxInt(@TypeOf(event_base)));
-    wake_event_type = event_base;
-    redraw_event_type = event_base + 1;
-}
+pub const State = struct {
+    quit_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    wake_event_type: u32 = 0,
+    redraw_event_type: u32 = 0,
+    redraw_event_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    frame_trace_state: FrameTraceState = .unknown,
+    window_wait_logged: bool = false,
+    window_wake_logged: bool = false,
 
-pub fn quitRequested() bool {
-    return quit_requested.load(.acquire);
-}
+    pub fn init(self: *State) void {
+        self.quit_requested.store(false, .release);
+        self.redraw_event_pending.store(false, .release);
+        self.window_wait_logged = false;
+        self.window_wake_logged = false;
+    }
+
+    pub fn initEventTypes(self: *State) void {
+        if (self.wake_event_type != 0) return;
+        const event_base = c_win.SDL_RegisterEvents(2);
+        assert(event_base != std.math.maxInt(@TypeOf(event_base)));
+        self.wake_event_type = event_base;
+        self.redraw_event_type = event_base + 1;
+    }
+
+    pub fn quitRequested(self: *const State) bool {
+        return self.quit_requested.load(.acquire);
+    }
+
+    pub fn logFramef(self: *State, comptime fmt: []const u8, args: anytype) void {
+        if (!self.frameTraceEnabled()) return;
+        logf(fmt, args);
+    }
+
+    pub fn requestQuit(self: *State) void {
+        self.quit_requested.store(true, .release);
+        self.wakeEventLoop();
+    }
+
+    pub fn requestRedraw(self: *State) void {
+        if (self.redraw_event_pending.swap(true, .acq_rel)) return;
+        if (!self.pushEvent(self.redrawType())) {
+            self.redraw_event_pending.store(false, .release);
+        }
+    }
+
+    pub fn redrawRequested(self: *const State) bool {
+        return self.redraw_event_pending.load(.acquire);
+    }
+
+    pub fn isWakeEventType(self: *const State, event_type: u32) bool {
+        return self.wake_event_type != 0 and event_type == self.wake_event_type;
+    }
+
+    pub fn isRedrawEventType(self: *const State, event_type: u32) bool {
+        return self.redraw_event_type != 0 and event_type == self.redraw_event_type;
+    }
+
+    pub fn ackRedrawEvent(self: *State) void {
+        self.redraw_event_pending.store(false, .release);
+    }
+
+    pub fn logWindowWaitStartup(self: *State) void {
+        if (self.window_wait_logged) return;
+        self.window_wait_logged = true;
+        logStartup("window-wait-enter");
+    }
+
+    pub fn logWindowWakeStartup(self: *State, signal: EventSignal) void {
+        if (self.window_wake_logged) return;
+        self.window_wake_logged = true;
+        logStartupf("stage=window-wait-return signal={s}", .{@tagName(signal)});
+    }
+
+    pub fn wakeEventLoop(self: *State) void {
+        _ = self.pushEvent(self.wakeType());
+    }
+
+    fn frameTraceEnabled(self: *State) bool {
+        if (self.frame_trace_state == .unknown) {
+            const raw = std.c.getenv("HOWL_RUNTIME_TRACE_FRAMES");
+            self.frame_trace_state = if (raw != null and raw.?[0] != 0 and raw.?[0] != '0') .enabled else .disabled;
+        }
+        return self.frame_trace_state == .enabled;
+    }
+
+    fn wakeType(self: *State) u32 {
+        self.initEventTypes();
+        assert(self.wake_event_type != 0);
+        return self.wake_event_type;
+    }
+
+    fn redrawType(self: *State) u32 {
+        self.initEventTypes();
+        assert(self.redraw_event_type != 0);
+        return self.redraw_event_type;
+    }
+
+    fn pushEvent(self: *State, event_type: u32) bool {
+        _ = self;
+        var event: c_win.SDL_Event = std.mem.zeroes(c_win.SDL_Event);
+        event.type = event_type;
+        return c_win.SDL_PushEvent(&event);
+    }
+};
 
 pub fn nowNs() u64 {
     return c_win.SDL_GetTicksNS();
@@ -57,98 +136,6 @@ pub fn logStartup(stage: []const u8) void {
 
 pub fn logStartupf(comptime fmt: []const u8, args: anytype) void {
     logf("host-start ts_ns={d} " ++ fmt, .{nowNs()} ++ args);
-}
-
-pub fn logFramef(comptime fmt: []const u8, args: anytype) void {
-    if (!frameTraceEnabled()) return;
-    logf(fmt, args);
-}
-
-pub fn logProgressWaitStartup() void {
-    logStartupOnce(&progress_wait_logged, "progress-wait-enter");
-}
-
-pub fn logProgressWakeStartup() void {
-    logStartupOnce(&progress_wake_logged, "progress-wait-return");
-}
-
-pub fn logProgressDriveStartupf(comptime fmt: []const u8, args: anytype) void {
-    if (progress_drive_logged.swap(true, .acq_rel)) return;
-    logStartupf(fmt, args);
-}
-
-pub fn logTransportReadStartupf(comptime fmt: []const u8, args: anytype) void {
-    if (transport_read_logged.swap(true, .acq_rel)) return;
-    logStartupf(fmt, args);
-}
-
-pub fn logSourcePublishStartupf(comptime fmt: []const u8, args: anytype) void {
-    if (source_publish_logged.swap(true, .acq_rel)) return;
-    logStartupf(fmt, args);
-}
-
-pub fn logLoopStartupf(comptime fmt: []const u8, args: anytype) void {
-    if (loop_turn_logged.swap(true, .acq_rel)) return;
-    logStartupf(fmt, args);
-}
-
-pub fn logLoopRenderStartupf(comptime fmt: []const u8, args: anytype) void {
-    if (loop_render_check_logged.swap(true, .acq_rel)) return;
-    logStartupf(fmt, args);
-}
-
-pub fn logWindowWaitStartup() void {
-    logStartupOnce(&window_wait_logged, "window-wait-enter");
-}
-
-pub fn logWindowWakeStartup(signal: EventSignal) void {
-    if (window_wake_logged.swap(true, .acq_rel)) return;
-    logStartupf("stage=window-wait-return signal={s}", .{@tagName(signal)});
-}
-
-pub fn logSdlEvent(stage: []const u8, event_type: u32) void {
-    logf("host-loop ts_ns={d} stage={s} event_type={d}", .{ nowNs(), stage, event_type });
-}
-
-fn frameTraceEnabled() bool {
-    if (frame_trace_cached == .unknown) {
-        const raw = std.c.getenv("HOWL_RUNTIME_TRACE_FRAMES");
-        frame_trace_cached = if (raw != null and raw.?[0] != 0 and raw.?[0] != '0') .enabled else .disabled;
-    }
-    return frame_trace_cached == .enabled;
-}
-
-fn logStartupOnce(flag: *std.atomic.Value(bool), stage: []const u8) void {
-    if (flag.swap(true, .acq_rel)) return;
-    logStartup(stage);
-}
-
-pub fn requestQuit() void {
-    quit_requested.store(true, .release);
-    wakeEventLoop();
-}
-
-pub fn requestRedraw() void {
-    if (redraw_event_pending.swap(true, .acq_rel)) return;
-    if (!pushEvent(redrawType())) {
-        redraw_event_pending.store(false, .release);
-    }
-}
-
-pub fn redrawRequested() bool {
-    return redraw_event_pending.load(.acquire);
-}
-
-pub fn isWakeEventType(event_type: u32) bool {
-    return wake_event_type != 0 and event_type == wake_event_type;
-}
-
-pub fn isRedrawEventType(event_type: u32) bool {
-    return redraw_event_type != 0 and event_type == redraw_event_type;
-}
-
-pub fn ackRedrawEvent() void {
-    redraw_event_pending.store(false, .release);
 }
 
 pub fn startQuitTimer(duration_ms: ?u64) c_win.SDL_TimerID {
@@ -171,31 +158,9 @@ pub fn isQuitEventType(event_type: u32) bool {
         event_type == c_win.SDL_EVENT_WINDOW_DESTROYED;
 }
 
-pub fn wakeEventLoop() void {
-    _ = pushEvent(wakeType());
-}
-
 fn quitTimer(_: ?*anyopaque, _: c_win.SDL_TimerID, _: u32) callconv(.c) u32 {
     var event: c_win.SDL_Event = std.mem.zeroes(c_win.SDL_Event);
     event.type = c_win.SDL_EVENT_QUIT;
     _ = c_win.SDL_PushEvent(&event);
     return 0;
-}
-
-fn wakeType() u32 {
-    initEventTypes();
-    assert(wake_event_type != 0);
-    return wake_event_type;
-}
-
-fn redrawType() u32 {
-    initEventTypes();
-    assert(redraw_event_type != 0);
-    return redraw_event_type;
-}
-
-fn pushEvent(event_type: u32) bool {
-    var event: c_win.SDL_Event = std.mem.zeroes(c_win.SDL_Event);
-    event.type = event_type;
-    return c_win.SDL_PushEvent(&event);
 }

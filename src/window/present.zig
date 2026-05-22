@@ -1,6 +1,5 @@
 const Draw = @import("draw.zig");
 const Layout = @import("layout.zig");
-const PerfLog = @import("../perf/log.zig");
 const InputWindow = @import("../input/window.zig");
 const Texture = @import("texture.zig");
 const std = @import("std");
@@ -64,7 +63,7 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
 }
 
 pub fn deinit(comptime c: type, state: *State(c)) void {
-    logSdlFps(c, state, true);
+    logSdlFps(c, state, null, true);
     releaseTabCache(c, state);
     if (state.gl_context) |ctx| {
         _ = ctx;
@@ -75,7 +74,7 @@ pub fn deinit(comptime c: type, state: *State(c)) void {
     state.window = null;
 }
 
-pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
+pub fn present(comptime c: type, state: *State(c), perf: anytype, frame: Layout.Frame) void {
     const handle = state.window orelse return;
     const start_ns = c.SDL_GetTicksNS();
     var fb_w: c_int = 0;
@@ -104,10 +103,10 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     state.draw_window_ns +%= before_swap_ns -| after_cache_ns;
     state.swap_window_ns +%= end_ns -| before_swap_ns;
     state.total_window_ns +%= end_ns -| start_ns;
-    logSdlFps(c, state, false);
+    logSdlFps(c, state, perf, false);
 }
 
-fn logSdlFps(comptime c: type, state: *State(c), force: bool) void {
+fn logSdlFps(comptime c: type, state: *State(c), perf: anytype, force: bool) void {
     if (!force and state.present_frames < state.fps_next_log_frame) return;
     const now_ns = c.SDL_GetTicksNS();
     const elapsed_ns = now_ns -| state.fps_window_start_ns;
@@ -118,15 +117,31 @@ fn logSdlFps(comptime c: type, state: *State(c), force: bool) void {
     else
         @as(f64, @floatFromInt(frame_delta)) / (@as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
     const denom = @as(f64, @floatFromInt(@max(frame_delta, 1)));
-    PerfLog.logSdlFpsWindow(
-        state.present_frames,
-        frame_delta,
-        fps,
-        @as(f64, @floatFromInt(state.cache_window_ns)) / denom / 1000.0,
-        @as(f64, @floatFromInt(state.draw_window_ns)) / denom / 1000.0,
-        @as(f64, @floatFromInt(state.swap_window_ns)) / denom / 1000.0,
-        @as(f64, @floatFromInt(state.total_window_ns)) / denom / 1000.0,
-    );
+    switch (@typeInfo(@TypeOf(perf))) {
+        .null => return,
+        .pointer => perf.logSdlFpsWindow(
+            state.present_frames,
+            frame_delta,
+            fps,
+            @as(f64, @floatFromInt(state.cache_window_ns)) / denom / 1000.0,
+            @as(f64, @floatFromInt(state.draw_window_ns)) / denom / 1000.0,
+            @as(f64, @floatFromInt(state.swap_window_ns)) / denom / 1000.0,
+            @as(f64, @floatFromInt(state.total_window_ns)) / denom / 1000.0,
+        ),
+        .optional => {
+            const perf_state = perf orelse return;
+            perf_state.logSdlFpsWindow(
+                state.present_frames,
+                frame_delta,
+                fps,
+                @as(f64, @floatFromInt(state.cache_window_ns)) / denom / 1000.0,
+                @as(f64, @floatFromInt(state.draw_window_ns)) / denom / 1000.0,
+                @as(f64, @floatFromInt(state.swap_window_ns)) / denom / 1000.0,
+                @as(f64, @floatFromInt(state.total_window_ns)) / denom / 1000.0,
+            );
+        },
+        else => @compileError("perf owner must be a pointer, optional pointer, or null"),
+    }
     state.fps_window_start_ns = now_ns;
     state.fps_window_start_frame = state.present_frames;
     state.fps_next_log_frame = state.present_frames + sdl_fps_log_every_frames;

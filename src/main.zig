@@ -56,10 +56,12 @@ const App = struct {
     feed_record_path: ?[]const u8,
     io: std.Io,
     window: *Window.State,
+    perf: *PerfLog.State,
     tab_bar: *TabBar,
     tabs: *TabList,
     active_tab_idx: *TabIndex,
     input: *Input,
+    first_loop_render_logged: bool,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -75,7 +77,6 @@ fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     setCurrentThreadName("howl-main");
     InputWindow.logStartup("app-start");
     try initVideo();
-    InputWindow.initEventTypes();
     defer Window.quit();
 
     var conf = try loadConfig(options);
@@ -90,8 +91,14 @@ fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     var tabs: TabList = .empty;
     defer destroyTabs(std.heap.c_allocator, &tabs);
     var active_tab_idx: TabIndex = 0;
+
+    var input = try initInput();
+    input.window_state.initEventTypes();
+    input.setBindings(Input.Bindings.Configured.init(&conf));
+    InputWindow.logStartup("input-ready");
+
     applyChildEnvironmentPolicy();
-    try openTab(std.heap.c_allocator, io, &conf, feed_record_path, &window, &tabs, &active_tab_idx);
+    try openTab(std.heap.c_allocator, io, &conf, &input, feed_record_path, &window, &tabs, &active_tab_idx);
     InputWindow.logStartup("initial-tab-opened");
 
     var perf: PerfLog.State = undefined;
@@ -99,8 +106,6 @@ fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     defer perf.stopAndDeinit();
     InputWindow.logStartup("perf-ready");
 
-    var input = try initInput();
-    InputWindow.logStartup("input-ready");
     const duration_timer = InputWindow.startQuitTimer(options.duration_ms);
     defer InputWindow.stopQuitTimer(duration_timer);
 
@@ -109,10 +114,12 @@ fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
         .feed_record_path = feed_record_path,
         .io = io,
         .window = &window,
+        .perf = &perf,
         .tab_bar = &tab_bar,
         .tabs = &tabs,
         .active_tab_idx = &active_tab_idx,
         .input = &input,
+        .first_loop_render_logged = false,
     };
     configureInputPolicies(&app);
     InputWindow.logStartup("policies-configured");
@@ -131,7 +138,6 @@ fn loadConfig(options: Options) !Config.State {
     var conf = try Config.State.load(std.heap.c_allocator);
     errdefer conf.deinit(std.heap.c_allocator);
     try conf.applyProcessOverrides(options.shell, options.start_path, options.command);
-    Input.Bindings.setConfigBindings(&conf);
     return conf;
 }
 
@@ -149,7 +155,7 @@ fn initPerf(perf: *PerfLog.State, tab: *TerminalPanel) !void {
 fn initInput() !Input {
     var input: Input = undefined;
     input.init();
-    Input.requestRedraw();
+    input.requestRedraw();
     return input;
 }
 
@@ -179,7 +185,7 @@ fn runLoop(app: *App) !void {
 }
 
 fn runLoopTurn(app: *App) !LoopAction {
-    if (quitRequested()) |action| return action;
+    if (quitRequested(app)) |action| return action;
 
     const pending = collectLoopPending(app);
     var loop = LoopState.init(pending);
@@ -188,7 +194,7 @@ fn runLoopTurn(app: *App) !LoopAction {
 
     applyFocusChange(app);
     try drainBindingActions(app);
-    if (quitRequested()) |action| return action;
+    if (quitRequested(app)) |action| return action;
 
     forwardTerminalInput(app);
     _ = applyWindowResize(app);
@@ -203,7 +209,7 @@ fn runLoopTurn(app: *App) !LoopAction {
     if (!loop.render_frame) return .continue_running;
 
     render(app, loop.chrome_present);
-    if (quitRequested()) |action| return action;
+    if (quitRequested(app)) |action| return action;
     try ensureActiveTabHealthy(app);
     return .continue_running;
 }
@@ -228,8 +234,8 @@ fn tabsHavePendingWake(tabs: []*TerminalPanel) bool {
     return false;
 }
 
-fn quitRequested() ?LoopAction {
-    if (!InputWindow.quitRequested()) return null;
+fn quitRequested(app: *const App) ?LoopAction {
+    if (!app.input.window_state.quitRequested()) return null;
     InputWindow.logStartup("loop-quit-requested");
     return .quit;
 }
@@ -251,7 +257,7 @@ fn applyFocusChange(app: *App) void {
 fn drainBindingActions(app: *App) !void {
     while (true) {
         const action = app.input.drainBindingAction() orelse return;
-        try handleBindingAction(app.conf, app.feed_record_path, app.io, app.window, app.tabs, app.active_tab_idx, action);
+        try handleBindingAction(app.conf, app.feed_record_path, app.io, app.input, app.window, app.tabs, app.active_tab_idx, action);
     }
 }
 
@@ -279,7 +285,7 @@ fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex) bool 
         redraw = redraw or outcome.should_redraw;
         request_next_turn = request_next_turn or outcome.keep;
     }
-    if (request_next_turn) Input.requestRedraw();
+    if (request_next_turn) activePanel(tabs, active_tab_idx).input.requestRedraw();
     return redraw;
 }
 
@@ -303,21 +309,24 @@ fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
 fn render(app: *App, chrome_present: bool) void {
     const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
     const turn = tab.renderTurn();
-    InputWindow.logLoopRenderStartupf("stage=loop-render-check-first content_before_render={} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
-        turn.work_before.wantsFrame(),
-        turn.work_before.inFlight(),
-        turn.work_before.source_pending,
-        turn.work_before.prepare_pending,
-        turn.work_before.submit_pending,
-        turn.work_before.present_pending,
-        tab.termTextureId(),
-    });
-    InputWindow.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
+    if (!app.first_loop_render_logged) {
+        app.first_loop_render_logged = true;
+        InputWindow.logStartupf("stage=loop-render-check-first content_before_render={} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
+            turn.work_before.wantsFrame(),
+            turn.work_before.inFlight(),
+            turn.work_before.source_pending,
+            turn.work_before.prepare_pending,
+            turn.work_before.submit_pending,
+            turn.work_before.present_pending,
+            tab.termTextureId(),
+        });
+    }
+    app.input.window_state.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
     const term_texture_before = tab.termTextureId();
     tab.noteRenderTurn(turn);
     const snapshot = renderSnapshot(app, tab);
     presentRenderFrame(app, tab, turn, chrome_present, snapshot);
-    InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
+    app.input.window_state.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
     std.debug.assert(tab.termTextureId() != 0 or term_texture_before == 0);
 }
 
@@ -343,7 +352,7 @@ fn renderSnapshot(app: *App, tab: *TerminalPanel) RenderSnapshot {
 
 fn presentRenderFrame(app: *App, tab: *TerminalPanel, turn: TerminalPanel.TurnResult, chrome_present: bool, snapshot: RenderSnapshot) void {
     if (!shouldPresent(turn.step, chrome_present)) return;
-    app.window.present(.{
+    app.window.present(app.perf, .{
         .term_texture_id = @intCast(tab.termTextureId()),
         .term_texture_rect = snapshot.texture_rect,
         .scrollbar = snapshot.scrollbar,
@@ -455,14 +464,14 @@ fn activePanel(tabs: []*TerminalPanel, active_tab_idx: TabIndex) *TerminalPanel 
     return activeTab(tabs, active_tab_idx);
 }
 
-fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8, io: std.Io, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex, action: Input.Bindings.Action) !void {
+fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8, io: std.Io, input: *Input, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex, action: Input.Bindings.Action) !void {
     switch (action) {
         .zoom_in => _ = activePanel(tabs.items, active_tab_idx.*).adjustFontSize(1),
         .zoom_out => _ = activePanel(tabs.items, active_tab_idx.*).adjustFontSize(-1),
         .zoom_reset => _ = activePanel(tabs.items, active_tab_idx.*).resetFontSize(),
         .zoom_stress_toggle => _ = activePanel(tabs.items, active_tab_idx.*).toggleStressFontSize(),
         .terminal_paste => pasteIntoActiveTab(activePanel(tabs.items, active_tab_idx.*)),
-        .terminal_new_tab => try openTab(std.heap.c_allocator, io, conf, feed_record_path, window, tabs, active_tab_idx),
+        .terminal_new_tab => try openTab(std.heap.c_allocator, io, conf, input, feed_record_path, window, tabs, active_tab_idx),
         .terminal_close_tab => closeActiveTab(window, tabs, active_tab_idx),
         .terminal_next_tab => selectRelative(window, tabs.items, active_tab_idx, 1),
         .terminal_prev_tab => selectRelative(window, tabs.items, active_tab_idx, -1),
@@ -470,15 +479,15 @@ fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8,
     }
 }
 
-fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, feed_record_path: ?[]const u8, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
+fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, input: *Input, feed_record_path: ?[]const u8, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
     assert(tabs.items.len <= max_tabs);
     if (tabs.items.len >= TabBar.max_tabs) return;
 
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
-    const tab = try TerminalPanel.create(alloc, io, feed_record_path, &conf.term, px.width, px.height, logical.width, logical.height);
+    const tab = try TerminalPanel.create(alloc, io, input, feed_record_path, &conf.term, px.width, px.height, logical.width, logical.height);
     errdefer tab.destroy(alloc);
-    Input.requestRedraw();
+    input.requestRedraw();
 
     try tabs.append(alloc, tab);
     assert(tabs.items.len > 0);

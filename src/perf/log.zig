@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const assert = std.debug.assert;
 const render_api = @import("../terminal/render/abi.zig");
@@ -15,15 +14,13 @@ const c = @cImport({
 const sample_interval_ms: u32 = 1000;
 const default_log_name: [*:0]const u8 = "howl-runtime.jsonl";
 
-var shared_state_mutex: std.Io.Mutex = .init;
-var shared_file: ?*c.FILE = null;
-
 pub const State = struct {
     file: ?*c.FILE,
     wake_sem: ?*window.c_win.SDL_Semaphore,
     thread: ?std.Thread,
     stop: std.atomic.Value(bool),
     term: *terminal_term.Term,
+    file_mutex: std.Io.Mutex,
 
     pub fn init(self: *State, term: *terminal_term.Term, path: ?[*:0]const u8) !void {
         assert(path == null or path.?[0] != 0);
@@ -38,9 +35,8 @@ pub const State = struct {
             .thread = null,
             .stop = std.atomic.Value(bool).init(false),
             .term = term,
+            .file_mutex = .init,
         };
-        setSharedState(file);
-        errdefer setSharedState(null);
 
         const thread = try std.Thread.spawn(.{}, threadMain, .{self});
         setThreadName(thread, "howl-perf");
@@ -48,6 +44,24 @@ pub const State = struct {
         assert(self.file != null);
         assert(self.wake_sem != null);
         assert(self.thread != null);
+    }
+
+    pub fn logSdlFpsWindow(self: *State, frames: u64, window_frames: u64, fps: f64, avg_cache_us: f64, avg_draw_us: f64, avg_swap_us: f64, avg_total_us: f64) void {
+        const file = self.file orelse return;
+        self.lockFile();
+        defer self.unlockFile();
+        _ = c.fprintf(
+            file,
+            "{\"type\":\"sdl_fps\",\"schema\":1,\"frames\":%llu,\"window_frames\":%llu,\"fps\":%.2f,\"avg_cache_us\":%.2f,\"avg_draw_us\":%.2f,\"avg_swap_us\":%.2f,\"avg_total_us\":%.2f}\n",
+            @as(c_ulonglong, frames),
+            @as(c_ulonglong, window_frames),
+            fps,
+            avg_cache_us,
+            avg_draw_us,
+            avg_swap_us,
+            avg_total_us,
+        );
+        _ = c.fflush(file);
     }
 
     pub fn stopAndDeinit(self: *State) void {
@@ -58,11 +72,18 @@ pub const State = struct {
         if (self.wake_sem) |sem| window.c_win.SDL_SignalSemaphore(sem);
         if (self.thread) |thread| thread.join();
         self.thread = null;
-        setSharedState(null);
         if (self.wake_sem) |sem| window.c_win.SDL_DestroySemaphore(sem);
         self.wake_sem = null;
         if (self.file) |file| _ = c.fclose(file);
         self.file = null;
+    }
+
+    fn lockFile(self: *State) void {
+        std.Io.Threaded.mutexLock(&self.file_mutex);
+    }
+
+    fn unlockFile(self: *State) void {
+        std.Io.Threaded.mutexUnlock(&self.file_mutex);
     }
 };
 
@@ -77,24 +98,6 @@ const ThreadSample = struct {
     name_len: u8,
     total_ticks: u64,
 };
-
-pub fn logSdlFpsWindow(frames: u64, window_frames: u64, fps: f64, avg_cache_us: f64, avg_draw_us: f64, avg_swap_us: f64, avg_total_us: f64) void {
-    lockFile();
-    defer unlockFile();
-    const file = shared_file orelse return;
-    _ = c.fprintf(
-        file,
-        "{\"type\":\"sdl_fps\",\"schema\":1,\"frames\":%llu,\"window_frames\":%llu,\"fps\":%.2f,\"avg_cache_us\":%.2f,\"avg_draw_us\":%.2f,\"avg_swap_us\":%.2f,\"avg_total_us\":%.2f}\n",
-        @as(c_ulonglong, frames),
-        @as(c_ulonglong, window_frames),
-        fps,
-        avg_cache_us,
-        avg_draw_us,
-        avg_swap_us,
-        avg_total_us,
-    );
-    _ = c.fflush(file);
-}
 
 fn threadMain(self: *State) void {
     assert(self.file != null);
@@ -147,8 +150,8 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
     assert(threads.items.len > 0);
 
     const file = self.file orelse return error.PerfLogClosed;
-    lockFile();
-    defer unlockFile();
+    self.lockFile();
+    defer self.unlockFile();
     if (c.fprintf(
         file,
         "{\"type\":\"thread_cpu\",\"schema\":1,\"mono_ns\":%llu,\"elapsed_ns\":%llu,\"render\":{\"snapshot_publishes\":%llu,\"snapshot_clean_drops\":%llu,\"prepare_requests\":%llu,\"prepare_coalesces\":%llu,\"prepare_forced_full\":%llu,\"prepare_takes\":%llu,\"prepared_publishes\":%llu,\"prepared_coalesces\":%llu,\"submit_takes\":%llu,\"submit_valid\":%llu,\"submit_rejected\":%llu,\"full_prepare_requests\":%llu,\"submitted_accepts\":%llu,\"presents\":%llu},\"threads\":[",
@@ -185,20 +188,6 @@ fn sample(self: *State, prev_threads: *std.ArrayList(ThreadPrev), last_sample_ns
     try prev_threads.resize(std.heap.c_allocator, threads.items.len);
     for (threads.items, 0..) |thread, idx| prev_threads.items[idx] = .{ .tid = thread.tid, .total_ticks = thread.total_ticks };
     last_sample_ns.* = now_ns;
-}
-
-fn setSharedState(file: ?*c.FILE) void {
-    lockFile();
-    defer unlockFile();
-    shared_file = file;
-}
-
-fn lockFile() void {
-    std.Io.Threaded.mutexLock(&shared_state_mutex);
-}
-
-fn unlockFile() void {
-    std.Io.Threaded.mutexUnlock(&shared_state_mutex);
 }
 
 fn readThreadSample(tid: u32) !ThreadSample {

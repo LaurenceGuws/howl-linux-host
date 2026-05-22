@@ -34,16 +34,18 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
     const keep = backlog or transport.hit_limit;
     const should_redraw = transport.reads != 0 or transport.bytes_read != 0;
     const wake = should_redraw or !alive;
-    log.logProgressDriveStartupf(
-        "stage=progress-drive-first reads={d} read_bytes={d} wake={d} keep={} alive={}",
-        .{
-            transport.reads,
-            transport.bytes_read,
-            @intFromBool(wake),
-            keep,
-            alive,
-        },
-    );
+    if (Ops.takeProgressDriveStartup(term)) {
+        log.logStartupf(
+            "stage=progress-drive-first reads={d} read_bytes={d} wake={d} keep={} alive={}",
+            .{
+                transport.reads,
+                transport.bytes_read,
+                @intFromBool(wake),
+                keep,
+                alive,
+            },
+        );
+    }
     if (wake) {
         log.logf(
             "host-loop ts_ns={d} stage=progress-drive-live drained={d} pending={d} reads={d} read_bytes={d} wake={} keep={}",
@@ -58,7 +60,8 @@ fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
             },
         );
     }
-    log.logFramef(
+    Ops.logFrame(
+        term,
         "host-loop ts_ns={d} stage=progress-drive drained={d} pending={d} reads={d} read_bytes={d} wake={d} keep={}",
         .{
             log.nowNs(),
@@ -84,6 +87,17 @@ const RealOps = struct {
 
     fn isAlive(term: *const terminal_term.Term) bool {
         return pty_session.isAlive(term);
+    }
+
+    fn takeProgressDriveStartup(term: *terminal_term.Term) bool {
+        if (term.trace.progress_drive_logged) return false;
+        term.trace.progress_drive_logged = true;
+        return true;
+    }
+
+    fn logFrame(term: *terminal_term.Term, comptime fmt: []const u8, args: anytype) void {
+        if (!frameTraceEnabled(term)) return;
+        log.logf(fmt, args);
     }
 };
 
@@ -115,10 +129,13 @@ fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPump
     const hit_limit = reads == limits.max_reads or bytes_read == limits.max_bytes;
 
     if (reads > 0) {
-        log.logTransportReadStartupf("stage=term-transport-read-first reads={d} read_bytes={d}", .{
-            reads,
-            bytes_read,
-        });
+        if (!term.trace.transport_read_logged) {
+            term.trace.transport_read_logged = true;
+            log.logStartupf("stage=term-transport-read-first reads={d} read_bytes={d}", .{
+                reads,
+                bytes_read,
+            });
+        }
     }
     return .{
         .drained_input_bytes = outbound.drained_input_bytes,
@@ -245,4 +262,18 @@ const FakeOps = struct {
     fn isAlive(_: *const FakeTerm) bool {
         return fake_state.is_alive;
     }
+
+    fn takeProgressDriveStartup(_: *FakeTerm) bool {
+        return true;
+    }
+
+    fn logFrame(_: *FakeTerm, comptime _: []const u8, _: anytype) void {}
 };
+
+fn frameTraceEnabled(term: *terminal_term.Term) bool {
+    if (term.trace.frame_trace_state == .unknown) {
+        const raw = std.c.getenv("HOWL_RUNTIME_TRACE_FRAMES");
+        term.trace.frame_trace_state = if (raw != null and raw.?[0] != 0 and raw.?[0] != '0') .enabled else .disabled;
+    }
+    return term.trace.frame_trace_state == .enabled;
+}

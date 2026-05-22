@@ -35,6 +35,7 @@ pub const Input = struct {
     scroll_pages: i32,
     binding_buf: [64]Bindings.Action,
     binding_len: u8,
+    bindings: Bindings.Configured,
     redraw_requested: bool,
     window_geometry_changed: bool,
     window_focus_changed: ?bool,
@@ -45,15 +46,16 @@ pub const Input = struct {
     terminal_motion_mod: Mod,
     mouse_motion_enabled: bool,
     mouse_button_down: bool,
+    window_state: window.State,
 
     pub fn init(self: *Input) void {
-        window.clearQuitRequest();
         self.* = .{
             .input_events = undefined,
             .input_len = 0,
             .scroll_pages = 0,
             .binding_buf = undefined,
             .binding_len = 0,
+            .bindings = .{},
             .redraw_requested = false,
             .window_geometry_changed = false,
             .window_focus_changed = null,
@@ -64,8 +66,14 @@ pub const Input = struct {
             .terminal_motion_mod = .{},
             .mouse_motion_enabled = true,
             .mouse_button_down = false,
+            .window_state = .{},
         };
+        self.window_state.init();
         self.updateMouseMotionEvents();
+    }
+
+    pub fn setBindings(self: *Input, bindings: Bindings.Configured) void {
+        self.bindings = bindings;
     }
 
     pub fn setHostMousePolicy(self: *Input, policy: HostMousePolicy) void {
@@ -138,7 +146,7 @@ pub const Input = struct {
             self.redraw_requested or
             self.window_geometry_changed or
             self.window_focus_changed != null or
-            window.redrawRequested();
+            self.window_state.redrawRequested();
     }
 
     pub fn drainWindowGeometryChanged(self: *Input) bool {
@@ -156,28 +164,28 @@ pub const Input = struct {
     }
 
     pub fn pumpWindow(self: *Input, wait: bool) Signal {
-        if (window.quitRequested()) return .quit;
+        if (self.window_state.quitRequested()) return .quit;
 
         if (wait) {
-            window.logWindowWaitStartup();
+            self.window_state.logWindowWaitStartup();
             const signal = self.waitAndDrainEvents();
-            window.logWindowWakeStartup(signal);
+            self.window_state.logWindowWakeStartup(signal);
             if (signal == .quit) return .quit;
         } else {
             const signal = self.drainPendingEvents();
             if (signal == .quit) return .quit;
         }
 
-        if (window.quitRequested()) return .quit;
+        if (self.window_state.quitRequested()) return .quit;
         return .none;
     }
 
-    pub fn wakeWindow() void {
-        window.wakeEventLoop();
+    pub fn wakeWindow(self: *Input) void {
+        self.window_state.wakeEventLoop();
     }
 
-    pub fn requestRedraw() void {
-        window.requestRedraw();
+    pub fn requestRedraw(self: *Input) void {
+        self.window_state.requestRedraw();
     }
 
     pub fn keyFromLabel(raw: []const u8) ?Key {
@@ -193,20 +201,20 @@ pub const Input = struct {
     }
 
     fn drainPendingEvents(self: *Input) Signal {
-        var signal: Signal = if (window.quitRequested()) .quit else .none;
+        var signal: Signal = if (self.window_state.quitRequested()) .quit else .none;
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {
             self.processEvent(&event);
-            if (window.quitRequested()) signal = .quit;
+            if (self.window_state.quitRequested()) signal = .quit;
         }
         return signal;
     }
 
     fn processEvent(self: *Input, event: *const c.SDL_Event) void {
-        if (window.isWakeEventType(event.type)) return;
-        if (window.isRedrawEventType(event.type)) {
+        if (self.window_state.isWakeEventType(event.type)) return;
+        if (self.window_state.isRedrawEventType(event.type)) {
             self.redraw_requested = true;
-            window.ackRedrawEvent();
+            self.window_state.ackRedrawEvent();
             return;
         }
 
@@ -216,7 +224,7 @@ pub const Input = struct {
             c.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
             c.SDL_EVENT_WINDOW_DESTROYED,
             => {
-                window.requestQuit();
+                self.window_state.requestQuit();
                 return;
             },
             c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
@@ -348,7 +356,7 @@ fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
     }
     if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
         if (sdlKey(event.key.key)) |key| {
-            if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
+            if (input.bindings.resolve(key, ctrl, shift, alt)) |action| {
                 appendBindingAction(input, action);
                 return;
             }
@@ -359,7 +367,7 @@ fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
     }
     if (alt and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
         if (sdlKey(event.key.key)) |key| {
-            if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
+            if (input.bindings.resolve(key, ctrl, shift, alt)) |action| {
                 appendBindingAction(input, action);
                 return;
             }
@@ -370,7 +378,7 @@ fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
         return;
     }
     if (sdlKey(event.key.key)) |key| {
-        if (Input.Bindings.resolve(key, ctrl, shift, alt)) |action| {
+        if (input.bindings.resolve(key, ctrl, shift, alt)) |action| {
             appendBindingAction(input, action);
             return;
         }
@@ -651,7 +659,7 @@ test "sdl mod binding" {
 test "special key binding" {
     try std.testing.expectEqual(keys.Key.up, sdlKey(c.SDLK_UP).?);
     try std.testing.expectEqual(keys.Key.page_up, sdlKey(c.SDLK_PAGEUP).?);
-    try std.testing.expectEqual(@as(?keys.Key, null), sdlKey('a'));
+    try std.testing.expectEqual(keys.Key.a, sdlKey('a').?);
 }
 
 test "mod subset requires at least one configured mod" {

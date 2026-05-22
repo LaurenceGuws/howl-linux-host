@@ -19,11 +19,19 @@ pub const Mutex = struct {
 };
 
 pub const Term = struct {
+    pub const TraceState = struct {
+        frame_trace_state: @import("../input/window.zig").FrameTraceState = .unknown,
+        progress_drive_logged: bool = false,
+        transport_read_logged: bool = false,
+        source_publish_logged: bool = false,
+    };
+
     allocator: std.mem.Allocator,
     pty: pty_retained.State,
     session: c.HowlPtySessionHandle,
     vt: c.HowlVtHandle,
     render: render_retained.State,
     vt_state: vt_retained.State = .{},
+    trace: TraceState = .{},
     mutex: Mutex = .{},
 };

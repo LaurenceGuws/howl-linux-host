@@ -83,12 +83,15 @@ pub fn publishSource(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
                 visible.scroll_row,
             },
         );
-        log.logSourcePublishStartupf("stage=term-source-publish-first queued={d} damage={d} snapshot_seq={d} geom_epoch={d}", .{
-            typed_response.queued,
-            typed_response.damage_kind,
-            typed_response.snapshot_seq,
-            typed_response.geometry_epoch,
-        });
+        if (!term.trace.source_publish_logged) {
+            term.trace.source_publish_logged = true;
+            log.logStartupf("stage=term-source-publish-first queued={d} damage={d} snapshot_seq={d} geom_epoch={d}", .{
+                typed_response.queued,
+                typed_response.damage_kind,
+                typed_response.snapshot_seq,
+                typed_response.geometry_epoch,
+            });
+        }
     }
     return typed_response;
 }

@@ -104,8 +104,8 @@ pub const State = struct {
         };
     }
 
-    pub fn present(self: *State, frame: Frame) void {
-        Present.present(c, &self.present_state, frame);
+    pub fn present(self: *State, perf: anytype, frame: Frame) void {
+        Present.present(c, &self.present_state, perf, frame);
     }
 
     pub fn tabBarHeight(self: *const State, configured_height: u32) c_int {

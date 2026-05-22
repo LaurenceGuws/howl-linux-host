@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const mouse = @import("mouse.zig");
 
@@ -182,6 +181,27 @@ pub fn label(key: Key) []const u8 {
 pub const Bindings = struct {
     bindings: []const Binding,
 
+    pub const Configured = struct {
+        term: []const Binding = &.{},
+        window: []const Binding = &.{},
+        tab_bar: []const Binding = &.{},
+
+        pub fn init(conf: anytype) Configured {
+            return .{
+                .term = conf.term.bindings.bindings,
+                .window = conf.window.bindings.bindings,
+                .tab_bar = conf.tab_bar.bindings.bindings,
+            };
+        }
+
+        pub fn resolve(self: Configured, key: Key, ctrl: bool, shift: bool, alt: bool) ?Action {
+            if (matchBinding(self.window, key, ctrl, shift, alt)) |action| return action;
+            if (matchBinding(self.term, key, ctrl, shift, alt)) |action| return action;
+            if (matchBinding(self.tab_bar, key, ctrl, shift, alt)) |action| return action;
+            return null;
+        }
+    };
+
     pub const Action = enum {
         zoom_in,
         zoom_out,
@@ -245,23 +265,6 @@ pub const Bindings = struct {
         }
         if (!saw_key) return error.InvalidConfig;
         return binding;
-    }
-
-    var term_bindings: []const Binding = &.{};
-    var window_bindings: []const Binding = &.{};
-    var tab_bar_bindings: []const Binding = &.{};
-
-    pub fn setConfigBindings(conf: anytype) void {
-        term_bindings = conf.term.bindings.bindings;
-        window_bindings = conf.window.bindings.bindings;
-        tab_bar_bindings = conf.tab_bar.bindings.bindings;
-    }
-
-    pub fn resolve(key: Key, ctrl: bool, shift: bool, alt: bool) ?Action {
-        if (matchBinding(window_bindings, key, ctrl, shift, alt)) |action| return action;
-        if (matchBinding(term_bindings, key, ctrl, shift, alt)) |action| return action;
-        if (matchBinding(tab_bar_bindings, key, ctrl, shift, alt)) |action| return action;
-        return null;
     }
 
     pub fn isRepeatable(action: Action) bool {
