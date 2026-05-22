@@ -12,8 +12,12 @@ fn cellCount(rows: u16, cols: u16) u32 {
 }
 
 pub const VisibleInfo = struct {
+    rows: u16,
+    cols: u16,
     history_count: u32,
     is_alternate_screen: bool,
+    snapshot_seq: u64,
+    dirty_generation: u64,
 };
 
 pub const VisibleCopy = struct {
@@ -119,8 +123,12 @@ pub fn sourceRejected(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
 pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
     const meta = vtVisibleMeta(handle, scrollback_offset);
     return .{
+        .rows = meta.rows,
+        .cols = meta.cols,
         .history_count = meta.history_count,
         .is_alternate_screen = meta.is_alternate_screen,
+        .snapshot_seq = meta.snapshot_seq,
+        .dirty_generation = meta.dirty_generation,
     };
 }
 
@@ -130,19 +138,21 @@ const VisibleMeta = struct {
     history_count: u32,
     is_alternate_screen: bool,
     snapshot_seq: u64,
+    dirty_generation: u64,
 };
 
 fn vtVisibleMeta(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
     std.debug.assert(handle != null);
-    const view = c.howl_vt_terminal_copy_surface(handle, scrollback_offset, null, 0, null, 0, null, 0, null, 0);
-    if (view.status != vt_abi.callShortBuffer()) vt_abi.requireStructOk(view.status);
-    std.debug.assert(scrollback_offset <= view.history_count);
+    const view = c.howl_vt_terminal_query_visible_meta(handle, scrollback_offset);
+    vt_abi.requireStructOk(view.status);
+    std.debug.assert(scrollback_offset <= view.meta.history_count);
     return .{
-        .rows = view.source.rows,
-        .cols = view.source.cols,
-        .history_count = @intCast(view.history_count),
-        .is_alternate_screen = view.source.is_alternate_screen != 0,
-        .snapshot_seq = view.snapshot_seq,
+        .rows = view.meta.rows,
+        .cols = view.meta.cols,
+        .history_count = @intCast(view.meta.history_count),
+        .is_alternate_screen = view.meta.is_alternate_screen != 0,
+        .snapshot_seq = view.meta.snapshot_seq,
+        .dirty_generation = view.meta.dirty_generation,
     };
 }
 

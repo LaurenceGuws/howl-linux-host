@@ -49,7 +49,7 @@ classDiagram
   shell prompt or terminal capability environment state itself.
 - `src/terminal/vt/abi.zig` owns VT C ABI call translation only.
 - `src/terminal/vt/retained.zig` owns host-retained VT state such as title, scrollback offset, and VT byte scratch.
-- `src/terminal/vt/surface.zig` owns VT-visible meta queries, direct VT copy into a render-owned
+- `src/terminal/vt/surface.zig` owns explicit VT-visible meta queries, direct VT copy into a render-owned
   publish slot typed as VT ABI cells/cursor, and VT source publication.
 - `src/terminal/host/input.zig` owns host-input publication through VT encoding plus PTY handoff.
 - `src/terminal/render/` owns render ABI calls, render-layout requests from host pixel constraints,
