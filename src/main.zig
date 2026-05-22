@@ -408,7 +408,7 @@ fn render(app: *App) void {
         });
         // Present closes the frame before the host retires render-present state and
         // then acknowledges the published VT dirty generation.
-        RenderFrame.finishPresent(&tab.panel.term);
+        RenderFrame.finishPresent(tab.panel);
     }
     InputWindow.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
 }

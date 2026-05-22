@@ -110,12 +110,12 @@ fn drive(
     };
 }
 
-pub fn finishPresent(term: *runtime.Term) void {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    const snapshot_seq = term.render.retirePresented();
+pub fn finishPresent(panel: *TerminalPanel) void {
+    panel.term.mutex.lock();
+    defer panel.term.mutex.unlock();
+    const snapshot_seq = panel.term.render.retirePresented();
     if (snapshot_seq == 0) return;
-    vt_abi.requireStructOk(c.howl_vt_terminal_ack_surface(term.vt, snapshot_seq));
+    vt_abi.requireStructOk(c.howl_vt_terminal_ack_surface(panel.term.vt, snapshot_seq));
 }
 
 fn maybePublishWith(
