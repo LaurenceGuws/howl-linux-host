@@ -53,15 +53,16 @@ classDiagram
   publish slot, and VT source publication.
 - `src/terminal/host/input.zig` owns host-input publication through VT encoding plus PTY handoff.
 - `src/terminal/render/` owns render ABI calls, render-layout requests from host pixel constraints,
-  frame layout sync, the host-side render turn, and contract translation between VT-surface input
+  frame layout sync, the bounded host-side pre-present render turn, and contract translation between VT-surface input
   and render-surface output. That owner publishes VT source when eligible, drives prepare/query,
   fetches prepared buffers, uploads the realized surface image into the host texture, submits the
   prepared frame, and retires present before VT dirty ack. Retained render queue state, geometry
   epoch/query state, VT source publication classification, submit validation, and present
   retirement belong to `howl-render`; the host consumes those steps through the render C ABI.
   `src/terminal/render/abi.zig` translates host geometry, font, metric, and pixel-space calls only.
-  `src/terminal/render/frame.zig` is the host render control spine. It owns render-work queries,
-  prepared-upload intake, upload/submit ordering, and present retirement plus VT ack ordering.
+  `src/terminal/render/frame.zig` is the host render control spine. It owns one bounded active-tab
+  render turn before present: render-work queries, VT publication eligibility, prepared-upload
+  intake, upload/submit ordering, and present retirement plus VT ack ordering.
   `src/terminal/render/retained.zig` owns host-side render retained state and render lifecycle
   mutation: frame-layout mirror, geometry epoch, prepared-surface handle lifetime,
   submit/present retirement, prepared-upload snapshots, and accumulated render perf counters. Font path ownership and
@@ -73,7 +74,7 @@ classDiagram
 - `src/terminal/terminal_panel.zig` owns terminal runtime lifetime plus host-retained wake-thread state for one panel.
 - `src/terminal/runtime/progress.zig` owns one bounded PTY/VT progress turn, including PTY-read slices, VT feed, and VT reply handoff.
 - `src/terminal/runtime/thread.zig` owns the background wait-only wake thread for PTY readiness. It does not own PTY pumping, VT mutation, or render work.
-- `main.zig` drives one bounded PTY transport slice with direct VT feed, and one explicit in-flight render-work plus host-pending query per turn when deciding whether to wait, poll, render, present, or wake again. It keeps app cadence, tab selection, window orchestration, and the actual `Window.present(...)` call. The render owner drives VT publish, prepare/query, upload/submit, and post-present retirement ordering.
+- `main.zig` drives one bounded PTY transport slice with direct VT feed, and asks render for one bounded active-tab render-turn result per frame when deciding whether to wait, poll, render, present, or wake again. It keeps app cadence, tab selection, window orchestration, and the actual `Window.present(...)` call. The render owner drives VT publish, prepare/query, upload/submit, and post-present retirement ordering.
 - `main.zig` also owns process-global child environment policy such as `TERM`, because that state is process-global on the current PTY launch path.
 - The background progress thread only waits for PTY readiness and wakes the owner thread. It does not pump transport, apply VT work, or mutate render state.
 - `Window` owns the OS window and host chrome presentation. It receives a term-texture handle; it does not infer terminal state.
@@ -120,7 +121,7 @@ sequenceDiagram
         T->>P: publish host input
         Main->>P: drive bounded transport slice
         P->>V: feed bytes directly
-        Main->>R: drive publish/prepare/upload/submit turn
+    Main->>R: ask for bounded pre-present render turn result
         Main->>W: present(frame)
         Main->>R: retire presented render frame then ack VT dirty
     end

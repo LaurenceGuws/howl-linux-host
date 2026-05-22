@@ -12,7 +12,8 @@ const c = runtime.c;
 pub const RenderWorkState = retained.WorkState;
 const PreparedUpload = retained.PreparedUpload;
 
-pub const DriveStep = enum {
+pub const TurnStep = enum {
+    no_frame,
     idle_prepare,
     idle_submit,
     blocked_present,
@@ -20,9 +21,11 @@ pub const DriveStep = enum {
     failed,
 };
 
-pub const DriveResult = struct {
+pub const TurnResult = struct {
+    work_before: RenderWorkState,
+    work_after: RenderWorkState,
     prepared: bool,
-    step: DriveStep,
+    step: TurnStep,
 };
 
 const PublishOps = struct {
@@ -35,11 +38,6 @@ const PublishOps = struct {
     }
 };
 
-pub fn maybePublish(panel: *TerminalPanel, bootstrap_surface: bool) void {
-    const work = workState(&panel.term, bootstrap_surface);
-    maybePublishWith(panel, bootstrap_surface, work, PublishOps);
-}
-
 pub fn workState(term: *const runtime.Term, bootstrap_surface: bool) RenderWorkState {
     const mut: *runtime.Term = @constCast(term);
     mut.mutex.lock();
@@ -47,7 +45,38 @@ pub fn workState(term: *const runtime.Term, bootstrap_surface: bool) RenderWorkS
     return term.render.pending(bootstrap_surface);
 }
 
-pub fn drive(
+pub fn renderTurn(
+    panel: *TerminalPanel,
+    surface: *c.HowlRenderSurfaceHandle,
+) TurnResult {
+    const bootstrap_surface = surface.host_surface_id == 0;
+    const publish_work = workState(&panel.term, bootstrap_surface);
+    maybePublishWith(panel, bootstrap_surface, publish_work, PublishOps);
+    const work_before = workState(&panel.term, bootstrap_surface);
+    if (!work_before.wantsFrame()) {
+        return .{
+            .work_before = work_before,
+            .work_after = work_before,
+            .prepared = false,
+            .step = .no_frame,
+        };
+    }
+
+    const drive_result = drive(&panel.term, surface, work_before);
+    return .{
+        .work_before = work_before,
+        .work_after = workState(&panel.term, bootstrap_surface),
+        .prepared = drive_result.prepared,
+        .step = drive_result.step,
+    };
+}
+
+const DriveResult = struct {
+    prepared: bool,
+    step: TurnStep,
+};
+
+fn drive(
     term: *runtime.Term,
     surface: *c.HowlRenderSurfaceHandle,
     work: RenderWorkState,
@@ -143,7 +172,7 @@ fn renderUs(start_ns: u64) u64 {
     return elapsed_ns / std.time.ns_per_us;
 }
 
-fn submitStep(result: retained.SubmitResult) DriveStep {
+fn submitStep(result: retained.SubmitResult) TurnStep {
     return switch (result) {
         .rendered => .rendered,
         .failed => .failed,
