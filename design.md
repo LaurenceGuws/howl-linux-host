@@ -65,6 +65,7 @@ classDiagram
   render does not discover fonts on the host's behalf.
 - `src/terminal/runtime/progress.zig` owns one bounded PTY/VT progress turn, including PTY-read slices, VT feed, and VT reply handoff.
 - `src/terminal/runtime/thread.zig` owns the background wait-only wake thread for PTY readiness. It waits in bounded slices, and it does not own PTY pumping, VT mutation, or render work.
+- Host shutdown wakes that thread through the PTY-owner ABI seam before join; it does not tear down transport just to break `wait_readable`.
 - `main.zig` drives one bounded host turn, asks the active `TerminalPanel` whether it needs progress or render work, and performs the actual `Window.present(...)` call when chrome or the active panel requires presentation.
 - `main.zig` also owns process-global child environment policy such as `TERM`, because that state is process-global on the current PTY launch path.
 - The background progress thread only waits for PTY readiness and wakes the owner thread. It does not pump transport, apply VT work, or mutate render state.

@@ -131,10 +131,11 @@ pub const TerminalPanel = struct {
         self.term_texture.height = 0;
         self.progress.stop.store(true, .release);
         runtime_thread.ackWake(self);
-        if (self.live) pty_session.stop(&self.term);
+        if (self.live) pty_session.kickWait(&self.term);
         if (self.progress.thread) |handle| handle.join();
         self.progress.thread = null;
         if (self.live) {
+            pty_session.stop(&self.term);
             feed_record.deinit(&self.term);
             self.term.render.deinit();
             self.term.vt_state.deinit(self.term.allocator);

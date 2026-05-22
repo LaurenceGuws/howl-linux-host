@@ -107,6 +107,12 @@ pub fn waitTransport(term: *terminal_term.Term, timeout_ms: i32) bool {
     return c.howl_pty_session_wait_readable(term.session, timeout_ms) != 0;
 }
 
+pub fn kickWait(term: *terminal_term.Term) void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    c.howl_pty_session_kick_wait(term.session);
+}
+
 pub fn pumpOutboundLocked(term: *terminal_term.Term) OutboundProgress {
     const outbound = c.howl_pty_session_pump_outbound(term.session, 0);
     ptyRequireStructOk(outbound.status);
