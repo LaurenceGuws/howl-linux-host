@@ -23,6 +23,8 @@ const FrameLayoutRequest = render_api.FrameLayoutRequest;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const ClipboardOsc52Policy = @import("../config/terminal.zig").ClipboardOsc52Policy;
+const LinkHoverPolicy = @import("../config/terminal.zig").LinkHoverPolicy;
+const LinkUnderlineStyle = @import("../config/terminal.zig").LinkUnderlineStyle;
 const font_size = @import("host/font_size.zig");
 const geometry = @import("host/geometry.zig");
 const term_input = @import("host/input.zig");
@@ -35,6 +37,11 @@ const CursorBlinkPlan = struct {
     visible: bool,
     deadline_ns: u64,
     changed: bool,
+};
+
+const HoveredLinkCell = struct {
+    row: u16,
+    col: u16,
 };
 
 pub const TerminalPanel = struct {
@@ -73,6 +80,7 @@ pub const TerminalPanel = struct {
     widget_focused: bool,
     scrollbar: scroll.State,
     link_cursor_active: bool,
+    hovered_link_cell: ?HoveredLinkCell,
     first_submit_trace_logged: bool,
     first_prepare_result_logged: bool,
     first_non_idle_submit_logged: bool,
@@ -117,6 +125,7 @@ pub const TerminalPanel = struct {
             .widget_focused = true,
             .scrollbar = .{},
             .link_cursor_active = false,
+            .hovered_link_cell = null,
             .first_submit_trace_logged = false,
             .first_prepare_result_logged = false,
             .first_non_idle_submit_logged = false,
@@ -188,18 +197,28 @@ pub const TerminalPanel = struct {
                 },
                 .mouse => |mouse_event| {
                     if (scroll.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
-                    if (mouse_event.host_only) continue;
-
-                    const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.geometry.render_px_w, self.geometry.render_px_h) orelse continue;
-                    const consumed_by_term = publishTerminalMouse(self, local_mouse);
-                    if (!consumed_by_term and local_mouse.kind == .wheel) {
-                        const delta: i32 = switch (local_mouse.button) {
-                            .wheel_up => 3,
-                            .wheel_down => -3,
-                            else => 0,
-                        };
-                        if (delta != 0) scroll.byRows(self, delta);
+                    const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.geometry.render_px_w, self.geometry.render_px_h) orelse {
+                        if (mouse_event.host_only and clearHoveredLink(self)) self.input.requestRedraw();
+                        continue;
+                    };
+                    if (local_mouse.kind == .wheel) {
+                        if (!publishTerminalMouse(self, local_mouse)) {
+                            const delta: i32 = switch (local_mouse.button) {
+                                .wheel_up => 3,
+                                .wheel_down => -3,
+                                else => 0,
+                            };
+                            if (delta != 0) scroll.byRows(self, delta);
+                        }
+                        continue;
                     }
+                    if (handleHostLinkMouse(self, local_mouse)) continue;
+                    if (mouse_event.host_only) {
+                        if (clearHoveredLink(self)) self.input.requestRedraw();
+                        continue;
+                    }
+
+                    _ = publishTerminalMouse(self, local_mouse);
                 },
             }
         }
@@ -216,6 +235,11 @@ pub const TerminalPanel = struct {
     /// Report whether this terminal needs unpressed mouse motion for link hover.
     pub fn wantsLinkHover(self: *const TerminalPanel) bool {
         return self.conf.links.hover != .off;
+    }
+
+    pub fn wantsTerminalHoverReporting(self: *TerminalPanel) bool {
+        if (!self.live) return false;
+        return term_input.wouldReportUnpressedMouseMotion(&self.term);
     }
 
     pub fn overlaySnapshot(self: *const TerminalPanel, texture_rect: window.Rect) OverlaySnapshot {
@@ -248,6 +272,7 @@ pub const TerminalPanel = struct {
     pub fn setWindowFocused(self: *TerminalPanel, focused: bool) void {
         if (self.window_focused == focused) return;
         self.window_focused = focused;
+        if (!focused and clearHoveredLink(self)) self.input.requestRedraw();
         scroll.setFocused(self, focused);
         self.syncInputFocus();
     }
@@ -255,6 +280,7 @@ pub const TerminalPanel = struct {
     pub fn setWidgetFocused(self: *TerminalPanel, focused: bool) void {
         if (self.widget_focused == focused) return;
         self.widget_focused = focused;
+        if (!focused and clearHoveredLink(self)) self.input.requestRedraw();
         scroll.invalidate(self);
         self.syncInputFocus();
     }
@@ -308,6 +334,8 @@ pub const TerminalPanel = struct {
         }
         var outcome = runtime_progress.driveOnce(&self.term);
         if (active and outcome.should_redraw) {
+            if (clearHoveredLink(self)) outcome.should_redraw = true;
+            _ = vt_surface.publishSource(&self.term, hoverDecoration(self));
             outcome.should_redraw = self.resetCursorBlinkActivity(InputWindow.nowNs()) or outcome.should_redraw;
         }
         self.applyPendingClipboardWrites();
@@ -473,7 +501,7 @@ pub const TerminalPanel = struct {
 
     fn maybePublishSource(self: *TerminalPanel, bootstrap_surface: bool, work: render_retained.WorkState) void {
         self.maybeCommitGridResize();
-        if (bootstrap_surface or !work.wantsFrame()) _ = vt_surface.publishSource(&self.term);
+        if (bootstrap_surface or !work.wantsFrame()) _ = vt_surface.publishSource(&self.term, hoverDecoration(self));
     }
 
     fn prepare(self: *TerminalPanel) render_retained.PrepareResult {
@@ -614,6 +642,107 @@ pub const TerminalPanel = struct {
             .mods = term_input.mods(mouse_event.mods),
             .buttons_down = term_input.buttons(mouse_event.buttons_down),
         }) catch false;
+    }
+
+    fn handleHostLinkMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+        switch (mouse_event.kind) {
+            .move => updateHoveredLinkCell(self, mouse_event),
+            .press => {
+                if (mouse_event.button == .left and mouse_event.mods.ctrl and self.conf.links.open == .system) {
+                    if (openLinkAtCell(self, mouseEventCell(self, mouse_event))) return true;
+                }
+            },
+            else => {},
+        }
+        return false;
+    }
+
+    fn updateHoveredLinkCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) void {
+        if (self.conf.links.hover == .off or !mouse_event.mods.ctrl) {
+            if (clearHoveredLink(self)) self.input.requestRedraw();
+            return;
+        }
+
+        const cell = mouseEventCell(self, mouse_event);
+        const uri = vt_retained.copyVisibleHyperlinkAt(&self.term, cell.row, cell.col) catch null;
+        if (uri == null or uri.?.len == 0) {
+            if (clearHoveredLink(self)) self.input.requestRedraw();
+            return;
+        }
+
+        var changed = false;
+        if (self.hovered_link_cell) |current| {
+            if (current.row != cell.row or current.col != cell.col) {
+                self.hovered_link_cell = cell;
+                changed = true;
+            }
+        } else {
+            self.hovered_link_cell = cell;
+            changed = true;
+        }
+        changed = syncLinkCursor(self, true) or changed;
+        if (changed) self.input.requestRedraw();
+    }
+
+    fn clearHoveredLink(self: *TerminalPanel) bool {
+        const had_hover = self.hovered_link_cell != null;
+        self.hovered_link_cell = null;
+        return syncLinkCursor(self, false) or had_hover;
+    }
+
+    fn syncLinkCursor(self: *TerminalPanel, active: bool) bool {
+        const wants_cursor = switch (self.conf.links.hover) {
+            .cursor, .underline_and_cursor => active,
+            .off, .underline => false,
+        };
+        if (self.link_cursor_active == wants_cursor) return false;
+        if (wants_cursor) {
+            window.usePointerCursor();
+        } else {
+            window.useDefaultCursor();
+        }
+        self.link_cursor_active = wants_cursor;
+        return true;
+    }
+
+    fn openLinkAtCell(self: *TerminalPanel, cell: HoveredLinkCell) bool {
+        const uri = vt_retained.copyVisibleHyperlinkAt(&self.term, cell.row, cell.col) catch return false;
+        const target = uri orelse return false;
+        if (target.len == 0) return false;
+        return window.openUrl(target);
+    }
+
+    fn mouseEventCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) HoveredLinkCell {
+        return .{
+            .row = @intCast(render_api.pixelToRow(&self.term, mouse_event.pixel_y)),
+            .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
+        };
+    }
+
+    fn hoverDecoration(self: *const TerminalPanel) ?vt_surface.HyperlinkHover {
+        const cell = self.hovered_link_cell orelse return null;
+        if (!hoverShowsUnderline(self.conf.links.hover)) return null;
+        return .{
+            .row = cell.row,
+            .col = cell.col,
+            .underline_style = underlineStyleValue(self.conf.links.underline),
+        };
+    }
+
+    fn hoverShowsUnderline(policy: LinkHoverPolicy) bool {
+        return switch (policy) {
+            .underline, .underline_and_cursor => true,
+            .off, .cursor => false,
+        };
+    }
+
+    fn underlineStyleValue(style: LinkUnderlineStyle) u8 {
+        return switch (style) {
+            .straight => 0,
+            .curly => 2,
+            .dotted => 3,
+            .dashed => 4,
+        };
     }
 
     const TermInit = struct {
@@ -769,6 +898,7 @@ test "cursor activity pushes blink deadline while visible" {
         .widget_focused = true,
         .scrollbar = .{},
         .link_cursor_active = false,
+        .hovered_link_cell = null,
         .first_submit_trace_logged = false,
         .first_prepare_result_logged = false,
         .first_non_idle_submit_logged = false,

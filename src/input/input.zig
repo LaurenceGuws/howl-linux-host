@@ -77,6 +77,8 @@ pub const Input = struct {
         listen_always: bool = false,
         /// Capture unpressed mouse motion for link hover without publishing it to the PTY.
         link_hover: bool = false,
+        /// Capture and forward passive unpressed motion when VT mouse any-event reporting is active.
+        terminal_hover: bool = false,
     };
     pub const TerminalMousePolicy = struct {
         /// Modifier that temporarily forwards unpressed motion to the terminal input path.
@@ -94,7 +96,9 @@ pub const Input = struct {
     last_mouse_y: i32,
     mouse_listen_always: bool,
     mouse_link_hover: bool,
+    mouse_terminal_hover: bool,
     terminal_motion_mod: Mod,
+    current_mods: Mod,
     mouse_motion_enabled: bool,
     mouse_button_down: bool,
     window_state: window.State,
@@ -112,7 +116,9 @@ pub const Input = struct {
             .last_mouse_y = 0,
             .mouse_listen_always = false,
             .mouse_link_hover = false,
+            .mouse_terminal_hover = false,
             .terminal_motion_mod = .{},
+            .current_mods = .{},
             .mouse_motion_enabled = true,
             .mouse_button_down = false,
             .window_state = .{},
@@ -128,6 +134,7 @@ pub const Input = struct {
     pub fn setHostMousePolicy(self: *Input, policy: HostMousePolicy) void {
         self.mouse_listen_always = policy.listen_always;
         self.mouse_link_hover = policy.link_hover;
+        self.mouse_terminal_hover = policy.terminal_hover;
         self.updateMouseMotionEvents();
     }
 
@@ -143,10 +150,13 @@ pub const Input = struct {
     }
 
     fn updateMouseMotionEvents(self: *Input) void {
+        const terminal_motion_active = modSubset(self.terminal_motion_mod, self.current_mods);
+        const link_hover_active = self.mouse_link_hover and self.current_mods.ctrl;
         const needs_motion = self.mouse_button_down or
             self.mouse_listen_always or
-            self.mouse_link_hover or
-            modConfigured(self.terminal_motion_mod);
+            self.mouse_terminal_hover or
+            link_hover_active or
+            terminal_motion_active;
         if (self.mouse_motion_enabled == needs_motion) return;
         c.SDL_SetEventEnabled(c.SDL_EVENT_MOUSE_MOTION, needs_motion);
         self.mouse_motion_enabled = needs_motion;
@@ -293,6 +303,10 @@ pub const Input = struct {
                 processKeyDown(self, event);
                 return;
             },
+            c.SDL_EVENT_KEY_UP => {
+                processKeyUp(self, event);
+                return;
+            },
             c.SDL_EVENT_MOUSE_MOTION => {
                 processMouseMotion(self, event);
                 return;
@@ -372,6 +386,7 @@ fn logQueuedInputEvent(stage: []const u8, event: Input.Event) void {
 }
 
 fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
+    updateModifierState(input, sdlMods(event.key.mod));
     const ctrl = (event.key.mod & c.SDL_KMOD_CTRL) != 0;
     const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
     const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
@@ -417,13 +432,18 @@ fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
     }
 }
 
+fn processKeyUp(input: *Input, event: *const c.SDL_Event) void {
+    updateModifierState(input, sdlMods(event.key.mod));
+}
+
 fn processMouseMotion(input: *Input, event: *const c.SDL_Event) void {
     const buttons_down = sdlButtons(event.motion.state);
     const mods = sdlMods(c.SDL_GetModState());
     const terminal_motion_active = modSubset(input.terminal_motion_mod, mods);
+    const link_hover_active = input.mouse_link_hover and mods.ctrl;
     const button_down = buttons_down.left or buttons_down.middle or buttons_down.right;
-    const host_only = !button_down and !terminal_motion_active;
-    if (!button_down and !input.mouse_listen_always and !terminal_motion_active and !input.mouse_link_hover) return;
+    const host_only = !button_down and !terminal_motion_active and !input.mouse_terminal_hover;
+    if (!button_down and !input.mouse_listen_always and !input.mouse_terminal_hover and !terminal_motion_active and !link_hover_active) return;
     const pixel_x = @as(i32, @intFromFloat(@round(event.motion.x)));
     const pixel_y = @as(i32, @intFromFloat(@round(event.motion.y)));
     input.last_mouse_x = pixel_x;
@@ -436,6 +456,35 @@ fn processMouseMotion(input: *Input, event: *const c.SDL_Event) void {
         .mods = mods,
         .buttons_down = buttons_down,
         .host_only = host_only,
+    });
+    input.redraw_requested = true;
+}
+
+fn updateModifierState(input: *Input, next_mods: mouse.Mod) void {
+    const prev_mods = input.current_mods;
+    if (std.meta.eql(prev_mods, next_mods)) return;
+    input.current_mods = next_mods;
+    input.updateMouseMotionEvents();
+    maybeQueueModifierMouseMove(input, prev_mods, next_mods);
+}
+
+fn maybeQueueModifierMouseMove(input: *Input, prev_mods: mouse.Mod, next_mods: mouse.Mod) void {
+    if (input.mouse_button_down) return;
+
+    const prev_terminal_motion = modSubset(input.terminal_motion_mod, prev_mods);
+    const next_terminal_motion = modSubset(input.terminal_motion_mod, next_mods);
+    const prev_link_hover = input.mouse_link_hover and prev_mods.ctrl;
+    const next_link_hover = input.mouse_link_hover and next_mods.ctrl;
+    if (prev_terminal_motion == next_terminal_motion and prev_link_hover == next_link_hover) return;
+
+    appendMouseEvent(input, .{
+        .kind = .move,
+        .button = .none,
+        .pixel_x = input.last_mouse_x,
+        .pixel_y = input.last_mouse_y,
+        .mods = next_mods,
+        .buttons_down = .{},
+        .host_only = !next_terminal_motion and !input.mouse_terminal_hover,
     });
     input.redraw_requested = true;
 }
@@ -482,6 +531,10 @@ fn processMouseWheel(input: *Input, event: *const c.SDL_Event) void {
     var ticks: i32 = event.wheel.integer_y;
     if (ticks == 0) ticks = @intFromFloat(@round(event.wheel.y));
     if (ticks == 0) return;
+    const pixel_x = @as(i32, @intFromFloat(@round(event.wheel.mouse_x)));
+    const pixel_y = @as(i32, @intFromFloat(@round(event.wheel.mouse_y)));
+    input.last_mouse_x = pixel_x;
+    input.last_mouse_y = pixel_y;
     const button: mouse.Button = if (ticks > 0) .wheel_up else .wheel_down;
     const step_count: u32 = @intCast(@abs(ticks));
     var i: u32 = 0;
@@ -489,8 +542,8 @@ fn processMouseWheel(input: *Input, event: *const c.SDL_Event) void {
         appendMouseEvent(input, .{
             .kind = .wheel,
             .button = button,
-            .pixel_x = input.last_mouse_x,
-            .pixel_y = input.last_mouse_y,
+            .pixel_x = pixel_x,
+            .pixel_y = pixel_y,
             .mods = sdlMods(c.SDL_GetModState()),
             .buttons_down = .{},
         });
@@ -668,10 +721,6 @@ fn modSubset(required: mouse.Mod, active: mouse.Mod) bool {
     return true;
 }
 
-fn modConfigured(mod: mouse.Mod) bool {
-    return mod.shift or mod.alt or mod.ctrl;
-}
-
 fn sdlButtons(state: u32) mouse.Buttons {
     return .{
         .left = (state & c.SDL_BUTTON_LMASK) != 0,
@@ -715,6 +764,38 @@ test "mod subset requires at least one configured mod" {
     try std.testing.expect(!modSubset(.{}, .{}));
     try std.testing.expect(modSubset(.{ .ctrl = true }, .{ .ctrl = true }));
     try std.testing.expect(!modSubset(.{ .ctrl = true }, .{ .shift = true }));
+}
+
+test "modifier transitions synthesize passive move for ctrl hover" {
+    var input: Input = undefined;
+    input.init();
+    input.setHostMousePolicy(.{ .link_hover = true });
+    input.last_mouse_x = 11;
+    input.last_mouse_y = 22;
+
+    updateModifierState(&input, .{ .ctrl = true });
+    const event = input.drainInputEvent() orelse return error.ExpectedEvent;
+    switch (event) {
+        .mouse => |mouse_event| {
+            try std.testing.expectEqual(mouse.Kind.move, mouse_event.kind);
+            try std.testing.expectEqual(@as(i32, 11), mouse_event.pixel_x);
+            try std.testing.expectEqual(@as(i32, 22), mouse_event.pixel_y);
+            try std.testing.expect(mouse_event.mods.ctrl);
+            try std.testing.expect(mouse_event.host_only);
+        },
+        else => return error.UnexpectedEvent,
+    }
+}
+
+test "host policy forwards passive terminal hover motion" {
+    var input: Input = undefined;
+    input.init();
+    input.setHostMousePolicy(.{ .terminal_hover = true });
+
+    try std.testing.expect(input.mouse_motion_enabled);
+
+    maybeQueueModifierMouseMove(&input, .{}, .{});
+    try std.testing.expectEqual(@as(?Input.Event, null), input.drainInputEvent());
 }
 
 test "byte chunking preserves order" {

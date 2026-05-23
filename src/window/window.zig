@@ -9,6 +9,8 @@ const c = @cImport({
     @cInclude("SDL3/SDL_opengl.h");
 });
 
+var pointer_cursor: ?*c.SDL_Cursor = null;
+
 pub const c_win = c;
 pub const Ptr = *c.SDL_Window;
 pub const Flags = c_uint;
@@ -149,6 +151,10 @@ pub fn initVideo() bool {
 }
 
 pub fn quit() void {
+    if (pointer_cursor) |cursor| {
+        c.SDL_DestroyCursor(cursor);
+        pointer_cursor = null;
+    }
     c.SDL_Quit();
 }
 
@@ -219,6 +225,18 @@ pub fn deleteTexture(surface_id: *u64) void {
 
 pub fn useDefaultCursor() void {
     _ = c.SDL_SetCursor(c.SDL_GetDefaultCursor());
+}
+
+pub fn usePointerCursor() void {
+    if (pointer_cursor == null) pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
+    const cursor = pointer_cursor orelse return;
+    _ = c.SDL_SetCursor(cursor);
+}
+
+pub fn openUrl(url: []const u8) bool {
+    const url_z = std.heap.c_allocator.dupeZ(u8, url) catch return false;
+    defer std.heap.c_allocator.free(url_z);
+    return c.SDL_OpenURL(url_z.ptr);
 }
 
 test "window title updates only when content changes" {

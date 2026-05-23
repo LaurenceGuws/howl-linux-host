@@ -7,6 +7,12 @@ const log = @import("../../input/window.zig");
 const damage_none: u8 = @intCast(c.HOWL_RENDER_DAMAGE_NONE);
 const damage_partial: u8 = @intCast(c.HOWL_RENDER_DAMAGE_PARTIAL);
 
+pub const HyperlinkHover = struct {
+    row: u16,
+    col: u16,
+    underline_style: u8,
+};
+
 fn cellCount(rows: u16, cols: u16) u32 {
     return @as(u32, rows) * @as(u32, cols);
 }
@@ -42,7 +48,7 @@ const PublishAckOps = struct {
     }
 };
 
-pub fn publishSource(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
+pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) c.HowlRenderVtPublishResult {
     term.mutex.lock();
     defer term.mutex.unlock();
 
@@ -50,6 +56,7 @@ pub fn publishSource(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
     const slot = reservePublishSlot(term.render.surface_text, meta.cols, meta.rows) catch return rejectPublishSource(term.render.surface_text, meta.snapshot_seq);
 
     const visible = vtCopyVisibleIntoSlot(term, meta, slot) catch return rejectPublishSource(term.render.surface_text, meta.snapshot_seq);
+    if (hover) |value| applyHyperlinkHover(slot, visible.rows, visible.cols, value);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.scroll_row <= visible.history_count + visible.rows);
     term.vt_state.cursor_visible = visible.cursor.visible != 0;
@@ -211,6 +218,43 @@ fn renderCallOk(status: i32) !void {
     if (status != c.HOWL_RENDER_CALL_OK) return error.RenderCallFailed;
 }
 
+fn applyHyperlinkHover(slot: ReservedPublishSlot, rows: u16, cols: u16, hover: HyperlinkHover) void {
+    if (hover.row >= rows or hover.col >= cols) return;
+    const hover_idx = @as(usize, hover.row) * @as(usize, cols) + @as(usize, hover.col);
+    std.debug.assert(hover_idx < slot.cells.len);
+    const link_id = slot.cells[hover_idx].link_id;
+    if (link_id == 0) return;
+
+    var first = hover_idx;
+    while (first > 0 and slot.cells[first - 1].link_id == link_id) first -= 1;
+
+    var last = hover_idx;
+    while (last + 1 < slot.cells.len and slot.cells[last + 1].link_id == link_id) last += 1;
+
+    var idx = first;
+    while (idx <= last) : (idx += 1) {
+        slot.cells[idx].attrs.underline = 1;
+        slot.cells[idx].underline_style = hover.underline_style;
+    }
+    markDirtyRange(slot, cols, first, last);
+}
+
+fn markDirtyRange(slot: ReservedPublishSlot, cols: u16, first: usize, last: usize) void {
+    const cols_usize: usize = @intCast(cols);
+    const first_row = first / cols_usize;
+    const last_row = last / cols_usize;
+    var row = first_row;
+    while (row <= last_row) : (row += 1) {
+        const row_start_idx = row * cols_usize;
+        const row_end_idx = row_start_idx + cols_usize - 1;
+        const range_start = @max(first, row_start_idx) - row_start_idx;
+        const range_end = @min(last, row_end_idx) - row_start_idx;
+        slot.dirty_rows[row] = 1;
+        slot.dirty_cols_start[row] = @min(slot.dirty_cols_start[row], @as(u16, @intCast(range_start)));
+        slot.dirty_cols_end[row] = @max(slot.dirty_cols_end[row], @as(u16, @intCast(range_end)));
+    }
+}
+
 fn recordPublishedSnapshot(visible: VisibleCopy, typed_response: c.HowlRenderVtPublishResult) void {
     if (typed_response.published != 0) {
         std.debug.assert(typed_response.queued != 0);
@@ -255,6 +299,35 @@ test "publish forwards vt snapshot sequence" {
         .snapshot_seq = 11,
         .geometry_epoch = 1,
     });
+}
+
+test "hover decoration underlines the hovered hyperlink span" {
+    var cells = [_]c.HowlVtSurfaceCell{
+        std.mem.zeroes(c.HowlVtSurfaceCell),
+        std.mem.zeroes(c.HowlVtSurfaceCell),
+        std.mem.zeroes(c.HowlVtSurfaceCell),
+        std.mem.zeroes(c.HowlVtSurfaceCell),
+    };
+    cells[1].link_id = 7;
+    cells[2].link_id = 7;
+    var dirty_rows = [_]u8{0};
+    var dirty_cols_start = [_]u16{0};
+    var dirty_cols_end = [_]u16{0};
+
+    applyHyperlinkHover(.{
+        .cells = cells[0..],
+        .dirty_rows = dirty_rows[0..],
+        .dirty_cols_start = dirty_cols_start[0..],
+        .dirty_cols_end = dirty_cols_end[0..],
+    }, 1, 4, .{ .row = 0, .col = 1, .underline_style = 4 });
+
+    try std.testing.expectEqual(@as(u8, 1), cells[1].attrs.underline);
+    try std.testing.expectEqual(@as(u8, 1), cells[2].attrs.underline);
+    try std.testing.expectEqual(@as(u8, 4), cells[1].underline_style);
+    try std.testing.expectEqual(@as(u8, 4), cells[2].underline_style);
+    try std.testing.expectEqual(@as(u8, 1), dirty_rows[0]);
+    try std.testing.expectEqual(@as(u16, 0), dirty_cols_start[0]);
+    try std.testing.expectEqual(@as(u16, 2), dirty_cols_end[0]);
 }
 
 test "ack forwards render-owned snapshot sequence" {

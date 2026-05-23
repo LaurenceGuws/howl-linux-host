@@ -223,6 +223,7 @@ fn configureInputPolicies(app: *App) void {
     app.input.setHostMousePolicy(.{
         .listen_always = app.conf.window.mouse.listen_always,
         .link_hover = tab.wantsLinkHover(),
+        .terminal_hover = tab.wantsTerminalHoverReporting(),
     });
     app.input.setTerminalMousePolicy(.{
         .bypass_mod = app.conf.term.mouse.bypass_mod,
@@ -259,6 +260,7 @@ fn runLoopTurn(app: *App) !LoopAction {
     forwardTerminalInput(app);
     _ = applyWindowResize(app);
     const progress_redraw = driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*);
+    configureInputPolicies(app);
     try ensureActiveTabHealthy(app);
     const blink_redraw = syncActiveBlinkCadence(app);
 

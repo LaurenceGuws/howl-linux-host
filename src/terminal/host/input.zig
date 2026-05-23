@@ -114,6 +114,29 @@ pub fn publishFocus(term: *Term, focused: bool) !bool {
     return try pty_session.publishInputBytesLocked(term, try encodeFocusBytes(term, focused));
 }
 
+pub fn wouldReportUnpressedMouseMotion(term: *Term) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    const out = retained.inputScratch(term);
+    const result = c.howl_vt_terminal_encode_mouse(
+        term.vt,
+        c.HOWL_VT_MOUSE_MOVE,
+        c.HOWL_VT_MOUSE_BUTTON_NONE,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        c.HOWL_VT_MOD_NONE,
+        0,
+        out.ptr,
+        out.len,
+    );
+    if (!api.isCallOk(result.status)) return false;
+    return result.written != 0;
+}
+
 fn encodeFocusBytes(term: *Term, focused: bool) ![]const u8 {
     const out = retained.inputScratch(term);
     const result = c.howl_vt_terminal_encode_focus(term.vt, if (focused) 1 else 0, out.ptr, out.len);
