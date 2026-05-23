@@ -19,7 +19,66 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
-const TabList = std.ArrayList(*TerminalPanel);
+
+const TabSlots = struct {
+    panels: [max_tabs]TerminalPanel = undefined,
+    active_tabs: [max_tabs]*TerminalPanel = undefined,
+    active_slots: [max_tabs]TabIndex = undefined,
+    free_slots: [max_tabs]TabIndex = undefined,
+    active_count: TabIndex = 0,
+    free_count: TabIndex = max_tabs,
+
+    fn init() TabSlots {
+        var tabs = TabSlots{};
+        for (0..max_tabs) |slot| {
+            tabs.free_slots[slot] = @intCast(max_tabs - 1 - slot);
+        }
+        return tabs;
+    }
+
+    fn items(self: *TabSlots) []*TerminalPanel {
+        return self.active_tabs[0..self.active_count];
+    }
+
+    fn acquireSlot(self: *TabSlots) ?struct { slot_idx: TabIndex, tab: *TerminalPanel } {
+        assert(self.active_count <= max_tabs);
+        assert(self.free_count <= max_tabs);
+        if (self.free_count == 0) return null;
+        self.free_count -= 1;
+        const slot_idx = self.free_slots[self.free_count];
+        return .{ .slot_idx = slot_idx, .tab = &self.panels[slot_idx] };
+    }
+
+    fn appendActive(self: *TabSlots, slot_idx: TabIndex, tab: *TerminalPanel) void {
+        assert(self.active_count < max_tabs);
+        assert(slot_idx < max_tabs);
+        self.active_slots[self.active_count] = slot_idx;
+        self.active_tabs[self.active_count] = tab;
+        self.active_count += 1;
+        assert(self.active_count <= max_tabs);
+    }
+
+    fn releaseSlot(self: *TabSlots, slot_idx: TabIndex) void {
+        assert(self.free_count < max_tabs);
+        assert(slot_idx < max_tabs);
+        self.free_slots[self.free_count] = slot_idx;
+        self.free_count += 1;
+        assert(self.free_count <= max_tabs);
+    }
+
+    fn orderedRemoveActive(self: *TabSlots, idx: TabIndex) struct { slot_idx: TabIndex, tab: *TerminalPanel } {
+        assert(idx < self.active_count);
+        const slot_idx = self.active_slots[idx];
+        const tab = self.active_tabs[idx];
+        var i: TabIndex = idx;
+        while (i + 1 < self.active_count) : (i += 1) {
+            self.active_slots[i] = self.active_slots[i + 1];
+            self.active_tabs[i] = self.active_tabs[i + 1];
+        }
+        self.active_count -= 1;
+        return .{ .slot_idx = slot_idx, .tab = tab };
+    }
+};
 
 const LoopAction = enum {
     continue_running,
@@ -58,7 +117,7 @@ const App = struct {
     window: *Window.State,
     perf: *PerfLog.State,
     tab_bar: *TabBar,
-    tabs: *TabList,
+    tabs: *TabSlots,
     active_tab_idx: *TabIndex,
     input: *Input,
     first_loop_render_logged: bool,
@@ -88,8 +147,8 @@ fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     InputWindow.logStartupf("stage=window-ready px_w={d} px_h={d} logical_w={d} logical_h={d}", .{ window.px_w, window.px_h, window.logical_w, window.logical_h });
 
     var tab_bar = TabBar{};
-    var tabs: TabList = .empty;
-    defer destroyTabs(std.heap.c_allocator, &tabs);
+    var tabs = TabSlots.init();
+    defer destroyTabs(&tabs);
     var active_tab_idx: TabIndex = 0;
 
     var input = try initInput();
@@ -98,11 +157,11 @@ fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     InputWindow.logStartup("input-ready");
 
     applyChildEnvironmentPolicy();
-    try openTab(std.heap.c_allocator, io, &conf, &input, feed_record_path, &window, &tabs, &active_tab_idx);
+    try openTab(io, &conf, &input, feed_record_path, &window, &tabs, &active_tab_idx);
     InputWindow.logStartup("initial-tab-opened");
 
     var perf: PerfLog.State = undefined;
-    try initPerf(&perf, activeTab(tabs.items, active_tab_idx));
+    try initPerf(&perf, activeTab(tabs.items(), active_tab_idx));
     defer perf.stopAndDeinit();
     InputWindow.logStartup("perf-ready");
 
@@ -160,7 +219,7 @@ fn initInput() !Input {
 }
 
 fn configureInputPolicies(app: *App) void {
-    const tab = activePanel(app.tabs.items, app.active_tab_idx.*);
+    const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
     app.input.setHostMousePolicy(.{
         .listen_always = app.conf.window.mouse.listen_always,
         .link_hover = tab.wantsLinkHover(),
@@ -198,13 +257,13 @@ fn runLoopTurn(app: *App) !LoopAction {
 
     forwardTerminalInput(app);
     _ = applyWindowResize(app);
-    const progress_redraw = driveTerminalProgress(app.tabs.items, app.active_tab_idx.*);
+    const progress_redraw = driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*);
     try ensureActiveTabHealthy(app);
 
     loop.finish(
         progress_redraw,
         app.input.drainRedrawRequested(),
-        activeTabNeedsRenderTurn(app.tabs.items, app.active_tab_idx.*),
+        activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
     );
     if (!loop.render_frame) return .continue_running;
 
@@ -217,8 +276,8 @@ fn runLoopTurn(app: *App) !LoopAction {
 fn collectLoopPending(app: *App) LoopPending {
     return .{
         .input = app.input.hasPendingLoopWork(),
-        .progress_wake = tabsHavePendingWake(app.tabs.items),
-        .active_frame = activeTabNeedsRenderTurn(app.tabs.items, app.active_tab_idx.*),
+        .progress_wake = tabsHavePendingWake(app.tabs.items()),
+        .active_frame = activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
     };
 }
 
@@ -250,7 +309,7 @@ fn pumpWindowEvents(app: *App, wait: bool) LoopAction {
 
 fn applyFocusChange(app: *App) void {
     if (app.input.drainWindowFocusChanged()) |focused| {
-        setWindowFocused(app.window, app.tabs.items, app.active_tab_idx.*, focused);
+        setWindowFocused(app.window, app.tabs.items(), app.active_tab_idx.*, focused);
     }
 }
 
@@ -262,7 +321,7 @@ fn drainBindingActions(app: *App) !void {
 }
 
 fn forwardTerminalInput(app: *App) void {
-    const tab = activePanel(app.tabs.items, app.active_tab_idx.*);
+    const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
     const content_logical = app.window.contentLogicalSize(app.conf.tab_bar.height);
     const origin_y = app.window.tabBarHeightLogical(app.conf.tab_bar.height);
     tab.drainInput(app.input, 0, origin_y, content_logical.width, content_logical.height);
@@ -272,7 +331,7 @@ fn forwardTerminalInput(app: *App) void {
 fn applyWindowResize(app: *App) bool {
     if (!app.input.drainWindowGeometryChanged()) return false;
     if (!app.window.refreshGeometry()) return false;
-    resizeTerminals(app.conf, app.window, app.tabs.items);
+    resizeTerminals(app.conf, app.window, app.tabs.items());
     return true;
 }
 
@@ -294,20 +353,19 @@ fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool) @import("terminal/runt
 }
 
 fn ensureActiveTabHealthy(app: *App) !void {
-    if (!activeTabFailed(app.tabs.items, app.active_tab_idx.*)) return;
-    const tab = activePanel(app.tabs.items, app.active_tab_idx.*);
+    if (!activeTabFailed(app.tabs.items(), app.active_tab_idx.*)) return;
+    const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
     const state = tab.lifecycleState();
     InputWindow.logStartupf("stage=active-tab-failed lifecycle={s} alive={}", .{ @tagName(state), tab.isAlive() });
     return error.HostTabFailed;
 }
 
-fn destroyTabs(alloc: std.mem.Allocator, tabs: *TabList) void {
-    for (tabs.items) |tab| tab.destroy(alloc);
-    tabs.deinit(alloc);
+fn destroyTabs(tabs: *TabSlots) void {
+    for (tabs.items()) |tab| tab.deinit();
 }
 
 fn render(app: *App, chrome_present: bool) void {
-    const tab = activeTab(app.tabs.items, app.active_tab_idx.*);
+    const tab = activeTab(app.tabs.items(), app.active_tab_idx.*);
     const turn = tab.renderTurn();
     if (!app.first_loop_render_logged) {
         app.first_loop_render_logged = true;
@@ -341,7 +399,7 @@ fn renderSnapshot(app: *App, tab: *TerminalPanel) RenderSnapshot {
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
     const overlay = tab.overlaySnapshot(texture_rect);
     var title_buf: [TabBar.max_tabs][]const u8 = undefined;
-    const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items, title_buf[0..]));
+    const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items(), title_buf[0..]));
     return .{
         .texture_rect = texture_rect,
         .scrollbar = overlay.scrollbar,
@@ -464,49 +522,54 @@ fn activePanel(tabs: []*TerminalPanel, active_tab_idx: TabIndex) *TerminalPanel 
     return activeTab(tabs, active_tab_idx);
 }
 
-fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8, io: std.Io, input: *Input, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex, action: Input.Bindings.Action) !void {
+fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8, io: std.Io, input: *Input, window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex, action: Input.Bindings.Action) !void {
     switch (action) {
-        .zoom_in => _ = activePanel(tabs.items, active_tab_idx.*).adjustFontSize(1),
-        .zoom_out => _ = activePanel(tabs.items, active_tab_idx.*).adjustFontSize(-1),
-        .zoom_reset => _ = activePanel(tabs.items, active_tab_idx.*).resetFontSize(),
-        .zoom_stress_toggle => _ = activePanel(tabs.items, active_tab_idx.*).toggleStressFontSize(),
-        .terminal_paste => pasteIntoActiveTab(activePanel(tabs.items, active_tab_idx.*)),
-        .terminal_new_tab => try openTab(std.heap.c_allocator, io, conf, input, feed_record_path, window, tabs, active_tab_idx),
+        .zoom_in => _ = activePanel(tabs.items(), active_tab_idx.*).adjustFontSize(1),
+        .zoom_out => _ = activePanel(tabs.items(), active_tab_idx.*).adjustFontSize(-1),
+        .zoom_reset => _ = activePanel(tabs.items(), active_tab_idx.*).resetFontSize(),
+        .zoom_stress_toggle => _ = activePanel(tabs.items(), active_tab_idx.*).toggleStressFontSize(),
+        .terminal_paste => pasteIntoActiveTab(activePanel(tabs.items(), active_tab_idx.*)),
+        .terminal_new_tab => try openTab(io, conf, input, feed_record_path, window, tabs, active_tab_idx),
         .terminal_close_tab => closeActiveTab(window, tabs, active_tab_idx),
-        .terminal_next_tab => selectRelative(window, tabs.items, active_tab_idx, 1),
-        .terminal_prev_tab => selectRelative(window, tabs.items, active_tab_idx, -1),
-        else => if (Input.Bindings.focusTabIndex(action)) |idx| selectTab(window, tabs.items, active_tab_idx, idx),
+        .terminal_next_tab => selectRelative(window, tabs.items(), active_tab_idx, 1),
+        .terminal_prev_tab => selectRelative(window, tabs.items(), active_tab_idx, -1),
+        else => if (Input.Bindings.focusTabIndex(action)) |idx| selectTab(window, tabs.items(), active_tab_idx, idx),
     }
 }
 
-fn openTab(alloc: std.mem.Allocator, io: std.Io, conf: *const Config.State, input: *Input, feed_record_path: ?[]const u8, window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) !void {
-    assert(tabs.items.len <= max_tabs);
-    if (tabs.items.len >= TabBar.max_tabs) return;
+fn openTab(io: std.Io, conf: *const Config.State, input: *Input, feed_record_path: ?[]const u8, window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex) !void {
+    const items = tabs.items();
+    assert(items.len <= max_tabs);
+    const slot = tabs.acquireSlot() orelse return;
+    errdefer tabs.releaseSlot(slot.slot_idx);
 
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
-    const tab = try TerminalPanel.create(alloc, io, input, feed_record_path, &conf.term, px.width, px.height, logical.width, logical.height);
-    errdefer tab.destroy(alloc);
+    try slot.tab.init(io, input, feed_record_path, &conf.term, px.width, px.height, logical.width, logical.height);
+    errdefer slot.tab.deinit();
     input.requestRedraw();
 
-    try tabs.append(alloc, tab);
-    assert(tabs.items.len > 0);
-    assert(tabs.items.len <= max_tabs);
-    active_tab_idx.* = @intCast(tabs.items.len - 1);
-    assert(tabIndexInRange(tabs.items, active_tab_idx.*));
-    syncTerminalFocus(window, tabs.items, active_tab_idx.*);
+    tabs.appendActive(slot.slot_idx, slot.tab);
+    const updated = tabs.items();
+    assert(updated.len > 0);
+    assert(updated.len <= max_tabs);
+    active_tab_idx.* = @intCast(updated.len - 1);
+    assert(tabIndexInRange(updated, active_tab_idx.*));
+    syncTerminalFocus(window, updated, active_tab_idx.*);
 }
 
-fn closeActiveTab(window: *Window.State, tabs: *TabList, active_tab_idx: *TabIndex) void {
-    if (tabs.items.len <= 1) return;
-    assert(tabIndexInRange(tabs.items, active_tab_idx.*));
+fn closeActiveTab(window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex) void {
+    const items = tabs.items();
+    if (items.len <= 1) return;
+    assert(tabIndexInRange(items, active_tab_idx.*));
     const idx: TabIndex = active_tab_idx.*;
-    const tab = tabs.items[idx];
-    _ = tabs.orderedRemove(idx);
-    tab.destroy(std.heap.c_allocator);
-    if (!tabIndexInRange(tabs.items, active_tab_idx.*)) active_tab_idx.* = @intCast(tabs.items.len - 1);
-    assert(tabIndexInRange(tabs.items, active_tab_idx.*));
-    syncTerminalFocus(window, tabs.items, active_tab_idx.*);
+    const removed = tabs.orderedRemoveActive(idx);
+    removed.tab.deinit();
+    tabs.releaseSlot(removed.slot_idx);
+    const updated = tabs.items();
+    if (!tabIndexInRange(updated, active_tab_idx.*)) active_tab_idx.* = @intCast(updated.len - 1);
+    assert(tabIndexInRange(updated, active_tab_idx.*));
+    syncTerminalFocus(window, updated, active_tab_idx.*);
 }
 
 fn selectRelative(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: *TabIndex, delta: i32) void {
@@ -559,4 +622,42 @@ test "child environment policy sets TERM in the app owner" {
     applyChildEnvironmentPolicy();
     const value = std.c.getenv("TERM") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("xterm-256color", std.mem.span(value));
+}
+
+test "tab slots bound growth and reuse freed slots" {
+    var tabs = TabSlots.init();
+
+    for (0..max_tabs) |expected_slot| {
+        const slot = tabs.acquireSlot() orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(@as(TabIndex, @intCast(expected_slot)), slot.slot_idx);
+        tabs.appendActive(slot.slot_idx, slot.tab);
+    }
+
+    try std.testing.expectEqual(@as(usize, max_tabs), tabs.items().len);
+    try std.testing.expect(tabs.acquireSlot() == null);
+
+    const removed = tabs.orderedRemoveActive(4);
+    try std.testing.expectEqual(@as(TabIndex, 4), removed.slot_idx);
+    tabs.releaseSlot(removed.slot_idx);
+
+    const reused = tabs.acquireSlot() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(TabIndex, 4), reused.slot_idx);
+    tabs.appendActive(reused.slot_idx, reused.tab);
+    try std.testing.expectEqual(@as(usize, max_tabs), tabs.items().len);
+}
+
+test "tab slots preserve order on close semantics" {
+    var tabs = TabSlots.init();
+
+    for (0..4) |_| {
+        const slot = tabs.acquireSlot() orelse return error.TestUnexpectedResult;
+        tabs.appendActive(slot.slot_idx, slot.tab);
+    }
+
+    const removed = tabs.orderedRemoveActive(1);
+    try std.testing.expectEqual(@as(TabIndex, 1), removed.slot_idx);
+    try std.testing.expectEqual(@as(usize, 3), tabs.items().len);
+    try std.testing.expectEqual(@as(TabIndex, 0), tabs.active_slots[0]);
+    try std.testing.expectEqual(@as(TabIndex, 2), tabs.active_slots[1]);
+    try std.testing.expectEqual(@as(TabIndex, 3), tabs.active_slots[2]);
 }

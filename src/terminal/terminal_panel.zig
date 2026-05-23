@@ -71,8 +71,8 @@ pub const TerminalPanel = struct {
     first_blocked_present_logged: bool,
     first_idle_render_logged: bool,
 
-    pub fn create(
-        allocator: std.mem.Allocator,
+    pub fn init(
+        self: *TerminalPanel,
         io: std.Io,
         input: *HostInput,
         feed_record_path: ?[]const u8,
@@ -81,19 +81,11 @@ pub const TerminalPanel = struct {
         render_height: c_int,
         logical_width: c_int,
         logical_height: c_int,
-    ) !*TerminalPanel {
-        const self = try allocator.create(TerminalPanel);
-        errdefer allocator.destroy(self);
+    ) !void {
         self.* = initial(conf, input, render_width, render_height, logical_width, logical_height);
         errdefer self.deinit();
         try self.initTerm();
         try self.startRuntime(io, feed_record_path);
-        return self;
-    }
-
-    pub fn destroy(self: *TerminalPanel, allocator: std.mem.Allocator) void {
-        self.deinit();
-        allocator.destroy(self);
     }
 
     fn initial(conf: *const TerminalConfig, input: *HostInput, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) TerminalPanel {
