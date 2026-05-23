@@ -4,7 +4,7 @@ const HostInput = @import("../../input/input.zig").Input;
 const log = @import("../../input/window.zig");
 const std = @import("std");
 
-const transport_wait_timeout_ms: i32 = -1;
+const wait_slice_timeout_ms: i32 = 50;
 
 pub const State = struct {
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -50,7 +50,7 @@ fn progressThreadMainWith(self: anytype, comptime Ops: type) void {
     while (!self.progress.stop.load(.acquire)) {
         waitForWakeAck(self, Ops);
         if (self.progress.stop.load(.acquire)) break;
-        waitForTransport(self, Ops);
+        if (!waitForTransport(self, Ops)) continue;
         if (self.progress.stop.load(.acquire)) break;
         signalWake(self, Ops);
         if (!Ops.isAlive(termRef(self))) break;
@@ -59,20 +59,33 @@ fn progressThreadMainWith(self: anytype, comptime Ops: type) void {
 
 fn waitForWakeAck(self: anytype, comptime Ops: type) void {
     while (self.progress.wake_pending.load(.acquire) and !self.progress.stop.load(.acquire)) {
-        Ops.waitWakeAck(self);
+        Ops.waitWakeAck(self, wait_slice_timeout_ms);
     }
 }
 
-fn waitForTransport(self: anytype, comptime Ops: type) void {
+fn waitForTransport(self: anytype, comptime Ops: type) bool {
     if (!self.progress.progress_wait_logged) {
         self.progress.progress_wait_logged = true;
         log.logStartup("progress-wait-enter");
     }
-    _ = Ops.waitTransport(termRef(self), transport_wait_timeout_ms);
+
+    while (true) {
+        if (self.progress.stop.load(.acquire)) return false;
+        if (self.progress.wake_pending.load(.acquire)) return false;
+        if (!Ops.isAlive(termRef(self))) {
+            break;
+        }
+        if (Ops.waitTransport(termRef(self), @intCast(wait_slice_timeout_ms))) {
+            break;
+        }
+    }
+
     if (!self.progress.progress_wake_logged) {
         self.progress.progress_wake_logged = true;
         log.logStartup("progress-wait-return");
     }
+
+    return true;
 }
 
 fn TermRef(comptime TermField: type) type {
@@ -105,9 +118,9 @@ const RealOps = struct {
         return pty_session.waitTransport(term, timeout_ms);
     }
 
-    fn waitWakeAck(self: anytype) void {
+    fn waitWakeAck(self: anytype, timeout_ms: i32) void {
         const sem = self.progress.wake_ack_sem orelse return;
-        log.c_win.SDL_WaitSemaphore(sem);
+        _ = log.c_win.SDL_WaitSemaphoreTimeout(sem, timeout_ms);
     }
 
     fn isAlive(term: *const terminal_term.Term) bool {
@@ -155,6 +168,39 @@ test "progress thread wakes on quiet transport death" {
     try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
 }
 
+test "wait for transport retries finite slices until readable" {
+    fake_state = .{};
+    fake_state.transport_ready_after = 3;
+    var ctx = FakeCtx{ .term = FakeTerm.init() };
+    fake_ctx = &ctx;
+    defer fake_ctx = null;
+    try std.testing.expect(waitForTransport(&ctx, FakeOps));
+    try std.testing.expectEqual(@as(u8, 3), fake_state.wait_calls);
+}
+
+test "wait for transport rechecks wake handoff between slices" {
+    fake_state = .{};
+    fake_state.set_wake_pending_after_wait_call = 2;
+    var ctx = FakeCtx{ .term = FakeTerm.init() };
+    fake_ctx = &ctx;
+    defer fake_ctx = null;
+    try std.testing.expect(!waitForTransport(&ctx, FakeOps));
+    try std.testing.expectEqual(@as(u8, 2), fake_state.wait_calls);
+    try std.testing.expect(ctx.progress.wake_pending.load(.acquire));
+}
+
+test "wait for wake ack rechecks stop between slices" {
+    fake_state = .{};
+    fake_state.set_stop_after_wake_ack_call = 2;
+    var ctx = FakeCtx{ .term = FakeTerm.init() };
+    ctx.progress.wake_pending.store(true, .release);
+    fake_ctx = &ctx;
+    defer fake_ctx = null;
+    waitForWakeAck(&ctx, FakeOps);
+    try std.testing.expectEqual(@as(u8, 2), fake_state.wait_wake_ack_calls);
+    try std.testing.expect(ctx.progress.stop.load(.acquire));
+}
+
 const FakeTerm = struct {
     pub fn init() FakeTerm {
         return .{};
@@ -178,16 +224,36 @@ var fake_state: struct {
     wait_wake_ack_calls: u8 = 0,
     wake_calls: u8 = 0,
     is_alive: bool = true,
+    transport_ready_after: ?u8 = null,
+    set_wake_pending_after_wait_call: ?u8 = null,
+    set_stop_after_wake_ack_call: ?u8 = null,
 } = .{};
+
+var fake_ctx: ?*FakeCtx = null;
 
 const FakeOps = struct {
     fn waitTransport(_: *FakeTerm, _: i32) bool {
         fake_state.wait_calls += 1;
+        if (fake_state.set_wake_pending_after_wait_call) |target| {
+            if (fake_state.wait_calls == target) {
+                const ctx = fake_ctx orelse unreachable;
+                ctx.progress.wake_pending.store(true, .release);
+            }
+        }
+        if (fake_state.transport_ready_after) |target| {
+            return fake_state.wait_calls >= target;
+        }
         return true;
     }
 
-    fn waitWakeAck(_: anytype) void {
+    fn waitWakeAck(_: anytype, _: i32) void {
         fake_state.wait_wake_ack_calls += 1;
+        if (fake_state.set_stop_after_wake_ack_call) |target| {
+            if (fake_state.wait_wake_ack_calls == target) {
+                const ctx = fake_ctx orelse unreachable;
+                ctx.progress.stop.store(true, .release);
+            }
+        }
     }
 
     fn isAlive(_: *const FakeTerm) bool {
