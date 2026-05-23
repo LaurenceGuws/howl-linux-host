@@ -5,6 +5,7 @@ const window = @import("window.zig");
 
 const c = window.c_win;
 const max_input_events = 256;
+const max_sdl_events_per_turn = max_input_events;
 
 pub const Input = struct {
     pub const Signal = window.EventSignal;
@@ -172,7 +173,7 @@ pub const Input = struct {
             self.window_state.logWindowWakeStartup(signal);
             if (signal == .quit) return .quit;
         } else {
-            const signal = self.drainPendingEvents();
+            const signal = self.drainPendingEvents(0);
             if (signal == .quit) return .quit;
         }
 
@@ -194,16 +195,22 @@ pub const Input = struct {
 
     fn waitAndDrainEvents(self: *Input) Signal {
         var event: c.SDL_Event = undefined;
+        var processed: usize = 0;
         if (c.SDL_WaitEvent(&event)) {
             self.processEvent(&event);
+            processed = 1;
         }
-        return self.drainPendingEvents();
+        return self.drainPendingEvents(processed);
     }
 
-    fn drainPendingEvents(self: *Input) Signal {
+    fn drainPendingEvents(self: *Input, processed_start: usize) Signal {
         var signal: Signal = if (self.window_state.quitRequested()) .quit else .none;
+        var processed = processed_start;
         var event: c.SDL_Event = undefined;
-        while (c.SDL_PollEvent(&event)) {
+
+        // Bound SDL burst handling to one explicit host-turn slice.
+        while (processed < max_sdl_events_per_turn) : (processed += 1) {
+            if (!c.SDL_PollEvent(&event)) break;
             self.processEvent(&event);
             if (self.window_state.quitRequested()) signal = .quit;
         }
@@ -649,6 +656,18 @@ fn sdlButtons(state: u32) mouse.Buttons {
     };
 }
 
+fn flushAllSdlEvents() void {
+    c.SDL_FlushEvents(0, std.math.maxInt(u32));
+}
+
+fn pushShiftPageUpEvent() !void {
+    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.key = c.SDLK_PAGEUP;
+    event.key.mod = c.SDL_KMOD_SHIFT;
+    try std.testing.expect(c.SDL_PushEvent(&event));
+}
+
 test "sdl mod binding" {
     const mods = sdlMods(c.SDL_KMOD_SHIFT | c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL);
     try std.testing.expect(mods.shift);
@@ -680,4 +699,26 @@ test "byte chunking preserves order" {
         else => return error.UnexpectedEvent,
     };
     try std.testing.expectEqualStrings(bytes, out.items);
+}
+
+test "pumpWindow bounds one SDL burst per turn" {
+    try std.testing.expect(c.SDL_Init(c.SDL_INIT_EVENTS));
+    defer c.SDL_Quit();
+
+    flushAllSdlEvents();
+    defer flushAllSdlEvents();
+
+    var input: Input = undefined;
+    input.init();
+
+    var i: usize = 0;
+    while (i < max_sdl_events_per_turn + 1) : (i += 1) {
+        try pushShiftPageUpEvent();
+    }
+
+    try std.testing.expectEqual(Input.Signal.none, input.pumpWindow(false));
+    try std.testing.expectEqual(@as(i32, @intCast(max_sdl_events_per_turn)), input.scroll_pages);
+
+    try std.testing.expectEqual(Input.Signal.none, input.pumpWindow(false));
+    try std.testing.expectEqual(@as(i32, @intCast(max_sdl_events_per_turn + 1)), input.scroll_pages);
 }
