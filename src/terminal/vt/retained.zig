@@ -10,6 +10,7 @@ comptime {
     std.debug.assert(title_max_bytes > 0);
     std.debug.assert(output_max_bytes > 0);
     std.debug.assert(input_max_bytes > 0);
+    std.debug.assert(output_max_bytes >= c.HOWL_VT_CLIPBOARD_SCRATCH_MAX_BYTES);
 }
 
 pub const ScrollState = struct {
@@ -132,6 +133,16 @@ pub fn copyPendingOutputLocked(term: anytype) ![]const u8 {
 
 pub fn clearPendingOutputLocked(term: anytype) void {
     c.howl_vt_terminal_clear_pending_output(term.vt);
+}
+
+pub fn drainPendingClipboardLocked(term: anytype) !?[]const u8 {
+    const out = term.vt_state.output_scratch[0..];
+    const result = c.howl_vt_terminal_drain_pending_clipboard(term.vt, out.ptr, out.len);
+    if (result.status == callShortBuffer()) return error.HostBufferTooSmall;
+    try requireOk(result.status);
+    std.debug.assert(result.written <= out.len);
+    if (result.written == 0 and result.needed == 0) return null;
+    return out[0..@intCast(result.written)];
 }
 
 fn clampScrollbackOffset(term: anytype, history_count: u32) void {

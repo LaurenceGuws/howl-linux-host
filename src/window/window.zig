@@ -204,6 +204,12 @@ pub fn getClipboardText(allocator: std.mem.Allocator) !?[]u8 {
     return try allocator.dupe(u8, std.mem.span(text_z));
 }
 
+pub fn setClipboardText(text: []const u8) bool {
+    const text_z = std.heap.c_allocator.dupeZ(u8, text) catch return false;
+    defer std.heap.c_allocator.free(text_z);
+    return c.SDL_SetClipboardText(text_z.ptr);
+}
+
 pub fn deleteTexture(surface_id: *u64) void {
     if (surface_id.* == 0) return;
     var value: c_uint = @intCast(surface_id.*);

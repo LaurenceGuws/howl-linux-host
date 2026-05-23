@@ -22,6 +22,7 @@ const LifecycleState = pty_retained.LifecycleState;
 const FrameLayoutRequest = render_api.FrameLayoutRequest;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
+const ClipboardOsc52Policy = @import("../config/terminal.zig").ClipboardOsc52Policy;
 const font_size = @import("host/font_size.zig");
 const geometry = @import("host/geometry.zig");
 const term_input = @import("host/input.zig");
@@ -268,6 +269,7 @@ pub const TerminalPanel = struct {
             return .{ .keep = false, .should_redraw = false, .alive = pty_session.isAlive(&self.term) };
         }
         const outcome = runtime_progress.driveOnce(&self.term);
+        self.applyPendingClipboardWrites();
         runtime_thread.ackWake(self);
         return outcome;
     }
@@ -351,6 +353,10 @@ pub const TerminalPanel = struct {
         const progress_thread = try std.Thread.spawn(.{}, runtime_thread.progressThreadMain, .{self});
         if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(progress_thread.getHandle(), "howl-term-host");
         self.progress.thread = progress_thread;
+    }
+
+    fn applyPendingClipboardWrites(self: *TerminalPanel) void {
+        applyPendingClipboardWrite(&self.term, self.conf.clipboard.osc_52, WindowClipboardOps);
     }
 
     fn workState(self: *const TerminalPanel) render_retained.WorkState {
@@ -566,6 +572,27 @@ pub const TerminalPanel = struct {
     }
 };
 
+const WindowClipboardOps = struct {
+    fn drainPendingClipboardLocked(term: *HowlTerm) !?[]const u8 {
+        return vt_retained.drainPendingClipboardLocked(term);
+    }
+
+    fn setClipboardText(text: []const u8) bool {
+        return window.setClipboardText(text);
+    }
+};
+
+fn applyPendingClipboardWrite(term: anytype, policy: ClipboardOsc52Policy, comptime Ops: type) void {
+    const mut = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+
+    const pending = Ops.drainPendingClipboardLocked(mut) catch return;
+    const text = pending orelse return;
+    if (policy != .allow) return;
+    _ = Ops.setClipboardText(text);
+}
+
 test "frame layout request ignores logical size" {
     var state = geometry.State{
         .render_px_w = 640,
@@ -583,4 +610,53 @@ test "frame layout request ignores logical size" {
     try std.testing.expectEqual(@as(u16, 480), request.render_px.height);
     try std.testing.expectEqual(@as(u16, 600), request.grid_px.width);
     try std.testing.expectEqual(@as(u16, 440), request.grid_px.height);
+}
+
+test "pending VT clipboard write follows OSC 52 policy" {
+    const FakeTerm = struct {
+        mutex: terminal_term.Mutex = .{},
+    };
+
+    const FakeOps = struct {
+        var drain_result: ?[]const u8 = null;
+        var drain_calls: usize = 0;
+        var set_calls: usize = 0;
+        var last_text: []const u8 = "";
+
+        fn reset(text: ?[]const u8) void {
+            drain_result = text;
+            drain_calls = 0;
+            set_calls = 0;
+            last_text = "";
+        }
+
+        fn drainPendingClipboardLocked(_: *FakeTerm) !?[]const u8 {
+            drain_calls += 1;
+            return drain_result;
+        }
+
+        fn setClipboardText(text: []const u8) bool {
+            set_calls += 1;
+            last_text = text;
+            return true;
+        }
+    };
+
+    var term = FakeTerm{};
+
+    FakeOps.reset("Howl");
+    applyPendingClipboardWrite(&term, .allow, FakeOps);
+    try std.testing.expectEqual(@as(usize, 1), FakeOps.drain_calls);
+    try std.testing.expectEqual(@as(usize, 1), FakeOps.set_calls);
+    try std.testing.expectEqualStrings("Howl", FakeOps.last_text);
+
+    FakeOps.reset("Howl");
+    applyPendingClipboardWrite(&term, .deny, FakeOps);
+    try std.testing.expectEqual(@as(usize, 1), FakeOps.drain_calls);
+    try std.testing.expectEqual(@as(usize, 0), FakeOps.set_calls);
+
+    FakeOps.reset(null);
+    applyPendingClipboardWrite(&term, .allow, FakeOps);
+    try std.testing.expectEqual(@as(usize, 1), FakeOps.drain_calls);
+    try std.testing.expectEqual(@as(usize, 0), FakeOps.set_calls);
 }
