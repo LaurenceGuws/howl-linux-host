@@ -7,6 +7,58 @@ const c = window.c_win;
 const max_input_events = 256;
 const max_sdl_events_per_turn = max_input_events;
 
+fn FixedRing(comptime T: type, comptime capacity: comptime_int) type {
+    comptime {
+        std.debug.assert(capacity > 0);
+        std.debug.assert(capacity <= std.math.maxInt(u16));
+    }
+
+    return struct {
+        buf: [capacity]T = undefined,
+        head: u16 = 0,
+        len: u16 = 0,
+
+        const Ring = @This();
+
+        fn push(self: *Ring, item: T) bool {
+            self.assertInvariants();
+            if (self.len == capacity) return false;
+
+            const tail = (self.head + self.len) % capacity;
+            self.buf[tail] = item;
+            self.len += 1;
+            self.assertInvariants();
+            return true;
+        }
+
+        fn pop(self: *Ring) ?T {
+            self.assertInvariants();
+            if (self.len == 0) return null;
+
+            const out = self.buf[self.head];
+            self.len -= 1;
+            if (self.len == 0) {
+                self.head = 0;
+            } else {
+                self.head = (self.head + 1) % capacity;
+            }
+
+            self.assertInvariants();
+            return out;
+        }
+
+        fn hasItems(self: *const Ring) bool {
+            self.assertInvariants();
+            return self.len != 0;
+        }
+
+        fn assertInvariants(self: *const Ring) void {
+            std.debug.assert(self.head < capacity);
+            std.debug.assert(self.len <= capacity);
+        }
+    };
+}
+
 pub const Input = struct {
     pub const Signal = window.EventSignal;
     pub const Keys = keys;
@@ -31,11 +83,9 @@ pub const Input = struct {
         bypass_mod: Mod = .{},
     };
 
-    input_events: [max_input_events]Event,
-    input_len: u16,
+    input_events: FixedRing(Event, max_input_events),
     scroll_pages: i32,
-    binding_buf: [64]Bindings.Action,
-    binding_len: u8,
+    binding_buf: FixedRing(Bindings.Action, 64),
     bindings: Bindings.Configured,
     redraw_requested: bool,
     window_geometry_changed: bool,
@@ -51,11 +101,9 @@ pub const Input = struct {
 
     pub fn init(self: *Input) void {
         self.* = .{
-            .input_events = undefined,
-            .input_len = 0,
+            .input_events = .{},
             .scroll_pages = 0,
-            .binding_buf = undefined,
-            .binding_len = 0,
+            .binding_buf = .{},
             .bindings = .{},
             .redraw_requested = false,
             .window_geometry_changed = false,
@@ -105,15 +153,8 @@ pub const Input = struct {
     }
 
     pub fn drainInputEvent(self: *Input) ?Event {
-        if (self.input_len == 0) return null;
-        const out = self.input_events[0];
+        const out = self.input_events.pop() orelse return null;
         logQueuedInputEvent("dequeue-input", out);
-        self.input_len -= 1;
-        if (self.input_len > 0) {
-            const live_len: usize = @intCast(self.input_len);
-            std.debug.assert(live_len < self.input_events.len);
-            std.mem.copyForwards(Event, self.input_events[0..live_len], self.input_events[1 .. live_len + 1]);
-        }
         return out;
     }
 
@@ -124,26 +165,19 @@ pub const Input = struct {
     }
 
     pub fn drainBindingAction(self: *Input) ?Bindings.Action {
-        if (self.binding_len == 0) return null;
-        const out = self.binding_buf[0];
+        const out = self.binding_buf.pop() orelse return null;
         window.logf("host-loop ts_ns={d} stage=dequeue-binding action={s}", .{ window.nowNs(), @tagName(out) });
-        self.binding_len -= 1;
-        if (self.binding_len > 0) {
-            const live_len: usize = @intCast(self.binding_len);
-            std.debug.assert(live_len < self.binding_buf.len);
-            std.mem.copyForwards(Bindings.Action, self.binding_buf[0..live_len], self.binding_buf[1 .. live_len + 1]);
-        }
         return out;
     }
 
     pub fn hasQueuedTerminalInput(self: *const Input) bool {
-        return self.input_len != 0 or self.scroll_pages != 0;
+        return self.input_events.hasItems() or self.scroll_pages != 0;
     }
 
     pub fn hasPendingLoopWork(self: *const Input) bool {
-        return self.input_len != 0 or
+        return self.input_events.hasItems() or
             self.scroll_pages != 0 or
-            self.binding_len != 0 or
+            self.binding_buf.hasItems() or
             self.redraw_requested or
             self.window_geometry_changed or
             self.window_focus_changed != null or
@@ -316,23 +350,13 @@ fn appendMouseEvent(input: *Input, event: mouse.Event) void {
 }
 
 fn appendInputEvent(input: *Input, event: Input.Event) bool {
-    if (input.input_len >= input.input_events.len) return false;
-    const idx: usize = @intCast(input.input_len);
-    std.debug.assert(idx < input.input_events.len);
-    input.input_events[idx] = event;
-    input.input_len += 1;
-    std.debug.assert(input.input_len <= input.input_events.len);
+    if (!input.input_events.push(event)) return false;
     logQueuedInputEvent("queue-input", event);
     return true;
 }
 
 fn appendBindingAction(input: *Input, action: Input.Bindings.Action) void {
-    if (input.binding_len >= input.binding_buf.len) return;
-    const idx: usize = @intCast(input.binding_len);
-    std.debug.assert(idx < input.binding_buf.len);
-    input.binding_buf[idx] = action;
-    input.binding_len += 1;
-    std.debug.assert(input.binding_len <= input.binding_buf.len);
+    if (!input.binding_buf.push(action)) return;
     input.redraw_requested = true;
     window.logf("host-loop ts_ns={d} stage=queue-binding action={s}", .{ window.nowNs(), @tagName(action) });
 }
@@ -668,6 +692,12 @@ fn pushShiftPageUpEvent() !void {
     try std.testing.expect(c.SDL_PushEvent(&event));
 }
 
+fn singleByteInput(value: u8) keys.ByteInput {
+    var chunk = keys.ByteInput{ .len = 1, .buf = undefined };
+    chunk.buf[0] = value;
+    return chunk;
+}
+
 test "sdl mod binding" {
     const mods = sdlMods(c.SDL_KMOD_SHIFT | c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL);
     try std.testing.expect(mods.shift);
@@ -699,6 +729,71 @@ test "byte chunking preserves order" {
         else => return error.UnexpectedEvent,
     };
     try std.testing.expectEqualStrings(bytes, out.items);
+}
+
+test "input event queue preserves FIFO across wraparound" {
+    var input: Input = undefined;
+    input.init();
+
+    var i: usize = 0;
+    while (i < max_input_events) : (i += 1) {
+        const value: u8 = @intCast(i);
+        try std.testing.expect(appendInputEvent(&input, .{ .bytes = singleByteInput(value) }));
+    }
+    try std.testing.expect(!appendInputEvent(&input, .{ .bytes = singleByteInput(255) }));
+
+    i = 0;
+    while (i < 32) : (i += 1) {
+        const event = input.drainInputEvent() orelse return error.ExpectedEvent;
+        switch (event) {
+            .bytes => |chunk| try std.testing.expectEqual(@as(u8, @intCast(i)), chunk.buf[0]),
+            else => return error.UnexpectedEvent,
+        }
+    }
+
+    i = 0;
+    while (i < 32) : (i += 1) {
+        const value: u8 = @intCast(max_input_events + i);
+        try std.testing.expect(appendInputEvent(&input, .{ .bytes = singleByteInput(value) }));
+    }
+
+    var expected: usize = 32;
+    while (input.drainInputEvent()) |event| : (expected += 1) {
+        switch (event) {
+            .bytes => |chunk| try std.testing.expectEqual(@as(u8, @intCast(expected)), chunk.buf[0]),
+            else => return error.UnexpectedEvent,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, max_input_events + 32), expected);
+}
+
+test "binding action queue preserves FIFO across wraparound" {
+    var input: Input = undefined;
+    input.init();
+
+    const capacity = input.binding_buf.buf.len;
+    var i: usize = 0;
+    while (i < capacity) : (i += 1) appendBindingAction(&input, .tab_next);
+    try std.testing.expectEqual(@as(u16, @intCast(capacity)), input.binding_buf.len);
+
+    i = 0;
+    while (i < 16) : (i += 1) {
+        try std.testing.expectEqual(Input.Bindings.Action.tab_next, input.drainBindingAction().?);
+    }
+
+    i = 0;
+    while (i < 16) : (i += 1) appendBindingAction(&input, .tab_prev);
+
+    var tab_next_remaining = capacity - 16;
+    while (tab_next_remaining > 0) : (tab_next_remaining -= 1) {
+        try std.testing.expectEqual(Input.Bindings.Action.tab_next, input.drainBindingAction().?);
+    }
+
+    i = 0;
+    while (i < 16) : (i += 1) {
+        try std.testing.expectEqual(Input.Bindings.Action.tab_prev, input.drainBindingAction().?);
+    }
+    try std.testing.expectEqual(@as(?Input.Bindings.Action, null), input.drainBindingAction());
 }
 
 test "pumpWindow bounds one SDL burst per turn" {
