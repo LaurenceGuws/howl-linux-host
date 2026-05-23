@@ -27,6 +27,7 @@ pub const PresentState = Present.State(c);
 pub const State = struct {
     handle: Ptr,
     present_state: PresentState,
+    current_title: [:0]u8,
     px_w: c_int,
     px_h: c_int,
     logical_w: c_int,
@@ -36,10 +37,13 @@ pub const State = struct {
     pub fn create(title: [*:0]const u8, width: c_int, height: c_int) !State {
         const handle = createWindow(title, width, height, windowFlags()) orelse return error.WindowCreateFailed;
         errdefer destroyWindow(handle);
+        const current_title = try std.heap.c_allocator.dupeZ(u8, std.mem.span(title));
+        errdefer std.heap.c_allocator.free(current_title);
 
         var self = State{
             .handle = handle,
             .present_state = undefined,
+            .current_title = current_title,
             .px_w = 1,
             .px_h = 1,
             .logical_w = 1,
@@ -55,6 +59,7 @@ pub const State = struct {
     pub fn deinit(self: *State) void {
         deinitPresent(&self.present_state);
         destroyWindow(self.handle);
+        std.heap.c_allocator.free(self.current_title);
     }
 
     pub fn refreshGeometry(self: *State) bool {
@@ -106,6 +111,10 @@ pub const State = struct {
         Present.present(c, &self.present_state, perf, frame);
     }
 
+    pub fn setTitle(self: *State, title: []const u8) void {
+        _ = self.setTitleWith(title, TitleOps) catch return;
+    }
+
     pub fn tabBarHeight(self: *const State, configured_height: u32) c_int {
         if (self.px_h <= 1) return 0;
         return @min(@as(c_int, @intCast(configured_height)), self.px_h - 1);
@@ -114,6 +123,22 @@ pub const State = struct {
     pub fn tabBarHeightLogical(self: *const State, configured_height: u32) c_int {
         if (self.logical_h <= 1) return 0;
         return @min(@as(c_int, @intCast(configured_height)), self.logical_h - 1);
+    }
+
+    fn setTitleWith(self: *State, title: []const u8, comptime Ops: type) !bool {
+        if (std.mem.eql(u8, self.current_title, title)) return false;
+        const title_z = try std.heap.c_allocator.dupeZ(u8, title);
+        errdefer std.heap.c_allocator.free(title_z);
+        Ops.setWindowTitle(self.handle, title_z.ptr);
+        std.heap.c_allocator.free(self.current_title);
+        self.current_title = title_z;
+        return true;
+    }
+};
+
+const TitleOps = struct {
+    fn setWindowTitle(handle: Ptr, title: [*:0]const u8) void {
+        _ = c.SDL_SetWindowTitle(handle, title);
     }
 };
 
@@ -188,4 +213,45 @@ pub fn deleteTexture(surface_id: *u64) void {
 
 pub fn useDefaultCursor() void {
     _ = c.SDL_SetCursor(c.SDL_GetDefaultCursor());
+}
+
+test "window title updates only when content changes" {
+    const FakeOps = struct {
+        var calls: usize = 0;
+        var last_title: [64]u8 = undefined;
+        var last_title_len: usize = 0;
+
+        fn reset() void {
+            calls = 0;
+            last_title_len = 0;
+        }
+
+        fn setWindowTitle(_: Ptr, title: [*:0]const u8) void {
+            const slice = std.mem.span(title);
+            calls += 1;
+            last_title_len = @min(slice.len, last_title.len);
+            if (last_title_len != 0) @memcpy(last_title[0..last_title_len], slice[0..last_title_len]);
+        }
+    };
+
+    FakeOps.reset();
+    var state = State{
+        .handle = undefined,
+        .present_state = undefined,
+        .current_title = try std.heap.c_allocator.dupeZ(u8, "shell"),
+        .px_w = 1,
+        .px_h = 1,
+        .logical_w = 1,
+        .logical_h = 1,
+        .focused = true,
+    };
+    defer std.heap.c_allocator.free(state.current_title);
+
+    try std.testing.expect(!try state.setTitleWith("shell", FakeOps));
+    try std.testing.expectEqual(@as(usize, 0), FakeOps.calls);
+
+    try std.testing.expect(try state.setTitleWith("vim main.zig", FakeOps));
+    try std.testing.expectEqual(@as(usize, 1), FakeOps.calls);
+    try std.testing.expectEqualStrings("vim main.zig", state.current_title);
+    try std.testing.expectEqualStrings("vim main.zig", FakeOps.last_title[0..FakeOps.last_title_len]);
 }

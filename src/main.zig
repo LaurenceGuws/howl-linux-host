@@ -382,10 +382,15 @@ fn render(app: *App, chrome_present: bool) void {
     app.input.window_state.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
     const term_texture_before = tab.termTextureId();
     tab.noteRenderTurn(turn);
+    syncActiveWindowTitle(app.window, tab);
     const snapshot = renderSnapshot(app, tab);
     presentRenderFrame(app, tab, turn, chrome_present, snapshot);
     app.input.window_state.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
     std.debug.assert(tab.termTextureId() != 0 or term_texture_before == 0);
+}
+
+fn syncActiveWindowTitle(window: anytype, tab: anytype) void {
+    window.setTitle(tab.titleSlice());
 }
 
 const RenderSnapshot = struct {
@@ -493,6 +498,29 @@ test "present cadence stays tied to frame or chrome work" {
     try std.testing.expect(shouldPresent(.no_frame, true));
 }
 
+test "active window title sync uses the active panel title" {
+    const FakeWindow = struct {
+        last_title: []const u8 = "",
+
+        fn setTitle(self: *@This(), title: []const u8) void {
+            self.last_title = title;
+        }
+    };
+
+    const FakePanel = struct {
+        title: []const u8,
+
+        fn titleSlice(self: *@This()) []const u8 {
+            return self.title;
+        }
+    };
+
+    var window = FakeWindow{};
+    var panel = FakePanel{ .title = "top" };
+    syncActiveWindowTitle(&window, &panel);
+    try std.testing.expectEqualStrings("top", window.last_title);
+}
+
 fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*TerminalPanel) void {
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
@@ -556,6 +584,7 @@ fn openTab(io: std.Io, conf: *const Config.State, input: *Input, feed_record_pat
     active_tab_idx.* = @intCast(updated.len - 1);
     assert(tabIndexInRange(updated, active_tab_idx.*));
     syncTerminalFocus(window, updated, active_tab_idx.*);
+    syncActiveWindowTitle(window, activePanel(updated, active_tab_idx.*));
 }
 
 fn closeActiveTab(window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex) void {
@@ -570,6 +599,7 @@ fn closeActiveTab(window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIn
     if (!tabIndexInRange(updated, active_tab_idx.*)) active_tab_idx.* = @intCast(updated.len - 1);
     assert(tabIndexInRange(updated, active_tab_idx.*));
     syncTerminalFocus(window, updated, active_tab_idx.*);
+    syncActiveWindowTitle(window, activePanel(updated, active_tab_idx.*));
 }
 
 fn selectRelative(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: *TabIndex, delta: i32) void {
@@ -586,6 +616,7 @@ fn selectTab(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: *Tab
     active_tab_idx.* = idx;
     assert(tabIndexInRange(tabs, active_tab_idx.*));
     syncTerminalFocus(window, tabs, active_tab_idx.*);
+    syncActiveWindowTitle(window, activePanel(tabs, active_tab_idx.*));
 }
 
 fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: TabIndex) void {
