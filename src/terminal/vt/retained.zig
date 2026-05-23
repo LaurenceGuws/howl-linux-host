@@ -145,6 +145,32 @@ pub fn drainPendingClipboardLocked(term: anytype) !?[]const u8 {
     return out[0..@intCast(result.written)];
 }
 
+pub fn copyVisibleHyperlinkAt(term: anytype, row: u16, col: u16) !?[]const u8 {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return copyVisibleHyperlinkAtLocked(term, row, col);
+}
+
+pub fn copyVisibleHyperlinkAtLocked(term: anytype, row: u16, col: u16) !?[]const u8 {
+    const meta = surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset);
+    const out = term.vt_state.output_scratch[0..];
+    const result = c.howl_vt_terminal_copy_surface_hyperlink(
+        term.vt,
+        term.vt_state.scrollback_offset,
+        meta.snapshot_seq,
+        row,
+        col,
+        out.ptr,
+        out.len,
+    );
+    if (result.status == callShortBuffer()) return error.HostBufferTooSmall;
+    try requireOk(result.status);
+    std.debug.assert(result.written <= out.len);
+    if (result.written == 0 and result.needed == 0) return null;
+    return out[0..@intCast(result.written)];
+}
+
 fn clampScrollbackOffset(term: anytype, history_count: u32) void {
     term.vt_state.scrollback_offset = @min(term.vt_state.scrollback_offset, history_count);
     std.debug.assert(term.vt_state.scrollback_offset <= history_count);
