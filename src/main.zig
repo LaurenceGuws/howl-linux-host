@@ -28,14 +28,6 @@ const TabSlots = struct {
     active_count: TabIndex = 0,
     free_count: TabIndex = max_tabs,
 
-    fn init() TabSlots {
-        var tabs = TabSlots{};
-        for (0..max_tabs) |slot| {
-            tabs.free_slots[slot] = @intCast(max_tabs - 1 - slot);
-        }
-        return tabs;
-    }
-
     fn items(self: *TabSlots) []*TerminalPanel {
         return self.active_tabs[0..self.active_count];
     }
@@ -132,52 +124,86 @@ pub fn main(init: std.process.Init) !void {
     try start(init.io, options, feed_record_path);
 }
 
-fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
+noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     setCurrentThreadName("howl-main");
     InputWindow.logStartup("app-start");
     try initVideo();
     defer Window.quit();
 
-    var conf = try loadConfig(options);
-    defer conf.deinit(std.heap.c_allocator);
+    const conf = try std.heap.c_allocator.create(Config.State);
+    errdefer std.heap.c_allocator.destroy(conf);
+    conf.* = try loadConfig(options);
+    defer {
+        conf.deinit(std.heap.c_allocator);
+        std.heap.c_allocator.destroy(conf);
+    }
     InputWindow.logStartupf("stage=config-loaded shell_len={d} title_len={d}", .{ conf.term.shell.len, conf.window.title.len });
 
-    var window = try createWindow(&conf, options);
-    defer window.deinit();
+    const window = try std.heap.c_allocator.create(Window.State);
+    errdefer std.heap.c_allocator.destroy(window);
+    window.* = try createWindow(conf, options);
+    defer {
+        window.deinit();
+        std.heap.c_allocator.destroy(window);
+    }
     InputWindow.logStartupf("stage=window-ready px_w={d} px_h={d} logical_w={d} logical_h={d}", .{ window.px_w, window.px_h, window.logical_w, window.logical_h });
 
-    var tab_bar = TabBar{};
-    var tabs = TabSlots.init();
-    defer destroyTabs(&tabs);
-    var active_tab_idx: TabIndex = 0;
+    const tab_bar = try std.heap.c_allocator.create(TabBar);
+    errdefer std.heap.c_allocator.destroy(tab_bar);
+    tab_bar.* = .{};
+    defer std.heap.c_allocator.destroy(tab_bar);
 
-    var input = try initInput();
+    const tabs = try std.heap.c_allocator.create(TabSlots);
+    errdefer std.heap.c_allocator.destroy(tabs);
+    tabs.active_count = 0;
+    tabs.free_count = max_tabs;
+    for (0..max_tabs) |slot| {
+        tabs.free_slots[slot] = @intCast(max_tabs - 1 - slot);
+    }
+    const active_tab_idx = try std.heap.c_allocator.create(TabIndex);
+    errdefer std.heap.c_allocator.destroy(active_tab_idx);
+    active_tab_idx.* = 0;
+
+    const input = try std.heap.c_allocator.create(Input);
+    errdefer std.heap.c_allocator.destroy(input);
+    input.* = try initInput();
     input.window_state.initEventTypes();
-    input.setBindings(Input.Bindings.Configured.init(&conf));
+    input.setBindings(Input.Bindings.Configured.init(conf));
+    defer {
+        destroyTabs(tabs);
+        std.heap.c_allocator.destroy(tabs);
+        std.heap.c_allocator.destroy(input);
+        std.heap.c_allocator.destroy(active_tab_idx);
+    }
     InputWindow.logStartup("input-ready");
 
     applyChildEnvironmentPolicy();
-    try openTab(io, &conf, &input, feed_record_path, &window, &tabs, &active_tab_idx);
+    try openTab(io, conf, input, feed_record_path, window, tabs, active_tab_idx);
     InputWindow.logStartup("initial-tab-opened");
 
-    var perf: PerfLog.State = undefined;
-    try initPerf(&perf, activeTab(tabs.items(), active_tab_idx));
-    defer perf.stopAndDeinit();
+    const perf = try std.heap.c_allocator.create(PerfLog.State);
+    errdefer std.heap.c_allocator.destroy(perf);
+    perf.* = undefined;
+    try initPerf(perf, activeTab(tabs.items(), active_tab_idx.*));
+    defer {
+        perf.stopAndDeinit();
+        std.heap.c_allocator.destroy(perf);
+    }
     InputWindow.logStartup("perf-ready");
 
     const duration_timer = InputWindow.startQuitTimer(options.duration_ms);
     defer InputWindow.stopQuitTimer(duration_timer);
 
     var app = App{
-        .conf = &conf,
+        .conf = conf,
         .feed_record_path = feed_record_path,
         .io = io,
-        .window = &window,
-        .perf = &perf,
-        .tab_bar = &tab_bar,
-        .tabs = &tabs,
-        .active_tab_idx = &active_tab_idx,
-        .input = &input,
+        .window = window,
+        .perf = perf,
+        .tab_bar = tab_bar,
+        .tabs = tabs,
+        .active_tab_idx = active_tab_idx,
+        .input = input,
         .first_loop_render_logged = false,
     };
     configureInputPolicies(&app);
@@ -579,7 +605,7 @@ fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8,
     }
 }
 
-fn openTab(io: std.Io, conf: *const Config.State, input: *Input, feed_record_path: ?[]const u8, window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex) !void {
+noinline fn openTab(io: std.Io, conf: *const Config.State, input: *Input, feed_record_path: ?[]const u8, window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex) !void {
     const items = tabs.items();
     assert(items.len <= max_tabs);
     const slot = tabs.acquireSlot() orelse return;

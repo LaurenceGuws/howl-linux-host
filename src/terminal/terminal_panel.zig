@@ -44,6 +44,11 @@ const HoveredLinkCell = struct {
     col: u16,
 };
 
+const SelectionCell = struct {
+    row: i32,
+    col: u16,
+};
+
 pub const TerminalPanel = struct {
     pub const OverlaySnapshot = struct {
         scrollbar: window.ScrollbarLayout,
@@ -81,6 +86,8 @@ pub const TerminalPanel = struct {
     scrollbar: scroll.State,
     link_cursor_active: bool,
     hovered_link_cell: ?HoveredLinkCell,
+    selection_anchor: ?SelectionCell,
+    selection_drag_active: bool,
     hover_publish_pending: bool,
     first_submit_trace_logged: bool,
     first_prepare_result_logged: bool,
@@ -92,7 +99,7 @@ pub const TerminalPanel = struct {
     cursor_blink_visible: bool,
     cursor_blink_deadline_ns: u64,
 
-    pub fn init(
+    pub noinline fn init(
         self: *TerminalPanel,
         io: std.Io,
         input: *HostInput,
@@ -103,41 +110,42 @@ pub const TerminalPanel = struct {
         logical_width: c_int,
         logical_height: c_int,
     ) !void {
-        self.* = initial(conf, input, render_width, render_height, logical_width, logical_height);
+        initial(self, conf, input, render_width, render_height, logical_width, logical_height);
         errdefer self.deinit();
         try self.initTerm();
         try self.startRuntime(io, feed_record_path);
     }
 
-    fn initial(conf: *const TerminalConfig, input: *HostInput, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) TerminalPanel {
+    noinline fn initial(self: *TerminalPanel, conf: *const TerminalConfig, input: *HostInput, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
         const start_font_px = @max(conf.font_size, 1);
-        return .{
-            .term = undefined,
-            .live = false,
-            .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
-            .conf = conf,
-            .input = input,
-            .title_buf = undefined,
-            .title_len = 0,
-            .geometry = geometry.init(render_width, render_height, logical_width, logical_height),
-            .font_size_px = start_font_px,
-            .default_font_size_px = start_font_px,
-            .window_focused = true,
-            .widget_focused = true,
-            .scrollbar = .{},
-            .link_cursor_active = false,
-            .hovered_link_cell = null,
-            .hover_publish_pending = false,
-            .first_submit_trace_logged = false,
-            .first_prepare_result_logged = false,
-            .first_non_idle_submit_logged = false,
-            .first_rendered_surface_logged = false,
-            .first_submit_work_logged = false,
-            .first_blocked_present_logged = false,
-            .first_idle_render_logged = false,
-            .cursor_blink_visible = true,
-            .cursor_blink_deadline_ns = 0,
-        };
+        self.term = undefined;
+        self.progress = .{};
+        self.live = false;
+        self.term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 };
+        self.conf = conf;
+        self.input = input;
+        self.title_buf = undefined;
+        self.title_len = 0;
+        self.geometry = geometry.init(render_width, render_height, logical_width, logical_height);
+        self.font_size_px = start_font_px;
+        self.default_font_size_px = start_font_px;
+        self.window_focused = true;
+        self.widget_focused = true;
+        self.scrollbar = .{};
+        self.link_cursor_active = false;
+        self.hovered_link_cell = null;
+        self.selection_anchor = null;
+        self.selection_drag_active = false;
+        self.hover_publish_pending = false;
+        self.first_submit_trace_logged = false;
+        self.first_prepare_result_logged = false;
+        self.first_non_idle_submit_logged = false;
+        self.first_rendered_surface_logged = false;
+        self.first_submit_work_logged = false;
+        self.first_blocked_present_logged = false;
+        self.first_idle_render_logged = false;
+        self.cursor_blink_visible = true;
+        self.cursor_blink_deadline_ns = 0;
     }
 
     pub fn deinit(self: *TerminalPanel) void {
@@ -214,6 +222,7 @@ pub const TerminalPanel = struct {
                         }
                         continue;
                     }
+                    if (handleHostSelectionMouse(self, local_mouse)) continue;
                     if (handleHostLinkMouse(self, local_mouse)) continue;
                     if (mouse_event.host_only) {
                         if (clearHoveredLink(self)) self.input.requestRedraw();
@@ -401,13 +410,21 @@ pub const TerminalPanel = struct {
         const launch = launchConfig(self.conf);
         const render_init = renderInit(self, frame_request, &resolved_fonts);
         const term_init = try initTermState(self.conf, launch, render_init);
-        self.term = .{
-            .allocator = std.heap.c_allocator,
-            .pty = .{ .launch = launch },
-            .session = term_init.session,
-            .vt = term_init.vt,
-            .render = .init(term_init.surface_text, term_init.frame_layout),
-        };
+        self.term.allocator = std.heap.c_allocator;
+        self.term.pty = .{ .launch = launch };
+        self.term.session = term_init.session;
+        self.term.vt = term_init.vt;
+        self.term.render = .init(term_init.surface_text, term_init.frame_layout);
+        self.term.vt_state.title_buf = undefined;
+        self.term.vt_state.title_len = 0;
+        self.term.vt_state.output_scratch = undefined;
+        self.term.vt_state.input_scratch = undefined;
+        self.term.vt_state.scrollback_offset = 0;
+        self.term.vt_state.focused = true;
+        self.term.vt_state.cursor_visible = true;
+        self.term.vt_state.cursor_blink = false;
+        self.term.trace = .{};
+        self.term.mutex = .{};
         self.live = true;
         self.term.render.syncFrameLayout(term_init.frame_layout);
     }
@@ -662,6 +679,62 @@ pub const TerminalPanel = struct {
         return false;
     }
 
+    fn handleHostSelectionMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+        switch (mouse_event.kind) {
+            .press => {
+                if (mouse_event.button != .left or mouse_event.mods.ctrl) return false;
+                if (terminalOwnsMouse(self, mouse_event)) return false;
+                self.selection_anchor = selectionEventCell(self, mouse_event);
+                self.selection_drag_active = false;
+                return true;
+            },
+            .move => {
+                if (self.selection_anchor == null or !mouse_event.buttons_down.left) return false;
+                const anchor = self.selection_anchor.?;
+                const cell = selectionEventCell(self, mouse_event);
+                if (!self.selection_drag_active) {
+                    if (anchor.row == cell.row and anchor.col == cell.col) return true;
+                    vt_retained.startSelection(&self.term, anchor.row, anchor.col) catch return false;
+                    self.selection_drag_active = true;
+                }
+                vt_retained.updateSelection(&self.term, cell.row, cell.col) catch return false;
+                self.input.requestRedraw();
+                return true;
+            },
+            .release => {
+                if (mouse_event.button != .left) return false;
+                if (self.selection_anchor == null) return false;
+                if (!self.selection_drag_active) {
+                    self.selection_anchor = null;
+                    return true;
+                }
+                const cell = selectionEventCell(self, mouse_event);
+                vt_retained.updateSelection(&self.term, cell.row, cell.col) catch return false;
+                vt_retained.finishSelection(&self.term) catch return false;
+                self.selection_anchor = null;
+                self.selection_drag_active = false;
+                const text = vt_retained.copySelection(&self.term) catch return true;
+                if (text.len != 0) _ = window.setClipboardText(text);
+                self.input.requestRedraw();
+                return true;
+            },
+            else => return false,
+        }
+    }
+
+    fn terminalOwnsMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+        return term_input.wouldReportMouse(&self.term, .{
+            .kind = term_input.mouseKind(mouse_event.kind),
+            .button = term_input.mouseButton(mouse_event.button),
+            .row = render_api.pixelToRow(&self.term, mouse_event.pixel_y),
+            .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
+            .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
+            .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
+            .mods = term_input.mods(mouse_event.mods),
+            .buttons_down = term_input.buttons(mouse_event.buttons_down),
+        });
+    }
+
     fn updateHoveredLinkCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) void {
         if (self.conf.links.hover == .off or !mouse_event.mods.ctrl) {
             if (clearHoveredLink(self)) {
@@ -729,6 +802,15 @@ pub const TerminalPanel = struct {
     fn mouseEventCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) HoveredLinkCell {
         return .{
             .row = @intCast(render_api.pixelToRow(&self.term, mouse_event.pixel_y)),
+            .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
+        };
+    }
+
+    fn selectionEventCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) SelectionCell {
+        const row = render_api.pixelToRow(&self.term, mouse_event.pixel_y);
+        const scrollback_offset: i32 = @intCast(self.term.vt_state.scrollback_offset);
+        return .{
+            .row = row - scrollback_offset,
             .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
         };
     }
@@ -913,6 +995,8 @@ test "cursor activity pushes blink deadline while visible" {
         .scrollbar = .{},
         .link_cursor_active = false,
         .hovered_link_cell = null,
+        .selection_anchor = null,
+        .selection_drag_active = false,
         .first_submit_trace_logged = false,
         .first_prepare_result_logged = false,
         .first_non_idle_submit_logged = false,

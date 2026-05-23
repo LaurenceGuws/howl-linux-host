@@ -137,6 +137,29 @@ pub fn wouldReportUnpressedMouseMotion(term: *Term) bool {
     return result.written != 0;
 }
 
+pub fn wouldReportMouse(term: *Term, mouse: TermInput.MouseEvent) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    const out = retained.inputScratch(term);
+    const result = c.howl_vt_terminal_encode_mouse(
+        term.vt,
+        mouse.kind,
+        mouse.button,
+        mouse.row,
+        mouse.col,
+        if (mouse.pixel_x != null) 1 else 0,
+        if (mouse.pixel_x) |value| value else 0,
+        if (mouse.pixel_y != null) 1 else 0,
+        if (mouse.pixel_y) |value| value else 0,
+        @intCast(mouse.mods),
+        mouse.buttons_down,
+        out.ptr,
+        out.len,
+    );
+    if (!api.isCallOk(result.status)) return false;
+    return result.written != 0;
+}
+
 fn encodeFocusBytes(term: *Term, focused: bool) ![]const u8 {
     const out = retained.inputScratch(term);
     const result = c.howl_vt_terminal_encode_focus(term.vt, if (focused) 1 else 0, out.ptr, out.len);

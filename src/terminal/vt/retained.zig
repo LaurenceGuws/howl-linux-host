@@ -173,6 +173,43 @@ pub fn copyVisibleHyperlinkAtLocked(term: anytype, row: u16, col: u16) !?[]const
     return out[0..@intCast(result.written)];
 }
 
+pub fn startSelection(term: anytype, row: i32, col: u16) !void {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    try requireOk(c.howl_vt_terminal_start_selection(term.vt, row, col));
+}
+
+pub fn updateSelection(term: anytype, row: i32, col: u16) !void {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    try requireOk(c.howl_vt_terminal_update_selection(term.vt, row, col));
+}
+
+pub fn finishSelection(term: anytype) !void {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    try requireOk(c.howl_vt_terminal_finish_selection(term.vt));
+}
+
+pub fn clearSelection(term: anytype) !void {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    try requireOk(c.howl_vt_terminal_clear_selection(term.vt));
+}
+
+pub fn copySelection(term: anytype) ![]const u8 {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    const out = term.vt_state.output_scratch[0..];
+    const result = c.howl_vt_terminal_copy_selection(term.vt, out.ptr, out.len);
+    return copyBoundedBytes(out, result);
+}
+
 fn clampScrollbackOffset(term: anytype, history_count: u32) void {
     term.vt_state.scrollback_offset = @min(term.vt_state.scrollback_offset, history_count);
     std.debug.assert(term.vt_state.scrollback_offset <= history_count);
