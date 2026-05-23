@@ -81,6 +81,7 @@ pub const TerminalPanel = struct {
     scrollbar: scroll.State,
     link_cursor_active: bool,
     hovered_link_cell: ?HoveredLinkCell,
+    hover_publish_pending: bool,
     first_submit_trace_logged: bool,
     first_prepare_result_logged: bool,
     first_non_idle_submit_logged: bool,
@@ -126,6 +127,7 @@ pub const TerminalPanel = struct {
             .scrollbar = .{},
             .link_cursor_active = false,
             .hovered_link_cell = null,
+            .hover_publish_pending = false,
             .first_submit_trace_logged = false,
             .first_prepare_result_logged = false,
             .first_non_idle_submit_logged = false,
@@ -501,7 +503,10 @@ pub const TerminalPanel = struct {
 
     fn maybePublishSource(self: *TerminalPanel, bootstrap_surface: bool, work: render_retained.WorkState) void {
         self.maybeCommitGridResize();
-        if (bootstrap_surface or !work.wantsFrame()) _ = vt_surface.publishSource(&self.term, hoverDecoration(self));
+        if (bootstrap_surface or !work.wantsFrame() or self.hover_publish_pending) {
+            _ = vt_surface.publishSource(&self.term, hoverDecoration(self));
+            self.hover_publish_pending = false;
+        }
     }
 
     fn prepare(self: *TerminalPanel) render_retained.PrepareResult {
@@ -659,14 +664,20 @@ pub const TerminalPanel = struct {
 
     fn updateHoveredLinkCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) void {
         if (self.conf.links.hover == .off or !mouse_event.mods.ctrl) {
-            if (clearHoveredLink(self)) self.input.requestRedraw();
+            if (clearHoveredLink(self)) {
+                self.hover_publish_pending = true;
+                self.input.requestRedraw();
+            }
             return;
         }
 
         const cell = mouseEventCell(self, mouse_event);
         const uri = vt_retained.copyVisibleHyperlinkAt(&self.term, cell.row, cell.col) catch null;
         if (uri == null or uri.?.len == 0) {
-            if (clearHoveredLink(self)) self.input.requestRedraw();
+            if (clearHoveredLink(self)) {
+                self.hover_publish_pending = true;
+                self.input.requestRedraw();
+            }
             return;
         }
 
@@ -681,7 +692,10 @@ pub const TerminalPanel = struct {
             changed = true;
         }
         changed = syncLinkCursor(self, true) or changed;
-        if (changed) self.input.requestRedraw();
+        if (changed) {
+            self.hover_publish_pending = true;
+            self.input.requestRedraw();
+        }
     }
 
     fn clearHoveredLink(self: *TerminalPanel) bool {
