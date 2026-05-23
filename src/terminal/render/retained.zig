@@ -209,11 +209,6 @@ pub const State = struct {
         return self.preparedBuffer(&upload_out.buffer);
     }
 
-    pub fn preparedDiagnostics(self: *const State, diagnostics_out: *c.HowlRenderPreparedSurfaceDiagnostics) bool {
-        const prepared = self.prepared_surface orelse return false;
-        return c.howl_render_prepared_surface_diagnostics(prepared, diagnostics_out) == c.HOWL_RENDER_CALL_OK;
-    }
-
     pub fn retirePresented(self: *State) u64 {
         var retire = std.mem.zeroes(c.HowlRenderPresentedRetire);
         std.debug.assert(c.howl_render_surface_text_retire_presented(self.surface_text, &retire) == c.HOWL_RENDER_CALL_OK);

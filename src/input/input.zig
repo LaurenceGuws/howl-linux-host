@@ -170,10 +170,6 @@ pub const Input = struct {
         return out;
     }
 
-    pub fn hasQueuedTerminalInput(self: *const Input) bool {
-        return self.input_events.hasItems() or self.scroll_pages != 0;
-    }
-
     pub fn hasPendingLoopWork(self: *const Input) bool {
         return self.input_events.hasItems() or
             self.scroll_pages != 0 or

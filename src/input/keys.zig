@@ -267,13 +267,6 @@ pub const Bindings = struct {
         return binding;
     }
 
-    pub fn isRepeatable(action: Action) bool {
-        return switch (action) {
-            .zoom_in, .zoom_out, .zoom_stress_toggle, .terminal_next_tab, .terminal_prev_tab => true,
-            else => false,
-        };
-    }
-
     pub fn focusTabIndex(action: Action) ?u8 {
         return switch (action) {
             .terminal_focus_tab_1 => 0,
