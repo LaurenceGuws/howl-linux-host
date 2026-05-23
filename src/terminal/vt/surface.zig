@@ -52,6 +52,8 @@ pub fn publishSource(term: *terminal_term.Term) c.HowlRenderVtPublishResult {
     const visible = vtCopyVisibleIntoSlot(term, meta, slot) catch return rejectPublishSource(term.render.surface_text, meta.snapshot_seq);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.scroll_row <= visible.history_count + visible.rows);
+    term.vt_state.cursor_visible = visible.cursor.visible != 0;
+    term.vt_state.cursor_blink = visible.cursor.blink != 0;
 
     const typed_response = c.howl_render_surface_text_commit_publish_slot(term.render.surface_text, .{
         .scroll_row = visible.scroll_row,

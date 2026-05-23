@@ -109,6 +109,12 @@ pub fn takeRenderMetrics(term: *Term) RenderMetrics {
     return metrics;
 }
 
+pub fn setCursorBlinkVisible(term: *Term, visible: bool) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return renderCallOk(c.howl_render_surface_text_set_cursor_blink_visible(term.render.surface_text, @intFromBool(visible)));
+}
+
 pub fn pixelToCol(term: *const Term, pixel_x: i32) u16 {
     const frame_layout = term.render.frame_layout;
     if (frame_layout.cols == 0 or frame_layout.cell_px.width == 0) return 0;

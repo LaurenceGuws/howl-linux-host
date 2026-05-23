@@ -246,9 +246,10 @@ fn runLoop(app: *App) !void {
 fn runLoopTurn(app: *App) !LoopAction {
     if (quitRequested(app)) |action| return action;
 
+    _ = syncActiveBlinkCadence(app);
     const pending = collectLoopPending(app);
     var loop = LoopState.init(pending);
-    const event_action = pumpWindowEvents(app, loop.wait_for_window);
+    const event_action = pumpWindowEvents(app, loop.wait_for_window, activeBlinkWaitMs(app));
     if (event_action == .quit) return .quit;
 
     applyFocusChange(app);
@@ -259,9 +260,10 @@ fn runLoopTurn(app: *App) !LoopAction {
     _ = applyWindowResize(app);
     const progress_redraw = driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*);
     try ensureActiveTabHealthy(app);
+    const blink_redraw = syncActiveBlinkCadence(app);
 
     loop.finish(
-        progress_redraw,
+        progress_redraw or blink_redraw,
         app.input.drainRedrawRequested(),
         activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
     );
@@ -299,12 +301,22 @@ fn quitRequested(app: *const App) ?LoopAction {
     return .quit;
 }
 
-fn pumpWindowEvents(app: *App, wait: bool) LoopAction {
-    const signal = app.input.pumpWindow(wait);
+fn pumpWindowEvents(app: *App, wait: bool, timeout_ms: ?u32) LoopAction {
+    const signal = app.input.pumpWindow(wait, timeout_ms);
     return switch (signal) {
         .none => .continue_running,
         .quit => .quit,
     };
+}
+
+fn syncActiveBlinkCadence(app: *App) bool {
+    const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
+    return tab.syncCursorBlinkCadence(InputWindow.nowNs());
+}
+
+fn activeBlinkWaitMs(app: *App) ?u32 {
+    const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
+    return tab.nextCursorBlinkWaitMs(InputWindow.nowNs());
 }
 
 fn applyFocusChange(app: *App) void {

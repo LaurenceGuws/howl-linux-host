@@ -1,10 +1,19 @@
 const std = @import("std");
 const c = @import("../c.zig").c;
 const terminal_term = @import("../term.zig");
+const terminal_config = @import("../../config/terminal.zig");
 
 const default_history_capacity: u16 = 4096;
 
 pub const Term = terminal_term.Term;
+pub const CursorStyle = terminal_config.CursorStyle;
+pub const InitOptions = struct {
+    default_cursor_style: struct {
+        shape: CursorStyle,
+        blink: bool,
+    } = .{ .shape = .block, .blink = true },
+};
+
 pub const Input = struct {
     pub const Key = u32;
     pub const Modifier = u32;
@@ -44,9 +53,22 @@ pub fn requireStructOk(status: i32) void {
 }
 
 pub fn init(rows: u16, cols: u16) !c.HowlVtHandle {
+    return initWithOptions(rows, cols, .{});
+}
+
+pub fn initWithOptions(rows: u16, cols: u16, options: InitOptions) !c.HowlVtHandle {
     std.debug.assert(rows > 0);
     std.debug.assert(cols > 0);
-    const handle = c.howl_vt_terminal_init(rows, cols, default_history_capacity);
+    const handle = c.howl_vt_terminal_init_with_options(rows, cols, default_history_capacity, .{
+        .default_cursor_style = .{
+            .shape = switch (options.default_cursor_style.shape) {
+                .block => 0,
+                .underline => 1,
+                .bar => 2,
+            },
+            .blink = @intFromBool(options.default_cursor_style.blink),
+        },
+    });
     if (handle == null) return error.VtInitFailed;
     return handle;
 }

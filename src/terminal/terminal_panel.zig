@@ -28,6 +28,15 @@ const geometry = @import("host/geometry.zig");
 const term_input = @import("host/input.zig");
 const scroll = @import("host/scroll.zig");
 
+const cursor_blink_interval_ms: u64 = 600;
+const cursor_blink_interval_ns: u64 = cursor_blink_interval_ms * std.time.ns_per_ms;
+
+const CursorBlinkPlan = struct {
+    visible: bool,
+    deadline_ns: u64,
+    changed: bool,
+};
+
 pub const TerminalPanel = struct {
     pub const OverlaySnapshot = struct {
         scrollbar: window.ScrollbarLayout,
@@ -71,6 +80,8 @@ pub const TerminalPanel = struct {
     first_submit_work_logged: bool,
     first_blocked_present_logged: bool,
     first_idle_render_logged: bool,
+    cursor_blink_visible: bool,
+    cursor_blink_deadline_ns: u64,
 
     pub fn init(
         self: *TerminalPanel,
@@ -113,6 +124,8 @@ pub const TerminalPanel = struct {
             .first_submit_work_logged = false,
             .first_blocked_present_logged = false,
             .first_idle_render_logged = false,
+            .cursor_blink_visible = true,
+            .cursor_blink_deadline_ns = 0,
         };
     }
 
@@ -264,6 +277,17 @@ pub const TerminalPanel = struct {
         return self.workState().wantsFrame();
     }
 
+    pub fn syncCursorBlinkCadence(self: *TerminalPanel, now_ns: u64) bool {
+        const plan = planCursorBlink(self.cursor_blink_visible, self.cursor_blink_deadline_ns, self.cursorBlinkShouldAnimate(), now_ns);
+        self.cursor_blink_deadline_ns = plan.deadline_ns;
+        if (!plan.changed) return false;
+        return self.setCursorBlinkVisible(plan.visible);
+    }
+
+    pub fn nextCursorBlinkWaitMs(self: *TerminalPanel, now_ns: u64) ?u32 {
+        return cursorBlinkWaitMs(self.cursor_blink_deadline_ns, self.cursorBlinkShouldAnimate(), now_ns);
+    }
+
     pub fn driveProgress(self: *TerminalPanel, active: bool) runtime_progress.Outcome {
         if (!active and !runtime_thread.wakePending(self)) {
             return .{ .keep = false, .should_redraw = false, .alive = pty_session.isAlive(&self.term) };
@@ -329,7 +353,7 @@ pub const TerminalPanel = struct {
 
         const launch = launchConfig(self.conf);
         const render_init = renderInit(self, frame_request, &resolved_fonts);
-        const term_init = try initTermState(launch, render_init);
+        const term_init = try initTermState(self.conf, launch, render_init);
         self.term = .{
             .allocator = std.heap.c_allocator,
             .pty = .{ .launch = launch },
@@ -364,6 +388,49 @@ pub const TerminalPanel = struct {
         mut.term.mutex.lock();
         defer mut.term.mutex.unlock();
         return self.term.render.pending(self.term_texture.host_surface_id == 0);
+    }
+
+    fn cursorBlinkShouldAnimate(self: *TerminalPanel) bool {
+        self.term.mutex.lock();
+        defer self.term.mutex.unlock();
+        return self.window_focused and
+            self.widget_focused and
+            self.term.vt_state.cursor_visible and
+            self.term.vt_state.cursor_blink;
+    }
+
+    fn setCursorBlinkVisible(self: *TerminalPanel, visible: bool) bool {
+        if (self.cursor_blink_visible == visible) return false;
+        if (!render_api.setCursorBlinkVisible(&self.term, visible)) return false;
+        self.cursor_blink_visible = visible;
+        return true;
+    }
+
+    fn nextCursorBlinkDeadline(now_ns: u64) u64 {
+        return now_ns + cursor_blink_interval_ns;
+    }
+
+    fn cursorBlinkWaitMs(deadline_ns: u64, should_animate: bool, now_ns: u64) ?u32 {
+        if (!should_animate) return null;
+        const target_deadline_ns = if (deadline_ns == 0) nextCursorBlinkDeadline(now_ns) else deadline_ns;
+        const remaining_ns = target_deadline_ns -| now_ns;
+        const remaining_ms = @max(@as(u64, 1), remaining_ns / std.time.ns_per_ms);
+        return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
+    }
+
+    fn planCursorBlink(visible: bool, deadline_ns: u64, should_animate: bool, now_ns: u64) CursorBlinkPlan {
+        if (!should_animate) {
+            return .{ .visible = true, .deadline_ns = 0, .changed = !visible };
+        }
+        if (deadline_ns == 0) {
+            return .{ .visible = visible, .deadline_ns = nextCursorBlinkDeadline(now_ns), .changed = false };
+        }
+        if (now_ns < deadline_ns) {
+            return .{ .visible = visible, .deadline_ns = deadline_ns, .changed = false };
+        }
+        var next_deadline_ns = deadline_ns;
+        while (next_deadline_ns <= now_ns) next_deadline_ns +%= cursor_blink_interval_ns;
+        return .{ .visible = !visible, .deadline_ns = next_deadline_ns, .changed = true };
     }
 
     const DriveResult = struct {
@@ -555,13 +622,18 @@ pub const TerminalPanel = struct {
         };
     }
 
-    fn initTermState(launch: pty_retained.LaunchConfig, render_init: render_api.RenderInit) !TermInit {
+    fn initTermState(conf: *const TerminalConfig, launch: pty_retained.LaunchConfig, render_init: render_api.RenderInit) !TermInit {
         const surface_text = try render_api.initSurfaceText(render_init);
         errdefer if (surface_text) |handle| terminal_c.howl_render_surface_text_deinit(handle);
         const frame_layout = try render_api.initFrameLayout(surface_text, render_init);
         const session_handle = try pty_session.initHandle(launch, frame_layout.cols, frame_layout.rows);
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
-        const vt = try vt_api.init(frame_layout.rows, frame_layout.cols);
+        const vt = try vt_api.initWithOptions(frame_layout.rows, frame_layout.cols, .{
+            .default_cursor_style = .{
+                .shape = conf.cursor.style,
+                .blink = conf.cursor.blink,
+            },
+        });
         errdefer if (vt) |handle| vt_api.deinit(handle);
         return .{
             .surface_text = surface_text.?,

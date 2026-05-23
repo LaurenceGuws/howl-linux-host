@@ -23,6 +23,10 @@ return {
     font_size = 16,
     -- Explicit primary font path. If unset, the bundled default primary is used.
     font_primary = "assets/fonts/IosevkaTermNerdFont-Regular.ttf",
+    -- One of: "block", "underline", "bar".
+    cursor_style = "bar",
+    -- Whether the default cursor style blinks before runtime DECSCUSR overrides it.
+    cursor_style_blink = true,
     -- Ordered explicit fallback override paths. Bundled symbols and emoji
     -- coverage still remain behind these entries.
     fallback_mono = {},

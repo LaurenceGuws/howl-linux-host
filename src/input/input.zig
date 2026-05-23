@@ -194,12 +194,12 @@ pub const Input = struct {
         return focused;
     }
 
-    pub fn pumpWindow(self: *Input, wait: bool) Signal {
+    pub fn pumpWindow(self: *Input, wait: bool, timeout_ms: ?u32) Signal {
         if (self.window_state.quitRequested()) return .quit;
 
         if (wait) {
             self.window_state.logWindowWaitStartup();
-            const signal = self.waitAndDrainEvents();
+            const signal = self.waitAndDrainEvents(timeout_ms);
             self.window_state.logWindowWakeStartup(signal);
             if (signal == .quit) return .quit;
         } else {
@@ -223,10 +223,14 @@ pub const Input = struct {
         return keys.parseLabel(raw);
     }
 
-    fn waitAndDrainEvents(self: *Input) Signal {
+    fn waitAndDrainEvents(self: *Input, timeout_ms: ?u32) Signal {
         var event: c.SDL_Event = undefined;
         var processed: usize = 0;
-        if (c.SDL_WaitEvent(&event)) {
+        const received = if (timeout_ms) |timeout|
+            c.SDL_WaitEventTimeout(&event, @intCast(timeout))
+        else
+            c.SDL_WaitEvent(&event);
+        if (received) {
             self.processEvent(&event);
             processed = 1;
         }
@@ -807,9 +811,9 @@ test "pumpWindow bounds one SDL burst per turn" {
         try pushShiftPageUpEvent();
     }
 
-    try std.testing.expectEqual(Input.Signal.none, input.pumpWindow(false));
+    try std.testing.expectEqual(Input.Signal.none, input.pumpWindow(false, null));
     try std.testing.expectEqual(@as(i32, @intCast(max_sdl_events_per_turn)), input.scroll_pages);
 
-    try std.testing.expectEqual(Input.Signal.none, input.pumpWindow(false));
+    try std.testing.expectEqual(Input.Signal.none, input.pumpWindow(false, null));
     try std.testing.expectEqual(@as(i32, @intCast(max_sdl_events_per_turn + 1)), input.scroll_pages);
 }

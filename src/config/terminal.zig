@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const howl_lua = @import("howl_lua");
 const env = @import("env.zig");
@@ -18,7 +17,6 @@ pub const FontStack = struct {
         freeZSlice(alloc, self.symbols);
         freeZSlice(alloc, self.emoji);
     }
-
 };
 
 pub const ClipboardOsc52Policy = enum {
@@ -59,12 +57,24 @@ pub const MousePolicy = struct {
     bypass_mod: Input.Mod = .{},
 };
 
+pub const CursorStyle = enum {
+    block,
+    underline,
+    bar,
+};
+
+pub const Cursor = struct {
+    style: CursorStyle = .block,
+    blink: bool = true,
+};
+
 pub const Config = struct {
     shell: []u8,
     start_path: ?[]u8,
     command: ?[]u8,
     font_size: u16,
     fonts: FontStack,
+    cursor: Cursor,
     clipboard: Clipboard,
     links: Links,
     mouse: MousePolicy,
@@ -92,6 +102,7 @@ pub const Config = struct {
         }
 
         const clipboard_policy = loadClipboardPolicy(reader);
+        const cursor = loadCursor(reader);
         const links = loadLinkPolicies(reader);
         const mouse = try loadMousePolicy(reader);
 
@@ -107,6 +118,7 @@ pub const Config = struct {
             .command = command,
             .font_size = @intCast(reader.intField("font_size") orelse 16),
             .fonts = fonts,
+            .cursor = cursor,
             .clipboard = .{ .osc_52 = clipboard_policy },
             .links = links,
             .mouse = mouse,
@@ -134,6 +146,12 @@ const binding_specs = [_]Input.Bindings.Spec{
 fn parseClipboardOsc52Policy(raw: []const u8) ClipboardOsc52Policy {
     if (std.ascii.eqlIgnoreCase(raw, "allow")) return .allow;
     return .deny;
+}
+
+fn parseCursorStyle(raw: []const u8) CursorStyle {
+    if (std.ascii.eqlIgnoreCase(raw, "underline")) return .underline;
+    if (std.ascii.eqlIgnoreCase(raw, "bar")) return .bar;
+    return .block;
 }
 
 fn parseLinkOpenPolicy(raw: []const u8) LinkOpenPolicy {
@@ -207,6 +225,13 @@ fn loadClipboardPolicy(reader: Lua.Reader) ClipboardOsc52Policy {
         parseClipboardOsc52Policy(child.fieldString("osc_52") orelse "deny")
     else
         .deny;
+}
+
+fn loadCursor(reader: Lua.Reader) Cursor {
+    return .{
+        .style = parseCursorStyle(reader.fieldString("cursor_style") orelse "block"),
+        .blink = reader.boolField("cursor_style_blink") orelse true,
+    };
 }
 
 fn loadLinkPolicies(reader: Lua.Reader) Links {

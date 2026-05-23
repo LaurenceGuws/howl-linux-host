@@ -27,6 +27,8 @@ pub const State = struct {
     input_scratch: [input_max_bytes]u8 = undefined,
     scrollback_offset: u32 = 0,
     focused: bool = true,
+    cursor_visible: bool = true,
+    cursor_blink: bool = false,
 
     pub fn deinit(_: *State, _: std.mem.Allocator) void {}
 };
