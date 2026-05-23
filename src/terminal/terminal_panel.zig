@@ -170,13 +170,22 @@ pub const TerminalPanel = struct {
 
     pub fn paste(self: *TerminalPanel, payload: []const u8) void {
         term_input.publishPaste(&self.term, payload) catch return;
+        _ = self.resetCursorBlinkActivity(InputWindow.nowNs());
     }
 
     pub fn drainInput(self: *TerminalPanel, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
         while (input_events.drainInputEvent()) |event| {
             switch (event) {
-                .bytes => |bytes| publishTerminalBytes(self, bytes.slice()),
-                .key => |key| publishTerminalKey(self, key),
+                .bytes => |bytes| {
+                    if (publishTerminalBytes(self, bytes.slice())) {
+                        _ = self.resetCursorBlinkActivity(InputWindow.nowNs());
+                    }
+                },
+                .key => |key| {
+                    if (publishTerminalKey(self, key)) {
+                        _ = self.resetCursorBlinkActivity(InputWindow.nowNs());
+                    }
+                },
                 .mouse => |mouse_event| {
                     if (scroll.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
                     if (mouse_event.host_only) continue;
@@ -284,6 +293,11 @@ pub const TerminalPanel = struct {
         return self.setCursorBlinkVisible(plan.visible);
     }
 
+    pub fn resetCursorBlinkActivity(self: *TerminalPanel, now_ns: u64) bool {
+        self.cursor_blink_deadline_ns = nextCursorBlinkDeadline(now_ns);
+        return self.setCursorBlinkVisible(true);
+    }
+
     pub fn nextCursorBlinkWaitMs(self: *TerminalPanel, now_ns: u64) ?u32 {
         return cursorBlinkWaitMs(self.cursor_blink_deadline_ns, self.cursorBlinkShouldAnimate(), now_ns);
     }
@@ -292,7 +306,10 @@ pub const TerminalPanel = struct {
         if (!active and !runtime_thread.wakePending(self)) {
             return .{ .keep = false, .should_redraw = false, .alive = pty_session.isAlive(&self.term) };
         }
-        const outcome = runtime_progress.driveOnce(&self.term);
+        var outcome = runtime_progress.driveOnce(&self.term);
+        if (active and outcome.should_redraw) {
+            outcome.should_redraw = self.resetCursorBlinkActivity(InputWindow.nowNs()) or outcome.should_redraw;
+        }
         self.applyPendingClipboardWrites();
         runtime_thread.ackWake(self);
         return outcome;
@@ -574,14 +591,16 @@ pub const TerminalPanel = struct {
         std.debug.assert(work.submit_pending or work.present_pending);
     }
 
-    fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) void {
+    fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) bool {
         _ = vt_retained.followLiveBottom(&self.term);
-        pty_session.publishInputBytes(&self.term, bytes) catch return;
+        pty_session.publishInputBytes(&self.term, bytes) catch return false;
+        return true;
     }
 
-    fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) void {
-        const terminal_key = term_input.key(key.key) orelse return;
-        term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return;
+    fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) bool {
+        const terminal_key = term_input.key(key.key) orelse return false;
+        term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return false;
+        return true;
     }
 
     fn publishTerminalMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
@@ -731,4 +750,37 @@ test "pending VT clipboard write follows OSC 52 policy" {
     applyPendingClipboardWrite(&term, .allow, FakeOps);
     try std.testing.expectEqual(@as(usize, 1), FakeOps.drain_calls);
     try std.testing.expectEqual(@as(usize, 0), FakeOps.set_calls);
+}
+
+test "cursor activity pushes blink deadline while visible" {
+    var panel = TerminalPanel{
+        .term = undefined,
+        .progress = .{},
+        .live = false,
+        .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
+        .conf = undefined,
+        .input = undefined,
+        .title_buf = undefined,
+        .title_len = 0,
+        .geometry = undefined,
+        .font_size_px = 0,
+        .default_font_size_px = 0,
+        .window_focused = true,
+        .widget_focused = true,
+        .scrollbar = .{},
+        .link_cursor_active = false,
+        .first_submit_trace_logged = false,
+        .first_prepare_result_logged = false,
+        .first_non_idle_submit_logged = false,
+        .first_rendered_surface_logged = false,
+        .first_submit_work_logged = false,
+        .first_blocked_present_logged = false,
+        .first_idle_render_logged = false,
+        .cursor_blink_visible = true,
+        .cursor_blink_deadline_ns = 0,
+    };
+
+    try std.testing.expect(!panel.resetCursorBlinkActivity(1234));
+    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink_interval_ns, panel.cursor_blink_deadline_ns);
+    try std.testing.expect(panel.cursor_blink_visible);
 }
