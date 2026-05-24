@@ -37,6 +37,14 @@ pub const VisibleCopy = struct {
     colors: c.HowlVtRenderColorState,
     selection: c.HowlVtSelection,
     graphics: c.HowlVtGraphicsMeta,
+    graphics_images: []c.HowlVtGraphicsImage,
+    graphics_placements: []c.HowlVtGraphicsPlacement,
+
+    fn deinit(self: *VisibleCopy, allocator: std.mem.Allocator) void {
+        if (self.graphics_images.len > 0) allocator.free(self.graphics_images);
+        if (self.graphics_placements.len > 0) allocator.free(self.graphics_placements);
+        self.* = undefined;
+    }
 };
 
 const ReservedPublishSlot = struct {
@@ -63,7 +71,8 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     const meta = Ops.visibleMeta(term.vt, term.vt_state.scrollback_offset);
     const slot = Ops.reserveSlot(term.render.surface_text, meta.cols, meta.rows) catch return Ops.rejectPublish(term.render.surface_text, meta.snapshot_seq);
 
-    const visible = Ops.acquireVisibleAndGraphics(term.vt, term.vt_state.scrollback_offset, meta, slot) catch return Ops.rejectPublish(term.render.surface_text, meta.snapshot_seq);
+    const visible = Ops.acquireVisibleAndGraphics(term.allocator, term.vt, term.vt_state.scrollback_offset, meta, slot) catch return Ops.rejectPublish(term.render.surface_text, meta.snapshot_seq);
+    defer visible.deinit(term.allocator);
     if (hover) |value| applyHyperlinkHover(slot, visible.rows, visible.cols, value);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.scroll_row <= visible.history_count + visible.rows);
@@ -115,8 +124,8 @@ const RealOps = struct {
         return reservePublishSlot(handle, cols, rows);
     }
 
-    fn acquireVisibleAndGraphics(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
-        return vtAcquireVisibleAndGraphicsIntoSlot(handle, scrollback_offset, meta, slot);
+    fn acquireVisibleAndGraphics(allocator: std.mem.Allocator, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
+        return vtAcquireVisibleAndGraphicsIntoSlot(allocator, handle, scrollback_offset, meta, slot);
     }
 
     fn commitPublishSlot(handle: c.HowlRenderSurfaceTextHandle, visible: VisibleCopy) c.HowlRenderVtPublishResult {
@@ -147,6 +156,8 @@ fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
             .publication_seq = visible.graphics.publication_seq,
             .dirty_generation = visible.graphics.dirty_generation,
         },
+        .graphics_images = .{ .ptr = if (visible.graphics_images.len == 0) null else visible.graphics_images.ptr, .len = visible.graphics_images.len },
+        .graphics_placements = .{ .ptr = if (visible.graphics_placements.len == 0) null else visible.graphics_placements.ptr, .len = visible.graphics_placements.len },
     };
 }
 
@@ -221,39 +232,67 @@ fn reservePublishSlot(handle: c.HowlRenderSurfaceTextHandle, cols: u16, rows: u1
     };
 }
 
-fn vtAcquireVisibleAndGraphicsIntoSlot(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
-    const source = c.howl_vt_terminal_copy_surface(
-        handle,
-        scrollback_offset,
-        slot.cells.ptr,
-        slot.cells.len,
-        slot.dirty_rows.ptr,
-        slot.dirty_rows.len,
-        slot.dirty_cols_start.ptr,
-        slot.dirty_cols_start.len,
-        slot.dirty_cols_end.ptr,
-        slot.dirty_cols_end.len,
-    );
-    try vt_abi.requireOk(source.status);
-    std.debug.assert(source.source.rows == meta.rows);
-    std.debug.assert(source.source.cols == meta.cols);
-    std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
-    std.debug.assert(source.source.scroll_row <= source.history_count + source.source.rows);
-    std.debug.assert(scrollback_offset <= source.history_count);
-    const graphics = vtGraphicsMeta(handle);
-    std.debug.assert((graphics.is_alternate_screen != 0) == (source.source.is_alternate_screen != 0));
-    return .{
-        .rows = source.source.rows,
-        .cols = source.source.cols,
-        .is_alternate_screen = source.source.is_alternate_screen != 0,
-        .history_count = @intCast(source.history_count),
-        .scroll_row = source.source.scroll_row,
-        .snapshot_seq = source.snapshot_seq,
-        .cursor = source.source.cursor,
-        .colors = source.source.colors,
-        .selection = source.source.selection,
-        .graphics = graphics,
-    };
+fn vtAcquireVisibleAndGraphicsIntoSlot(allocator: std.mem.Allocator, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
+    return vtAcquireVisibleAndGraphicsIntoSlotWith(allocator, handle, scrollback_offset, meta, slot, RealAcquireOps);
+}
+
+const RealAcquireOps = struct {
+    fn copySurface(handle: c.HowlVtHandle, scrollback_offset: u32, slot: ReservedPublishSlot) c.HowlVtSurfaceResult {
+        return c.howl_vt_terminal_copy_surface(
+            handle,
+            scrollback_offset,
+            slot.cells.ptr,
+            slot.cells.len,
+            slot.dirty_rows.ptr,
+            slot.dirty_rows.len,
+            slot.dirty_cols_start.ptr,
+            slot.dirty_cols_start.len,
+            slot.dirty_cols_end.ptr,
+            slot.dirty_cols_end.len,
+        );
+    }
+
+    fn graphicsMeta(handle: c.HowlVtHandle) c.HowlVtGraphicsMeta {
+        return vtGraphicsMeta(handle);
+    }
+
+    fn graphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphics: c.HowlVtGraphicsMeta) error{ InvalidPublication, VtCallFailed, OutOfMemory }!GraphicsItems {
+        return vtGraphicsItems(allocator, handle, graphics);
+    }
+};
+
+fn vtAcquireVisibleAndGraphicsIntoSlotWith(allocator: std.mem.Allocator, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot, comptime Ops: type) !VisibleCopy {
+    var attempts: u8 = 0;
+    while (attempts < 2) : (attempts += 1) {
+        const source = Ops.copySurface(handle, scrollback_offset, slot);
+        try vt_abi.requireOk(source.status);
+        std.debug.assert(source.source.rows == meta.rows);
+        std.debug.assert(source.source.cols == meta.cols);
+        std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
+        std.debug.assert(source.source.scroll_row <= source.history_count + source.source.rows);
+        std.debug.assert(scrollback_offset <= source.history_count);
+        const graphics = Ops.graphicsMeta(handle);
+        std.debug.assert((graphics.is_alternate_screen != 0) == (source.source.is_alternate_screen != 0));
+        const items = Ops.graphicsItems(allocator, handle, graphics) catch |err| switch (err) {
+            error.InvalidPublication => continue,
+            else => return err,
+        };
+        return .{
+            .rows = source.source.rows,
+            .cols = source.source.cols,
+            .is_alternate_screen = source.source.is_alternate_screen != 0,
+            .history_count = @intCast(source.history_count),
+            .scroll_row = source.source.scroll_row,
+            .snapshot_seq = source.snapshot_seq,
+            .cursor = source.source.cursor,
+            .colors = source.source.colors,
+            .selection = source.source.selection,
+            .graphics = graphics,
+            .graphics_images = items.images,
+            .graphics_placements = items.placements,
+        };
+    }
+    return error.InvalidPublication;
 }
 
 fn vtGraphicsMeta(handle: c.HowlVtHandle) c.HowlVtGraphicsMeta {
@@ -261,6 +300,46 @@ fn vtGraphicsMeta(handle: c.HowlVtHandle) c.HowlVtGraphicsMeta {
     const result = c.howl_vt_terminal_query_graphics_meta(handle);
     vt_abi.requireStructOk(result.status);
     return result.meta;
+}
+
+const GraphicsItems = struct {
+    images: []c.HowlVtGraphicsImage,
+    placements: []c.HowlVtGraphicsPlacement,
+
+    fn deinit(self: *GraphicsItems, allocator: std.mem.Allocator) void {
+        if (self.images.len > 0) allocator.free(self.images);
+        if (self.placements.len > 0) allocator.free(self.placements);
+        self.* = undefined;
+    }
+};
+
+fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphics: c.HowlVtGraphicsMeta) error{InvalidPublication,VtCallFailed,OutOfMemory}!GraphicsItems {
+    var images = try allocator.alloc(c.HowlVtGraphicsImage, graphics.image_count);
+    errdefer if (images.len > 0) allocator.free(images);
+    var placements = try allocator.alloc(c.HowlVtGraphicsPlacement, graphics.placement_count);
+    errdefer if (placements.len > 0) allocator.free(placements);
+
+    var image_idx: u32 = 0;
+    while (image_idx < graphics.image_count) : (image_idx += 1) {
+        const result = c.howl_vt_terminal_query_graphics_image(handle, graphics.publication_seq, image_idx);
+        switch (result.status) {
+            c.HOWL_VT_CALL_OK => images[image_idx] = result.image,
+            c.HOWL_VT_CALL_INVALID_ARGUMENT => return error.InvalidPublication,
+            else => return error.VtCallFailed,
+        }
+    }
+
+    var placement_idx: u32 = 0;
+    while (placement_idx < graphics.placement_count) : (placement_idx += 1) {
+        const result = c.howl_vt_terminal_query_graphics_placement(handle, graphics.publication_seq, placement_idx);
+        switch (result.status) {
+            c.HOWL_VT_CALL_OK => placements[placement_idx] = result.placement,
+            c.HOWL_VT_CALL_INVALID_ARGUMENT => return error.InvalidPublication,
+            else => return error.VtCallFailed,
+        }
+    }
+
+    return .{ .images = images, .placements = placements };
 }
 
 fn renderCallOk(status: i32) !void {
@@ -326,6 +405,8 @@ fn zeroVisibleCopy(snapshot_seq: u64) VisibleCopy {
         .colors = std.mem.zeroes(c.HowlVtRenderColorState),
         .selection = std.mem.zeroes(c.HowlVtSelection),
         .graphics = std.mem.zeroes(c.HowlVtGraphicsMeta),
+        .graphics_images = &.{},
+        .graphics_placements = &.{},
     };
 }
 
@@ -447,6 +528,8 @@ test "publish commit forwards graphics metadata exactly" {
             .publication_seq = 33,
             .dirty_generation = 44,
         },
+        .graphics_images = &.{},
+        .graphics_placements = &.{},
     };
 
     const commit = publishSlotCommit(visible);
@@ -480,16 +563,94 @@ test "paired acquisition returns surface and graphics truth from real vt state" 
         .dirty_cols_end = dirty_cols_end[0..meta.rows],
     };
 
-    const visible = try vtAcquireVisibleAndGraphicsIntoSlot(handle, 0, meta, slot);
+    var visible = try vtAcquireVisibleAndGraphicsIntoSlot(std.testing.allocator, handle, 0, meta, slot);
+    defer visible.deinit(std.testing.allocator);
     try std.testing.expectEqual(meta.snapshot_seq, visible.snapshot_seq);
     try std.testing.expectEqual(@as(u32, 1), visible.graphics.image_count);
     try std.testing.expectEqual(@as(u32, 1), visible.graphics.placement_count);
     try std.testing.expectEqual(visible.is_alternate_screen, visible.graphics.is_alternate_screen != 0);
     try std.testing.expect(visible.graphics.publication_seq != 0);
+    try std.testing.expectEqual(@as(usize, 1), visible.graphics_images.len);
+    try std.testing.expectEqual(@as(usize, 1), visible.graphics_placements.len);
+}
+
+test "paired acquisition retries whole attempt on stale graphics publication" {
+    const FakeOps = struct {
+        var copy_calls: u8 = 0;
+        var graphics_meta_calls: u8 = 0;
+        var graphics_item_calls: u8 = 0;
+
+        fn copySurface(_: c.HowlVtHandle, _: u32, slot: ReservedPublishSlot) c.HowlVtSurfaceResult {
+            copy_calls += 1;
+            slot.cells[0] = std.mem.zeroes(c.HowlVtSurfaceCell);
+            slot.cells[0].codepoint = 'A';
+            slot.dirty_rows[0] = 1;
+            slot.dirty_cols_start[0] = 0;
+            slot.dirty_cols_end[0] = 0;
+            return .{
+                .status = c.HOWL_VT_CALL_OK,
+                .history_count = 0,
+                .scrollback_offset = 0,
+                .snapshot_seq = 5,
+                .dirty_generation = 7,
+                .source = .{
+                    .surface_cells = .{ .ptr = slot.cells.ptr, .len = slot.cells.len },
+                    .cols = 1,
+                    .rows = 1,
+                    .scroll_row = 0,
+                    .is_alternate_screen = 0,
+                    .dirty_rows = .{ .ptr = slot.dirty_rows.ptr, .len = slot.dirty_rows.len },
+                    .dirty_cols_start = .{ .ptr = slot.dirty_cols_start.ptr, .len = slot.dirty_cols_start.len },
+                    .dirty_cols_end = .{ .ptr = slot.dirty_cols_end.ptr, .len = slot.dirty_cols_end.len },
+                    .cursor = std.mem.zeroes(c.HowlVtCursor),
+                    .colors = std.mem.zeroes(c.HowlVtRenderColorState),
+                    .selection = std.mem.zeroes(c.HowlVtSelection),
+                },
+            };
+        }
+
+        fn graphicsMeta(_: c.HowlVtHandle) c.HowlVtGraphicsMeta {
+            graphics_meta_calls += 1;
+            return .{ .image_count = 1, .placement_count = 1, .is_alternate_screen = 0, .reserved0 = 0, .reserved1 = 0, .publication_seq = 9, .dirty_generation = 7 };
+        }
+
+        fn graphicsItems(allocator: std.mem.Allocator, _: c.HowlVtHandle, _: c.HowlVtGraphicsMeta) error{ InvalidPublication, VtCallFailed, OutOfMemory }!GraphicsItems {
+            graphics_item_calls += 1;
+            if (graphics_item_calls == 1) return error.InvalidPublication;
+            const images = try allocator.alloc(c.HowlVtGraphicsImage, 1);
+            errdefer allocator.free(images);
+            const placements = try allocator.alloc(c.HowlVtGraphicsPlacement, 1);
+            errdefer allocator.free(placements);
+            images[0] = .{ .image_id = 7, .image_number = 1, .format = 24, .reserved0 = 0, .width = 2, .height = 1, .payload_len = 4 };
+            placements[0] = .{ .image_id = 7, .placement_id = 4, .z_index = 0, .anchor = .{ .kind = c.HOWL_VT_GRAPHICS_ROW_ANCHOR_ON_SCREEN, .reserved0 = 0, .reserved1 = 0, .value = 1 }, .anchor_col = 2, .reserved0 = 0, .source_x = 0, .source_y = 0, .source_width = 2, .source_height = 1, .cell_x_offset = 0, .cell_y_offset = 0, .columns = 4, .rows = 2, .effective_columns = 4, .effective_rows = 2 };
+            return .{ .images = images, .placements = placements };
+        }
+    };
+
+    const meta: VisibleMeta = .{ .rows = 1, .cols = 1, .history_count = 0, .is_alternate_screen = false, .snapshot_seq = 5, .dirty_generation = 7 };
+    var cells: [1]c.HowlVtSurfaceCell = undefined;
+    var dirty_rows: [1]u8 = undefined;
+    var dirty_cols_start: [1]u16 = undefined;
+    var dirty_cols_end: [1]u16 = undefined;
+    const slot: ReservedPublishSlot = .{
+        .cells = cells[0..],
+        .dirty_rows = dirty_rows[0..],
+        .dirty_cols_start = dirty_cols_start[0..],
+        .dirty_cols_end = dirty_cols_end[0..],
+    };
+
+    var visible = try vtAcquireVisibleAndGraphicsIntoSlotWith(std.testing.allocator, @ptrFromInt(1), 0, meta, slot, FakeOps);
+    defer visible.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u8, 2), FakeOps.copy_calls);
+    try std.testing.expectEqual(@as(u8, 2), FakeOps.graphics_meta_calls);
+    try std.testing.expectEqual(@as(u8, 2), FakeOps.graphics_item_calls);
+    try std.testing.expectEqual(@as(usize, 1), visible.graphics_images.len);
+    try std.testing.expectEqual(@as(usize, 1), visible.graphics_placements.len);
 }
 
 test "publish rejects reserved slot when paired acquisition fails" {
     const FakeTerm = struct {
+        allocator: std.mem.Allocator = std.testing.allocator,
         vt: c.HowlVtHandle = @ptrFromInt(1),
         vt_state: struct {
             scrollback_offset: u32 = 0,
@@ -521,7 +682,7 @@ test "publish rejects reserved slot when paired acquisition fails" {
             return .{ .cells = &.{}, .dirty_rows = &.{}, .dirty_cols_start = &.{}, .dirty_cols_end = &.{} };
         }
 
-        fn acquireVisibleAndGraphics(_: c.HowlVtHandle, _: u32, _: VisibleMeta, _: ReservedPublishSlot) error{AcquisitionFailed}!VisibleCopy {
+        fn acquireVisibleAndGraphics(_: std.mem.Allocator, _: c.HowlVtHandle, _: u32, _: VisibleMeta, _: ReservedPublishSlot) error{AcquisitionFailed}!VisibleCopy {
             return error.AcquisitionFailed;
         }
 
