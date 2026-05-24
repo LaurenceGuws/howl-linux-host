@@ -39,10 +39,12 @@ pub const VisibleCopy = struct {
     graphics: c.HowlVtGraphicsMeta,
     graphics_images: []c.HowlVtGraphicsImage,
     graphics_placements: []c.HowlVtGraphicsPlacement,
+    graphics_payload_bytes: []u8,
 
     fn deinit(self: *VisibleCopy, allocator: std.mem.Allocator) void {
         if (self.graphics_images.len > 0) allocator.free(self.graphics_images);
         if (self.graphics_placements.len > 0) allocator.free(self.graphics_placements);
+        if (self.graphics_payload_bytes.len > 0) allocator.free(self.graphics_payload_bytes);
         self.* = undefined;
     }
 };
@@ -139,6 +141,7 @@ const RealOps = struct {
 
 fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
     return .{
+        .history_count = visible.history_count,
         .scroll_row = visible.scroll_row,
         .snapshot_seq = visible.snapshot_seq,
         .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
@@ -158,6 +161,7 @@ fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
         },
         .graphics_images = .{ .ptr = if (visible.graphics_images.len == 0) null else visible.graphics_images.ptr, .len = visible.graphics_images.len },
         .graphics_placements = .{ .ptr = if (visible.graphics_placements.len == 0) null else visible.graphics_placements.ptr, .len = visible.graphics_placements.len },
+        .graphics_payload_bytes = .{ .ptr = if (visible.graphics_payload_bytes.len == 0) null else visible.graphics_payload_bytes.ptr, .len = visible.graphics_payload_bytes.len },
     };
 }
 
@@ -290,6 +294,7 @@ fn vtAcquireVisibleAndGraphicsIntoSlotWith(allocator: std.mem.Allocator, handle:
             .graphics = graphics,
             .graphics_images = items.images,
             .graphics_placements = items.placements,
+            .graphics_payload_bytes = items.payload_bytes,
         };
     }
     return error.InvalidPublication;
@@ -305,10 +310,12 @@ fn vtGraphicsMeta(handle: c.HowlVtHandle) c.HowlVtGraphicsMeta {
 const GraphicsItems = struct {
     images: []c.HowlVtGraphicsImage,
     placements: []c.HowlVtGraphicsPlacement,
+    payload_bytes: []u8,
 
     fn deinit(self: *GraphicsItems, allocator: std.mem.Allocator) void {
         if (self.images.len > 0) allocator.free(self.images);
         if (self.placements.len > 0) allocator.free(self.placements);
+        if (self.payload_bytes.len > 0) allocator.free(self.payload_bytes);
         self.* = undefined;
     }
 };
@@ -339,7 +346,35 @@ fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphic
         }
     }
 
-    return .{ .images = images, .placements = placements };
+    const payload_len = try totalPayloadLen(images);
+    const payload_bytes = try allocator.alloc(u8, payload_len);
+    errdefer if (payload_bytes.len > 0) allocator.free(payload_bytes);
+    var payload_offset: usize = 0;
+    image_idx = 0;
+    while (image_idx < graphics.image_count) : (image_idx += 1) {
+        const image = images[image_idx];
+        const image_payload_len = std.math.cast(usize, image.payload_len) orelse return error.OutOfMemory;
+        const payload = payload_bytes[payload_offset..][0..image_payload_len];
+        const copied = c.howl_vt_terminal_copy_graphics_payload(handle, graphics.publication_seq, image_idx, payload.ptr, payload.len);
+        switch (copied.status) {
+            c.HOWL_VT_CALL_OK => {},
+            c.HOWL_VT_CALL_INVALID_ARGUMENT => return error.InvalidPublication,
+            else => return error.VtCallFailed,
+        }
+        if (copied.written != image.payload_len) return error.VtCallFailed;
+        payload_offset += image_payload_len;
+    }
+    std.debug.assert(payload_offset == payload_bytes.len);
+
+    return .{ .images = images, .placements = placements, .payload_bytes = payload_bytes };
+}
+
+fn totalPayloadLen(images: []const c.HowlVtGraphicsImage) !usize {
+    var total: u64 = 0;
+    for (images) |image| {
+        total = std.math.add(u64, total, image.payload_len) catch return error.OutOfMemory;
+    }
+    return std.math.cast(usize, total) orelse return error.OutOfMemory;
 }
 
 fn renderCallOk(status: i32) !void {
@@ -407,6 +442,7 @@ fn zeroVisibleCopy(snapshot_seq: u64) VisibleCopy {
         .graphics = std.mem.zeroes(c.HowlVtGraphicsMeta),
         .graphics_images = &.{},
         .graphics_placements = &.{},
+        .graphics_payload_bytes = &.{},
     };
 }
 
@@ -533,6 +569,7 @@ test "publish commit forwards graphics metadata exactly" {
     };
 
     const commit = publishSlotCommit(visible);
+    try std.testing.expectEqual(@as(u64, visible.history_count), commit.history_count);
     try std.testing.expectEqual(visible.scroll_row, commit.scroll_row);
     try std.testing.expectEqual(visible.snapshot_seq, commit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 1), commit.is_alternate_screen);
@@ -543,11 +580,34 @@ test "publish commit forwards graphics metadata exactly" {
     try std.testing.expectEqual(visible.graphics.dirty_generation, commit.graphics.dirty_generation);
 }
 
+test "publish commit forwards graphics payload bytes exactly" {
+    const visible: VisibleCopy = .{
+        .rows = 1,
+        .cols = 1,
+        .is_alternate_screen = false,
+        .history_count = 0,
+        .scroll_row = 0,
+        .snapshot_seq = 1,
+        .cursor = std.mem.zeroes(c.HowlVtCursor),
+        .colors = std.mem.zeroes(c.HowlVtRenderColorState),
+        .selection = std.mem.zeroes(c.HowlVtSelection),
+        .graphics = std.mem.zeroes(c.HowlVtGraphicsMeta),
+        .graphics_images = &.{},
+        .graphics_placements = &.{},
+        .graphics_payload_bytes = "QUJDREVG",
+    };
+
+    const commit = publishSlotCommit(visible);
+    try std.testing.expectEqualStrings("QUJDREVG", commit.graphics_payload_bytes.ptr[0..commit.graphics_payload_bytes.len]);
+}
+
 test "paired acquisition returns surface and graphics truth from real vt state" {
     const handle = try vt_abi.init(4, 16);
     defer vt_abi.deinit(handle);
 
-    const command = "\x1b[2;3H\x1b_Gi=7,p=4,s=2,v=1,a=T,t=d,f=24,c=4,r=2;QUJD\x1b\\";
+    try vt_abi.requireStructOk(c.howl_vt_terminal_set_cell_pixel_size(handle, 10, 20));
+
+    const command = "\x1b[2;3H\x1b_Gi=7,p=4,s=40,v=20,a=T,t=d,f=24,X=3,Y=5,r=2;AAAA\x1b\\";
     const feed = c.howl_vt_terminal_feed(handle, command.ptr, command.len);
     try vt_abi.requireOk(feed.status);
 
@@ -572,6 +632,47 @@ test "paired acquisition returns surface and graphics truth from real vt state" 
     try std.testing.expect(visible.graphics.publication_seq != 0);
     try std.testing.expectEqual(@as(usize, 1), visible.graphics_images.len);
     try std.testing.expectEqual(@as(usize, 1), visible.graphics_placements.len);
+
+    const placement = visible.graphics_placements[0];
+    try std.testing.expectEqual(@as(u32, 7), placement.image_id);
+    try std.testing.expectEqual(@as(u32, 4), placement.placement_id);
+    try std.testing.expectEqual(@as(u32, 0), placement.columns);
+    try std.testing.expectEqual(@as(u32, 2), placement.rows);
+    try std.testing.expectEqual(@as(u32, 3), placement.dest_left_cell_px);
+    try std.testing.expectEqual(@as(u32, 5), placement.dest_top_cell_px);
+    try std.testing.expectEqual(@as(u32, 93), placement.dest_right_cell_px);
+    try std.testing.expectEqual(@as(u32, 45), placement.dest_bottom_cell_px);
+    try std.testing.expectEqual(@as(u32, 9), placement.dest_grid_columns);
+    try std.testing.expectEqual(@as(u32, 2), placement.dest_grid_rows);
+}
+
+test "paired acquisition copies graphics payload bytes in image order" {
+    const handle = try vt_abi.init(4, 16);
+    defer vt_abi.deinit(handle);
+
+    const first = "\x1b_Gi=7,s=1,v=1,t=d,f=24;QUJD\x1b\\";
+    const second = "\x1b_Gi=8,s=1,v=1,t=d,f=24;REVG\x1b\\";
+    try vt_abi.requireOk(c.howl_vt_terminal_feed(handle, first.ptr, first.len).status);
+    try vt_abi.requireOk(c.howl_vt_terminal_feed(handle, second.ptr, second.len).status);
+
+    const meta = vtVisibleMeta(handle, 0);
+    var cells: [64]c.HowlVtSurfaceCell = undefined;
+    var dirty_rows: [4]u8 = undefined;
+    var dirty_cols_start: [4]u16 = undefined;
+    var dirty_cols_end: [4]u16 = undefined;
+    const slot: ReservedPublishSlot = .{
+        .cells = cells[0 .. @as(usize, meta.rows) * @as(usize, meta.cols)],
+        .dirty_rows = dirty_rows[0..meta.rows],
+        .dirty_cols_start = dirty_cols_start[0..meta.rows],
+        .dirty_cols_end = dirty_cols_end[0..meta.rows],
+    };
+
+    var visible = try vtAcquireVisibleAndGraphicsIntoSlot(std.testing.allocator, handle, 0, meta, slot);
+    defer visible.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), visible.graphics_images.len);
+    try std.testing.expectEqual(@as(u32, 7), visible.graphics_images[0].image_id);
+    try std.testing.expectEqual(@as(u32, 8), visible.graphics_images[1].image_id);
+    try std.testing.expectEqualStrings("QUJDREVG", visible.graphics_payload_bytes);
 }
 
 test "paired acquisition retries whole attempt on stale graphics publication" {
@@ -622,7 +723,7 @@ test "paired acquisition retries whole attempt on stale graphics publication" {
             const placements = try allocator.alloc(c.HowlVtGraphicsPlacement, 1);
             errdefer allocator.free(placements);
             images[0] = .{ .image_id = 7, .image_number = 1, .format = 24, .reserved0 = 0, .width = 2, .height = 1, .payload_len = 4 };
-            placements[0] = .{ .image_id = 7, .placement_id = 4, .z_index = 0, .anchor = .{ .kind = c.HOWL_VT_GRAPHICS_ROW_ANCHOR_ON_SCREEN, .reserved0 = 0, .reserved1 = 0, .value = 1 }, .anchor_col = 2, .reserved0 = 0, .source_x = 0, .source_y = 0, .source_width = 2, .source_height = 1, .cell_x_offset = 0, .cell_y_offset = 0, .columns = 4, .rows = 2, .effective_columns = 4, .effective_rows = 2 };
+            placements[0] = .{ .image_id = 7, .placement_id = 4, .z_index = 0, .anchor = .{ .kind = c.HOWL_VT_GRAPHICS_ROW_ANCHOR_ON_SCREEN, .reserved0 = 0, .reserved1 = 0, .value = 1 }, .anchor_col = 2, .reserved0 = 0, .source_x = 0, .source_y = 0, .source_width = 2, .source_height = 1, .cell_x_offset = 0, .cell_y_offset = 0, .columns = 4, .rows = 2, .dest_left_cell_px = 3, .dest_top_cell_px = 5, .dest_right_cell_px = 35, .dest_bottom_cell_px = 37, .dest_grid_columns = 4, .dest_grid_rows = 2, .effective_columns = 4, .effective_rows = 2 };
             return .{ .images = images, .placements = placements };
         }
     };
@@ -646,6 +747,12 @@ test "paired acquisition retries whole attempt on stale graphics publication" {
     try std.testing.expectEqual(@as(u8, 2), FakeOps.graphics_item_calls);
     try std.testing.expectEqual(@as(usize, 1), visible.graphics_images.len);
     try std.testing.expectEqual(@as(usize, 1), visible.graphics_placements.len);
+    try std.testing.expectEqual(@as(u32, 3), visible.graphics_placements[0].dest_left_cell_px);
+    try std.testing.expectEqual(@as(u32, 5), visible.graphics_placements[0].dest_top_cell_px);
+    try std.testing.expectEqual(@as(u32, 35), visible.graphics_placements[0].dest_right_cell_px);
+    try std.testing.expectEqual(@as(u32, 37), visible.graphics_placements[0].dest_bottom_cell_px);
+    try std.testing.expectEqual(@as(u32, 4), visible.graphics_placements[0].dest_grid_columns);
+    try std.testing.expectEqual(@as(u32, 2), visible.graphics_placements[0].dest_grid_rows);
 }
 
 test "publish rejects reserved slot when paired acquisition fails" {
