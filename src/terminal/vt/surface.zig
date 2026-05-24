@@ -33,6 +33,10 @@ pub const VisibleCopy = struct {
     history_count: u32,
     scroll_row: u64,
     snapshot_seq: u64,
+    cursor: c.HowlVtCursor,
+    colors: c.HowlVtRenderColorState,
+    selection: c.HowlVtSelection,
+    graphics: c.HowlVtGraphicsMeta,
 };
 
 const ReservedPublishSlot = struct {
@@ -55,7 +59,7 @@ pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) c.HowlRe
     const meta = vtVisibleMeta(term.vt, term.vt_state.scrollback_offset);
     const slot = reservePublishSlot(term.render.surface_text, meta.cols, meta.rows) catch return rejectPublishSource(term.render.surface_text, meta.snapshot_seq);
 
-    const visible = vtCopyVisibleIntoSlot(term, meta, slot) catch return rejectPublishSource(term.render.surface_text, meta.snapshot_seq);
+    const visible = vtAcquireVisibleAndGraphicsIntoSlot(term, meta, slot) catch return rejectPublishSource(term.render.surface_text, meta.snapshot_seq);
     if (hover) |value| applyHyperlinkHover(slot, visible.rows, visible.cols, value);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.scroll_row <= visible.history_count + visible.rows);
@@ -71,6 +75,15 @@ pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) c.HowlRe
         .cursor = visible.cursor,
         .colors = visible.colors,
         .selection = visible.selection,
+        .graphics = .{
+            .image_count = visible.graphics.image_count,
+            .placement_count = visible.graphics.placement_count,
+            .is_alternate_screen = @intFromBool(visible.graphics.is_alternate_screen),
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .publication_seq = visible.graphics.publication_seq,
+            .dirty_generation = visible.graphics.dirty_generation,
+        },
     });
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPublishedSnapshot(.{
@@ -178,17 +191,7 @@ fn reservePublishSlot(handle: c.HowlRenderSurfaceTextHandle, cols: u16, rows: u1
     };
 }
 
-fn vtCopyVisibleIntoSlot(term: *terminal_term.Term, meta: VisibleMeta, slot: ReservedPublishSlot) !struct {
-    rows: u16,
-    cols: u16,
-    is_alternate_screen: bool,
-    history_count: u32,
-    scroll_row: u64,
-    snapshot_seq: u64,
-    cursor: c.HowlVtCursor,
-    colors: c.HowlVtRenderColorState,
-    selection: c.HowlVtSelection,
-} {
+fn vtAcquireVisibleAndGraphicsIntoSlot(term: *terminal_term.Term, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
     const source = c.howl_vt_terminal_copy_surface(
         term.vt,
         term.vt_state.scrollback_offset,
@@ -207,6 +210,8 @@ fn vtCopyVisibleIntoSlot(term: *terminal_term.Term, meta: VisibleMeta, slot: Res
     std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
     std.debug.assert(source.source.scroll_row <= source.history_count + source.source.rows);
     std.debug.assert(term.vt_state.scrollback_offset <= source.history_count);
+    const graphics = vtGraphicsMeta(term.vt);
+    std.debug.assert(graphics.is_alternate_screen == (source.source.is_alternate_screen != 0));
     return .{
         .rows = source.source.rows,
         .cols = source.source.cols,
@@ -217,6 +222,28 @@ fn vtCopyVisibleIntoSlot(term: *terminal_term.Term, meta: VisibleMeta, slot: Res
         .cursor = source.source.cursor,
         .colors = source.source.colors,
         .selection = source.source.selection,
+        .graphics = graphics,
+    };
+}
+
+const GraphicsMeta = struct {
+    image_count: u32,
+    placement_count: u32,
+    is_alternate_screen: bool,
+    publication_seq: u64,
+    dirty_generation: u64,
+};
+
+fn vtGraphicsMeta(handle: c.HowlVtHandle) GraphicsMeta {
+    std.debug.assert(handle != null);
+    const result = c.howl_vt_terminal_query_graphics_meta(handle);
+    vt_abi.requireStructOk(result.status);
+    return .{
+        .image_count = result.meta.image_count,
+        .placement_count = result.meta.placement_count,
+        .is_alternate_screen = result.meta.is_alternate_screen != 0,
+        .publication_seq = result.meta.publication_seq,
+        .dirty_generation = result.meta.dirty_generation,
     };
 }
 
