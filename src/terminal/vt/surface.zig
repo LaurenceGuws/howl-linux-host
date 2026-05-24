@@ -53,38 +53,24 @@ const PublishAckOps = struct {
 };
 
 pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) c.HowlRenderVtPublishResult {
+    return publishSourceWith(term, hover, RealOps);
+}
+
+fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) c.HowlRenderVtPublishResult {
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const meta = vtVisibleMeta(term.vt, term.vt_state.scrollback_offset);
-    const slot = reservePublishSlot(term.render.surface_text, meta.cols, meta.rows) catch return rejectPublishSource(term.render.surface_text, meta.snapshot_seq);
+    const meta = Ops.visibleMeta(term.vt, term.vt_state.scrollback_offset);
+    const slot = Ops.reserveSlot(term.render.surface_text, meta.cols, meta.rows) catch return Ops.rejectPublish(term.render.surface_text, meta.snapshot_seq);
 
-    const visible = vtAcquireVisibleAndGraphicsIntoSlot(term, meta, slot) catch return rejectPublishSource(term.render.surface_text, meta.snapshot_seq);
+    const visible = Ops.acquireVisibleAndGraphics(term.vt, term.vt_state.scrollback_offset, meta, slot) catch return Ops.rejectPublish(term.render.surface_text, meta.snapshot_seq);
     if (hover) |value| applyHyperlinkHover(slot, visible.rows, visible.cols, value);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
     std.debug.assert(visible.scroll_row <= visible.history_count + visible.rows);
     term.vt_state.cursor_visible = visible.cursor.visible != 0;
     term.vt_state.cursor_blink = visible.cursor.blink != 0;
 
-    const typed_response = c.howl_render_surface_text_commit_publish_slot(term.render.surface_text, .{
-        .scroll_row = visible.scroll_row,
-        .snapshot_seq = visible.snapshot_seq,
-        .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .cursor = visible.cursor,
-        .colors = visible.colors,
-        .selection = visible.selection,
-        .graphics = .{
-            .image_count = visible.graphics.image_count,
-            .placement_count = visible.graphics.placement_count,
-            .is_alternate_screen = @intFromBool(visible.graphics.is_alternate_screen),
-            .reserved0 = 0,
-            .reserved1 = 0,
-            .publication_seq = visible.graphics.publication_seq,
-            .dirty_generation = visible.graphics.dirty_generation,
-        },
-    });
+    const typed_response = Ops.commitPublishSlot(term.render.surface_text, visible);
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPublishedSnapshot(.{
         .rows = visible.rows,
@@ -118,6 +104,50 @@ pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) c.HowlRe
         }
     }
     return typed_response;
+}
+
+const RealOps = struct {
+    fn visibleMeta(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
+        return vtVisibleMeta(handle, scrollback_offset);
+    }
+
+    fn reserveSlot(handle: c.HowlRenderSurfaceTextHandle, cols: u16, rows: u16) !ReservedPublishSlot {
+        return reservePublishSlot(handle, cols, rows);
+    }
+
+    fn acquireVisibleAndGraphics(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
+        return vtAcquireVisibleAndGraphicsIntoSlot(handle, scrollback_offset, meta, slot);
+    }
+
+    fn commitPublishSlot(handle: c.HowlRenderSurfaceTextHandle, visible: VisibleCopy) c.HowlRenderVtPublishResult {
+        return c.howl_render_surface_text_commit_publish_slot(handle, publishSlotCommit(visible));
+    }
+
+    fn rejectPublish(handle: c.HowlRenderSurfaceTextHandle, snapshot_seq: u64) c.HowlRenderVtPublishResult {
+        return rejectPublishSource(handle, snapshot_seq);
+    }
+};
+
+fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
+    return .{
+        .scroll_row = visible.scroll_row,
+        .snapshot_seq = visible.snapshot_seq,
+        .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .cursor = visible.cursor,
+        .colors = visible.colors,
+        .selection = visible.selection,
+        .graphics = .{
+            .image_count = visible.graphics.image_count,
+            .placement_count = visible.graphics.placement_count,
+            .is_alternate_screen = visible.graphics.is_alternate_screen,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .publication_seq = visible.graphics.publication_seq,
+            .dirty_generation = visible.graphics.dirty_generation,
+        },
+    };
 }
 
 pub fn ackPublishedSourceLocked(term: *terminal_term.Term, snapshot_seq: u64) void {
@@ -191,10 +221,10 @@ fn reservePublishSlot(handle: c.HowlRenderSurfaceTextHandle, cols: u16, rows: u1
     };
 }
 
-fn vtAcquireVisibleAndGraphicsIntoSlot(term: *terminal_term.Term, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
+fn vtAcquireVisibleAndGraphicsIntoSlot(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
     const source = c.howl_vt_terminal_copy_surface(
-        term.vt,
-        term.vt_state.scrollback_offset,
+        handle,
+        scrollback_offset,
         slot.cells.ptr,
         slot.cells.len,
         slot.dirty_rows.ptr,
@@ -209,9 +239,9 @@ fn vtAcquireVisibleAndGraphicsIntoSlot(term: *terminal_term.Term, meta: VisibleM
     std.debug.assert(source.source.cols == meta.cols);
     std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
     std.debug.assert(source.source.scroll_row <= source.history_count + source.source.rows);
-    std.debug.assert(term.vt_state.scrollback_offset <= source.history_count);
-    const graphics = vtGraphicsMeta(term.vt);
-    std.debug.assert(graphics.is_alternate_screen == (source.source.is_alternate_screen != 0));
+    std.debug.assert(scrollback_offset <= source.history_count);
+    const graphics = vtGraphicsMeta(handle);
+    std.debug.assert((graphics.is_alternate_screen != 0) == (source.source.is_alternate_screen != 0));
     return .{
         .rows = source.source.rows,
         .cols = source.source.cols,
@@ -226,25 +256,11 @@ fn vtAcquireVisibleAndGraphicsIntoSlot(term: *terminal_term.Term, meta: VisibleM
     };
 }
 
-const GraphicsMeta = struct {
-    image_count: u32,
-    placement_count: u32,
-    is_alternate_screen: bool,
-    publication_seq: u64,
-    dirty_generation: u64,
-};
-
-fn vtGraphicsMeta(handle: c.HowlVtHandle) GraphicsMeta {
+fn vtGraphicsMeta(handle: c.HowlVtHandle) c.HowlVtGraphicsMeta {
     std.debug.assert(handle != null);
     const result = c.howl_vt_terminal_query_graphics_meta(handle);
     vt_abi.requireStructOk(result.status);
-    return .{
-        .image_count = result.meta.image_count,
-        .placement_count = result.meta.placement_count,
-        .is_alternate_screen = result.meta.is_alternate_screen != 0,
-        .publication_seq = result.meta.publication_seq,
-        .dirty_generation = result.meta.dirty_generation,
-    };
+    return result.meta;
 }
 
 fn renderCallOk(status: i32) !void {
@@ -298,15 +314,23 @@ fn recordPublishedSnapshot(visible: VisibleCopy, typed_response: c.HowlRenderVtP
     std.debug.assert(typed_response.snapshot_seq == visible.snapshot_seq);
 }
 
-test "publish forwards vt snapshot sequence" {
-    recordPublishedSnapshot(.{
+fn zeroVisibleCopy(snapshot_seq: u64) VisibleCopy {
+    return .{
         .rows = 2,
         .cols = 4,
         .is_alternate_screen = false,
         .history_count = 0,
         .scroll_row = 0,
-        .snapshot_seq = 9,
-    }, .{
+        .snapshot_seq = snapshot_seq,
+        .cursor = std.mem.zeroes(c.HowlVtCursor),
+        .colors = std.mem.zeroes(c.HowlVtRenderColorState),
+        .selection = std.mem.zeroes(c.HowlVtSelection),
+        .graphics = std.mem.zeroes(c.HowlVtGraphicsMeta),
+    };
+}
+
+test "publish forwards vt snapshot sequence" {
+    recordPublishedSnapshot(zeroVisibleCopy(9), .{
         .status = c.HOWL_RENDER_CALL_OK,
         .published = 1,
         .queued = 1,
@@ -316,14 +340,7 @@ test "publish forwards vt snapshot sequence" {
         .geometry_epoch = 1,
     });
 
-    recordPublishedSnapshot(.{
-        .rows = 2,
-        .cols = 4,
-        .is_alternate_screen = false,
-        .history_count = 0,
-        .scroll_row = 0,
-        .snapshot_seq = 11,
-    }, .{
+    recordPublishedSnapshot(zeroVisibleCopy(11), .{
         .status = c.HOWL_RENDER_CALL_FAILED,
         .published = 0,
         .queued = 0,
@@ -408,4 +425,122 @@ test "zero snapshot sequence means no ack call" {
     var term = FakeTerm{};
     ackPublishedSourceLockedWith(&term, 0, FakeOps);
     try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
+}
+
+test "publish commit forwards graphics metadata exactly" {
+    const visible: VisibleCopy = .{
+        .rows = 3,
+        .cols = 8,
+        .is_alternate_screen = true,
+        .history_count = 1,
+        .scroll_row = 4,
+        .snapshot_seq = 9,
+        .cursor = .{ .row = 1, .col = 2, .visible = 1, .shape = 2, .blink = 1 },
+        .colors = std.mem.zeroes(c.HowlVtRenderColorState),
+        .selection = std.mem.zeroes(c.HowlVtSelection),
+        .graphics = .{
+            .image_count = 7,
+            .placement_count = 5,
+            .is_alternate_screen = 1,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .publication_seq = 33,
+            .dirty_generation = 44,
+        },
+    };
+
+    const commit = publishSlotCommit(visible);
+    try std.testing.expectEqual(visible.scroll_row, commit.scroll_row);
+    try std.testing.expectEqual(visible.snapshot_seq, commit.snapshot_seq);
+    try std.testing.expectEqual(@as(u8, 1), commit.is_alternate_screen);
+    try std.testing.expectEqual(visible.graphics.image_count, commit.graphics.image_count);
+    try std.testing.expectEqual(visible.graphics.placement_count, commit.graphics.placement_count);
+    try std.testing.expectEqual(visible.graphics.is_alternate_screen, commit.graphics.is_alternate_screen);
+    try std.testing.expectEqual(visible.graphics.publication_seq, commit.graphics.publication_seq);
+    try std.testing.expectEqual(visible.graphics.dirty_generation, commit.graphics.dirty_generation);
+}
+
+test "paired acquisition returns surface and graphics truth from real vt state" {
+    const handle = try vt_abi.init(4, 16);
+    defer vt_abi.deinit(handle);
+
+    const command = "\x1b[2;3H\x1b_Gi=7,p=4,s=2,v=1,a=T,t=d,f=24,c=4,r=2;QUJD\x1b\\";
+    const feed = c.howl_vt_terminal_feed(handle, command.ptr, command.len);
+    try vt_abi.requireOk(feed.status);
+
+    const meta = vtVisibleMeta(handle, 0);
+    var cells: [64]c.HowlVtSurfaceCell = undefined;
+    var dirty_rows: [4]u8 = undefined;
+    var dirty_cols_start: [4]u16 = undefined;
+    var dirty_cols_end: [4]u16 = undefined;
+    const slot: ReservedPublishSlot = .{
+        .cells = cells[0 .. @as(usize, meta.rows) * @as(usize, meta.cols)],
+        .dirty_rows = dirty_rows[0..meta.rows],
+        .dirty_cols_start = dirty_cols_start[0..meta.rows],
+        .dirty_cols_end = dirty_cols_end[0..meta.rows],
+    };
+
+    const visible = try vtAcquireVisibleAndGraphicsIntoSlot(handle, 0, meta, slot);
+    try std.testing.expectEqual(meta.snapshot_seq, visible.snapshot_seq);
+    try std.testing.expectEqual(@as(u32, 1), visible.graphics.image_count);
+    try std.testing.expectEqual(@as(u32, 1), visible.graphics.placement_count);
+    try std.testing.expectEqual(visible.is_alternate_screen, visible.graphics.is_alternate_screen != 0);
+    try std.testing.expect(visible.graphics.publication_seq != 0);
+}
+
+test "publish rejects reserved slot when paired acquisition fails" {
+    const FakeTerm = struct {
+        vt: c.HowlVtHandle = @ptrFromInt(1),
+        vt_state: struct {
+            scrollback_offset: u32 = 0,
+            cursor_visible: bool = false,
+            cursor_blink: bool = false,
+        } = .{},
+        render: struct {
+            surface_text: c.HowlRenderSurfaceTextHandle = @ptrFromInt(2),
+        } = .{},
+        trace: struct {
+            source_publish_logged: bool = false,
+        } = .{},
+        mutex: struct {
+            fn lock(_: *@This()) void {}
+            fn unlock(_: *@This()) void {}
+        } = .{},
+    };
+
+    const FakeOps = struct {
+        var reject_calls: u8 = 0;
+        var commit_calls: u8 = 0;
+        var last_reject_snapshot_seq: u64 = 0;
+
+        fn visibleMeta(_: c.HowlVtHandle, _: u32) VisibleMeta {
+            return .{ .rows = 2, .cols = 4, .history_count = 0, .is_alternate_screen = false, .snapshot_seq = 12, .dirty_generation = 3 };
+        }
+
+        fn reserveSlot(_: c.HowlRenderSurfaceTextHandle, _: u16, _: u16) !ReservedPublishSlot {
+            return .{ .cells = &.{}, .dirty_rows = &.{}, .dirty_cols_start = &.{}, .dirty_cols_end = &.{} };
+        }
+
+        fn acquireVisibleAndGraphics(_: c.HowlVtHandle, _: u32, _: VisibleMeta, _: ReservedPublishSlot) error{AcquisitionFailed}!VisibleCopy {
+            return error.AcquisitionFailed;
+        }
+
+        fn commitPublishSlot(_: c.HowlRenderSurfaceTextHandle, _: VisibleCopy) c.HowlRenderVtPublishResult {
+            commit_calls += 1;
+            return .{ .status = c.HOWL_RENDER_CALL_OK, .published = 1, .queued = 1, .damage_kind = damage_partial, .reserved0 = 0, .snapshot_seq = 12, .geometry_epoch = 1 };
+        }
+
+        fn rejectPublish(_: c.HowlRenderSurfaceTextHandle, snapshot_seq: u64) c.HowlRenderVtPublishResult {
+            reject_calls += 1;
+            last_reject_snapshot_seq = snapshot_seq;
+            return .{ .status = c.HOWL_RENDER_CALL_FAILED, .published = 0, .queued = 0, .damage_kind = damage_none, .reserved0 = 0, .snapshot_seq = snapshot_seq, .geometry_epoch = 0 };
+        }
+    };
+
+    var term = FakeTerm{};
+    const result = publishSourceWith(&term, null, FakeOps);
+    try std.testing.expectEqual(c.HOWL_RENDER_CALL_FAILED, result.status);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.reject_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.commit_calls);
+    try std.testing.expectEqual(@as(u64, 12), FakeOps.last_reject_snapshot_seq);
 }
