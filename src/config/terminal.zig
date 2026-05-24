@@ -81,13 +81,19 @@ pub const Config = struct {
     bindings: Input.Bindings,
 
     pub fn load(alloc: std.mem.Allocator, reader: Lua.Reader) !Config {
-        const shell_raw = reader.fieldString("shell") orelse return error.MissingShell;
-        const shell = try env.expand(alloc, shell_raw);
+        var shell_raw: ?[]u8 = null;
+        try reader.optionalStringOwned("shell", &shell_raw);
+        const shell_src = shell_raw orelse return error.MissingShell;
+        defer alloc.free(shell_src);
+        const shell = try env.expand(alloc, shell_src);
         errdefer alloc.free(shell);
 
         var start_path: ?[]u8 = null;
-        if (reader.fieldString("start_path")) |start_path_raw| {
-            start_path = try env.expand(alloc, start_path_raw);
+        var start_path_raw: ?[]u8 = null;
+        try reader.optionalStringOwned("start_path", &start_path_raw);
+        defer if (start_path_raw) |raw| alloc.free(raw);
+        if (start_path_raw) |raw| {
+            start_path = try env.expand(alloc, raw);
         }
         errdefer if (start_path) |p| alloc.free(p);
 
@@ -106,7 +112,11 @@ pub const Config = struct {
         const links = loadLinkPolicies(reader);
         const mouse = try loadMousePolicy(reader);
 
-        const bindings = try loadBindings(alloc, reader.child("bindings"));
+        var bindings_child = reader.childTable("bindings");
+        const bindings = if (bindings_child) |*child|
+            try loadBindings(alloc, child)
+        else
+            .{ .bindings = try alloc.alloc(Input.Bindings.Binding, 0) };
         errdefer {
             var bindings_mut = bindings;
             bindings_mut.deinit(alloc);
@@ -181,9 +191,9 @@ fn parseMouseBypassMod(raw: []const u8) !Input.Mod {
     return error.InvalidConfig;
 }
 
-fn loadBindings(alloc: std.mem.Allocator, bindings_reader_opt: ?Lua.Reader) !Input.Bindings {
-    const bindings_reader = bindings_reader_opt orelse return .{ .bindings = try alloc.alloc(Input.Bindings.Binding, 0) };
-    defer bindings_reader.finish();
+fn loadBindings(alloc: std.mem.Allocator, bindings_child: *Lua.ChildTable) !Input.Bindings {
+    defer bindings_child.finish();
+    const bindings_reader = bindings_child.view();
 
     var out = std.ArrayList(Input.Bindings.Binding).empty;
     errdefer out.deinit(alloc);
@@ -201,8 +211,11 @@ fn loadBindings(alloc: std.mem.Allocator, bindings_reader_opt: ?Lua.Reader) !Inp
 
 fn loadFonts(alloc: std.mem.Allocator, reader: Lua.Reader) !FontStack {
     var primary: ?[:0]u8 = null;
-    if (reader.fieldString("font_primary")) |primary_raw| {
-        const expanded = try env.expand(alloc, primary_raw);
+    var primary_raw: ?[]u8 = null;
+    try reader.optionalStringOwned("font_primary", &primary_raw);
+    defer if (primary_raw) |raw| alloc.free(raw);
+    if (primary_raw) |raw| {
+        const expanded = try env.expand(alloc, raw);
         defer alloc.free(expanded);
         primary = try alloc.dupeZ(u8, expanded);
     }
@@ -219,52 +232,53 @@ fn loadFonts(alloc: std.mem.Allocator, reader: Lua.Reader) !FontStack {
 }
 
 fn loadClipboardPolicy(reader: Lua.Reader) ClipboardOsc52Policy {
-    const clipboard_reader = reader.child("clipboard");
-    defer if (clipboard_reader) |child| child.finish();
-    return if (clipboard_reader) |child|
-        parseClipboardOsc52Policy(child.fieldString("osc_52") orelse "deny")
-    else
-        .deny;
+    var clipboard_child = reader.childTable("clipboard");
+    defer if (clipboard_child) |*child| child.finish();
+    if (clipboard_child) |*child| {
+        var raw: ?[]u8 = null;
+        child.view().optionalStringOwned("osc_52", &raw) catch return .deny;
+        defer if (raw) |owned| child.view().allocator.free(owned);
+        return parseClipboardOsc52Policy(raw orelse "deny");
+    }
+    return .deny;
 }
 
 fn loadCursor(reader: Lua.Reader) Cursor {
+    var style_raw: ?[]u8 = null;
+    reader.optionalStringOwned("cursor_style", &style_raw) catch {};
+    defer if (style_raw) |owned| reader.allocator.free(owned);
     return .{
-        .style = parseCursorStyle(reader.fieldString("cursor_style") orelse "block"),
+        .style = parseCursorStyle(style_raw orelse "block"),
         .blink = reader.boolField("cursor_style_blink") orelse true,
     };
 }
 
 fn loadLinkPolicies(reader: Lua.Reader) Links {
-    const links_reader = reader.child("links");
-    defer if (links_reader) |child| child.finish();
+    var links_child = reader.childTable("links");
+    defer if (links_child) |*child| child.finish();
     return .{
-        .open = if (links_reader) |child|
-            parseLinkOpenPolicy(child.fieldString("open") orelse "disabled")
-        else
-            .disabled,
-        .hover = if (links_reader) |child|
-            parseLinkHoverPolicy(child.fieldString("hover") orelse "underline+cursor")
-        else
-            .underline_and_cursor,
-        .underline = if (links_reader) |child|
-            parseLinkUnderlineStyle(child.fieldString("underline") orelse "straight")
-        else
-            .straight,
+        .open = readLinkOpenPolicy(links_child),
+        .hover = readLinkHoverPolicy(links_child),
+        .underline = readLinkUnderlineStyle(links_child),
     };
 }
 
 fn loadMousePolicy(reader: Lua.Reader) !MousePolicy {
-    const mouse_reader = reader.child("mouse");
-    defer if (mouse_reader) |child| child.finish();
-    return .{ .bypass_mod = if (mouse_reader) |child| blk: {
-        if (child.fieldString("bypass_mod")) |raw| break :blk try parseMouseBypassMod(raw);
+    var mouse_child = reader.childTable("mouse");
+    defer if (mouse_child) |*child| child.finish();
+    return .{ .bypass_mod = if (mouse_child) |*child| blk: {
+        var raw: ?[]u8 = null;
+        try child.view().optionalStringOwned("bypass_mod", &raw);
+        defer if (raw) |owned| allocFreeViewString(child.view(), owned);
+        if (raw) |value| break :blk try parseMouseBypassMod(value);
         break :blk Input.Mod{};
     } else Input.Mod{} };
 }
 
 fn loadPlainStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []const u8) ![]const []u8 {
-    const arr_reader = parent.child(field) orelse return try alloc.alloc([]u8, 0);
-    defer arr_reader.finish();
+    var arr_child = parent.childTable(field) orelse return try alloc.alloc([]u8, 0);
+    defer arr_child.finish();
+    const arr_reader = arr_child.view();
 
     const n = arr_reader.arrayLen();
     if (n == 0) return try alloc.alloc([]u8, 0);
@@ -277,10 +291,7 @@ fn loadPlainStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field
     }
     for (out, 1..) |*slot, i| {
         std.debug.assert(i <= n);
-        arr_reader.state.rawGetIndex(arr_reader.index, i);
-        defer arr_reader.state.pop(1);
-        const raw = arr_reader.state.readString(-1) orelse return error.InvalidConfig;
-        slot.* = try alloc.dupe(u8, raw);
+        slot.* = try (try arr_reader.stringAtOwned(i) orelse return error.InvalidConfig);
         written += 1;
     }
     return out;
@@ -296,8 +307,9 @@ fn freePlainSlice(alloc: std.mem.Allocator, items: []const []u8) void {
 }
 
 fn loadStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []const u8) ![]const [:0]u8 {
-    const arr_reader = parent.child(field) orelse return try alloc.alloc([:0]u8, 0);
-    defer arr_reader.finish();
+    var arr_child = parent.childTable(field) orelse return try alloc.alloc([:0]u8, 0);
+    defer arr_child.finish();
+    const arr_reader = arr_child.view();
 
     const n = arr_reader.arrayLen();
     if (n == 0) return try alloc.alloc([:0]u8, 0);
@@ -310,15 +322,48 @@ fn loadStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []c
     }
     for (out, 1..) |*slot, i| {
         std.debug.assert(i <= n);
-        arr_reader.state.rawGetIndex(arr_reader.index, i);
-        defer arr_reader.state.pop(1);
-        const raw = arr_reader.state.readString(-1) orelse return error.InvalidConfig;
+        const raw = try arr_reader.stringAtOwned(i) orelse return error.InvalidConfig;
+        defer alloc.free(raw);
         const expanded = try env.expand(alloc, raw);
         defer alloc.free(expanded);
         slot.* = try alloc.dupeZ(u8, expanded);
         written += 1;
     }
     return out;
+}
+
+fn allocFreeViewString(reader: Lua.Reader, owned: []u8) void {
+    reader.allocator.free(owned);
+}
+
+fn readLinkOpenPolicy(child_opt: ?Lua.ChildTable) LinkOpenPolicy {
+    if (child_opt) |*child| {
+        var raw: ?[]u8 = null;
+        child.view().optionalStringOwned("open", &raw) catch return .disabled;
+        defer if (raw) |owned| allocFreeViewString(child.view(), owned);
+        return parseLinkOpenPolicy(raw orelse "disabled");
+    }
+    return .disabled;
+}
+
+fn readLinkHoverPolicy(child_opt: ?Lua.ChildTable) LinkHoverPolicy {
+    if (child_opt) |*child| {
+        var raw: ?[]u8 = null;
+        child.view().optionalStringOwned("hover", &raw) catch return .underline_and_cursor;
+        defer if (raw) |owned| allocFreeViewString(child.view(), owned);
+        return parseLinkHoverPolicy(raw orelse "underline+cursor");
+    }
+    return .underline_and_cursor;
+}
+
+fn readLinkUnderlineStyle(child_opt: ?Lua.ChildTable) LinkUnderlineStyle {
+    if (child_opt) |*child| {
+        var raw: ?[]u8 = null;
+        child.view().optionalStringOwned("underline", &raw) catch return .straight;
+        defer if (raw) |owned| allocFreeViewString(child.view(), owned);
+        return parseLinkUnderlineStyle(raw orelse "straight");
+    }
+    return .straight;
 }
 
 fn freeZSlice(alloc: std.mem.Allocator, items: []const [:0]u8) void {

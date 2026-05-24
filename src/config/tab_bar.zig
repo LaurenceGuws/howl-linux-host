@@ -13,7 +13,11 @@ pub const Config = struct {
     bindings: Bindings,
 
     pub fn load(alloc: std.mem.Allocator, reader: Lua.Reader) !Config {
-        const bindings = try loadBindings(alloc, reader.child("bindings"));
+        var bindings_child = reader.childTable("bindings");
+        const bindings = if (bindings_child) |*child|
+            try loadBindings(alloc, child)
+        else
+            .{ .bindings = try alloc.alloc(Bindings.Binding, 0) };
         errdefer {
             var bindings_mut = bindings;
             bindings_mut.deinit(alloc);
@@ -46,9 +50,9 @@ const binding_specs = [_]Bindings.Spec{
     .{ .field = "focus_tab_9", .action = .terminal_focus_tab_9 },
 };
 
-fn loadBindings(alloc: std.mem.Allocator, bindings_reader_opt: ?Lua.Reader) !Bindings {
-    const bindings_reader = bindings_reader_opt orelse return .{ .bindings = try alloc.alloc(Bindings.Binding, 0) };
-    defer bindings_reader.finish();
+fn loadBindings(alloc: std.mem.Allocator, bindings_child: *Lua.ChildTable) !Bindings {
+    defer bindings_child.finish();
+    const bindings_reader = bindings_child.view();
 
     var out = std.ArrayList(Bindings.Binding).empty;
     errdefer out.deinit(alloc);
@@ -65,8 +69,9 @@ fn loadBindings(alloc: std.mem.Allocator, bindings_reader_opt: ?Lua.Reader) !Bin
 }
 
 fn loadPlainStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []const u8) ![]const []u8 {
-    const arr_reader = parent.child(field) orelse return try alloc.alloc([]u8, 0);
-    defer arr_reader.finish();
+    var arr_child = parent.childTable(field) orelse return try alloc.alloc([]u8, 0);
+    defer arr_child.finish();
+    const arr_reader = arr_child.view();
 
     const n = arr_reader.arrayLen();
     if (n == 0) return try alloc.alloc([]u8, 0);
@@ -79,10 +84,7 @@ fn loadPlainStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field
     }
     var i: usize = 1;
     while (i <= n) : (i += 1) {
-        arr_reader.state.rawGetIndex(arr_reader.index, i);
-        defer arr_reader.state.pop(1);
-        const raw = arr_reader.state.readString(-1) orelse return error.InvalidConfig;
-        out[written] = try alloc.dupe(u8, raw);
+        out[written] = try (try arr_reader.stringAtOwned(i) orelse return error.InvalidConfig);
         written += 1;
     }
     return out[0..written];

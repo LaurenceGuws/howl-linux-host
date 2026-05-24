@@ -24,19 +24,19 @@ pub const State = struct {
 
         const root = Lua.Reader.init(lua, alloc, -1);
 
-        const term_reader = root.child("term") orelse return error.InvalidConfig;
-        defer term_reader.finish();
-        var term = try term_config.Config.load(alloc, term_reader);
+        var term_child = root.childTable("term") orelse return error.InvalidConfig;
+        defer term_child.finish();
+        var term = try term_config.Config.load(alloc, term_child.view());
         errdefer term.deinit(alloc);
 
-        const window_reader = root.child("window") orelse return error.InvalidConfig;
-        defer window_reader.finish();
-        var window = try window_config.Window.load(alloc, window_reader);
+        var window_child = root.childTable("window") orelse return error.InvalidConfig;
+        defer window_child.finish();
+        var window = try window_config.Window.load(alloc, window_child.view());
         errdefer window.deinit(alloc);
 
-        const tab_bar_reader = root.child("tab_bar") orelse return error.InvalidConfig;
-        defer tab_bar_reader.finish();
-        var tab_bar = try tab_bar_config.Config.load(alloc, tab_bar_reader);
+        var tab_bar_child = root.childTable("tab_bar") orelse return error.InvalidConfig;
+        defer tab_bar_child.finish();
+        var tab_bar = try tab_bar_config.Config.load(alloc, tab_bar_child.view());
         errdefer tab_bar.deinit(alloc);
 
         return .{
