@@ -69,6 +69,7 @@ pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) c.HowlRe
         .reserved0 = 0,
         .reserved1 = 0,
         .cursor = visible.cursor,
+        .colors = visible.colors,
         .selection = visible.selection,
     });
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
@@ -185,6 +186,7 @@ fn vtCopyVisibleIntoSlot(term: *terminal_term.Term, meta: VisibleMeta, slot: Res
     scroll_row: u64,
     snapshot_seq: u64,
     cursor: c.HowlVtCursor,
+    colors: c.HowlVtRenderColorState,
     selection: c.HowlVtSelection,
 } {
     const source = c.howl_vt_terminal_copy_surface(
@@ -213,6 +215,7 @@ fn vtCopyVisibleIntoSlot(term: *terminal_term.Term, meta: VisibleMeta, slot: Res
         .scroll_row = source.source.scroll_row,
         .snapshot_seq = source.snapshot_seq,
         .cursor = source.source.cursor,
+        .colors = source.source.colors,
         .selection = source.source.selection,
     };
 }
