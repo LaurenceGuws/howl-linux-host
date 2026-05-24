@@ -36,7 +36,7 @@ pub const Window = struct {
         const bindings = if (bindings_child) |*child|
             try loadBindings(alloc, child)
         else
-            .{ .bindings = try alloc.alloc(Bindings.Binding, 0) };
+            Bindings{ .bindings = try alloc.alloc(Bindings.Binding, 0) };
         errdefer {
             var bindings_mut = bindings;
             bindings_mut.deinit(alloc);
@@ -95,7 +95,7 @@ fn loadPlainStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field
     }
     var i: usize = 1;
     while (i <= n) : (i += 1) {
-        out[written] = try (try arr_reader.stringAtOwned(i) orelse return error.InvalidConfig);
+        out[written] = try arr_reader.stringAtOwned(i) orelse return error.InvalidConfig;
         written += 1;
     }
     return out[0..written];

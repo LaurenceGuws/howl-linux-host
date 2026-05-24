@@ -116,7 +116,7 @@ pub const Config = struct {
         const bindings = if (bindings_child) |*child|
             try loadBindings(alloc, child)
         else
-            .{ .bindings = try alloc.alloc(Input.Bindings.Binding, 0) };
+            Input.Bindings{ .bindings = try alloc.alloc(Input.Bindings.Binding, 0) };
         errdefer {
             var bindings_mut = bindings;
             bindings_mut.deinit(alloc);
@@ -291,7 +291,7 @@ fn loadPlainStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field
     }
     for (out, 1..) |*slot, i| {
         std.debug.assert(i <= n);
-        slot.* = try (try arr_reader.stringAtOwned(i) orelse return error.InvalidConfig);
+        slot.* = try arr_reader.stringAtOwned(i) orelse return error.InvalidConfig;
         written += 1;
     }
     return out;
