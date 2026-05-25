@@ -273,10 +273,11 @@ fn runLoop(app: *App) !void {
 fn runLoopTurn(app: *App) !LoopAction {
     if (quitRequested(app)) |action| return action;
 
-    _ = syncActiveBlinkCadence(app);
-    const pending = collectLoopPending(app);
+    const now_ns = InputWindow.nowNs();
+    _ = syncActiveBlinkCadence(app, now_ns);
+    const pending = collectLoopPending(app, now_ns);
     var loop = LoopState.init(pending);
-    const event_action = pumpWindowEvents(app, loop.wait_for_window, activeBlinkWaitMs(app));
+    const event_action = pumpWindowEvents(app, loop.wait_for_window, loopWaitMs(app, now_ns));
     if (event_action == .quit) return .quit;
 
     applyFocusChange(app);
@@ -285,10 +286,10 @@ fn runLoopTurn(app: *App) !LoopAction {
 
     forwardTerminalInput(app);
     _ = applyWindowResize(app);
-    const progress_redraw = driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*);
+    const progress_redraw = driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*, InputWindow.nowNs());
     configureInputPolicies(app);
     try ensureActiveTabHealthy(app);
-    const blink_redraw = syncActiveBlinkCadence(app);
+    const blink_redraw = syncActiveBlinkCadence(app, InputWindow.nowNs());
 
     loop.finish(
         progress_redraw or blink_redraw,
@@ -303,10 +304,10 @@ fn runLoopTurn(app: *App) !LoopAction {
     return .continue_running;
 }
 
-fn collectLoopPending(app: *App) LoopPending {
+fn collectLoopPending(app: *App, now_ns: u64) LoopPending {
     return .{
         .input = app.input.hasPendingLoopWork(),
-        .progress_wake = tabsHavePendingWake(app.tabs.items()),
+        .progress_wake = tabsHavePendingWake(app.tabs.items()) or tabsHavePendingRuntimeObligation(app.tabs.items(), now_ns),
         .active_frame = activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
     };
 }
@@ -319,6 +320,17 @@ fn activeTabNeedsRenderTurn(tabs: []*TerminalPanel, active_tab_idx: TabIndex) bo
 fn tabsHavePendingWake(tabs: []*TerminalPanel) bool {
     for (tabs) |tab| {
         if (runtime_thread.wakePending(tab)) return true;
+    }
+    return false;
+}
+
+fn tabsHavePendingRuntimeObligation(tabs: []*TerminalPanel, now_ns: u64) bool {
+    return tabsHavePendingRuntimeObligationWith(tabs, now_ns);
+}
+
+fn tabsHavePendingRuntimeObligationWith(tabs: anytype, now_ns: u64) bool {
+    for (tabs) |tab| {
+        if (tab.runtimeObligationDueNow(now_ns)) return true;
     }
     return false;
 }
@@ -337,14 +349,33 @@ fn pumpWindowEvents(app: *App, wait: bool, timeout_ms: ?u32) LoopAction {
     };
 }
 
-fn syncActiveBlinkCadence(app: *App) bool {
+fn syncActiveBlinkCadence(app: *App, now_ns: u64) bool {
     const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
-    return tab.syncCursorBlinkCadence(InputWindow.nowNs());
+    return tab.syncCursorBlinkCadence(now_ns);
 }
 
-fn activeBlinkWaitMs(app: *App) ?u32 {
+fn activeBlinkWaitMs(app: *App, now_ns: u64) ?u32 {
     const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
-    return tab.nextCursorBlinkWaitMs(InputWindow.nowNs());
+    return tab.nextCursorBlinkWaitMs(now_ns);
+}
+
+fn loopWaitMs(app: *App, now_ns: u64) ?u32 {
+    var wait_ms = activeBlinkWaitMs(app, now_ns);
+    wait_ms = minRuntimeObligationWaitMs(wait_ms, app.tabs.items(), now_ns);
+    return wait_ms;
+}
+
+fn minRuntimeObligationWaitMs(current_wait_ms: ?u32, tabs: []*TerminalPanel, now_ns: u64) ?u32 {
+    return minRuntimeObligationWaitMsWith(current_wait_ms, tabs, now_ns);
+}
+
+fn minRuntimeObligationWaitMsWith(current_wait_ms: ?u32, tabs: anytype, now_ns: u64) ?u32 {
+    var wait_ms = current_wait_ms;
+    for (tabs) |tab| {
+        const tab_wait_ms = tab.nextRuntimeObligationWaitMs(now_ns) orelse continue;
+        wait_ms = if (wait_ms) |current| @min(current, tab_wait_ms) else tab_wait_ms;
+    }
+    return wait_ms;
 }
 
 fn applyFocusChange(app: *App) void {
@@ -375,12 +406,12 @@ fn applyWindowResize(app: *App) bool {
     return true;
 }
 
-fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex) bool {
+fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex, now_ns: u64) bool {
     var redraw = false;
     var request_next_turn = false;
     for (tabs, 0..) |tab, i| {
         const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
-        const outcome = driveTabRuntimeTurn(tab, is_active);
+        const outcome = driveTabRuntimeTurn(tab, is_active, now_ns);
         redraw = redraw or outcome.should_redraw;
         request_next_turn = request_next_turn or outcome.keep;
     }
@@ -388,8 +419,8 @@ fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex) bool 
     return redraw;
 }
 
-fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool) @import("terminal/runtime/progress.zig").Outcome {
-    return tab.driveProgress(active);
+fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool, now_ns: u64) @import("terminal/runtime/progress.zig").Outcome {
+    return tab.driveProgress(active, now_ns);
 }
 
 fn ensureActiveTabHealthy(app: *App) !void {
@@ -536,6 +567,57 @@ test "present cadence stays tied to frame or chrome work" {
     try std.testing.expect(shouldPresent(.rendered, false));
     try std.testing.expect(shouldPresent(.blocked_present, false));
     try std.testing.expect(shouldPresent(.no_frame, true));
+}
+
+test "runtime obligation due-now is treated as immediate loop work" {
+    const FakeTab = struct {
+        due_now: bool,
+
+        fn runtimeObligationDueNow(self: @This(), _: u64) bool {
+            return self.due_now;
+        }
+
+        fn nextRuntimeObligationWaitMs(_: @This(), _: u64) ?u32 {
+            return null;
+        }
+    };
+
+    const tabs = [_]FakeTab{
+        .{ .due_now = false },
+        .{ .due_now = true },
+    };
+    try std.testing.expect(tabsHavePendingRuntimeObligationWith(tabs[0..], 1234));
+
+    const loop = LoopState.init(.{
+        .input = false,
+        .progress_wake = tabsHavePendingRuntimeObligationWith(tabs[0..], 1234),
+        .active_frame = false,
+    });
+    try std.testing.expect(!loop.wait_for_window);
+}
+
+test "runtime obligation deadline is merged with blink wait by minimum" {
+    const FakeTab = struct {
+        wait_ms: ?u32,
+
+        fn runtimeObligationDueNow(_: @This(), _: u64) bool {
+            return false;
+        }
+
+        fn nextRuntimeObligationWaitMs(self: @This(), _: u64) ?u32 {
+            return self.wait_ms;
+        }
+    };
+
+    const tabs = [_]FakeTab{
+        .{ .wait_ms = 40 },
+        .{ .wait_ms = 12 },
+        .{ .wait_ms = null },
+    };
+
+    try std.testing.expectEqual(@as(?u32, 12), minRuntimeObligationWaitMsWith(@as(?u32, 25), tabs[0..], 99));
+    try std.testing.expectEqual(@as(?u32, 12), minRuntimeObligationWaitMsWith(null, tabs[0..], 99));
+    try std.testing.expectEqual(@as(?u32, 25), minRuntimeObligationWaitMsWith(@as(?u32, 25), &[_]FakeTab{}, 99));
 }
 
 test "active window title sync uses the active panel title" {

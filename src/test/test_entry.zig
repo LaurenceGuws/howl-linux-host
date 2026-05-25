@@ -1,9 +1,5 @@
-
 test {
-    _ = @import("host").Config;
-    _ = @import("host").Input;
-    _ = @import("host").Main;
-    _ = @import("host").TerminalPanel;
-    _ = @import("host").Thread;
-    _ = @import("host").Window;
+    _ = @import("cli_args");
+    _ = @import("config_env");
+    _ = @import("tab_bar");
 }

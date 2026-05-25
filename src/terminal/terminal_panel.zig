@@ -339,11 +339,24 @@ pub const TerminalPanel = struct {
         return cursorBlinkWaitMs(self.cursor_blink_deadline_ns, self.cursorBlinkShouldAnimate(), now_ns);
     }
 
-    pub fn driveProgress(self: *TerminalPanel, active: bool) runtime_progress.Outcome {
-        if (!active and !runtime_thread.wakePending(self)) {
+    pub fn runtimeObligationDueNow(self: *TerminalPanel, now_ns: u64) bool {
+        const obligation = vt_retained.queryRuntimeObligation(&self.term, now_ns) catch return false;
+        return obligation.pending_now;
+    }
+
+    pub fn nextRuntimeObligationWaitMs(self: *TerminalPanel, now_ns: u64) ?u32 {
+        const obligation = vt_retained.queryRuntimeObligation(&self.term, now_ns) catch return null;
+        if (obligation.pending_now or obligation.deadline_ns == 0) return null;
+        const remaining_ns = obligation.deadline_ns -| now_ns;
+        const remaining_ms = @max(@as(u64, 1), remaining_ns / std.time.ns_per_ms);
+        return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
+    }
+
+    pub fn driveProgress(self: *TerminalPanel, active: bool, now_ns: u64) runtime_progress.Outcome {
+        if (!active and !runtime_thread.wakePending(self) and !self.runtimeObligationDueNow(now_ns)) {
             return .{ .keep = false, .should_redraw = false, .alive = pty_session.isAlive(&self.term) };
         }
-        var outcome = runtime_progress.driveOnce(&self.term);
+        var outcome = runtime_progress.driveOnce(&self.term, now_ns);
         if (active and outcome.should_redraw) {
             if (clearHoveredLink(self)) outcome.should_redraw = true;
             _ = vt_surface.publishSource(&self.term, hoverDecoration(self));

@@ -4,12 +4,13 @@
 // Until further notice, this host exists to validate embedding assumptions early rather than grant host constraints special treatment.
 
 const std = @import("std");
-const assert = std.debug.assert;
 const HostTests = @import("build_support/host_tests.zig");
 
 const Build = std.Build;
 const Compile = Build.Step.Compile;
 const Module = Build.Module;
+
+const harness_install_dir: Build.InstallDir = .{ .custom = "harness" };
 
 const HostDeps = struct {
     target: Build.ResolvedTarget,
@@ -45,12 +46,18 @@ const Steps = struct {
     check: *Build.Step,
     run: *Build.Step,
     stress_rain: *Build.Step,
+    stress_rain_build: *Build.Step,
     stress_rain_ascii: *Build.Step,
+    stress_rain_ascii_build: *Build.Step,
     stress_rain_mixed: *Build.Step,
+    stress_rain_mixed_build: *Build.Step,
     stress_rain_visual: *Build.Step,
+    stress_rain_visual_build: *Build.Step,
     test_all: *Build.Step,
     test_unit: *Build.Step,
     test_unit_build: *Build.Step,
+    test_integration: *Build.Step,
+    test_integration_build: *Build.Step,
 };
 
 pub fn build(b: *Build) void {
@@ -62,25 +69,33 @@ pub fn build(b: *Build) void {
     const deps = resolveHostDeps(b, target, optimize);
 
     const exe = buildHostExe(b, deps);
+    steps.check.dependOn(&exe.step);
     wireRunStep(b, steps.run, exe);
 
-    const rain_stress = buildLibcExe(b, "ascii_rain_stress", "src/fuzz/ascii_rain_stress.zig", target, optimize);
-    const visual_rain_stress = buildLibcExe(b, "visual_rain_stress", "src/fuzz/visual_rain_stress.zig", target, optimize);
+    const rain_stress = buildLibcExe(b, "ascii_rain_stress", "src/stress/ascii_rain_stress.zig", target, optimize);
+    const visual_rain_stress = buildLibcExe(b, "visual_rain_stress", "src/stress/visual_rain_stress.zig", target, optimize);
+    installHarnessArtifact(b, exe);
     wireStressSteps(b, steps, rain_stress, visual_rain_stress);
     wireTestSteps(b, steps, deps, target, optimize);
 }
 
 fn createSteps(b: *Build) Steps {
     return .{
-        .check = b.step("check", "Run repository checks"),
+        .check = b.step("check", "Build the default host harness without installing it"),
         .run = b.step("run", "Run host window"),
         .stress_rain = b.step("stress:rain", "Run hostile ASCII rain terminal traffic generator"),
+        .stress_rain_build = b.step("stress:rain:build", "Build hostile ASCII rain terminal traffic generator"),
         .stress_rain_ascii = b.step("stress:rain:ascii", "Run pure ASCII rain stress generator with metrics"),
+        .stress_rain_ascii_build = b.step("stress:rain:ascii:build", "Build pure ASCII rain stress generator with metrics defaults"),
         .stress_rain_mixed = b.step("stress:rain:mixed", "Run mixed glyph rain stress generator with metrics"),
+        .stress_rain_mixed_build = b.step("stress:rain:mixed:build", "Build mixed glyph rain stress generator with metrics defaults"),
         .stress_rain_visual = b.step("stress:rain:visual", "Run visual ASCII rain correctness stress generator"),
+        .stress_rain_visual_build = b.step("stress:rain:visual:build", "Build visual ASCII rain correctness stress generator"),
         .test_all = b.step("test", "Run all tests"),
         .test_unit = b.step("test:unit", "Run unit tests"),
         .test_unit_build = b.step("test:unit:build", "Build unit tests"),
+        .test_integration = b.step("test:integration", "Run integration tests"),
+        .test_integration_build = b.step("test:integration:build", "Build integration tests"),
     };
 }
 
@@ -125,13 +140,13 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
 }
 
 fn buildHostExe(b: *Build, deps: HostDeps) *Compile {
+    const name = artifactName(b, "howl_term", deps.optimize);
     const exe = b.addExecutable(.{
-        .name = "howl_term",
+        .name = name,
         .root_module = createHostModule(b, deps, "src/main.zig"),
     });
     exe.use_llvm = true;
     linkHostWindow(exe.root_module, deps);
-    b.installArtifact(exe);
     return exe;
 }
 
@@ -172,8 +187,9 @@ fn buildLibcExe(
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *Compile {
+    const artifact_name = artifactName(b, name, optimize);
     const exe = b.addExecutable(.{
-        .name = name,
+        .name = artifact_name,
         .root_module = b.createModule(.{
             .root_source_file = b.path(path),
             .target = target,
@@ -182,18 +198,42 @@ fn buildLibcExe(
     });
     exe.use_llvm = true;
     exe.root_module.link_libc = true;
-    b.installArtifact(exe);
     return exe;
+}
+
+fn installHarnessArtifact(b: *Build, exe: *Compile) void {
+    const install = b.addInstallArtifact(exe, .{
+        .dest_dir = .{ .override = harness_install_dir },
+        .dest_sub_path = exe.out_filename,
+    });
+    b.getInstallStep().dependOn(&install.step);
+}
+
+fn artifactName(b: *Build, base: []const u8, optimize: std.builtin.OptimizeMode) []const u8 {
+    return b.fmt("{s}_{s}", .{ base, optimizeSuffix(optimize) });
+}
+
+fn optimizeSuffix(optimize: std.builtin.OptimizeMode) []const u8 {
+    return switch (optimize) {
+        .Debug => "debug",
+        .ReleaseSafe => "release_safe",
+        .ReleaseFast => "release_fast",
+        .ReleaseSmall => "release_small",
+    };
 }
 
 fn wireRunStep(b: *Build, step: *Build.Step, exe: *Compile) void {
     const run_cmd = b.addRunArtifact(exe);
-    run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
     step.dependOn(&run_cmd.step);
 }
 
 fn wireStressSteps(b: *Build, steps: Steps, rain_stress: *Compile, visual_rain_stress: *Compile) void {
+    stageHarnessArtifact(b, steps.stress_rain_build, rain_stress);
+    stageHarnessArtifact(b, steps.stress_rain_ascii_build, rain_stress);
+    stageHarnessArtifact(b, steps.stress_rain_mixed_build, rain_stress);
+    stageHarnessArtifact(b, steps.stress_rain_visual_build, visual_rain_stress);
+
     const run_rain = b.addRunArtifact(rain_stress);
     if (b.args) |args| run_rain.addArgs(args);
     steps.stress_rain.dependOn(&run_rain.step);
@@ -215,6 +255,13 @@ fn wireStressSteps(b: *Build, steps: Steps, rain_stress: *Compile, visual_rain_s
     steps.stress_rain_visual.dependOn(&run_visual.step);
 }
 
+fn stageHarnessArtifact(b: *Build, step: *Build.Step, exe: *Compile) void {
+    step.dependOn(&b.addInstallArtifact(exe, .{
+        .dest_dir = .{ .override = harness_install_dir },
+        .dest_sub_path = exe.out_filename,
+    }).step);
+}
+
 fn wireTestSteps(
     b: *Build,
     steps: Steps,
@@ -223,63 +270,67 @@ fn wireTestSteps(
     optimize: std.builtin.OptimizeMode,
 ) void {
     const filters = b.args orelse &.{};
-    const host_test_mod = HostTests.createModule(b, deps.testDeps());
-    const host_loop_test_mod = HostTests.createModule(b, deps.testDeps());
-    const test_mod = b.createModule(.{
+
+    const unit_test_mod = b.createModule(.{
         .root_source_file = b.path("src/test/test_entry.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "host", .module = host_test_mod },
-            .{ .name = "howl_lua", .module = deps.howl_lua_mod },
+            .{ .name = "cli_args", .module = b.createModule(.{
+                .root_source_file = b.path("src/cli/args.zig"),
+                .target = target,
+                .optimize = optimize,
+            }) },
+            .{ .name = "config_env", .module = b.createModule(.{
+                .root_source_file = b.path("src/config/env.zig"),
+                .target = target,
+                .optimize = optimize,
+            }) },
+            .{ .name = "tab_bar", .module = b.createModule(.{
+                .root_source_file = b.path("src/tab_bar/tab_bar.zig"),
+                .target = target,
+                .optimize = optimize,
+            }) },
         },
     });
 
-    const mod_tests = b.addTest(.{
+    const unit_tests = b.addTest(.{
         .name = "test-unit",
-        .root_module = test_mod,
-        .filters = filters,
-    });
-    const rain_stress_tests = b.addTest(.{
-        .name = "test-rain-stress",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/fuzz/ascii_rain_stress.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-        .filters = filters,
-    });
-    const visual_rain_stress_tests = b.addTest(.{
-        .name = "test-visual-rain-stress",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/fuzz/visual_rain_stress.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-        .filters = filters,
-    });
-    const host_loop_tests = b.addTest(.{
-        .name = "test-host-loop",
-        .root_module = host_loop_test_mod,
+        .root_module = unit_test_mod,
         .filters = filters,
     });
 
-    configureHostTests(mod_tests, deps);
-    configureHostTests(host_loop_tests, deps);
-    configureLibcTests(rain_stress_tests, visual_rain_stress_tests);
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    if (b.args != null) run_unit_tests.has_side_effects = true;
 
-    const run_mod_tests = b.addRunArtifact(mod_tests);
-    const run_rain_stress_tests = b.addRunArtifact(rain_stress_tests);
-    const run_visual_rain_stress_tests = b.addRunArtifact(visual_rain_stress_tests);
-    const run_host_loop_tests = b.addRunArtifact(host_loop_tests);
-    if (b.args != null) markSideEffects(run_mod_tests, run_rain_stress_tests, run_visual_rain_stress_tests, run_host_loop_tests);
-
-    installTestArtifacts(b, steps.test_unit_build, mod_tests, rain_stress_tests, visual_rain_stress_tests, host_loop_tests);
-    steps.test_unit.dependOn(&run_mod_tests.step);
-    steps.test_unit.dependOn(&run_rain_stress_tests.step);
-    steps.test_unit.dependOn(&run_visual_rain_stress_tests.step);
-    steps.test_unit.dependOn(&run_host_loop_tests.step);
+    stageTestArtifact(steps.test_unit_build, unit_tests);
+    steps.test_unit.dependOn(&run_unit_tests.step);
     steps.test_all.dependOn(steps.test_unit);
+
+    const host_test_mod = HostTests.createModule(b, deps.testDeps());
+    const integration_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/test/integration_entry.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "host", .module = host_test_mod },
+        },
+    });
+
+    const integration_tests = b.addTest(.{
+        .name = "test-integration",
+        .root_module = integration_test_mod,
+        .filters = filters,
+    });
+
+    configureHostTests(integration_tests, deps);
+
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+    if (b.args != null) run_integration_tests.has_side_effects = true;
+
+    stageTestArtifact(steps.test_integration_build, integration_tests);
+    steps.test_integration.dependOn(&run_integration_tests.step);
+    steps.test_all.dependOn(steps.test_integration);
 }
 
 fn configureHostTests(mod_tests: *Compile, deps: HostDeps) void {
@@ -288,36 +339,6 @@ fn configureHostTests(mod_tests: *Compile, deps: HostDeps) void {
     linkLua(mod_tests.root_module);
 }
 
-fn configureLibcTests(rain_stress_tests: *Compile, visual_rain_stress_tests: *Compile) void {
-    rain_stress_tests.use_llvm = true;
-    rain_stress_tests.root_module.link_libc = true;
-    visual_rain_stress_tests.use_llvm = true;
-    visual_rain_stress_tests.root_module.link_libc = true;
-}
-
-fn markSideEffects(
-    run_mod_tests: *Build.Step.Run,
-    run_rain_stress_tests: *Build.Step.Run,
-    run_visual_rain_stress_tests: *Build.Step.Run,
-    run_host_loop_tests: *Build.Step.Run,
-) void {
-    run_mod_tests.has_side_effects = true;
-    run_rain_stress_tests.has_side_effects = true;
-    run_visual_rain_stress_tests.has_side_effects = true;
-    run_host_loop_tests.has_side_effects = true;
-}
-
-fn installTestArtifacts(
-    b: *Build,
-    step: *Build.Step,
-    mod_tests: *Compile,
-    rain_stress_tests: *Compile,
-    visual_rain_stress_tests: *Compile,
-    host_loop_tests: *Compile,
-) void {
-    step.dependOn(&b.addInstallArtifact(mod_tests, .{}).step);
-    step.dependOn(&b.addInstallArtifact(rain_stress_tests, .{}).step);
-    step.dependOn(&b.addInstallArtifact(visual_rain_stress_tests, .{}).step);
-    step.dependOn(&b.addInstallArtifact(host_loop_tests, .{}).step);
-    assert(step.dependencies.items.len == 4);
+fn stageTestArtifact(step: *Build.Step, mod_tests: *Compile) void {
+    step.dependOn(&mod_tests.step);
 }

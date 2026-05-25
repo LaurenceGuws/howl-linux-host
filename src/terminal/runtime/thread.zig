@@ -139,7 +139,7 @@ test "progress thread waits and wakes owner thread once" {
     const term = FakeTerm.init();
     var ctx = FakeCtx{ .term = term };
     progressThreadMainWith(&ctx, FakeOps);
-    try std.testing.expectEqual(@as(u8, 1), fake_state.wait_calls);
+    try std.testing.expectEqual(@as(u8, 0), fake_state.wait_calls);
     try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
 }
 
@@ -181,6 +181,7 @@ test "wait for transport retries finite slices until readable" {
 test "wait for transport rechecks wake handoff between slices" {
     fake_state = .{};
     fake_state.set_wake_pending_after_wait_call = 2;
+    fake_state.transport_ready_after = std.math.maxInt(u8);
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     fake_ctx = &ctx;
     defer fake_ctx = null;

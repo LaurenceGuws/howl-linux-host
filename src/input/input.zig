@@ -834,14 +834,14 @@ test "input event queue preserves FIFO across wraparound" {
 
     i = 0;
     while (i < 32) : (i += 1) {
-        const value: u8 = @intCast(max_input_events + i);
+        const value: u8 = @intCast((max_input_events + i) % 256);
         try std.testing.expect(appendInputEvent(&input, .{ .bytes = singleByteInput(value) }));
     }
 
     var expected: usize = 32;
     while (input.drainInputEvent()) |event| : (expected += 1) {
         switch (event) {
-            .bytes => |chunk| try std.testing.expectEqual(@as(u8, @intCast(expected)), chunk.buf[0]),
+            .bytes => |chunk| try std.testing.expectEqual(@as(u8, @intCast(expected % 256)), chunk.buf[0]),
             else => return error.UnexpectedEvent,
         }
     }
@@ -854,25 +854,25 @@ test "binding action queue preserves FIFO across wraparound" {
 
     const capacity = input.binding_buf.buf.len;
     var i: usize = 0;
-    while (i < capacity) : (i += 1) appendBindingAction(&input, .tab_next);
+    while (i < capacity) : (i += 1) appendBindingAction(&input, .terminal_next_tab);
     try std.testing.expectEqual(@as(u16, @intCast(capacity)), input.binding_buf.len);
 
     i = 0;
     while (i < 16) : (i += 1) {
-        try std.testing.expectEqual(Input.Bindings.Action.tab_next, input.drainBindingAction().?);
+        try std.testing.expectEqual(Input.Bindings.Action.terminal_next_tab, input.drainBindingAction().?);
     }
 
     i = 0;
-    while (i < 16) : (i += 1) appendBindingAction(&input, .tab_prev);
+    while (i < 16) : (i += 1) appendBindingAction(&input, .terminal_prev_tab);
 
     var tab_next_remaining = capacity - 16;
     while (tab_next_remaining > 0) : (tab_next_remaining -= 1) {
-        try std.testing.expectEqual(Input.Bindings.Action.tab_next, input.drainBindingAction().?);
+        try std.testing.expectEqual(Input.Bindings.Action.terminal_next_tab, input.drainBindingAction().?);
     }
 
     i = 0;
     while (i < 16) : (i += 1) {
-        try std.testing.expectEqual(Input.Bindings.Action.tab_prev, input.drainBindingAction().?);
+        try std.testing.expectEqual(Input.Bindings.Action.terminal_prev_tab, input.drainBindingAction().?);
     }
     try std.testing.expectEqual(@as(?Input.Bindings.Action, null), input.drainBindingAction());
 }

@@ -21,6 +21,7 @@ PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
 
 
 ROOT = Path(__file__).resolve().parents[1]
+HARNESS_DIR = ROOT / "zig-out" / "harness"
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-resource-interval", type=float, default=1.0, help="seconds between nvidia-smi GPU resource samples")
     parser.add_argument("--no-resources", action="store_true", help="disable child process resource sampling")
     parser.add_argument("--out-dir", type=Path, default=ROOT / "artifacts" / "stress")
-    parser.add_argument("--build", action="store_true", help="run zig build before benchmarking")
+    parser.add_argument("--build", action="store_true", help="run zig build install and zig build stress:rain:build before benchmarking")
     parser.add_argument("--trace-howl", action="store_true", help="enable HOWL_TRACE_PATH during Howl runs")
     parser.add_argument(
         "--terminals",
@@ -45,8 +46,8 @@ def parse_args() -> argparse.Namespace:
         choices=("howl", "kitty", "ghostty", "alacritty", "wezterm"),
         default=["howl", "alacritty", "kitty"],
     )
-    parser.add_argument("--howl-bin", type=Path, default=ROOT / "zig-out" / "bin" / "howl_term")
-    parser.add_argument("--stress-bin", type=Path, default=ROOT / "zig-out" / "bin" / "ascii_rain_stress")
+    parser.add_argument("--howl-bin", type=Path, default=HARNESS_DIR / "howl_term_release_fast")
+    parser.add_argument("--stress-bin", type=Path, default=HARNESS_DIR / "ascii_rain_stress_release_fast")
     parser.add_argument("--kitty-bin", default="kitty")
     parser.add_argument("--ghostty-bin", default="ghostty")
     parser.add_argument("--alacritty-bin", default="alacritty")
@@ -457,7 +458,8 @@ class ResourceSampler:
 
 
 def run_build() -> None:
-    subprocess.run(["zig", "build", "-Doptimize=ReleaseFast"], cwd=ROOT, check=True)
+    subprocess.run(["zig", "build", "install", "-Doptimize=ReleaseFast"], cwd=ROOT, check=True)
+    subprocess.run(["zig", "build", "stress:rain:build", "-Doptimize=ReleaseFast"], cwd=ROOT, check=True)
 
 
 def tooling_snapshot() -> dict[str, object]:
@@ -616,7 +618,7 @@ def main() -> int:
     if args.build:
         run_build()
     if not args.stress_bin.exists():
-        print(f"missing stress binary: {args.stress_bin}; run with --build or run zig build", file=sys.stderr)
+        print(f"missing stress binary: {args.stress_bin}; run with --build or run zig build stress:rain:build -Doptimize=ReleaseFast", file=sys.stderr)
         return 2
 
     run_id = time.strftime("%Y%m%d-%H%M%S") + f"-{args.mode}"

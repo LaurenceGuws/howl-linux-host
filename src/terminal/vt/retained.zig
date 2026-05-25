@@ -6,6 +6,16 @@ const title_max_bytes = @as(usize, c.HOWL_VT_TITLE_MAX_BYTES);
 const output_max_bytes = @as(usize, c.HOWL_VT_PENDING_OUTPUT_MAX_BYTES);
 const input_max_bytes = @as(usize, c.HOWL_VT_INPUT_ENCODE_MAX_BYTES);
 
+pub const RuntimeObligation = struct {
+    pending_now: bool,
+    deadline_ns: u64,
+};
+
+pub const RuntimeProgress = struct {
+    state_changed: bool,
+    obligation: RuntimeObligation,
+};
+
 comptime {
     std.debug.assert(title_max_bytes > 0);
     std.debug.assert(output_max_bytes > 0);
@@ -115,6 +125,34 @@ pub fn feedLocked(term: anytype, bytes: []const u8) c.HowlVtFeedResult {
         };
     }
     return c.howl_vt_terminal_feed(term.vt, bytes.ptr, bytes.len);
+}
+
+pub fn queryRuntimeObligation(term: anytype, now_ns: u64) !RuntimeObligation {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return queryRuntimeObligationLocked(term, now_ns);
+}
+
+pub fn queryRuntimeObligationLocked(term: anytype, now_ns: u64) !RuntimeObligation {
+    const result = c.howl_vt_terminal_query_runtime_obligation(term.vt, now_ns);
+    try requireOk(result.status);
+    return .{
+        .pending_now = result.obligation.pending_now != 0,
+        .deadline_ns = result.obligation.deadline_ns,
+    };
+}
+
+pub fn progressRuntimeLocked(term: anytype, now_ns: u64) !RuntimeProgress {
+    const result = c.howl_vt_terminal_progress_runtime(term.vt, now_ns);
+    try requireOk(result.status);
+    return .{
+        .state_changed = result.state_changed != 0,
+        .obligation = .{
+            .pending_now = result.obligation.pending_now != 0,
+            .deadline_ns = result.obligation.deadline_ns,
+        },
+    };
 }
 
 pub fn copyTitleLocked(term: anytype) ![]const u8 {

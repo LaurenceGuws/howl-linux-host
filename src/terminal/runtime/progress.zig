@@ -15,6 +15,12 @@ pub const Outcome = struct {
     alive: bool,
 };
 
+const RuntimeProgress = struct {
+    state_changed: bool,
+    pending_now: bool,
+    deadline_ns: u64,
+};
+
 const TransportProgress = struct {
     drained_input_bytes: u64,
     reads: u32,
@@ -23,16 +29,17 @@ const TransportProgress = struct {
     hit_limit: bool,
 };
 
-pub fn driveOnce(term: *terminal_term.Term) Outcome {
-    return driveOnceWith(term, RealOps);
+pub fn driveOnce(term: *terminal_term.Term, now_ns: u64) Outcome {
+    return driveOnceWith(term, now_ns, RealOps);
 }
 
-fn driveOnceWith(term: anytype, comptime Ops: type) Outcome {
+fn driveOnceWith(term: anytype, now_ns: u64, comptime Ops: type) Outcome {
     const transport = Ops.pumpTransport(term, transport_mode);
+    const runtime = Ops.progressRuntime(term, now_ns);
     const backlog = Ops.hasOutboundInputBacklog(term);
     const alive = Ops.isAlive(term);
-    const keep = backlog or transport.hit_limit;
-    const should_redraw = transport.reads != 0 or transport.bytes_read != 0;
+    const keep = backlog or transport.hit_limit or runtime.pending_now;
+    const should_redraw = transport.reads != 0 or transport.bytes_read != 0 or runtime.state_changed;
     const wake = should_redraw or !alive;
     if (Ops.takeProgressDriveStartup(term)) {
         log.logStartupf(
@@ -85,6 +92,10 @@ const RealOps = struct {
         return pty_session.hasOutboundInputBacklog(term);
     }
 
+    fn progressRuntime(term: *terminal_term.Term, now_ns: u64) RuntimeProgress {
+        return progressRuntimeLocked(term, now_ns);
+    }
+
     fn isAlive(term: *const terminal_term.Term) bool {
         return pty_session.isAlive(term);
     }
@@ -100,6 +111,23 @@ const RealOps = struct {
         log.logf(fmt, args);
     }
 };
+
+fn progressRuntimeLocked(term: *terminal_term.Term, now_ns: u64) RuntimeProgress {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+
+    const obligation = vt_retained.queryRuntimeObligationLocked(term, now_ns) catch return .{ .state_changed = false, .pending_now = false, .deadline_ns = 0 };
+    if (!obligation.pending_now) {
+        return .{ .state_changed = false, .pending_now = false, .deadline_ns = obligation.deadline_ns };
+    }
+    const progress = vt_retained.progressRuntimeLocked(term, now_ns) catch return .{ .state_changed = false, .pending_now = false, .deadline_ns = 0 };
+    drainTerminalReplyLocked(term);
+    return .{
+        .state_changed = progress.state_changed,
+        .pending_now = progress.obligation.pending_now,
+        .deadline_ns = progress.obligation.deadline_ns,
+    };
+}
 
 fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPumpMode) TransportProgress {
     const limits = pty_session.transportLimits(mode);
@@ -184,7 +212,7 @@ fn drainTerminalReplyLocked(term: *terminal_term.Term) void {
 test "progress drive stays quiet when nothing changes" {
     fake_state = .{};
     var term = FakeTerm{};
-    const outcome = driveOnceWith(&term, FakeOps);
+    const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(!outcome.keep);
     try std.testing.expect(!outcome.should_redraw);
     try std.testing.expect(outcome.alive);
@@ -195,7 +223,7 @@ test "progress drive requests redraw on transport read" {
     fake_state.reads = 1;
     fake_state.read_bytes = 8;
     var term = FakeTerm{};
-    const outcome = driveOnceWith(&term, FakeOps);
+    const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(!outcome.keep);
     try std.testing.expect(outcome.should_redraw);
     try std.testing.expect(outcome.alive);
@@ -207,7 +235,7 @@ test "progress drive keeps work bounded after saturated transport slice" {
     fake_state.read_bytes = 8;
     fake_state.hit_limit = true;
     var term = FakeTerm{};
-    const outcome = driveOnceWith(&term, FakeOps);
+    const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(outcome.keep);
     try std.testing.expect(outcome.should_redraw);
 }
@@ -216,7 +244,7 @@ test "progress drive keeps next turn alive for outbound backlog only" {
     fake_state = .{};
     fake_state.backlog = true;
     var term = FakeTerm{};
-    const outcome = driveOnceWith(&term, FakeOps);
+    const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(outcome.keep);
     try std.testing.expect(!outcome.should_redraw);
     try std.testing.expect(outcome.alive);
@@ -226,10 +254,21 @@ test "progress drive reports quiet transport death without redraw" {
     fake_state = .{};
     fake_state.is_alive = false;
     var term = FakeTerm{};
-    const outcome = driveOnceWith(&term, FakeOps);
+    const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(!outcome.keep);
     try std.testing.expect(!outcome.should_redraw);
     try std.testing.expect(!outcome.alive);
+}
+
+test "progress drive requests redraw and next turn for runtime work" {
+    fake_state = .{};
+    fake_state.runtime_state_changed = true;
+    fake_state.runtime_pending_now = true;
+    var term = FakeTerm{};
+    const outcome = driveOnceWith(&term, 1, FakeOps);
+    try std.testing.expect(outcome.keep);
+    try std.testing.expect(outcome.should_redraw);
+    try std.testing.expect(outcome.alive);
 }
 
 const FakeTerm = struct {};
@@ -241,6 +280,9 @@ var fake_state: struct {
     is_alive: bool = true,
     read_bytes: u32 = 0,
     reads: u32 = 0,
+    runtime_state_changed: bool = false,
+    runtime_pending_now: bool = false,
+    runtime_deadline_ns: u64 = 0,
 } = .{};
 
 const FakeOps = struct {
@@ -257,6 +299,14 @@ const FakeOps = struct {
 
     fn hasOutboundInputBacklog(_: *const FakeTerm) bool {
         return fake_state.backlog;
+    }
+
+    fn progressRuntime(_: *FakeTerm, _: u64) RuntimeProgress {
+        return .{
+            .state_changed = fake_state.runtime_state_changed,
+            .pending_now = fake_state.runtime_pending_now,
+            .deadline_ns = fake_state.runtime_deadline_ns,
+        };
     }
 
     fn isAlive(_: *const FakeTerm) bool {

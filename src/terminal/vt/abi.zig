@@ -31,6 +31,16 @@ pub const Input = struct {
         buttons_down: u8 = 0,
     };
 };
+
+pub const RuntimeObligation = struct {
+    pending_now: bool,
+    deadline_ns: u64,
+};
+
+pub const RuntimeProgress = struct {
+    state_changed: bool,
+    obligation: RuntimeObligation,
+};
 fn callOk() i32 {
     return c.HOWL_VT_CALL_OK;
 }
@@ -76,4 +86,25 @@ pub fn initWithOptions(rows: u16, cols: u16, options: InitOptions) !c.HowlVtHand
 pub fn deinit(handle: c.HowlVtHandle) void {
     std.debug.assert(handle != null);
     c.howl_vt_terminal_deinit(handle);
+}
+
+pub fn runtimeObligation(handle: c.HowlVtHandle, now_ns: u64) !RuntimeObligation {
+    const result = c.howl_vt_terminal_query_runtime_obligation(handle, now_ns);
+    try requireOk(result.status);
+    return .{
+        .pending_now = result.obligation.pending_now != 0,
+        .deadline_ns = result.obligation.deadline_ns,
+    };
+}
+
+pub fn progressRuntime(handle: c.HowlVtHandle, now_ns: u64) !RuntimeProgress {
+    const result = c.howl_vt_terminal_progress_runtime(handle, now_ns);
+    try requireOk(result.status);
+    return .{
+        .state_changed = result.state_changed != 0,
+        .obligation = .{
+            .pending_now = result.obligation.pending_now != 0,
+            .deadline_ns = result.obligation.deadline_ns,
+        },
+    };
 }
