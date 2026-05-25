@@ -48,7 +48,6 @@ pub const State = struct {
     geometry_epoch: u64 = 0,
     surface_text: c.HowlRenderSurfaceTextHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
-    perf: Perf = .{},
 
     pub fn init(
         surface_text: c.HowlRenderSurfaceTextHandle,
@@ -122,16 +121,6 @@ pub const State = struct {
 
     pub fn forgetPreparedSurface(self: *State) void {
         self.prepared_surface = null;
-    }
-
-    pub fn addPerf(self: *State, metrics: anytype) void {
-        self.perf.add(metrics);
-    }
-
-    pub fn takePerf(self: *State) Perf {
-        const out = self.perf;
-        self.perf = .{};
-        return out;
     }
 
     pub fn prepare(self: *State) PrepareResult {
@@ -252,7 +241,6 @@ pub const State = struct {
         std.debug.assert(prepared == current);
         const result = c.howl_render_surface_text_submit_handle(self.surface_text, prepared, execution, feedback);
         if (result == c.HOWL_RENDER_SUBMIT_RENDERED) {
-            self.addPerf(feedback.metrics);
             self.forgetPreparedSurface();
         }
         return result;
@@ -279,48 +267,6 @@ fn testFrameLayout() FrameLayout {
         .cell_px = .{ .width = 9, .height = 14 },
     };
 }
-
-pub const Perf = struct {
-    frames: u64 = 0,
-    sync_us: u64 = 0,
-    copy_us: u64 = 0,
-    render_us: u64 = 0,
-    glyphs: u64 = 0,
-    fills: u64 = 0,
-    clear_fills: u64 = 0,
-    background_fills: u64 = 0,
-    decoration_fills: u64 = 0,
-    cursor_fills: u64 = 0,
-    uploads: u64 = 0,
-    face_checks: u64 = 0,
-    face_cache_hits: u64 = 0,
-    shape_requests: u64 = 0,
-    shape_cache_hits: u64 = 0,
-    fallback_hits: u64 = 0,
-    fallback_misses: u64 = 0,
-    missing_glyphs: u64 = 0,
-
-    pub fn add(self: *Perf, metrics: anytype) void {
-        self.frames +%= 1;
-        self.sync_us +%= metrics.sync_us;
-        self.copy_us +%= metrics.copy_us;
-        self.render_us +%= metrics.render_us;
-        self.glyphs +%= metrics.glyphs;
-        self.fills +%= metrics.fills;
-        self.clear_fills +%= metrics.clear_fills;
-        self.background_fills +%= metrics.background_fills;
-        self.decoration_fills +%= metrics.decoration_fills;
-        self.cursor_fills +%= metrics.cursor_fills;
-        self.uploads +%= metrics.uploads;
-        self.face_checks +%= metrics.face_checks;
-        self.face_cache_hits +%= metrics.face_cache_hits;
-        self.shape_requests +%= metrics.shape_requests;
-        self.shape_cache_hits +%= metrics.shape_cache_hits;
-        self.fallback_hits +%= metrics.fallback_hits;
-        self.fallback_misses +%= metrics.fallback_misses;
-        self.missing_glyphs +%= metrics.missing_glyphs;
-    }
-};
 
 fn assertPreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) void {
     if (prepared == null) return;
@@ -353,33 +299,4 @@ test "frame layout sync reports grid and cell changes" {
     const changed = state.frameLayoutSync(next);
     try std.testing.expect(changed.changed);
     try std.testing.expect(changed.grid_changed);
-}
-
-test "takePerf resets retained counters" {
-    var state = State.init(null, testFrameLayout());
-    state.addPerf(.{
-        .sync_us = 1,
-        .copy_us = 2,
-        .render_us = 3,
-        .glyphs = 4,
-        .fills = 5,
-        .clear_fills = 6,
-        .background_fills = 7,
-        .decoration_fills = 8,
-        .cursor_fills = 9,
-        .uploads = 10,
-        .face_checks = 11,
-        .face_cache_hits = 12,
-        .shape_requests = 13,
-        .shape_cache_hits = 14,
-        .fallback_hits = 15,
-        .fallback_misses = 16,
-        .missing_glyphs = 17,
-    });
-
-    const perf = state.takePerf();
-    try std.testing.expectEqual(@as(u64, 1), perf.frames);
-    try std.testing.expectEqual(@as(u64, 3), perf.render_us);
-    try std.testing.expectEqual(@as(u64, 17), perf.missing_glyphs);
-    try std.testing.expectEqual(@as(u64, 0), state.perf.frames);
 }

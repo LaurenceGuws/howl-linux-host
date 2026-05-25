@@ -57,7 +57,7 @@ classDiagram
   and host-side render retained state. `src/terminal/render/abi.zig` translates host geometry,
   font, metric, and pixel-space calls only. `src/terminal/render/retained.zig` owns host-side render retained state and render lifecycle
   mutation: frame-layout mirror, geometry epoch, prepared-surface handle lifetime,
-  prepared-upload snapshots, and accumulated render perf counters. Font path ownership and
+  and prepared-upload snapshots. Font path ownership and
   fallback-path copies belong to `howl-render`; host render code does not mirror them as retained
   state, and it does not own host term-texture state outside the active upload/submit handoff.
 - `howl-linux-host` owns explicit font override resolution plus bundled fallback-stack assembly

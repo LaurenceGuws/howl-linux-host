@@ -19,7 +19,6 @@ pub const FrameLayoutRequest = struct {
     grid_px: c.HowlRenderPixelSize,
 };
 pub const RenderSurface = c.HowlRenderSurfaceHandle;
-pub const RenderMetrics = c.HowlRenderQueueMetrics;
 pub const RenderCellSize = c.HowlRenderCellSize;
 pub const FrameLayoutSync = retained.FrameLayoutSync;
 
@@ -101,12 +100,6 @@ pub fn commitFrameLayout(term: *Term, layout: FrameLayout) void {
     term.mutex.lock();
     defer term.mutex.unlock();
     term.render.syncFrameLayout(layout);
-}
-
-pub fn takeRenderMetrics(term: *Term) RenderMetrics {
-    var metrics = std.mem.zeroes(RenderMetrics);
-    std.debug.assert(c.howl_render_surface_text_take_queue_metrics(term.render.surface_text, &metrics) == c.HOWL_RENDER_CALL_OK);
-    return metrics;
 }
 
 pub fn setCursorBlinkVisible(term: *Term, visible: bool) bool {

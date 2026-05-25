@@ -109,8 +109,8 @@ pub const State = struct {
         };
     }
 
-    pub fn present(self: *State, perf: anytype, frame: Frame) void {
-        Present.present(c, &self.present_state, perf, frame);
+    pub fn present(self: *State, frame: Frame) void {
+        Present.present(c, &self.present_state, frame);
     }
 
     pub fn setTitle(self: *State, title: []const u8) void {

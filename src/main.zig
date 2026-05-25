@@ -4,7 +4,6 @@ const cli_args = @import("cli/args.zig");
 const Config = @import("config/config.zig");
 const Input = @import("input/input.zig").Input;
 const InputWindow = @import("input/window.zig");
-const PerfLog = @import("perf/log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const pty_session = @import("terminal/pty/session.zig");
 const runtime_thread = @import("terminal/runtime/thread.zig");
@@ -107,7 +106,6 @@ const App = struct {
     feed_record_path: ?[]const u8,
     io: std.Io,
     window: *Window.State,
-    perf: *PerfLog.State,
     tab_bar: *TabBar,
     tabs: *TabSlots,
     active_tab_idx: *TabIndex,
@@ -181,16 +179,6 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
     try openTab(io, conf, input, feed_record_path, window, tabs, active_tab_idx);
     InputWindow.logStartup("initial-tab-opened");
 
-    const perf = try std.heap.c_allocator.create(PerfLog.State);
-    errdefer std.heap.c_allocator.destroy(perf);
-    perf.* = undefined;
-    try initPerf(perf, activeTab(tabs.items(), active_tab_idx.*));
-    defer {
-        perf.stopAndDeinit();
-        std.heap.c_allocator.destroy(perf);
-    }
-    InputWindow.logStartup("perf-ready");
-
     const duration_timer = InputWindow.startQuitTimer(options.duration_ms);
     defer InputWindow.stopQuitTimer(duration_timer);
 
@@ -199,7 +187,6 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         .feed_record_path = feed_record_path,
         .io = io,
         .window = window,
-        .perf = perf,
         .tab_bar = tab_bar,
         .tabs = tabs,
         .active_tab_idx = active_tab_idx,
@@ -231,10 +218,6 @@ fn createWindow(conf: *const Config.State, options: Options) !Window.State {
     var window = try Window.State.create(title, conf.window.width, conf.window.height);
     errdefer window.deinit();
     return window;
-}
-
-fn initPerf(perf: *PerfLog.State, tab: *TerminalPanel) !void {
-    try tab.initPerf(perf);
 }
 
 fn initInput() !Input {
@@ -486,7 +469,7 @@ fn renderSnapshot(app: *App, tab: *TerminalPanel) RenderSnapshot {
 
 fn presentRenderFrame(app: *App, tab: *TerminalPanel, turn: TerminalPanel.TurnResult, chrome_present: bool, snapshot: RenderSnapshot) void {
     if (!shouldPresent(turn.step, chrome_present)) return;
-    app.window.present(app.perf, .{
+    app.window.present(.{
         .term_texture_id = @intCast(tab.termTextureId()),
         .term_texture_rect = snapshot.texture_rect,
         .scrollbar = snapshot.scrollbar,

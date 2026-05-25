@@ -4,8 +4,6 @@ const InputWindow = @import("../input/window.zig");
 const Texture = @import("texture.zig");
 const std = @import("std");
 
-const sdl_fps_log_every_frames: u64 = 200;
-
 pub fn State(comptime c: type) type {
     return struct {
         window: ?*c.SDL_Window,
@@ -17,14 +15,6 @@ pub fn State(comptime c: type) type {
         tab_cache_hash: u64,
         first_present_attempt_logged: bool,
         first_present_logged: bool,
-        present_frames: u64,
-        fps_window_start_ns: u64,
-        fps_window_start_frame: u64,
-        fps_next_log_frame: u64,
-        cache_window_ns: u64,
-        draw_window_ns: u64,
-        swap_window_ns: u64,
-        total_window_ns: u64,
     };
 }
 
@@ -43,14 +33,6 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
         .tab_cache_hash = 0,
         .first_present_attempt_logged = false,
         .first_present_logged = false,
-        .present_frames = 0,
-        .fps_window_start_ns = c.SDL_GetTicksNS(),
-        .fps_window_start_frame = 0,
-        .fps_next_log_frame = sdl_fps_log_every_frames,
-        .cache_window_ns = 0,
-        .draw_window_ns = 0,
-        .swap_window_ns = 0,
-        .total_window_ns = 0,
     };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
@@ -63,7 +45,6 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
 }
 
 pub fn deinit(comptime c: type, state: *State(c)) void {
-    logSdlFps(c, state, null, true);
     releaseTabCache(c, state);
     if (state.gl_context) |ctx| {
         _ = ctx;
@@ -74,21 +55,18 @@ pub fn deinit(comptime c: type, state: *State(c)) void {
     state.window = null;
 }
 
-pub fn present(comptime c: type, state: *State(c), perf: anytype, frame: Layout.Frame) void {
+pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
     const handle = state.window orelse return;
-    const start_ns = c.SDL_GetTicksNS();
     var fb_w: c_int = 0;
     var fb_h: c_int = 0;
     _ = c.SDL_GetWindowSizeInPixels(handle, &fb_w, &fb_h);
     updateTabCacheIfNeeded(c, state, @max(fb_w, 1), @max(fb_h, 1), frame);
-    const after_cache_ns = c.SDL_GetTicksNS();
     c.glViewport(0, 0, @max(fb_w, 1), @max(fb_h, 1));
     c.glClearColor(0.06, 0.09, 0.14, 1.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.term_texture_rect.y);
     Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.term_texture_id, frame.term_texture_rect.x, frame.term_texture_rect.y, frame.term_texture_rect.width, frame.term_texture_rect.height);
     Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
-    const before_swap_ns = c.SDL_GetTicksNS();
     if (!state.first_present_attempt_logged) {
         state.first_present_attempt_logged = true;
     }
@@ -97,58 +75,6 @@ pub fn present(comptime c: type, state: *State(c), perf: anytype, frame: Layout.
         InputWindow.logStartupf("stage=term-present-first term_texture_id={d} rect_w={d} rect_h={d}", .{ frame.term_texture_id, frame.term_texture_rect.width, frame.term_texture_rect.height });
     }
     Texture.swapWindow(c, handle);
-    const end_ns = c.SDL_GetTicksNS();
-    state.present_frames += 1;
-    state.cache_window_ns +%= after_cache_ns -| start_ns;
-    state.draw_window_ns +%= before_swap_ns -| after_cache_ns;
-    state.swap_window_ns +%= end_ns -| before_swap_ns;
-    state.total_window_ns +%= end_ns -| start_ns;
-    logSdlFps(c, state, perf, false);
-}
-
-fn logSdlFps(comptime c: type, state: *State(c), perf: anytype, force: bool) void {
-    if (!force and state.present_frames < state.fps_next_log_frame) return;
-    const now_ns = c.SDL_GetTicksNS();
-    const elapsed_ns = now_ns -| state.fps_window_start_ns;
-    const frame_delta = state.present_frames -| state.fps_window_start_frame;
-    if (frame_delta == 0) return;
-    const fps = if (elapsed_ns == 0)
-        0
-    else
-        @as(f64, @floatFromInt(frame_delta)) / (@as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)));
-    const denom = @as(f64, @floatFromInt(@max(frame_delta, 1)));
-    switch (@typeInfo(@TypeOf(perf))) {
-        .null => return,
-        .pointer => perf.logSdlFpsWindow(
-            state.present_frames,
-            frame_delta,
-            fps,
-            @as(f64, @floatFromInt(state.cache_window_ns)) / denom / 1000.0,
-            @as(f64, @floatFromInt(state.draw_window_ns)) / denom / 1000.0,
-            @as(f64, @floatFromInt(state.swap_window_ns)) / denom / 1000.0,
-            @as(f64, @floatFromInt(state.total_window_ns)) / denom / 1000.0,
-        ),
-        .optional => {
-            const perf_state = perf orelse return;
-            perf_state.logSdlFpsWindow(
-                state.present_frames,
-                frame_delta,
-                fps,
-                @as(f64, @floatFromInt(state.cache_window_ns)) / denom / 1000.0,
-                @as(f64, @floatFromInt(state.draw_window_ns)) / denom / 1000.0,
-                @as(f64, @floatFromInt(state.swap_window_ns)) / denom / 1000.0,
-                @as(f64, @floatFromInt(state.total_window_ns)) / denom / 1000.0,
-            );
-        },
-        else => @compileError("perf owner must be a pointer, optional pointer, or null"),
-    }
-    state.fps_window_start_ns = now_ns;
-    state.fps_window_start_frame = state.present_frames;
-    state.fps_next_log_frame = state.present_frames + sdl_fps_log_every_frames;
-    state.cache_window_ns = 0;
-    state.draw_window_ns = 0;
-    state.swap_window_ns = 0;
-    state.total_window_ns = 0;
 }
 
 fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {

@@ -315,10 +315,6 @@ pub const TerminalPanel = struct {
         return geometry.syncCurrentFrameLayout(self);
     }
 
-    pub fn initPerf(self: *TerminalPanel, perf: anytype) !void {
-        try perf.init(&self.term, std.c.getenv("HOWL_RUNTIME_LOG_PATH"));
-    }
-
     pub fn wantsRenderTurn(self: *const TerminalPanel) bool {
         return self.workState().wantsFrame();
     }
