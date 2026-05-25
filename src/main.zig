@@ -122,6 +122,10 @@ pub fn main(init: std.process.Init) !void {
     try start(init.io, options, feed_record_path);
 }
 
+pub fn startForTest(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
+    return start(io, options, feed_record_path);
+}
+
 noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     setCurrentThreadName("howl-main");
     InputWindow.logStartup("app-start");
@@ -129,50 +133,48 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
     defer Window.quit();
 
     const conf = try std.heap.c_allocator.create(Config.State);
-    errdefer std.heap.c_allocator.destroy(conf);
-    conf.* = try loadConfig(options);
+    var conf_loaded = false;
     defer {
-        conf.deinit(std.heap.c_allocator);
+        if (conf_loaded) conf.deinit(std.heap.c_allocator);
         std.heap.c_allocator.destroy(conf);
     }
+    conf.* = try loadConfig(options);
+    conf_loaded = true;
     InputWindow.logStartupf("stage=config-loaded shell_len={d} title_len={d}", .{ conf.term.shell.len, conf.window.title.len });
 
     const window = try std.heap.c_allocator.create(Window.State);
-    errdefer std.heap.c_allocator.destroy(window);
-    window.* = try createWindow(conf, options);
+    var window_created = false;
     defer {
-        window.deinit();
+        if (window_created) window.deinit();
         std.heap.c_allocator.destroy(window);
     }
+    window.* = try createWindow(conf, options);
+    window_created = true;
     InputWindow.logStartupf("stage=window-ready px_w={d} px_h={d} logical_w={d} logical_h={d}", .{ window.px_w, window.px_h, window.logical_w, window.logical_h });
 
     const tab_bar = try std.heap.c_allocator.create(TabBar);
-    errdefer std.heap.c_allocator.destroy(tab_bar);
     tab_bar.* = .{};
     defer std.heap.c_allocator.destroy(tab_bar);
 
     const tabs = try std.heap.c_allocator.create(TabSlots);
-    errdefer std.heap.c_allocator.destroy(tabs);
     tabs.active_count = 0;
     tabs.free_count = max_tabs;
     for (0..max_tabs) |slot| {
         tabs.free_slots[slot] = @intCast(max_tabs - 1 - slot);
     }
     const active_tab_idx = try std.heap.c_allocator.create(TabIndex);
-    errdefer std.heap.c_allocator.destroy(active_tab_idx);
     active_tab_idx.* = 0;
 
     const input = try std.heap.c_allocator.create(Input);
-    errdefer std.heap.c_allocator.destroy(input);
-    input.* = try initInput();
-    input.window_state.initEventTypes();
-    input.setBindings(Input.Bindings.Configured.init(conf));
     defer {
         destroyTabs(tabs);
         std.heap.c_allocator.destroy(tabs);
         std.heap.c_allocator.destroy(input);
         std.heap.c_allocator.destroy(active_tab_idx);
     }
+    input.* = try initInput();
+    input.window_state.initEventTypes();
+    input.setBindings(Input.Bindings.Configured.init(conf));
     InputWindow.logStartup("input-ready");
 
     applyChildEnvironmentPolicy();
@@ -407,11 +409,23 @@ fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool, now_ns: u64) @import("
 }
 
 fn ensureActiveTabHealthy(app: *App) !void {
-    if (!activeTabFailed(app.tabs.items(), app.active_tab_idx.*)) return;
+    const problem = activeTabProblem(app.tabs.items(), app.active_tab_idx.*) orelse return;
     const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
     const state = tab.lifecycleState();
-    InputWindow.logStartupf("stage=active-tab-failed lifecycle={s} alive={}", .{ @tagName(state), tab.isAlive() });
-    return error.HostTabFailed;
+    const pty = pty_session.snapshot(&tab.term);
+    const outcome = pty_session.outcome(&tab.term);
+    InputWindow.logStartupf("stage=active-tab-failed reason={s} lifecycle={s} outcome={s} status={s} terminal_reason={s} wait_outcome={s}", .{
+        @tagName(problem),
+        @tagName(state),
+        @tagName(outcome),
+        @tagName(pty.status),
+        @tagName(pty.terminal_reason),
+        @tagName(pty.last_wait_outcome),
+    });
+    return switch (problem) {
+        .exited => error.ActiveTabExited,
+        .runtime_failed => error.ActiveTabRuntimeFailed,
+    };
 }
 
 fn destroyTabs(tabs: *TabSlots) void {
@@ -638,11 +652,19 @@ fn setWindowFocused(window: *Window.State, tabs: []*TerminalPanel, active_tab_id
     syncTerminalFocus(window, tabs, active_tab_idx);
 }
 
-fn activeTabFailed(tabs: []*TerminalPanel, active_tab_idx: TabIndex) bool {
-    if (tabs.len == 0) return true;
+const ActiveTabProblem = enum {
+    exited,
+    runtime_failed,
+};
+
+fn activeTabProblem(tabs: []*TerminalPanel, active_tab_idx: TabIndex) ?ActiveTabProblem {
+    if (tabs.len == 0) return .exited;
     const tab = activePanel(tabs, active_tab_idx);
-    if (!tab.isAlive()) return true;
-    return tab.lifecycleState() == .failed;
+    return switch (tab.sessionOutcome()) {
+        .active => null,
+        .exited => .exited,
+        .runtime_failed => .runtime_failed,
+    };
 }
 
 fn activeTab(tabs: []*TerminalPanel, active_tab_idx: TabIndex) *TerminalPanel {

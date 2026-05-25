@@ -10,6 +10,8 @@ pub const Deps = struct {
     howl_render_include: std.Build.LazyPath,
     howl_pty_include: std.Build.LazyPath,
     howl_vt_include: std.Build.LazyPath,
+    sdl_include: std.Build.LazyPath,
+    vendor_include: std.Build.LazyPath,
 };
 
 pub fn createModule(b: *std.Build, deps: Deps) *std.Build.Module {
@@ -21,6 +23,8 @@ pub fn createModule(b: *std.Build, deps: Deps) *std.Build.Module {
             .{ .name = "howl_lua", .module = deps.howl_lua_mod },
         },
     });
+    mod.addIncludePath(deps.sdl_include);
+    mod.addIncludePath(deps.vendor_include);
     mod.addIncludePath(deps.howl_render_include);
     mod.addIncludePath(deps.howl_pty_include);
     mod.addIncludePath(deps.howl_vt_include);

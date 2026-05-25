@@ -8,6 +8,40 @@ const default_pending_capacity: u32 = 4096;
 
 pub const transport_chunk_bytes = c.HOWL_PTY_TRANSPORT_CHUNK_BYTES;
 
+pub const SessionStatus = enum(u8) {
+    idle = c.HOWL_PTY_SESSION_IDLE,
+    active = c.HOWL_PTY_SESSION_ACTIVE,
+    stopped = c.HOWL_PTY_SESSION_STOPPED,
+};
+
+pub const TerminalReason = enum(u8) {
+    none = c.HOWL_PTY_TERMINAL_REASON_NONE,
+    explicit_stop = c.HOWL_PTY_TERMINAL_REASON_EXPLICIT_STOP,
+    child_exit = c.HOWL_PTY_TERMINAL_REASON_CHILD_EXIT,
+    transport_eof = c.HOWL_PTY_TERMINAL_REASON_TRANSPORT_EOF,
+    transport_failure = c.HOWL_PTY_TERMINAL_REASON_TRANSPORT_FAILURE,
+};
+
+pub const WaitOutcome = enum(u8) {
+    none = c.HOWL_PTY_WAIT_OUTCOME_NONE,
+    ready = c.HOWL_PTY_WAIT_OUTCOME_READY,
+    timeout = c.HOWL_PTY_WAIT_OUTCOME_TIMEOUT,
+    wake = c.HOWL_PTY_WAIT_OUTCOME_WAKE,
+    stopped = c.HOWL_PTY_WAIT_OUTCOME_STOPPED,
+};
+
+pub const Snapshot = struct {
+    status: SessionStatus,
+    terminal_reason: TerminalReason,
+    last_wait_outcome: WaitOutcome,
+};
+
+pub const SessionOutcome = enum {
+    active,
+    exited,
+    runtime_failed,
+};
+
 pub const TransportPumpMode = enum(u8) {
     normal = c.HOWL_PTY_TRANSPORT_PUMP_NORMAL,
     constrained = c.HOWL_PTY_TRANSPORT_PUMP_CONSTRAINED,
@@ -50,7 +84,7 @@ pub fn deinitHandle(handle: c.HowlPtySessionHandle) void {
 pub fn start(term: *terminal_term.Term) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    if (ptySessionStatus(term.session) == c.HOWL_PTY_SESSION_ACTIVE) return error.AlreadyStarted;
+    if (ptySessionSnapshot(term.session).status == .active) return error.AlreadyStarted;
     term.pty.lifecycle = .starting;
     requireOk(c.howl_pty_session_start(term.session)) catch |err| {
         term.pty.lifecycle = .failed;
@@ -83,7 +117,21 @@ pub fn isAlive(term: *const terminal_term.Term) bool {
     const mut: *terminal_term.Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return ptySessionStatus(term.session) == c.HOWL_PTY_SESSION_ACTIVE;
+    return ptySessionSnapshot(term.session).status == .active;
+}
+
+pub fn snapshot(term: *const terminal_term.Term) Snapshot {
+    const mut: *terminal_term.Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return ptySessionSnapshot(term.session);
+}
+
+pub fn outcome(term: *const terminal_term.Term) SessionOutcome {
+    const mut: *terminal_term.Term = @constCast(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return classifyOutcome(term.pty.lifecycle, ptySessionSnapshot(term.session));
 }
 
 pub fn requireResizeOk(status: i32) !void {
@@ -173,9 +221,15 @@ fn ptyPublishInput(handle: c.HowlPtySessionHandle, bytes: []const u8) !void {
     ptyRequireStructOk(c.howl_pty_session_pump_outbound(handle, 0).status);
 }
 
-fn ptySessionStatus(handle: c.HowlPtySessionHandle) u8 {
+fn ptySessionSnapshot(handle: c.HowlPtySessionHandle) Snapshot {
     std.debug.assert(handle != null);
-    return c.howl_pty_session_snapshot(handle).session_status;
+    const raw = c.howl_pty_session_snapshot(handle);
+    ptyRequireStructOk(raw.status);
+    return .{
+        .status = @enumFromInt(raw.session_status),
+        .terminal_reason = @enumFromInt(raw.terminal_reason),
+        .last_wait_outcome = @enumFromInt(raw.last_wait_outcome),
+    };
 }
 
 fn ptySessionPendingBytes(handle: c.HowlPtySessionHandle) u64 {
@@ -187,8 +241,45 @@ fn ptyCallOk() i32 {
     return c.HOWL_PTY_CALL_OK;
 }
 
+fn classifyOutcome(lifecycle: terminal_term.LifecycleState, snap: Snapshot) SessionOutcome {
+    if (lifecycle == .failed) return .runtime_failed;
+    if (snap.status == .active) return .active;
+    return switch (snap.terminal_reason) {
+        .child_exit, .transport_eof, .explicit_stop => .exited,
+        .none, .transport_failure => .runtime_failed,
+    };
+}
+
 fn optBytesPtr(bytes: ?[]const u8) ?[*]const u8 {
     const value = bytes orelse return null;
     if (value.len == 0) return null;
     return value.ptr;
+}
+
+test "session outcome keeps child exit distinct from runtime failure" {
+    try std.testing.expectEqual(.active, classifyOutcome(.ready, .{
+        .status = .active,
+        .terminal_reason = .none,
+        .last_wait_outcome = .ready,
+    }));
+    try std.testing.expectEqual(.exited, classifyOutcome(.ready, .{
+        .status = .stopped,
+        .terminal_reason = .child_exit,
+        .last_wait_outcome = .stopped,
+    }));
+    try std.testing.expectEqual(.exited, classifyOutcome(.ready, .{
+        .status = .stopped,
+        .terminal_reason = .transport_eof,
+        .last_wait_outcome = .stopped,
+    }));
+    try std.testing.expectEqual(.runtime_failed, classifyOutcome(.ready, .{
+        .status = .stopped,
+        .terminal_reason = .transport_failure,
+        .last_wait_outcome = .stopped,
+    }));
+    try std.testing.expectEqual(.runtime_failed, classifyOutcome(.failed, .{
+        .status = .stopped,
+        .terminal_reason = .child_exit,
+        .last_wait_outcome = .stopped,
+    }));
 }

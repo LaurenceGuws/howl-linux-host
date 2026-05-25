@@ -267,6 +267,14 @@ pub const TerminalPanel = struct {
         return pty_session.isAlive(&self.term);
     }
 
+    pub fn ptySnapshot(self: *const TerminalPanel) pty_session.Snapshot {
+        return pty_session.snapshot(&self.term);
+    }
+
+    pub fn sessionOutcome(self: *const TerminalPanel) pty_session.SessionOutcome {
+        return pty_session.outcome(&self.term);
+    }
+
     pub fn titleSlice(self: *TerminalPanel) []const u8 {
         self.refreshTitle();
         return self.title_buf[0..self.title_len];
