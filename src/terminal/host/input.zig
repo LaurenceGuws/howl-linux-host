@@ -82,7 +82,6 @@ pub fn publishPaste(term: *Term, text: []const u8) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
     _ = retained.followLiveBottomLocked(term);
-    log.logf("host-loop ts_ns={d} stage=transport-publish-paste len={d}", .{ log.nowNs(), text.len });
     const start = try encodePasteStartBytes(term);
     if (start.len != 0) _ = try pty_session.publishInputBytesLocked(term, start);
     _ = try pty_session.publishInputBytesLocked(term, text);
@@ -94,14 +93,12 @@ pub fn publishKey(term: *Term, key_code: TermInput.Key, modifiers: TermInput.Mod
     term.mutex.lock();
     defer term.mutex.unlock();
     _ = retained.followLiveBottomLocked(term);
-    log.logf("host-loop ts_ns={d} stage=transport-publish-key key={d} mods={d}", .{ log.nowNs(), key_code, modifiers });
     _ = try pty_session.publishInputBytesLocked(term, try encodeKeyBytes(term, .{ .key = key_code, .mods = modifiers }));
 }
 
 pub fn publishMouse(term: *Term, mouse: TermInput.MouseEvent) !bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    log.logf("host-loop ts_ns={d} stage=transport-publish-mouse kind={d} button={d}", .{ log.nowNs(), mouse.kind, mouse.button });
     return try pty_session.publishInputBytesLocked(term, try encodeMouseBytes(term, mouse));
 }
 
@@ -110,7 +107,6 @@ pub fn publishFocus(term: *Term, focused: bool) !bool {
     defer term.mutex.unlock();
     if (!retained.setFocused(term, focused)) return false;
     _ = retained.followLiveBottomLocked(term);
-    log.logf("host-loop ts_ns={d} stage=transport-publish-focus focused={}", .{ log.nowNs(), focused });
     return try pty_session.publishInputBytesLocked(term, try encodeFocusBytes(term, focused));
 }
 

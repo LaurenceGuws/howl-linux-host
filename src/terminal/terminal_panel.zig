@@ -262,11 +262,11 @@ pub const TerminalPanel = struct {
             .observed = false,
             .prepared_snapshot_seq = 0,
             .prepared_dirty_epoch = 0,
-            .prepared_required_base_seq = 0,
-            .uploads_committed = 0,
-            .rgba_len = 0,
-            .rgba_has_non_zero_byte = false,
-            .vt_graphics = .{
+                .prepared_required_base_seq = 0,
+                .uploads_committed = 0,
+                .rgba_len = 0,
+                .rgba_has_non_zero_byte = false,
+                .vt_graphics = .{
                 .image_count = 0,
                 .placement_count = 0,
                 .virtual_placement_count = 0,
@@ -849,22 +849,12 @@ pub const TerminalPanel = struct {
     }
 
     fn noteSubmitPendingEntry(self: *TerminalPanel, work: render_retained.WorkState) void {
-        if (!self.first_submit_work_logged and work.submit_pending) {
-            self.first_submit_work_logged = true;
-            InputWindow.logStartup("term-submit-work-first");
-        }
+        _ = self;
+        _ = work;
     }
 
     fn noteRenderedStep(self: *TerminalPanel, work: render_retained.WorkState) void {
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=rendered present_pending={} term_texture_id={d}", .{ InputWindow.nowNs(), work.present_pending, self.term_texture.host_surface_id });
-        if (!self.first_submit_trace_logged) {
-            self.first_submit_trace_logged = true;
-            InputWindow.logStartupf("stage=term-submit-first result=rendered", .{});
-        }
-        if (!self.first_non_idle_submit_logged) {
-            self.first_non_idle_submit_logged = true;
-            InputWindow.logStartupf("stage=term-submit-non-idle-first result=rendered", .{});
-        }
+        _ = work;
         if (!self.first_rendered_surface_logged) {
             self.first_rendered_surface_logged = true;
             InputWindow.logStartupf("stage=term-rendered-surface-first term_texture_id={d}", .{self.term_texture.host_surface_id});
@@ -876,11 +866,11 @@ pub const TerminalPanel = struct {
     }
 
     fn noteIdleStep(self: *TerminalPanel, work: render_retained.WorkState) void {
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{ InputWindow.nowNs(), work.source_pending, work.prepare_pending, work.submit_pending, work.present_pending, self.term_texture.host_surface_id });
+        _ = self;
+        _ = work;
     }
 
     fn noteBlockedPresentStep(self: *TerminalPanel) void {
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=blocked_present term_texture_id={d}", .{ InputWindow.nowNs(), self.term_texture.host_surface_id });
         if (!self.first_blocked_present_logged) {
             self.first_blocked_present_logged = true;
             InputWindow.logStartup("term-present-blocked-first");
@@ -888,19 +878,13 @@ pub const TerminalPanel = struct {
     }
 
     fn notePrepareIdleStep(self: *TerminalPanel, bootstrap_surface: bool, work: render_retained.WorkState) void {
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=idle source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{ InputWindow.nowNs(), work.source_pending, work.prepare_pending, work.submit_pending, work.present_pending, self.term_texture.host_surface_id });
-        if (!self.first_idle_render_logged) {
-            self.first_idle_render_logged = true;
-            InputWindow.logStartupf("stage=term-render-idle-first bootstrap={} term_texture_id={d}", .{ bootstrap_surface, self.term_texture.host_surface_id });
-        }
+        _ = self;
+        _ = bootstrap_surface;
+        _ = work;
     }
 
     fn notePreparedStep(self: *TerminalPanel, work: render_retained.WorkState) void {
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=prepared submit_pending={} present_pending={}", .{ InputWindow.nowNs(), work.submit_pending, work.present_pending });
-        if (!self.first_prepare_result_logged) {
-            self.first_prepare_result_logged = true;
-            InputWindow.logStartupf("stage=term-prepare-first prepared=true", .{});
-        }
+        _ = self;
         std.debug.assert(work.submit_pending or work.present_pending);
     }
 

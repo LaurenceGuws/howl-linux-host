@@ -176,7 +176,6 @@ pub const Input = struct {
 
     pub fn drainBindingAction(self: *Input) ?Bindings.Action {
         const out = self.binding_buf.pop() orelse return null;
-        window.logf("host-loop ts_ns={d} stage=dequeue-binding action={s}", .{ window.nowNs(), @tagName(out) });
         return out;
     }
 
@@ -192,14 +191,12 @@ pub const Input = struct {
 
     pub fn drainWindowGeometryChanged(self: *Input) bool {
         const changed = self.window_geometry_changed;
-        if (changed) window.logf("host-loop ts_ns={d} stage=dequeue-window-geometry", .{window.nowNs()});
         self.window_geometry_changed = false;
         return changed;
     }
 
     pub fn drainWindowFocusChanged(self: *Input) ?bool {
         const focused = self.window_focus_changed;
-        if (focused) |value| window.logf("host-loop ts_ns={d} stage=dequeue-window-focus focused={}", .{ window.nowNs(), value });
         self.window_focus_changed = null;
         return focused;
     }
@@ -372,17 +369,11 @@ fn appendInputEvent(input: *Input, event: Input.Event) bool {
 fn appendBindingAction(input: *Input, action: Input.Bindings.Action) void {
     if (!input.binding_buf.push(action)) return;
     input.redraw_requested = true;
-    window.logf("host-loop ts_ns={d} stage=queue-binding action={s}", .{ window.nowNs(), @tagName(action) });
 }
 
 fn logQueuedInputEvent(stage: []const u8, event: Input.Event) void {
     if (event == .mouse) return;
-    const kind = switch (event) {
-        .bytes => "bytes",
-        .key => "key",
-        .mouse => "mouse",
-    };
-    window.logf("host-loop ts_ns={d} stage={s} kind={s}", .{ window.nowNs(), stage, kind });
+    _ = stage;
 }
 
 fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {

@@ -88,18 +88,6 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
     recordPublishedSnapshot(visible, typed_response);
     if (typed_response.published != 0) {
-        log.logf(
-            "host-loop ts_ns={d} stage=surface-publish snapshot_seq={d} queued={} damage={d} rows={d} cols={d} scroll={d}",
-            .{
-                log.nowNs(),
-                typed_response.snapshot_seq,
-                typed_response.queued != 0,
-                typed_response.damage_kind,
-                visible.rows,
-                visible.cols,
-                visible.scroll_row,
-            },
-        );
         if (!term.trace.source_publish_logged) {
             term.trace.source_publish_logged = true;
             log.logStartupf("stage=term-source-publish-first queued={d} damage={d} snapshot_seq={d} geom_epoch={d}", .{
@@ -177,7 +165,6 @@ fn rejectPublishSource(handle: c.HowlRenderSurfaceTextHandle, snapshot_seq: u64)
     std.debug.assert(result.published == 0);
     std.debug.assert(result.queued == 0);
     std.debug.assert(result.damage_kind == damage_none);
-    log.logf("host-loop ts_ns={d} stage=surface-publish-rejected snapshot_seq={d}", .{ log.nowNs(), result.snapshot_seq });
     return result;
 }
 

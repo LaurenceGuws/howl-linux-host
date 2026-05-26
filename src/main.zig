@@ -432,30 +432,17 @@ fn destroyTabs(tabs: *TabSlots) void {
     for (tabs.items()) |tab| tab.deinit();
 }
 
-fn render(app: *App, chrome_present: bool) void {
-    const tab = activeTab(app.tabs.items(), app.active_tab_idx.*);
-    const turn = tab.renderTurn();
-    if (!app.first_loop_render_logged) {
+    fn render(app: *App, chrome_present: bool) void {
+        const tab = activeTab(app.tabs.items(), app.active_tab_idx.*);
+        const turn = tab.renderTurn();
         app.first_loop_render_logged = true;
-        InputWindow.logStartupf("stage=loop-render-check-first content_before_render={} in_flight={} source_pending={} prepare_pending={} submit_pending={} present_pending={} term_texture_id={d}", .{
-            turn.work_before.wantsFrame(),
-            turn.work_before.inFlight(),
-            turn.work_before.source_pending,
-            turn.work_before.prepare_pending,
-            turn.work_before.submit_pending,
-            turn.work_before.present_pending,
-            tab.termTextureId(),
-        });
+        const term_texture_before = tab.termTextureId();
+        tab.noteRenderTurn(turn);
+        syncActiveWindowTitle(app.window, tab);
+        const snapshot = renderSnapshot(app, tab);
+        presentRenderFrame(app, tab, turn, chrome_present, snapshot);
+        std.debug.assert(tab.termTextureId() != 0 or term_texture_before == 0);
     }
-    app.input.window_state.logFramef("host-loop ts_ns={d} stage=render-begin terminal_frame=true", .{InputWindow.nowNs()});
-    const term_texture_before = tab.termTextureId();
-    tab.noteRenderTurn(turn);
-    syncActiveWindowTitle(app.window, tab);
-    const snapshot = renderSnapshot(app, tab);
-    presentRenderFrame(app, tab, turn, chrome_present, snapshot);
-    app.input.window_state.logFramef("host-loop ts_ns={d} stage=render-end", .{InputWindow.nowNs()});
-    std.debug.assert(tab.termTextureId() != 0 or term_texture_before == 0);
-}
 
 fn syncActiveWindowTitle(window: anytype, tab: anytype) void {
     window.setTitle(tab.titleSlice());

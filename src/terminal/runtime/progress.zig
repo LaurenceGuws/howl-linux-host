@@ -40,33 +40,7 @@ fn driveOnceWith(term: anytype, now_ns: u64, comptime Ops: type) Outcome {
     const alive = Ops.isAlive(term);
     const keep = backlog or transport.hit_limit or runtime.pending_now;
     const should_redraw = transport.reads != 0 or transport.bytes_read != 0 or runtime.state_changed;
-    const wake = should_redraw or !alive;
-    if (Ops.takeProgressDriveStartup(term)) {
-        log.logStartupf(
-            "stage=progress-drive-first reads={d} read_bytes={d} wake={d} keep={} alive={}",
-            .{
-                transport.reads,
-                transport.bytes_read,
-                @intFromBool(wake),
-                keep,
-                alive,
-            },
-        );
-    }
-    if (wake) {
-        log.logf(
-            "host-loop ts_ns={d} stage=progress-drive-live drained={d} pending={d} reads={d} read_bytes={d} wake={} keep={}",
-            .{
-                log.nowNs(),
-                transport.drained_input_bytes,
-                transport.pending_input_bytes,
-                transport.reads,
-                transport.bytes_read,
-                wake,
-                keep,
-            },
-        );
-    }
+    _ = Ops.takeProgressDriveStartup(term);
     Ops.logFrame(
         term,
         "host-loop ts_ns={d} stage=progress-drive drained={d} pending={d} reads={d} read_bytes={d} wake={d} keep={}",
@@ -76,7 +50,7 @@ fn driveOnceWith(term: anytype, now_ns: u64, comptime Ops: type) Outcome {
             transport.pending_input_bytes,
             transport.reads,
             transport.bytes_read,
-            @intFromBool(wake),
+            @intFromBool(should_redraw or !alive),
             keep,
         },
     );
@@ -107,8 +81,9 @@ const RealOps = struct {
     }
 
     fn logFrame(term: *terminal_term.Term, comptime fmt: []const u8, args: anytype) void {
-        if (!frameTraceEnabled(term)) return;
-        log.logf(fmt, args);
+        _ = term;
+        _ = fmt;
+        _ = args;
     }
 };
 
@@ -156,15 +131,6 @@ fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPump
     std.debug.assert(bytes_read <= limits.max_bytes);
     const hit_limit = reads == limits.max_reads or bytes_read == limits.max_bytes;
 
-    if (reads > 0) {
-        if (!term.trace.transport_read_logged) {
-            term.trace.transport_read_logged = true;
-            log.logStartupf("stage=term-transport-read-first reads={d} read_bytes={d}", .{
-                reads,
-                bytes_read,
-            });
-        }
-    }
     return .{
         .drained_input_bytes = outbound.drained_input_bytes,
         .reads = reads,
@@ -204,7 +170,6 @@ fn recordChunkLocked(term: *terminal_term.Term, chunk: []const u8) bool {
 fn drainTerminalReplyLocked(term: *terminal_term.Term) void {
     const pending = vt_retained.copyPendingOutputLocked(term) catch return;
     if (pending.len == 0) return;
-    log.logf("host-loop ts_ns={d} stage=transport-drain-terminal-reply len={d}", .{ log.nowNs(), pending.len });
     _ = pty_session.publishInputBytesLocked(term, pending) catch return;
     vt_retained.clearPendingOutputLocked(term);
 }

@@ -126,16 +126,17 @@ pub fn nowNs() u64 {
 }
 
 pub fn logf(comptime fmt: []const u8, args: anytype) void {
-    if (builtin.is_test) return;
-    std.debug.print(fmt ++ "\n", args);
+    _ = fmt;
+    _ = args;
 }
 
 pub fn logStartup(stage: []const u8) void {
-    logf("host-start ts_ns={d} stage={s}", .{ nowNs(), stage });
+    _ = stage;
 }
 
 pub fn logStartupf(comptime fmt: []const u8, args: anytype) void {
-    logf("host-start ts_ns={d} " ++ fmt, .{nowNs()} ++ args);
+    _ = fmt;
+    _ = args;
 }
 
 pub fn startQuitTimer(duration_ms: ?u64) c_win.SDL_TimerID {
