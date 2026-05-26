@@ -17,6 +17,7 @@ const max_failure_turns: u32 = 12000;
 const turn_sleep_ns: u64 = 1 * std.time.ns_per_ms;
 const bash_path = "/bin/bash";
 const replay_rel_path = "src/test/fixtures/kitty_graphics_app_icon_replay.sh";
+const placeholder_replay_rel_path = "src/test/fixtures/kitty_graphics_unicode_placeholder_replay.sh";
 const primary_font_rel_path = "assets/fonts/IosevkaTermNerdFont-Regular.ttf";
 const icon_rel_path = "assets/icon/howl_window_icon.png";
 const signature_grid_columns: usize = 4;
@@ -301,6 +302,135 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
     try std.testing.expect(panel.progress.thread == null);
 }
 
+test "kitty graphics unicode-placeholder replay proves graphics-only present retire ack and movement" {
+    try std.testing.expect(setenv("SDL_VIDEODRIVER", try displayDriver(), 1) == 0);
+    try std.testing.expect(setenv("TERM", "xterm-256color", 1) == 0);
+    try std.testing.expect(Window.initVideo());
+    defer Window.quit();
+
+    var input: Input = undefined;
+    input.init();
+    input.window_state.initEventTypes();
+
+    var conf = try makeTerminalConfigForReplay(std.testing.allocator, placeholder_replay_rel_path);
+    defer conf.deinit(std.testing.allocator);
+
+    const title = try std.testing.allocator.dupeZ(u8, "Howl Placeholder Replay Test");
+    defer std.testing.allocator.free(title);
+
+    var window = try Window.State.create(title, 640, 480);
+    defer window.deinit();
+    try std.testing.expect(window.present_state.gl_context != null);
+
+    const px = window.contentPixelSize(0);
+    const logical = window.contentLogicalSize(0);
+
+    var panel: TerminalPanel = undefined;
+    var panel_live = false;
+    try panel.init(
+        std.Io.Threaded.global_single_threaded.io(),
+        &input,
+        null,
+        &conf,
+        px.width,
+        px.height,
+        logical.width,
+        logical.height,
+    );
+    panel_live = true;
+    defer if (panel_live) panel.deinit();
+
+    var saw_virtual_only_vt_truth = false;
+    var proved_virtual_only_upload = false;
+    var proved_first_placeholder_present = false;
+    var proved_placeholder_move_present = false;
+    var last_upload_snapshot_seq: u64 = 0;
+    var first_placeholder_rect: ?Rect = null;
+    var successful_presents: u32 = 0;
+    var turn_count: u32 = 0;
+    while (turn_count < max_failure_turns) : (turn_count += 1) {
+        _ = panel.driveProgress(true, Window.c_win.SDL_GetTicksNS());
+        const turn = panel.renderTurn();
+        panel.noteRenderTurn(turn);
+
+        const after = panel.graphicsProofSnapshot();
+        const virtual = panel.firstGraphicsVirtualPlacementProofSnapshot();
+        if (after.vt_graphics.image_count != 0 and after.vt_graphics.placement_count == 0 and after.vt_graphics.virtual_placement_count != 0) {
+            saw_virtual_only_vt_truth = true;
+        }
+        if (after.last_upload.observed and after.last_upload.prepared_snapshot_seq != last_upload_snapshot_seq) {
+            last_upload_snapshot_seq = after.last_upload.prepared_snapshot_seq;
+            try std.testing.expect(after.last_upload.prepared_snapshot_seq != 0);
+            try std.testing.expect(after.last_upload.rgba_len != 0);
+            try std.testing.expect(after.last_upload.rgba_has_non_zero_byte);
+            if (after.last_upload.vt_graphics.image_count != 0 and after.last_upload.vt_graphics.placement_count == 0 and after.last_upload.vt_graphics.virtual_placement_count != 0) {
+                proved_virtual_only_upload = true;
+            }
+        }
+
+        if (shouldPresent(turn.step) and virtual.observed) {
+            const local_probe = virtual.rect();
+            try std.testing.expect(local_probe.width > 0);
+            try std.testing.expect(local_probe.height > 0);
+            const content_rect = window.contentRect(0);
+            const probe_rect = offsetRect(content_rect, local_probe);
+            if (clipRect(probe_rect, content_rect) == null) {
+                std.debug.panic(
+                    "virtual placement probe clipped empty: content_rect=({}, {}, {}, {}) local_probe=({}, {}, {}, {})",
+                    .{ content_rect.x, content_rect.y, content_rect.width, content_rect.height, local_probe.x, local_probe.y, local_probe.width, local_probe.height },
+                );
+            }
+            window.requestPresentProof();
+            window.present_state.proof_probe_rect = probe_rect;
+            window.present(.{
+                .term_texture_id = @intCast(panel.termTextureId()),
+                .term_texture_rect = content_rect,
+                .scrollbar = panel.overlaySnapshot(content_rect).scrollbar,
+                .tab_count = 1,
+                .active_tab = 0,
+                .tab_labels = &.{"placeholder"},
+            });
+            const present = window.presentProofSnapshot();
+            panel.finishPresent();
+
+            if (present.observed and present.term_texture_id == panel.termTextureId()) {
+                try std.testing.expect(present.framebuffer_probe_after.observed);
+                try std.testing.expect(present.framebuffer_probe_after.rgba_has_non_clear_pixel);
+                try std.testing.expect(present.framebuffer_probe_delta.observed);
+                try std.testing.expect(present.framebuffer_probe_delta.bytes_changed);
+                try std.testing.expect(present.framebuffer_probe_delta.changed_byte_count != 0);
+                successful_presents += 1;
+                if (!proved_first_placeholder_present) {
+                    first_placeholder_rect = local_probe;
+                    proved_first_placeholder_present = true;
+                } else if (first_placeholder_rect) |first_rect| {
+                    if (first_rect.x != local_probe.x or first_rect.y != local_probe.y) {
+                        proved_placeholder_move_present = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (panel.sessionOutcome() == .runtime_failed) return error.TestUnexpectedResult;
+        if (panel.sessionOutcome() == .exited) break;
+        try std.Io.sleep(std.Io.Threaded.global_single_threaded.io(), std.Io.Duration.fromNanoseconds(turn_sleep_ns), .awake);
+    }
+
+    try std.testing.expect(saw_virtual_only_vt_truth);
+    try std.testing.expect(proved_virtual_only_upload);
+    try std.testing.expect(proved_first_placeholder_present);
+    try std.testing.expect(proved_placeholder_move_present);
+    try std.testing.expect(successful_presents >= 2);
+    try std.testing.expect(panel.termTextureId() != 0);
+    try std.testing.expect(window.present_state.first_present_logged);
+
+    panel.deinit();
+    panel_live = false;
+    try std.testing.expect(!panel.live);
+    try std.testing.expect(panel.progress.thread == null);
+}
+
 fn expectPlacementRect(placement: TerminalPanel.GraphicsPlacementProofSnapshot) !Rect {
     const derived = placement.derivedRect();
     if (derived.status != .ok) return placementGeometryFailure(placement, derived.status);
@@ -343,7 +473,11 @@ fn placementGeometryFailure(placement: TerminalPanel.GraphicsPlacementProofSnaps
 }
 
 fn makeTerminalConfig(allocator: std.mem.Allocator) !TerminalConfig {
-    const replay_abs = try realPathAlloc(allocator, replay_rel_path);
+    return makeTerminalConfigForReplay(allocator, replay_rel_path);
+}
+
+fn makeTerminalConfigForReplay(allocator: std.mem.Allocator, replay_path: []const u8) !TerminalConfig {
+    const replay_abs = try realPathAlloc(allocator, replay_path);
     defer allocator.free(replay_abs);
     const primary_font_abs = try realPathAlloc(allocator, primary_font_rel_path);
     defer allocator.free(primary_font_abs);

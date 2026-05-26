@@ -167,6 +167,43 @@ pub const TerminalPanel = struct {
         }
     };
 
+    pub const GraphicsVirtualPlacementProofSnapshot = struct {
+        observed: bool,
+        publication_seq: u64,
+        image_id: u32,
+        placement_id: u32,
+        source_x: u32,
+        source_y: u32,
+        source_width: u32,
+        source_height: u32,
+        columns: u32,
+        rows: u32,
+        cell_row: u16,
+        cell_col: u16,
+        cell_width_px: u16,
+        cell_height_px: u16,
+
+        pub fn rect(self: GraphicsVirtualPlacementProofSnapshot) Layout.Rect {
+            if (!self.observed) return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            if (self.cell_width_px == 0 or self.cell_height_px == 0) return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            const columns = @max(self.columns, 1);
+            const rows = @max(self.rows, 1);
+            const x_px = std.math.mul(u32, self.cell_col, self.cell_width_px) catch return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            const y_px = std.math.mul(u32, self.cell_row, self.cell_height_px) catch return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            const width_px = std.math.mul(u32, columns, self.cell_width_px) catch return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            const height_px = std.math.mul(u32, rows, self.cell_height_px) catch return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            const max_c_int = std.math.maxInt(c_int);
+            if (x_px > max_c_int or y_px > max_c_int) return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            if (width_px > max_c_int or height_px > max_c_int) return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            return .{
+                .x = @intCast(x_px),
+                .y = @intCast(y_px),
+                .width = @intCast(width_px),
+                .height = @intCast(height_px),
+            };
+        }
+    };
+
     pub const TurnStep = enum {
         no_frame,
         idle_prepare,
@@ -262,11 +299,11 @@ pub const TerminalPanel = struct {
             .observed = false,
             .prepared_snapshot_seq = 0,
             .prepared_dirty_epoch = 0,
-                .prepared_required_base_seq = 0,
-                .uploads_committed = 0,
-                .rgba_len = 0,
-                .rgba_has_non_zero_byte = false,
-                .vt_graphics = .{
+            .prepared_required_base_seq = 0,
+            .uploads_committed = 0,
+            .rgba_len = 0,
+            .rgba_has_non_zero_byte = false,
+            .vt_graphics = .{
                 .image_count = 0,
                 .placement_count = 0,
                 .virtual_placement_count = 0,
@@ -625,6 +662,66 @@ pub const TerminalPanel = struct {
         };
     }
 
+    pub fn firstGraphicsVirtualPlacementProofSnapshot(self: *const TerminalPanel) GraphicsVirtualPlacementProofSnapshot {
+        const mut: *TerminalPanel = @constCast(self);
+        mut.term.mutex.lock();
+        defer mut.term.mutex.unlock();
+
+        const meta_result = terminal_c.howl_vt_terminal_query_graphics_meta(mut.term.vt);
+        vt_api.requireStructOk(meta_result.status);
+        if (meta_result.meta.virtual_placement_count == 0) return emptyGraphicsVirtualPlacementProofSnapshot(meta_result.meta.publication_seq);
+
+        const placement_result = terminal_c.howl_vt_terminal_query_graphics_virtual_placement(mut.term.vt, meta_result.meta.publication_seq, 0);
+        vt_api.requireStructOk(placement_result.status);
+
+        const visible = vt_surface.vtVisibleInfo(mut.term.vt, mut.term.vt_state.scrollback_offset);
+        const cell_count = @as(usize, visible.rows) * @as(usize, visible.cols);
+        const cells = mut.term.allocator.alloc(terminal_c.HowlVtSurfaceCell, cell_count) catch return emptyGraphicsVirtualPlacementProofSnapshot(meta_result.meta.publication_seq);
+        defer if (cells.len > 0) mut.term.allocator.free(cells);
+        const dirty_rows = mut.term.allocator.alloc(u8, visible.rows) catch return emptyGraphicsVirtualPlacementProofSnapshot(meta_result.meta.publication_seq);
+        defer if (dirty_rows.len > 0) mut.term.allocator.free(dirty_rows);
+        const dirty_cols_start = mut.term.allocator.alloc(u16, visible.rows) catch return emptyGraphicsVirtualPlacementProofSnapshot(meta_result.meta.publication_seq);
+        defer if (dirty_cols_start.len > 0) mut.term.allocator.free(dirty_cols_start);
+        const dirty_cols_end = mut.term.allocator.alloc(u16, visible.rows) catch return emptyGraphicsVirtualPlacementProofSnapshot(meta_result.meta.publication_seq);
+        defer if (dirty_cols_end.len > 0) mut.term.allocator.free(dirty_cols_end);
+
+        const surface_result = terminal_c.howl_vt_terminal_copy_surface(
+            mut.term.vt,
+            mut.term.vt_state.scrollback_offset,
+            cells.ptr,
+            cells.len,
+            dirty_rows.ptr,
+            dirty_rows.len,
+            dirty_cols_start.ptr,
+            dirty_cols_start.len,
+            dirty_cols_end.ptr,
+            dirty_cols_end.len,
+        );
+        vt_api.requireOk(surface_result.status) catch return emptyGraphicsVirtualPlacementProofSnapshot(meta_result.meta.publication_seq);
+
+        const placement = placement_result.placement;
+        const image_id = placement.image_id;
+        const placement_id = placement.placement_id;
+        const placeholder = findPlaceholderCell(cells, visible.cols, image_id, placement_id) orelse return emptyGraphicsVirtualPlacementProofSnapshot(meta_result.meta.publication_seq);
+        const cell = mut.term.render.frame_layout.cell_px;
+        return .{
+            .observed = true,
+            .publication_seq = meta_result.meta.publication_seq,
+            .image_id = image_id,
+            .placement_id = placement_id,
+            .source_x = placement.source_x,
+            .source_y = placement.source_y,
+            .source_width = placement.source_width,
+            .source_height = placement.source_height,
+            .columns = placement.columns,
+            .rows = placement.rows,
+            .cell_row = placeholder.row,
+            .cell_col = placeholder.col,
+            .cell_width_px = cell.width,
+            .cell_height_px = cell.height,
+        };
+    }
+
     fn initTerm(self: *TerminalPanel) !void {
         const frame_request = self.frameLayoutSnapshot();
         var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, self.conf.fonts);
@@ -819,6 +916,58 @@ pub const TerminalPanel = struct {
             .virtual_placement_count = result.meta.virtual_placement_count,
             .publication_seq = result.meta.publication_seq,
             .dirty_generation = result.meta.dirty_generation,
+        };
+    }
+
+    const GraphicsPlaceholderCell = struct {
+        row: u16,
+        col: u16,
+    };
+
+    fn emptyGraphicsVirtualPlacementProofSnapshot(publication_seq: u64) GraphicsVirtualPlacementProofSnapshot {
+        return .{
+            .observed = false,
+            .publication_seq = publication_seq,
+            .image_id = 0,
+            .placement_id = 0,
+            .source_x = 0,
+            .source_y = 0,
+            .source_width = 0,
+            .source_height = 0,
+            .columns = 0,
+            .rows = 0,
+            .cell_row = 0,
+            .cell_col = 0,
+            .cell_width_px = 0,
+            .cell_height_px = 0,
+        };
+    }
+
+    fn findPlaceholderCell(cells: []const terminal_c.HowlVtSurfaceCell, cols: u16, image_id: u32, placement_id: u32) ?GraphicsPlaceholderCell {
+        for (cells, 0..) |cell, idx| {
+            if (!isMatchingPlaceholderCell(cell, image_id, placement_id)) continue;
+            return .{
+                .row = @intCast(idx / @as(usize, cols)),
+                .col = @intCast(idx % @as(usize, cols)),
+            };
+        }
+        return null;
+    }
+
+    fn isMatchingPlaceholderCell(cell: terminal_c.HowlVtSurfaceCell, image_id: u32, placement_id: u32) bool {
+        if (cell.flags.continuation != 0) return false;
+        if (cell.codepoint != 0x10EEEE) return false;
+        if (placeholderColorId(cell.fg_color) != image_id) return false;
+        if (placeholderColorId(cell.underline_color) != placement_id) return false;
+        return true;
+    }
+
+    fn placeholderColorId(color: terminal_c.HowlVtColor) u32 {
+        return switch (color.kind) {
+            0 => 0,
+            1 => color.value & 0xFF,
+            2 => color.value & 0xFFFFFF,
+            else => 0,
         };
     }
 

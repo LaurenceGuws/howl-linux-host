@@ -168,10 +168,28 @@ fn recordChunkLocked(term: *terminal_term.Term, chunk: []const u8) bool {
 }
 
 fn drainTerminalReplyLocked(term: *terminal_term.Term) void {
-    const pending = vt_retained.copyPendingOutputLocked(term) catch return;
+    drainTerminalReplyLockedWith(term, RealDrainReplyOps);
+}
+
+const RealDrainReplyOps = struct {
+    fn copyPendingOutputLocked(term: *terminal_term.Term) ![]const u8 {
+        return vt_retained.copyPendingOutputLocked(term);
+    }
+
+    fn publishInputBytesLocked(term: *terminal_term.Term, pending: []const u8) !bool {
+        return pty_session.publishInputBytesLocked(term, pending);
+    }
+
+    fn clearPendingOutputLocked(term: *terminal_term.Term) void {
+        vt_retained.clearPendingOutputLocked(term);
+    }
+};
+
+fn drainTerminalReplyLockedWith(term: anytype, comptime Ops: type) void {
+    const pending = Ops.copyPendingOutputLocked(term) catch return;
     if (pending.len == 0) return;
-    _ = pty_session.publishInputBytesLocked(term, pending) catch return;
-    vt_retained.clearPendingOutputLocked(term);
+    _ = Ops.publishInputBytesLocked(term, pending) catch return;
+    Ops.clearPendingOutputLocked(term);
 }
 
 test "progress drive stays quiet when nothing changes" {
@@ -234,6 +252,61 @@ test "progress drive requests redraw and next turn for runtime work" {
     try std.testing.expect(outcome.keep);
     try std.testing.expect(outcome.should_redraw);
     try std.testing.expect(outcome.alive);
+}
+
+test "pending vt output clears only after successful publish" {
+    const ReplyTerm = struct {};
+    const ReplyOps = struct {
+        var publish_calls: u8 = 0;
+        var clear_calls: u8 = 0;
+        var last_pending: []const u8 = "";
+
+        fn copyPendingOutputLocked(_: *ReplyTerm) ![]const u8 {
+            return "\x1b_Gi=7;OK\x1b\\";
+        }
+
+        fn publishInputBytesLocked(_: *ReplyTerm, pending: []const u8) !bool {
+            publish_calls += 1;
+            last_pending = pending;
+            return true;
+        }
+
+        fn clearPendingOutputLocked(_: *ReplyTerm) void {
+            clear_calls += 1;
+        }
+    };
+
+    var term = ReplyTerm{};
+    drainTerminalReplyLockedWith(&term, ReplyOps);
+    try std.testing.expectEqual(@as(u8, 1), ReplyOps.publish_calls);
+    try std.testing.expectEqual(@as(u8, 1), ReplyOps.clear_calls);
+    try std.testing.expectEqualStrings("\x1b_Gi=7;OK\x1b\\", ReplyOps.last_pending);
+}
+
+test "pending vt output stays pending after publish failure" {
+    const ReplyTerm = struct {};
+    const ReplyOps = struct {
+        var publish_calls: u8 = 0;
+        var clear_calls: u8 = 0;
+
+        fn copyPendingOutputLocked(_: *ReplyTerm) ![]const u8 {
+            return "\x1b_Gi=7;OK\x1b\\";
+        }
+
+        fn publishInputBytesLocked(_: *ReplyTerm, _: []const u8) !bool {
+            publish_calls += 1;
+            return error.PtyCallFailed;
+        }
+
+        fn clearPendingOutputLocked(_: *ReplyTerm) void {
+            clear_calls += 1;
+        }
+    };
+
+    var term = ReplyTerm{};
+    drainTerminalReplyLockedWith(&term, ReplyOps);
+    try std.testing.expectEqual(@as(u8, 1), ReplyOps.publish_calls);
+    try std.testing.expectEqual(@as(u8, 0), ReplyOps.clear_calls);
 }
 
 const FakeTerm = struct {};
