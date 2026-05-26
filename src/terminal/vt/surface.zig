@@ -85,7 +85,30 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     term.vt_state.cursor_blink = visible.cursor.blink != 0;
 
     const typed_response = Ops.commitPublishSlot(term.render.surface_text, visible);
-    std.debug.assert(typed_response.status == c.HOWL_RENDER_CALL_OK);
+    if (typed_response.status != c.HOWL_RENDER_CALL_OK) {
+        std.debug.panic(
+            "render publish rejected: status={d} published={d} queued={d} damage={d} snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} rows={d} cols={d} history={d} scroll_row={d} graphics_pub={d} images={d} placements={d} virtuals={d} payload_len={d}",
+            .{
+                typed_response.status,
+                typed_response.published,
+                typed_response.queued,
+                typed_response.damage_kind,
+                typed_response.snapshot_seq,
+                typed_response.geometry_epoch,
+                visible.snapshot_seq,
+                visible.is_alternate_screen,
+                visible.rows,
+                visible.cols,
+                visible.history_count,
+                visible.scroll_row,
+                visible.graphics.publication_seq,
+                visible.graphics.image_count,
+                visible.graphics.placement_count,
+                visible.graphics.virtual_placement_count,
+                visible.graphics_payload_bytes.len,
+            },
+        );
+    }
     recordPublishedSnapshot(visible, typed_response);
     if (typed_response.published != 0) {
         if (!term.trace.source_publish_logged) {
