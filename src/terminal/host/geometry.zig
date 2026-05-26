@@ -88,6 +88,7 @@ pub fn syncFrameLayout(panel: anytype, request: render_api.FrameLayoutRequest) !
         try pty_session.resize(&panel.term, sync.layout.cols, sync.layout.rows);
         try vt_retained.resize(&panel.term, sync.layout.rows, sync.layout.cols);
     }
+    try vt_retained.setCellPixelSize(&panel.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
     render_api.commitFrameLayout(&panel.term, sync.layout);
 }
 

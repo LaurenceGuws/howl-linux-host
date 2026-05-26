@@ -293,6 +293,12 @@ pub fn resize(term: anytype, rows: u16, cols: u16) !void {
     clampScrollbackOffset(term, surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count);
 }
 
+pub fn setCellPixelSize(term: anytype, width: u16, height: u16) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    try requireOk(c.howl_vt_terminal_set_cell_pixel_size(term.vt, width, height));
+}
+
 pub fn setFocused(term: anytype, focused: bool) bool {
     if (term.vt_state.focused == focused) return false;
     term.vt_state.focused = focused;

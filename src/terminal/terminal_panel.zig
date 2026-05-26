@@ -54,6 +54,119 @@ pub const TerminalPanel = struct {
         scrollbar: window.ScrollbarLayout,
     };
 
+    pub const GraphicsTruthSnapshot = struct {
+        image_count: u32,
+        placement_count: u32,
+        virtual_placement_count: u32,
+        publication_seq: u64,
+        dirty_generation: u64,
+
+        pub fn nonEmpty(self: GraphicsTruthSnapshot) bool {
+            return self.image_count != 0 or
+                self.placement_count != 0 or
+                self.virtual_placement_count != 0;
+        }
+    };
+
+    pub const GraphicsUploadObservation = struct {
+        observed: bool,
+        prepared_snapshot_seq: u64,
+        prepared_dirty_epoch: u64,
+        prepared_required_base_seq: u64,
+        uploads_committed: u64,
+        rgba_len: usize,
+        rgba_has_non_zero_byte: bool,
+        vt_graphics: GraphicsTruthSnapshot,
+    };
+
+    pub const GraphicsProofSnapshot = struct {
+        vt_graphics: GraphicsTruthSnapshot,
+        last_upload: GraphicsUploadObservation,
+        term_texture_id: u64,
+    };
+
+    pub const GraphicsPlacementProofSnapshot = struct {
+        pub const RectStatus = enum {
+            missing,
+            ok,
+            unsupported_anchor,
+            missing_cell_width,
+            missing_cell_height,
+            non_positive_width,
+            non_positive_height,
+            x_out_of_range,
+            y_out_of_range,
+            width_out_of_range,
+            height_out_of_range,
+        };
+
+        pub const DerivedRect = struct {
+            status: RectStatus,
+            rect: Layout.Rect,
+        };
+
+        observed: bool,
+        publication_seq: u64,
+        image_id: u32,
+        placement_id: u32,
+        anchor_kind: u8,
+        anchor_value: u32,
+        anchor_col: u16,
+        source_width: u32,
+        source_height: u32,
+        cell_x_offset: u32,
+        cell_y_offset: u32,
+        left_px: u32,
+        top_px: u32,
+        right_px: u32,
+        bottom_px: u32,
+        columns: u16,
+        rows: u16,
+        dest_grid_columns: u32,
+        dest_grid_rows: u32,
+        effective_columns: u32,
+        effective_rows: u32,
+        cell_width_px: u16,
+        cell_height_px: u16,
+
+        pub fn rect(self: GraphicsPlacementProofSnapshot) Layout.Rect {
+            const derived = self.derivedRect();
+            if (derived.status != .ok) return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            return derived.rect;
+        }
+
+        pub fn derivedRect(self: GraphicsPlacementProofSnapshot) DerivedRect {
+            const empty: Layout.Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            if (!self.observed) return .{ .status = .missing, .rect = empty };
+            if (self.anchor_kind != 1) return .{ .status = .unsupported_anchor, .rect = empty };
+            if (self.cell_width_px == 0) return .{ .status = .missing_cell_width, .rect = empty };
+            if (self.cell_height_px == 0) return .{ .status = .missing_cell_height, .rect = empty };
+            if (self.right_px <= self.left_px) return .{ .status = .non_positive_width, .rect = empty };
+            if (self.bottom_px <= self.top_px) return .{ .status = .non_positive_height, .rect = empty };
+
+            const max_c_int = std.math.maxInt(c_int);
+            const anchor_x_px = std.math.mul(u32, self.anchor_col, self.cell_width_px) catch return .{ .status = .x_out_of_range, .rect = empty };
+            const anchor_y_px = std.math.mul(u32, self.anchor_value, self.cell_height_px) catch return .{ .status = .y_out_of_range, .rect = empty };
+            const x_px = std.math.add(u32, anchor_x_px, self.left_px) catch return .{ .status = .x_out_of_range, .rect = empty };
+            const y_px = std.math.add(u32, anchor_y_px, self.top_px) catch return .{ .status = .y_out_of_range, .rect = empty };
+            const width_px = self.right_px - self.left_px;
+            const height_px = self.bottom_px - self.top_px;
+            if (x_px > max_c_int) return .{ .status = .x_out_of_range, .rect = empty };
+            if (y_px > max_c_int) return .{ .status = .y_out_of_range, .rect = empty };
+            if (width_px > max_c_int) return .{ .status = .width_out_of_range, .rect = empty };
+            if (height_px > max_c_int) return .{ .status = .height_out_of_range, .rect = empty };
+            return .{
+                .status = .ok,
+                .rect = .{
+                    .x = @intCast(x_px),
+                    .y = @intCast(y_px),
+                    .width = @intCast(width_px),
+                    .height = @intCast(height_px),
+                },
+            };
+        }
+    };
+
     pub const TurnStep = enum {
         no_frame,
         idle_prepare,
@@ -96,6 +209,7 @@ pub const TerminalPanel = struct {
     first_submit_work_logged: bool,
     first_blocked_present_logged: bool,
     first_idle_render_logged: bool,
+    last_graphics_upload: GraphicsUploadObservation,
     cursor_blink_visible: bool,
     cursor_blink_deadline_ns: u64,
 
@@ -144,6 +258,22 @@ pub const TerminalPanel = struct {
         self.first_submit_work_logged = false;
         self.first_blocked_present_logged = false;
         self.first_idle_render_logged = false;
+        self.last_graphics_upload = .{
+            .observed = false,
+            .prepared_snapshot_seq = 0,
+            .prepared_dirty_epoch = 0,
+            .prepared_required_base_seq = 0,
+            .uploads_committed = 0,
+            .rgba_len = 0,
+            .rgba_has_non_zero_byte = false,
+            .vt_graphics = .{
+                .image_count = 0,
+                .placement_count = 0,
+                .virtual_placement_count = 0,
+                .publication_seq = 0,
+                .dirty_generation = 0,
+            },
+        };
         self.cursor_blink_visible = true;
         self.cursor_blink_deadline_ns = 0;
     }
@@ -419,6 +549,82 @@ pub const TerminalPanel = struct {
         return self.term_texture.host_surface_id;
     }
 
+    pub fn graphicsProofSnapshot(self: *const TerminalPanel) GraphicsProofSnapshot {
+        const mut: *TerminalPanel = @constCast(self);
+        mut.term.mutex.lock();
+        defer mut.term.mutex.unlock();
+        return .{
+            .vt_graphics = graphicsTruthSnapshotLocked(&mut.term),
+            .last_upload = self.last_graphics_upload,
+            .term_texture_id = self.term_texture.host_surface_id,
+        };
+    }
+
+    pub fn firstGraphicsPlacementProofSnapshot(self: *const TerminalPanel) GraphicsPlacementProofSnapshot {
+        const mut: *TerminalPanel = @constCast(self);
+        mut.term.mutex.lock();
+        defer mut.term.mutex.unlock();
+
+        const meta_result = terminal_c.howl_vt_terminal_query_graphics_meta(mut.term.vt);
+        vt_api.requireStructOk(meta_result.status);
+        if (meta_result.meta.placement_count == 0) {
+            return .{
+                .observed = false,
+                .publication_seq = meta_result.meta.publication_seq,
+                .image_id = 0,
+                .placement_id = 0,
+                .anchor_kind = 0,
+                .anchor_value = 0,
+                .anchor_col = 0,
+                .source_width = 0,
+                .source_height = 0,
+                .cell_x_offset = 0,
+                .cell_y_offset = 0,
+                .left_px = 0,
+                .top_px = 0,
+                .right_px = 0,
+                .bottom_px = 0,
+                .columns = 0,
+                .rows = 0,
+                .dest_grid_columns = 0,
+                .dest_grid_rows = 0,
+                .effective_columns = 0,
+                .effective_rows = 0,
+                .cell_width_px = 0,
+                .cell_height_px = 0,
+            };
+        }
+
+        const placement_result = terminal_c.howl_vt_terminal_query_graphics_placement(mut.term.vt, meta_result.meta.publication_seq, 0);
+        vt_api.requireStructOk(placement_result.status);
+        const cell = mut.term.render.frame_layout.cell_px;
+        return .{
+            .observed = true,
+            .publication_seq = meta_result.meta.publication_seq,
+            .image_id = placement_result.placement.image_id,
+            .placement_id = placement_result.placement.placement_id,
+            .anchor_kind = placement_result.placement.anchor.kind,
+            .anchor_value = placement_result.placement.anchor.value,
+            .anchor_col = placement_result.placement.anchor_col,
+            .source_width = placement_result.placement.source_width,
+            .source_height = placement_result.placement.source_height,
+            .cell_x_offset = placement_result.placement.cell_x_offset,
+            .cell_y_offset = placement_result.placement.cell_y_offset,
+            .left_px = placement_result.placement.dest_left_cell_px,
+            .top_px = placement_result.placement.dest_top_cell_px,
+            .right_px = placement_result.placement.dest_right_cell_px,
+            .bottom_px = placement_result.placement.dest_bottom_cell_px,
+            .columns = @intCast(placement_result.placement.columns),
+            .rows = @intCast(placement_result.placement.rows),
+            .dest_grid_columns = placement_result.placement.dest_grid_columns,
+            .dest_grid_rows = placement_result.placement.dest_grid_rows,
+            .effective_columns = placement_result.placement.effective_columns,
+            .effective_rows = placement_result.placement.effective_rows,
+            .cell_width_px = cell.width,
+            .cell_height_px = cell.height,
+        };
+    }
+
     fn initTerm(self: *TerminalPanel) !void {
         const frame_request = self.frameLayoutSnapshot();
         var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, self.conf.fonts);
@@ -443,6 +649,7 @@ pub const TerminalPanel = struct {
         self.term.trace = .{};
         self.term.mutex = .{};
         self.live = true;
+        try vt_retained.setCellPixelSize(&self.term, term_init.frame_layout.cell_px.width, term_init.frame_layout.cell_px.height);
         self.term.render.syncFrameLayout(term_init.frame_layout);
     }
 
@@ -560,6 +767,7 @@ pub const TerminalPanel = struct {
 
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.takePreparedUpload(&upload)) return .failed;
+        self.recordGraphicsUploadObservation(upload);
 
         const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
             &.{}
@@ -581,6 +789,44 @@ pub const TerminalPanel = struct {
         const result = self.submit(&execution, &feedback);
         if (result == .rendered) self.term_texture = feedback.surface;
         return result;
+    }
+
+    fn recordGraphicsUploadObservation(self: *TerminalPanel, upload: render_retained.PreparedUpload) void {
+        const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
+            &.{}
+        else
+            upload.buffer.rgba_pixels.ptr[0..upload.buffer.rgba_pixels.len];
+        self.term.mutex.lock();
+        defer self.term.mutex.unlock();
+        self.last_graphics_upload = .{
+            .observed = true,
+            .prepared_snapshot_seq = upload.info.snapshot_seq,
+            .prepared_dirty_epoch = upload.info.dirty_epoch,
+            .prepared_required_base_seq = upload.info.required_base_seq,
+            .uploads_committed = upload.buffer.uploads_committed,
+            .rgba_len = pixels.len,
+            .rgba_has_non_zero_byte = hasNonZeroByte(pixels),
+            .vt_graphics = graphicsTruthSnapshotLocked(&self.term),
+        };
+    }
+
+    fn graphicsTruthSnapshotLocked(term: *const HowlTerm) GraphicsTruthSnapshot {
+        const result = terminal_c.howl_vt_terminal_query_graphics_meta(term.vt);
+        vt_api.requireStructOk(result.status);
+        return .{
+            .image_count = result.meta.image_count,
+            .placement_count = result.meta.placement_count,
+            .virtual_placement_count = result.meta.virtual_placement_count,
+            .publication_seq = result.meta.publication_seq,
+            .dirty_generation = result.meta.dirty_generation,
+        };
+    }
+
+    fn hasNonZeroByte(bytes: []const u8) bool {
+        for (bytes) |byte| {
+            if (byte != 0) return true;
+        }
+        return false;
     }
 
     fn submit(self: *TerminalPanel, execution: *const terminal_c.HowlRenderSurfaceExecutionInput, feedback: *terminal_c.HowlRenderSurfaceFeedback) render_retained.SubmitResult {

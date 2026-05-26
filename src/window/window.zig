@@ -25,6 +25,7 @@ pub const Rect = Layout.Rect;
 pub const ScrollbarLayout = Layout.ScrollbarLayout;
 pub const Frame = Layout.Frame;
 pub const PresentState = Present.State(c);
+pub const PresentProofSnapshot = Present.PresentProofSnapshot;
 
 pub const State = struct {
     handle: Ptr,
@@ -111,6 +112,14 @@ pub const State = struct {
 
     pub fn present(self: *State, frame: Frame) void {
         Present.present(c, &self.present_state, frame);
+    }
+
+    pub fn requestPresentProof(self: *State) void {
+        Present.requestPresentProof(c, &self.present_state);
+    }
+
+    pub fn presentProofSnapshot(self: *const State) PresentProofSnapshot {
+        return Present.presentProofSnapshot(c, &self.present_state);
     }
 
     pub fn setTitle(self: *State, title: []const u8) void {
