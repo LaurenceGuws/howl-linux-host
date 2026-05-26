@@ -823,20 +823,33 @@ pub const TerminalPanel = struct {
         step: TurnStep,
     };
 
+    const RenderAction = enum {
+        blocked_present,
+        submit_pending,
+        prepare_or_idle,
+        idle_submit,
+    };
+
     fn driveRender(self: *TerminalPanel, work: render_retained.WorkState) DriveResult {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         std.debug.assert(work.bootstrap_surface == bootstrap_surface);
-        if (work.submit_pending) return .{ .prepared = false, .step = submitStep(self.submitPrepared()) };
-        if (work.present_pending) return .{ .prepared = false, .step = .blocked_present };
-        if (!(work.source_pending or work.prepare_pending or bootstrap_surface)) {
-            return .{ .prepared = false, .step = .idle_submit };
-        }
-
-        return switch (self.prepare()) {
-            .idle => .{ .prepared = false, .step = .idle_prepare },
-            .failed => .{ .prepared = false, .step = .failed },
-            .prepared => .{ .prepared = true, .step = submitStep(self.submitPrepared()) },
+        return switch (renderAction(work, bootstrap_surface)) {
+            .blocked_present => .{ .prepared = false, .step = .blocked_present },
+            .submit_pending => .{ .prepared = false, .step = submitStep(self.submitPrepared()) },
+            .idle_submit => .{ .prepared = false, .step = .idle_submit },
+            .prepare_or_idle => switch (self.prepare()) {
+                .idle => .{ .prepared = false, .step = .idle_prepare },
+                .failed => .{ .prepared = false, .step = .failed },
+                .prepared => .{ .prepared = true, .step = submitStep(self.submitPrepared()) },
+            },
         };
+    }
+
+    fn renderAction(work: render_retained.WorkState, bootstrap_surface: bool) RenderAction {
+        if (work.present_pending) return .blocked_present;
+        if (work.submit_pending) return .submit_pending;
+        if (!(work.source_pending or work.prepare_pending or bootstrap_surface)) return .idle_submit;
+        return .prepare_or_idle;
     }
 
     fn maybePublishSource(self: *TerminalPanel, bootstrap_surface: bool, work: render_retained.WorkState) void {
@@ -1407,4 +1420,28 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(!panel.resetCursorBlinkActivity(1234));
     try std.testing.expectEqual(@as(u64, 1234) + cursor_blink_interval_ns, panel.cursor_blink_deadline_ns);
     try std.testing.expect(panel.cursor_blink_visible);
+}
+
+test "present pending blocks submit path until retire ack" {
+    const work = render_retained.WorkState{
+        .source_pending = false,
+        .prepare_pending = false,
+        .submit_pending = true,
+        .present_pending = true,
+        .bootstrap_surface = false,
+    };
+
+    try std.testing.expectEqual(TerminalPanel.RenderAction.blocked_present, TerminalPanel.renderAction(work, false));
+}
+
+test "submit path runs once no presented frame is in flight" {
+    const work = render_retained.WorkState{
+        .source_pending = false,
+        .prepare_pending = false,
+        .submit_pending = true,
+        .present_pending = false,
+        .bootstrap_surface = false,
+    };
+
+    try std.testing.expectEqual(TerminalPanel.RenderAction.submit_pending, TerminalPanel.renderAction(work, false));
 }
