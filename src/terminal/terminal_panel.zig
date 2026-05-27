@@ -223,6 +223,7 @@ pub const TerminalPanel = struct {
         work_after: render_retained.WorkState,
         prepared: bool,
         step: TurnStep,
+        present_snapshot_seq: u64,
     };
 
     term: HowlTerm,
@@ -519,6 +520,7 @@ pub const TerminalPanel = struct {
                 .work_after = work_before,
                 .prepared = false,
                 .step = .no_frame,
+                .present_snapshot_seq = 0,
             };
         }
 
@@ -528,19 +530,26 @@ pub const TerminalPanel = struct {
             .work_after = self.workState(),
             .prepared = drive_result.prepared,
             .step = drive_result.step,
+            .present_snapshot_seq = drive_result.present_snapshot_seq,
         };
     }
 
-    pub fn finishPresent(self: *TerminalPanel) void {
+    pub fn notePresentSubmitted(self: *TerminalPanel, snapshot_seq: u64, token: u64) void {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
-        finishPresentLockedWith(&self.term, VtPresentAckOps);
+        self.term.render.notePresentSubmitted(snapshot_seq, token);
+    }
+
+    pub fn completePresent(self: *TerminalPanel, token: u64) void {
+        self.term.mutex.lock();
+        defer self.term.mutex.unlock();
+        completePresentLockedWith(&self.term, token, VtPresentAckOps);
     }
 
     pub fn noteRenderTurn(self: *TerminalPanel, turn: TurnResult) void {
         if (turn.step == .no_frame) return;
         self.noteSubmitPendingEntry(turn.work_before);
-        if (turn.prepared) self.notePreparedStep(turn.work_after);
+        if (turn.prepared and turn.step != .rendered) self.notePreparedStep(turn.work_after);
         switch (turn.step) {
             .no_frame => unreachable,
             .rendered => self.noteRenderedStep(turn.work_after),
@@ -790,6 +799,7 @@ pub const TerminalPanel = struct {
     const DriveResult = struct {
         prepared: bool,
         step: TurnStep,
+        present_snapshot_seq: u64,
     };
 
     const RenderAction = enum {
@@ -803,13 +813,13 @@ pub const TerminalPanel = struct {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         std.debug.assert(work.bootstrap_surface == bootstrap_surface);
         return switch (renderAction(work, bootstrap_surface)) {
-            .blocked_present => .{ .prepared = false, .step = .blocked_present },
-            .submit_pending => .{ .prepared = false, .step = submitStep(self.submitPrepared()) },
-            .idle_submit => .{ .prepared = false, .step = .idle_submit },
+            .blocked_present => .{ .prepared = false, .step = .blocked_present, .present_snapshot_seq = 0 },
+            .submit_pending => submitDriveResult(false, self.submitPrepared()),
+            .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0 },
             .prepare_or_idle => switch (self.prepare()) {
-                .idle => .{ .prepared = false, .step = .idle_prepare },
-                .failed => .{ .prepared = false, .step = .failed },
-                .prepared => .{ .prepared = true, .step = submitStep(self.submitPrepared()) },
+                .idle => .{ .prepared = false, .step = .idle_prepare, .present_snapshot_seq = 0 },
+                .failed => .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0 },
+                .prepared => submitDriveResult(true, self.submitPrepared()),
             },
         };
     }
@@ -841,19 +851,19 @@ pub const TerminalPanel = struct {
         return self.term.render.preparedUpload(upload_out);
     }
 
-    fn submitPrepared(self: *TerminalPanel) render_retained.SubmitResult {
+    fn submitPrepared(self: *TerminalPanel) SubmitPreparedResult {
         const start_ns = window.c_win.SDL_GetTicksNS();
 
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
-        if (!self.takePreparedUpload(&upload)) return .failed;
+        if (!self.takePreparedUpload(&upload)) return .{ .result = .failed, .snapshot_seq = 0 };
         self.recordGraphicsUploadObservation(upload);
 
         const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
             &.{}
         else
             upload.buffer.rgba_pixels.ptr[0..upload.buffer.rgba_pixels.len];
-        if (!term_texture.ensureSurface(&self.term_texture, upload.info.render_px.width, upload.info.render_px.height)) return .failed;
-        if (!term_texture.uploadPreparedBuffer(self.term_texture, pixels)) return .failed;
+        if (!term_texture.ensureSurface(&self.term_texture, upload.info.render_px.width, upload.info.render_px.height)) return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+        if (!term_texture.uploadPreparedBuffer(self.term_texture, pixels)) return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
 
         var feedback = std.mem.zeroes(terminal_c.HowlRenderSurfaceFeedback);
         const execution = terminal_c.HowlRenderSurfaceExecutionInput{
@@ -865,11 +875,11 @@ pub const TerminalPanel = struct {
             .uploads_committed = upload.buffer.uploads_committed,
             .render_us = renderUs(start_ns),
         };
-        const result = self.submit(&execution, &feedback, upload.info.snapshot_seq);
+        const result = self.submit(&execution, &feedback);
         if (result == .rendered) {
             self.term_texture = feedback.surface;
         }
-        return result;
+        return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq };
     }
 
     fn recordGraphicsUploadObservation(self: *TerminalPanel, upload: render_retained.PreparedUpload) void {
@@ -962,12 +972,15 @@ pub const TerminalPanel = struct {
         return false;
     }
 
-    fn submit(self: *TerminalPanel, execution: *const terminal_c.HowlRenderSurfaceExecutionInput, feedback: *terminal_c.HowlRenderSurfaceFeedback, snapshot_seq: u64) render_retained.SubmitResult {
+    const SubmitPreparedResult = struct {
+        result: render_retained.SubmitResult,
+        snapshot_seq: u64,
+    };
+
+    fn submit(self: *TerminalPanel, execution: *const terminal_c.HowlRenderSurfaceExecutionInput, feedback: *terminal_c.HowlRenderSurfaceFeedback) render_retained.SubmitResult {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
-        const result = self.term.render.submit(execution, feedback);
-        if (result == .rendered) self.term.render.beginPresent(snapshot_seq);
-        return result;
+        return self.term.render.submit(execution, feedback);
     }
 
     fn renderUs(start_ns: u64) u64 {
@@ -980,6 +993,15 @@ pub const TerminalPanel = struct {
             .rendered => .rendered,
             .failed => .failed,
             .idle, .stale, .needs_prepare => .idle_submit,
+        };
+    }
+
+    fn submitDriveResult(prepared: bool, submit_result: SubmitPreparedResult) DriveResult {
+        const step = submitStep(submit_result.result);
+        return .{
+            .prepared = prepared,
+            .step = step,
+            .present_snapshot_seq = if (step == .rendered) submit_result.snapshot_seq else 0,
         };
     }
 
@@ -1361,8 +1383,8 @@ const VtPresentAckOps = struct {
     }
 };
 
-fn finishPresentLockedWith(term: anytype, comptime Ops: type) void {
-    const snapshot_seq = term.render.finishPresent() orelse return;
+fn completePresentLockedWith(term: anytype, token: u64, comptime Ops: type) void {
+    const snapshot_seq = term.render.completePresent(token) orelse return;
     std.debug.assert(snapshot_seq != 0);
     Ops.ack(term, snapshot_seq);
 }
@@ -1658,14 +1680,15 @@ test "submit path runs once no host present is in flight" {
     try std.testing.expectEqual(TerminalPanel.RenderAction.submit_pending, TerminalPanel.renderAction(work, false));
 }
 
-test "finish present acks host-owned snapshot once and clears" {
+test "complete present acks matching host-owned token once and clears" {
     const FakeRender = struct {
-        present_in_flight: ?u64 = 17,
+        present_in_flight: ?struct { snapshot_seq: u64, token: u64 } = .{ .snapshot_seq = 17, .token = 170 },
 
-        fn finishPresent(self: *@This()) ?u64 {
-            const snapshot_seq = self.present_in_flight orelse return null;
+        fn completePresent(self: *@This(), token: u64) ?u64 {
+            const present = self.present_in_flight orelse return null;
+            if (present.token != token) return null;
             self.present_in_flight = null;
-            return snapshot_seq;
+            return present.snapshot_seq;
         }
     };
     const FakeTerm = struct {
@@ -1689,20 +1712,25 @@ test "finish present acks host-owned snapshot once and clears" {
     FakeOps.reset();
     var term = FakeTerm{};
 
-    finishPresentLockedWith(&term, FakeOps);
+    completePresentLockedWith(&term, 170, FakeOps);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
     try std.testing.expectEqual(@as(u64, 17), FakeOps.last_snapshot_seq);
     try std.testing.expect(term.render.present_in_flight == null);
 
-    finishPresentLockedWith(&term, FakeOps);
+    completePresentLockedWith(&term, 170, FakeOps);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
     try std.testing.expectEqual(@as(u64, 17), FakeOps.last_snapshot_seq);
 }
 
-test "chrome-only finish present does not ack zero" {
+test "mismatched complete present does not ack or clear" {
     const FakeRender = struct {
-        fn finishPresent(_: *@This()) ?u64 {
-            return null;
+        present_in_flight: ?struct { snapshot_seq: u64, token: u64 } = .{ .snapshot_seq = 19, .token = 190 },
+
+        fn completePresent(self: *@This(), token: u64) ?u64 {
+            const present = self.present_in_flight orelse return null;
+            if (present.token != token) return null;
+            self.present_in_flight = null;
+            return present.snapshot_seq;
         }
     };
     const FakeTerm = struct {
@@ -1726,7 +1754,13 @@ test "chrome-only finish present does not ack zero" {
     FakeOps.reset();
     var term = FakeTerm{};
 
-    finishPresentLockedWith(&term, FakeOps);
+    completePresentLockedWith(&term, 191, FakeOps);
     try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
     try std.testing.expectEqual(@as(u64, 0), FakeOps.last_snapshot_seq);
+    try std.testing.expect(term.render.present_in_flight != null);
+
+    completePresentLockedWith(&term, 190, FakeOps);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
+    try std.testing.expectEqual(@as(u64, 19), FakeOps.last_snapshot_seq);
+    try std.testing.expect(term.render.present_in_flight == null);
 }

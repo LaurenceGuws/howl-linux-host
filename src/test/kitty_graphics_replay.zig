@@ -193,16 +193,21 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
             }
             window.requestPresentProof();
             window.present_state.proof_probe_rect = if (placement.observed) framebuffer_probe_rect else null;
-            window.present(.{
-                .term_texture_id = @intCast(panel.termTextureId()),
-                .term_texture_rect = rect,
-                .scrollbar = overlay.scrollbar,
-                .tab_count = 1,
-                .active_tab = 0,
-                .tab_labels = &.{"replay"},
-            });
+            if (turn.step == .blocked_present) {
+                if (window.drainPresentComplete()) |completed_token| panel.completePresent(completed_token);
+            } else {
+                const token = window.submitPresent(.{
+                    .term_texture_id = @intCast(panel.termTextureId()),
+                    .term_texture_rect = rect,
+                    .scrollbar = overlay.scrollbar,
+                    .tab_count = 1,
+                    .active_tab = 0,
+                    .tab_labels = &.{"replay"},
+                });
+                if (turn.step == .rendered) panel.notePresentSubmitted(turn.present_snapshot_seq, token);
+                if (window.drainPresentComplete()) |completed_token| panel.completePresent(completed_token);
+            }
             const present = window.presentProofSnapshot();
-            panel.finishPresent();
 
             if (saw_vt_non_empty_graphics and present.observed and present.term_texture_id == panel.termTextureId()) {
                 try std.testing.expect(present.texture.observed);
@@ -391,16 +396,21 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
             }
             window.requestPresentProof();
             window.present_state.proof_probe_rect = probe_rect;
-            window.present(.{
-                .term_texture_id = @intCast(panel.termTextureId()),
-                .term_texture_rect = content_rect,
-                .scrollbar = panel.overlaySnapshot(content_rect).scrollbar,
-                .tab_count = 1,
-                .active_tab = 0,
-                .tab_labels = &.{"placeholder"},
-            });
+            if (turn.step == .blocked_present) {
+                if (window.drainPresentComplete()) |completed_token| panel.completePresent(completed_token);
+            } else {
+                const token = window.submitPresent(.{
+                    .term_texture_id = @intCast(panel.termTextureId()),
+                    .term_texture_rect = content_rect,
+                    .scrollbar = panel.overlaySnapshot(content_rect).scrollbar,
+                    .tab_count = 1,
+                    .active_tab = 0,
+                    .tab_labels = &.{"placeholder"},
+                });
+                if (turn.step == .rendered) panel.notePresentSubmitted(turn.present_snapshot_seq, token);
+                if (window.drainPresentComplete()) |completed_token| panel.completePresent(completed_token);
+            }
             const present = window.presentProofSnapshot();
-            panel.finishPresent();
 
             if (virtual.observed and present.observed and present.term_texture_id == panel.termTextureId()) {
                 try std.testing.expect(present.framebuffer_probe_after.observed);

@@ -26,6 +26,7 @@ pub const ScrollbarLayout = Layout.ScrollbarLayout;
 pub const Frame = Layout.Frame;
 pub const PresentState = Present.State(c);
 pub const PresentProofSnapshot = Present.PresentProofSnapshot;
+pub const PresentToken = Present.PresentToken;
 
 pub const State = struct {
     handle: Ptr,
@@ -110,8 +111,12 @@ pub const State = struct {
         };
     }
 
-    pub fn present(self: *State, frame: Frame) void {
-        Present.present(c, &self.present_state, frame);
+    pub fn submitPresent(self: *State, frame: Frame) PresentToken {
+        return Present.submitPresent(c, &self.present_state, frame);
+    }
+
+    pub fn drainPresentComplete(self: *State) ?PresentToken {
+        return Present.drainPresentComplete(c, &self.present_state);
     }
 
     pub fn requestPresentProof(self: *State) void {

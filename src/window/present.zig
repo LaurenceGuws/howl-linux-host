@@ -5,6 +5,8 @@ const InputWindow = @import("../input/window.zig");
 const Texture = @import("texture.zig");
 const std = @import("std");
 
+pub const PresentToken = u64;
+
 pub const PresentProofStats = struct {
     observed: bool,
     width: c_int,
@@ -54,6 +56,9 @@ pub fn State(comptime c: type) type {
         proof_capture_requested: bool,
         proof_probe_rect: ?Layout.Rect,
         last_present_proof: PresentProofSnapshot,
+        next_present_token: PresentToken,
+        submitted_present: ?PresentToken,
+        completed_present: ?PresentToken,
     };
 }
 
@@ -75,6 +80,9 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
         .proof_capture_requested = false,
         .proof_probe_rect = null,
         .last_present_proof = emptyPresentProofSnapshot(),
+        .next_present_token = 1,
+        .submitted_present = null,
+        .completed_present = null,
     };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
@@ -97,8 +105,16 @@ pub fn deinit(comptime c: type, state: *State(c)) void {
     state.window = null;
 }
 
-pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
-    const handle = state.window orelse return;
+pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) PresentToken {
+    std.debug.assert(state.submitted_present == null);
+    std.debug.assert(state.completed_present == null);
+    const token = state.next_present_token;
+    std.debug.assert(token != 0);
+    state.next_present_token +%= 1;
+    if (state.next_present_token == 0) state.next_present_token = 1;
+    state.submitted_present = token;
+
+    const handle = state.window orelse unreachable;
     var fb_w: c_int = 0;
     var fb_h: c_int = 0;
     _ = c.SDL_GetWindowSizeInPixels(handle, &fb_w, &fb_h);
@@ -133,6 +149,18 @@ pub fn present(comptime c: type, state: *State(c), frame: Layout.Frame) void {
         InputWindow.logStartupf("stage=term-present-first term_texture_id={d} rect_w={d} rect_h={d}", .{ frame.term_texture_id, frame.term_texture_rect.width, frame.term_texture_rect.height });
     }
     Texture.swapWindow(c, handle);
+    std.debug.assert(state.submitted_present == token);
+    state.submitted_present = null;
+    state.completed_present = token;
+    return token;
+}
+
+pub fn drainPresentComplete(comptime c: type, state: *State(c)) ?PresentToken {
+    std.debug.assert(state.submitted_present == null);
+    const token = state.completed_present orelse return null;
+    state.completed_present = null;
+    std.debug.assert(token != 0);
+    return token;
 }
 
 pub fn requestPresentProof(comptime c: type, state: *State(c)) void {
@@ -400,4 +428,85 @@ fn hashTabBarState(frame: Layout.Frame) u64 {
         hasher.update(&[_]u8{0});
     }
     return hasher.final();
+}
+
+const FakeC = struct {
+    const SDL_Window = opaque {};
+    const SDL_GLContext = ?*anyopaque;
+    const SDL_WINDOW_RESIZABLE = 1;
+    const SDL_WINDOW_OPENGL = 2;
+    const GL_COLOR_BUFFER_BIT = 0x4000;
+
+    fn SDL_GetWindowSizeInPixels(_: *SDL_Window, width: *c_int, height: *c_int) bool {
+        width.* = 80;
+        height.* = 25;
+        return true;
+    }
+
+    fn glViewport(_: c_int, _: c_int, _: c_int, _: c_int) void {}
+    fn glClearColor(_: f32, _: f32, _: f32, _: f32) void {}
+    fn glClear(_: c_uint) void {}
+    fn SDL_GL_SwapWindow(_: *SDL_Window) bool {
+        return true;
+    }
+};
+
+fn testState() State(FakeC) {
+    return .{
+        .window = @ptrFromInt(1),
+        .gl_context = null,
+        .tab_texture_id = 0,
+        .tab_cache_valid = false,
+        .tab_cache_w = 0,
+        .tab_cache_h = 0,
+        .tab_cache_hash = 0,
+        .first_present_attempt_logged = false,
+        .first_present_logged = false,
+        .proof_capture_requested = false,
+        .proof_probe_rect = null,
+        .last_present_proof = emptyPresentProofSnapshot(),
+        .next_present_token = 1,
+        .submitted_present = null,
+        .completed_present = null,
+    };
+}
+
+fn testFrame() Layout.Frame {
+    return .{
+        .term_texture_id = 0,
+        .term_texture_rect = .{ .x = 0, .y = 0, .width = 80, .height = 25 },
+        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+        .tab_count = 0,
+        .active_tab = 0,
+        .tab_labels = &.{},
+    };
+}
+
+test "submit present returns monotonic nonzero tokens" {
+    var state = testState();
+    const first = submitPresent(FakeC, &state, testFrame());
+    try std.testing.expect(first != 0);
+    try std.testing.expectEqual(first, drainPresentComplete(FakeC, &state).?);
+
+    const second = submitPresent(FakeC, &state, testFrame());
+    try std.testing.expect(second != 0);
+    try std.testing.expect(second > first);
+    try std.testing.expectEqual(second, drainPresentComplete(FakeC, &state).?);
+}
+
+test "submit present enforces single in-flight state" {
+    var state = testState();
+    state.submitted_present = 7;
+    try std.testing.expect(state.submitted_present != null);
+}
+
+test "present completion drains once before overwrite" {
+    var state = testState();
+    const token = submitPresent(FakeC, &state, testFrame());
+    try std.testing.expectEqual(@as(?PresentToken, token), drainPresentComplete(FakeC, &state));
+    try std.testing.expectEqual(@as(?PresentToken, null), drainPresentComplete(FakeC, &state));
+
+    const next = submitPresent(FakeC, &state, testFrame());
+    try std.testing.expect(next > token);
+    try std.testing.expectEqual(@as(?PresentToken, next), drainPresentComplete(FakeC, &state));
 }

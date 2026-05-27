@@ -5,6 +5,11 @@ pub const PrepareResult = enum { idle, prepared, failed };
 
 pub const SubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
 
+pub const PresentInFlight = struct {
+    snapshot_seq: u64,
+    token: u64,
+};
+
 pub const WorkState = struct {
     source_pending: bool,
     prepare_pending: bool,
@@ -48,7 +53,7 @@ pub const State = struct {
     geometry_epoch: u64 = 0,
     surface_text: c.HowlRenderSurfaceTextHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
-    present_in_flight: ?u64 = null,
+    present_in_flight: ?PresentInFlight = null,
 
     pub fn init(
         surface_text: c.HowlRenderSurfaceTextHandle,
@@ -103,16 +108,19 @@ pub const State = struct {
         };
     }
 
-    pub fn beginPresent(self: *State, snapshot_seq: u64) void {
+    pub fn notePresentSubmitted(self: *State, snapshot_seq: u64, token: u64) void {
         std.debug.assert(snapshot_seq != 0);
+        std.debug.assert(token != 0);
         std.debug.assert(self.present_in_flight == null);
-        self.present_in_flight = snapshot_seq;
+        self.present_in_flight = .{ .snapshot_seq = snapshot_seq, .token = token };
     }
 
-    pub fn finishPresent(self: *State) ?u64 {
-        const snapshot_seq = self.present_in_flight orelse return null;
+    pub fn completePresent(self: *State, token: u64) ?u64 {
+        std.debug.assert(token != 0);
+        const present = self.present_in_flight orelse return null;
+        if (present.token != token) return null;
         self.present_in_flight = null;
-        return snapshot_seq;
+        return present.snapshot_seq;
     }
 
     pub fn presentPending(self: *const State) bool {
@@ -326,25 +334,25 @@ test "present in flight contributes host-owned pending state" {
     defer state.deinit();
     try std.testing.expect(!state.presentPending());
 
-    state.beginPresent(7);
+    state.notePresentSubmitted(7, 70);
     try std.testing.expect(state.presentPending());
 
     const pending = state.pending(false);
     try std.testing.expect(pending.present_pending);
 }
 
-test "finish present returns snapshot once and clears" {
+test "matching complete present returns snapshot once and clears" {
     var state = State.init(null, testFrameLayout());
 
-    state.beginPresent(9);
-    try std.testing.expectEqual(@as(?u64, 9), state.finishPresent());
+    state.notePresentSubmitted(9, 90);
+    try std.testing.expectEqual(@as(?u64, 9), state.completePresent(90));
     try std.testing.expect(!state.presentPending());
-    try std.testing.expectEqual(@as(?u64, null), state.finishPresent());
+    try std.testing.expectEqual(@as(?u64, null), state.completePresent(90));
 }
 
 test "submit is blocked while host present is pending" {
     var state = State.init(null, testFrameLayout());
-    state.beginPresent(11);
+    state.notePresentSubmitted(11, 110);
 
     const execution = c.HowlRenderSurfaceExecutionInput{
         .surface = .{ .host_surface_id = 1, .width = 1, .height = 1 },
@@ -357,10 +365,29 @@ test "submit is blocked while host present is pending" {
     try std.testing.expect(state.presentPending());
 }
 
-test "submit is allowed after finish present clears pending state" {
+test "submit is allowed after matching complete present clears pending state" {
     var state = State.init(null, testFrameLayout());
-    state.beginPresent(13);
+    state.notePresentSubmitted(13, 130);
 
-    try std.testing.expectEqual(@as(?u64, 13), state.finishPresent());
+    try std.testing.expectEqual(@as(?u64, 13), state.completePresent(130));
+    try std.testing.expect(!state.presentPending());
+}
+
+test "present submit stores snapshot and token" {
+    var state = State.init(null, testFrameLayout());
+    state.notePresentSubmitted(21, 210);
+
+    try std.testing.expect(state.present_in_flight != null);
+    try std.testing.expectEqual(@as(u64, 21), state.present_in_flight.?.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 210), state.present_in_flight.?.token);
+}
+
+test "mismatched complete present keeps pending state" {
+    var state = State.init(null, testFrameLayout());
+    state.notePresentSubmitted(31, 310);
+
+    try std.testing.expectEqual(@as(?u64, null), state.completePresent(311));
+    try std.testing.expect(state.presentPending());
+    try std.testing.expectEqual(@as(?u64, 31), state.completePresent(310));
     try std.testing.expect(!state.presentPending());
 }
