@@ -1,6 +1,5 @@
 const std = @import("std");
 const c = @import("../c.zig").c;
-const latency = @import("../../latency_log.zig");
 const retained = @import("retained.zig");
 const terminal_term = @import("../term.zig");
 
@@ -162,9 +161,7 @@ pub fn kickWait(term: *terminal_term.Term) void {
 }
 
 pub fn pumpOutboundLocked(term: *terminal_term.Term) OutboundProgress {
-    latency.event("pty-pump-outbound-begin", "", .{});
     const outbound = c.howl_pty_session_pump_outbound(term.session, 0);
-    latency.event("pty-pump-outbound-end", "status={d} drained={d}", .{ outbound.status, outbound.drained });
     ptyRequireStructOk(outbound.status);
     return .{
         .drained_input_bytes = outbound.drained,
@@ -174,9 +171,7 @@ pub fn pumpOutboundLocked(term: *terminal_term.Term) OutboundProgress {
 
 pub fn readTransportLocked(term: *terminal_term.Term, out: []u8) u32 {
     if (out.len == 0) return 0;
-    latency.event("pty-read-abi-begin", "capacity={d}", .{out.len});
     const read = c.howl_pty_session_read(term.session, out.ptr, out.len);
-    latency.event("pty-read-abi-end", "status={d} bytes={d}", .{ read.status, read.bytes_read });
     ptyRequireStructOk(read.status);
     std.debug.assert(read.bytes_read <= out.len);
     return @intCast(read.bytes_read);
@@ -219,13 +214,9 @@ fn ptyRequireStructOk(status: i32) void {
 
 fn ptyPublishInput(handle: c.HowlPtySessionHandle, bytes: []const u8) !void {
     if (bytes.len == 0) return;
-    latency.event("pty-publish-input-abi-begin", "len={d}", .{bytes.len});
     const status = c.howl_pty_session_publish_input(handle, bytes.ptr, bytes.len);
-    latency.event("pty-publish-input-abi-end", "len={d} status={d}", .{ bytes.len, status });
     try ptyRequireOk(status);
-    latency.event("pty-pump-outbound-begin", "from=publish", .{});
     const outbound = c.howl_pty_session_pump_outbound(handle, 0);
-    latency.event("pty-pump-outbound-end", "from=publish status={d} drained={d}", .{ outbound.status, outbound.drained });
     ptyRequireStructOk(outbound.status);
 }
 

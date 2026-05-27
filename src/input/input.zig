@@ -1,6 +1,5 @@
 const std = @import("std");
 const keys = @import("keys.zig");
-const latency = @import("../latency_log.zig");
 const mouse = @import("mouse.zig");
 const window = @import("window.zig");
 
@@ -164,13 +163,7 @@ pub const Input = struct {
     }
 
     pub fn drainInputEvent(self: *Input) ?Event {
-        const out = self.input_events.pop() orelse return null;
-        switch (out) {
-            .bytes => |bytes| latency.event("host-dequeue-input", "kind=bytes len={d}", .{bytes.len}),
-            .key => |key| latency.event("host-dequeue-input", "kind=key key={s}", .{@tagName(key.key)}),
-            .mouse => latency.event("host-dequeue-input", "kind=mouse", .{}),
-        }
-        return out;
+        return self.input_events.pop();
     }
 
     pub fn drainScrollPages(self: *Input) i32 {
@@ -289,13 +282,11 @@ pub const Input = struct {
                 if (event.text.text != null) {
                     const p: [*:0]const u8 = @ptrCast(event.text.text);
                     const bytes = std.mem.span(p);
-                    latency.event("sdl-text-input", "len={d}", .{bytes.len});
                     appendBytesEvent(self, bytes);
                 }
                 return;
             },
             c.SDL_EVENT_KEY_DOWN => {
-                latency.event("sdl-key-down", "key={d} mod={d}", .{ event.key.key, event.key.mod });
                 processKeyDown(self, event);
                 return;
             },
@@ -361,11 +352,6 @@ fn appendMouseEvent(input: *Input, event: mouse.Event) void {
 
 fn appendInputEvent(input: *Input, event: Input.Event) bool {
     if (!input.input_events.push(event)) return false;
-    switch (event) {
-        .bytes => |bytes| latency.event("host-queue-bytes", "len={d}", .{bytes.len}),
-        .key => |key| latency.event("host-queue-key", "key={s}", .{@tagName(key.key)}),
-        .mouse => {},
-    }
     return true;
 }
 

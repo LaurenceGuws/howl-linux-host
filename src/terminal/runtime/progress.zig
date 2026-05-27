@@ -1,5 +1,4 @@
 const feed_record = @import("../pty/feed_record.zig");
-const latency = @import("../../latency_log.zig");
 const pty_session = @import("../pty/session.zig");
 const terminal_term = @import("../term.zig");
 const vt_api = @import("../vt/abi.zig");
@@ -116,12 +115,10 @@ fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPump
 
 fn feedTermLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u32) bool {
     const history_before = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
-    latency.event("vt-feed-abi-begin", "len={d}", .{bytes.len});
     const result = vt_retained.feedLocked(term, bytes);
-    latency.event("vt-feed-abi-end", "status={d} state_changed={d} title_changed={d}", .{ result.status, result.state_changed, result.title_changed });
     if (!vt_api.isCallOk(result.status)) {
         term.pty.lifecycle = .failed;
-        latency.event("vt-feed-failed", "status={d} chunk_len={d}", .{ result.status, chunk_len });
+        _ = chunk_len;
         return false;
     }
     const title = if (result.title_changed != 0) vt_retained.copyTitleLocked(term) catch null else null;
@@ -135,9 +132,8 @@ fn feedTermLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u32) 
 }
 
 fn recordChunkLocked(term: *terminal_term.Term, chunk: []const u8) bool {
-    feed_record.writeChunkLocked(term, chunk) catch |err| {
+    feed_record.writeChunkLocked(term, chunk) catch {
         term.pty.lifecycle = .failed;
-        latency.event("transport-record-failed", "err={s} chunk_len={d}", .{ @errorName(err), chunk.len });
         return false;
     };
     return true;

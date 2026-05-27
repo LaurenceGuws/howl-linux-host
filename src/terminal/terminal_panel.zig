@@ -5,7 +5,7 @@ const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
 const term_texture = @import("../window/term_texture.zig");
 const HostInput = @import("../input/input.zig").Input;
-const latency = @import("../latency_log.zig");
+const graphics_log = @import("../graphics_log.zig");
 const terminal_c = @import("c.zig").c;
 const runtime_progress = @import("runtime/progress.zig");
 const runtime_thread = @import("runtime/thread.zig");
@@ -63,13 +63,15 @@ pub const TerminalPanel = struct {
         image_count: u32,
         placement_count: u32,
         virtual_placement_count: u32,
+        placeholder_run_count: u32,
         publication_seq: u64,
         dirty_generation: u64,
 
         pub fn nonEmpty(self: GraphicsTruthSnapshot) bool {
             return self.image_count != 0 or
                 self.placement_count != 0 or
-                self.virtual_placement_count != 0;
+                self.virtual_placement_count != 0 or
+                self.placeholder_run_count != 0;
         }
     };
 
@@ -299,6 +301,7 @@ pub const TerminalPanel = struct {
                 .image_count = 0,
                 .placement_count = 0,
                 .virtual_placement_count = 0,
+                .placeholder_run_count = 0,
                 .publication_seq = 0,
                 .dirty_generation = 0,
             },
@@ -863,24 +866,56 @@ pub const TerminalPanel = struct {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.takePreparedUpload(&upload)) return .{ .result = .failed, .snapshot_seq = 0 };
         self.recordGraphicsUploadObservation(upload);
+        const graphics_observation = self.last_graphics_upload;
 
         const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
             &.{}
         else
             upload.buffer.rgba_pixels.ptr[0..upload.buffer.rgba_pixels.len];
-        latency.event("gl-texture-ensure-begin", "snapshot_seq={d} width={d} height={d}", .{ upload.info.snapshot_seq, upload.info.render_px.width, upload.info.render_px.height });
+        if (graphics_observation.vt_graphics.nonEmpty()) {
+            graphics_log.event(
+                "host-upload-begin",
+                "snapshot_seq={d} dirty_epoch={d} required_base_seq={d} uploads_committed={d} rgba_len={d} rgba_nonzero={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} placeholders={d}",
+                .{
+                    graphics_observation.prepared_snapshot_seq,
+                    graphics_observation.prepared_dirty_epoch,
+                    graphics_observation.prepared_required_base_seq,
+                    graphics_observation.uploads_committed,
+                    graphics_observation.rgba_len,
+                    @intFromBool(graphics_observation.rgba_has_non_zero_byte),
+                    graphics_observation.vt_graphics.publication_seq,
+                    graphics_observation.vt_graphics.dirty_generation,
+                    graphics_observation.vt_graphics.image_count,
+                    graphics_observation.vt_graphics.placement_count,
+                    graphics_observation.vt_graphics.virtual_placement_count,
+                    graphics_observation.vt_graphics.placeholder_run_count,
+                },
+            );
+        }
         if (!term_texture.ensureSurface(&self.term_texture, upload.info.render_px.width, upload.info.render_px.height)) {
-            latency.event("gl-texture-ensure-end", "snapshot_seq={d} ok=0", .{upload.info.snapshot_seq});
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
-        latency.event("gl-texture-ensure-end", "snapshot_seq={d} ok=1 texture_id={d}", .{ upload.info.snapshot_seq, self.term_texture.host_surface_id });
-        latency.event("gl-texture-upload-begin", "snapshot_seq={d} texture_id={d} rgba_len={d}", .{ upload.info.snapshot_seq, self.term_texture.host_surface_id, pixels.len });
         if (!term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
-            latency.event("gl-texture-upload-end", "snapshot_seq={d} ok=0 texture_id={d}", .{ upload.info.snapshot_seq, self.term_texture.host_surface_id });
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
-        latency.event("gl-texture-upload-end", "snapshot_seq={d} ok=1 texture_id={d}", .{ upload.info.snapshot_seq, self.term_texture.host_surface_id });
-        latency.event("texture-repaint-complete", "snapshot_seq={d} texture_id={d}", .{ upload.info.snapshot_seq, self.term_texture.host_surface_id });
+        if (graphics_observation.vt_graphics.nonEmpty()) {
+            graphics_log.event(
+                "host-upload-end",
+                "snapshot_seq={d} texture_id={d} texture_w={d} texture_h={d} rgba_len={d} publication_seq={d} images={d} placements={d} virtuals={d} placeholders={d}",
+                .{
+                    upload.info.snapshot_seq,
+                    self.term_texture.host_surface_id,
+                    self.term_texture.width,
+                    self.term_texture.height,
+                    pixels.len,
+                    graphics_observation.vt_graphics.publication_seq,
+                    graphics_observation.vt_graphics.image_count,
+                    graphics_observation.vt_graphics.placement_count,
+                    graphics_observation.vt_graphics.virtual_placement_count,
+                    graphics_observation.vt_graphics.placeholder_run_count,
+                },
+            );
+        }
 
         var feedback = std.mem.zeroes(terminal_c.HowlRenderSurfaceFeedback);
         const execution = terminal_c.HowlRenderSurfaceExecutionInput{
@@ -893,6 +928,24 @@ pub const TerminalPanel = struct {
             .render_us = renderUs(start_ns),
         };
         const result = self.submit(&execution, &feedback);
+        if (graphics_observation.vt_graphics.nonEmpty()) {
+            graphics_log.event(
+                "host-render-submit",
+                "snapshot_seq={d} result={s} texture_id={d} feedback_w={d} feedback_h={d} publication_seq={d} images={d} placements={d} virtuals={d} placeholders={d}",
+                .{
+                    upload.info.snapshot_seq,
+                    @tagName(result),
+                    feedback.surface.host_surface_id,
+                    feedback.surface.width,
+                    feedback.surface.height,
+                    graphics_observation.vt_graphics.publication_seq,
+                    graphics_observation.vt_graphics.image_count,
+                    graphics_observation.vt_graphics.placement_count,
+                    graphics_observation.vt_graphics.virtual_placement_count,
+                    graphics_observation.vt_graphics.placeholder_run_count,
+                },
+            );
+        }
         if (result == .rendered) {
             self.term_texture = feedback.surface;
         }
@@ -925,6 +978,7 @@ pub const TerminalPanel = struct {
             .image_count = result.meta.image_count,
             .placement_count = result.meta.placement_count,
             .virtual_placement_count = result.meta.virtual_placement_count,
+            .placeholder_run_count = result.meta.placeholder_run_count,
             .publication_seq = result.meta.publication_seq,
             .dirty_generation = result.meta.dirty_generation,
         };
@@ -997,10 +1051,7 @@ pub const TerminalPanel = struct {
     fn submit(self: *TerminalPanel, execution: *const terminal_c.HowlRenderSurfaceExecutionInput, feedback: *terminal_c.HowlRenderSurfaceFeedback) render_retained.SubmitResult {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
-        latency.event("render-submit-abi-begin", "surface_id={d} width={d} height={d}", .{ execution.surface.host_surface_id, execution.surface.width, execution.surface.height });
-        const result = self.term.render.submit(execution, feedback);
-        latency.event("render-submit-abi-end", "result={s} texture_id={d}", .{ @tagName(result), feedback.surface.host_surface_id });
-        return result;
+        return self.term.render.submit(execution, feedback);
     }
 
     fn renderUs(start_ns: u64) u64 {
@@ -1032,23 +1083,17 @@ pub const TerminalPanel = struct {
 
     fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) bool {
         _ = vt_retained.followLiveBottom(&self.term);
-        latency.event("host-pty-publish-begin", "kind=bytes len={d}", .{bytes.len});
-        pty_session.publishInputBytes(&self.term, bytes) catch |err| {
-            latency.event("host-pty-publish-end", "kind=bytes len={d} ok=0 err={s}", .{ bytes.len, @errorName(err) });
+        pty_session.publishInputBytes(&self.term, bytes) catch {
             return false;
         };
-        latency.event("host-pty-publish-end", "kind=bytes len={d} ok=1", .{bytes.len});
         return true;
     }
 
     fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) bool {
         const terminal_key = term_input.key(key.key) orelse return false;
-        latency.event("host-pty-publish-begin", "kind=key key={s}", .{@tagName(key.key)});
-        term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch |err| {
-            latency.event("host-pty-publish-end", "kind=key key={s} ok=0 err={s}", .{ @tagName(key.key), @errorName(err) });
+        term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch {
             return false;
         };
-        latency.event("host-pty-publish-end", "kind=key key={s} ok=1", .{@tagName(key.key)});
         return true;
     }
 

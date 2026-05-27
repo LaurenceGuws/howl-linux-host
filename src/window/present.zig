@@ -1,7 +1,6 @@
 const builtin = @import("builtin");
 const Draw = @import("draw.zig");
 const Layout = @import("layout.zig");
-const latency = @import("../latency_log.zig");
 const Texture = @import("texture.zig");
 const std = @import("std");
 
@@ -109,7 +108,6 @@ pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) Pr
     state.next_present_token +%= 1;
     if (state.next_present_token == 0) state.next_present_token = 1;
     state.submitted_present = token;
-    latency.event("gl-present-begin", "token={d} texture_id={d} rect_w={d} rect_h={d}", .{ token, frame.term_texture_id, frame.term_texture_rect.width, frame.term_texture_rect.height });
 
     const handle = state.window orelse unreachable;
     var fb_w: c_int = 0;
@@ -139,7 +137,6 @@ pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) Pr
     if (capture_present_proof) capturePresentProof(c, state, frame, probe_rect, framebuffer_before, framebuffer_probe_before);
     Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
     Texture.swapWindow(c, handle);
-    latency.event("gl-present-end", "token={d} texture_id={d}", .{ token, frame.term_texture_id });
     std.debug.assert(state.submitted_present == token);
     state.submitted_present = null;
     state.completed_present = token;

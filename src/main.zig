@@ -2,9 +2,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 const cli_args = @import("cli/args.zig");
 const Config = @import("config/config.zig");
+const graphics_log = @import("graphics_log.zig");
 const Input = @import("input/input.zig").Input;
 const InputWindow = @import("input/window.zig");
-const latency = @import("latency_log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const runtime_thread = @import("terminal/runtime/thread.zig");
 const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
@@ -95,7 +95,6 @@ const LoopPending = struct {
 const TerminalProgress = struct {
     should_redraw: bool,
     keep_running: bool,
-    had_wake: bool,
 };
 
 const LoopAdmission = struct {
@@ -379,9 +378,6 @@ fn runLoopTurn(app: *App) !LoopAction {
     if (!app.frame_pacing.renderPermission()) return .continue_running;
 
     const frame = render(app);
-    if (terminal_progress.had_wake and frame.turn.step == .rendered) {
-        latency.event("wake-new-texture", "snapshot_seq={d} texture_id={d}", .{ frame.turn.present_snapshot_seq, frame.tab.termTextureId() });
-    }
     const present_plan = derivePresentPlan(frame, intent);
     _ = submitPresent(app, frame, present_plan);
     if (quitRequested(app)) |action| return action;
@@ -557,16 +553,13 @@ fn applyWindowResize(app: *App) bool {
 fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex, now_ns: u64) TerminalProgress {
     var should_redraw = false;
     var keep_running = false;
-    var had_wake = false;
     for (tabs, 0..) |tab, i| {
         const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
-        const wake_pending = runtime_thread.wakePending(tab);
         const outcome = driveTabRuntimeTurn(tab, is_active, now_ns);
         should_redraw = should_redraw or outcome.should_redraw;
         keep_running = keep_running or outcome.keep;
-        had_wake = had_wake or wake_pending;
     }
-    return .{ .should_redraw = should_redraw, .keep_running = keep_running, .had_wake = had_wake };
+    return .{ .should_redraw = should_redraw, .keep_running = keep_running };
 }
 
 fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool, now_ns: u64) @import("terminal/runtime/progress.zig").Outcome {
@@ -641,6 +634,30 @@ fn submitPresent(app: *App, frame: RenderFrame, plan: PresentPlan) PresentSubmis
         submitPresentWith(app.window, frame.tab, frame.snapshot, plan.reason)
     else
         PresentSubmission{ .reason = .none, .submitted = false, .token = null };
+    if (submission.submitted) {
+        const graphics = frame.tab.graphicsProofSnapshot();
+        if (graphics.vt_graphics.nonEmpty()) {
+            graphics_log.event(
+                "host-present-submit",
+                "reason={s} token={d} snapshot_seq={d} texture_id={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} placeholders={d} last_upload_snapshot={d} rgba_len={d} rgba_nonzero={d}",
+                .{
+                    @tagName(submission.reason),
+                    submission.token.?,
+                    frame.turn.present_snapshot_seq,
+                    graphics.term_texture_id,
+                    graphics.vt_graphics.publication_seq,
+                    graphics.vt_graphics.dirty_generation,
+                    graphics.vt_graphics.image_count,
+                    graphics.vt_graphics.placement_count,
+                    graphics.vt_graphics.virtual_placement_count,
+                    graphics.vt_graphics.placeholder_run_count,
+                    graphics.last_upload.prepared_snapshot_seq,
+                    graphics.last_upload.rgba_len,
+                    @intFromBool(graphics.last_upload.rgba_has_non_zero_byte),
+                },
+            );
+        }
+    }
     recordPresentSubmission(app, frame, submission);
     app.frame_pacing.noteRenderSubmitted(submission);
     return submission;
@@ -1177,7 +1194,7 @@ test "forward terminal input drains text before pointer UI without present inten
     try std.testing.expect(outcome.published_to_pty);
     try std.testing.expect(!outcome.host_visual_changed);
 
-    const progress = TerminalProgress{ .should_redraw = false, .keep_running = false, .had_wake = false };
+    const progress = TerminalProgress{ .should_redraw = false, .keep_running = false };
     const intent = deriveRedrawRenderIntent(false, outcome.host_visual_changed, progress, false, false);
     var admitted = false;
     admitted = admitted or outcome.published_to_pty;
@@ -1214,7 +1231,6 @@ test "runtime keep_running does not synthesize redraw" {
     const progress = TerminalProgress{
         .should_redraw = false,
         .keep_running = true,
-        .had_wake = false,
     };
     const intent = deriveRedrawRenderIntent(false, false, progress, false, false);
     try std.testing.expect(progress.keep_running);
@@ -1227,7 +1243,6 @@ test "keep_running true should_redraw false keeps host non-blocking without redr
     const progress = TerminalProgress{
         .should_redraw = false,
         .keep_running = true,
-        .had_wake = false,
     };
     const pending = LoopPending{
         .owner_work = true,
@@ -1245,7 +1260,6 @@ test "host_redraw_requested true can produce host-only present" {
     const progress = TerminalProgress{
         .should_redraw = false,
         .keep_running = false,
-        .had_wake = false,
     };
     const intent = deriveRedrawRenderIntent(true, false, progress, false, false);
 
@@ -1260,7 +1274,6 @@ test "render_work_pending true produces render without host redraw bit" {
     const progress = TerminalProgress{
         .should_redraw = false,
         .keep_running = false,
-        .had_wake = false,
     };
     const intent = deriveRedrawRenderIntent(false, false, progress, false, true);
 
