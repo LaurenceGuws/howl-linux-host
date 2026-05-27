@@ -41,12 +41,14 @@ pub const VisibleCopy = struct {
     graphics_images: []c.HowlVtGraphicsImage,
     graphics_placements: []c.HowlVtGraphicsPlacement,
     graphics_virtual_placements: []c.HowlVtGraphicsVirtualPlacement,
+    graphics_placeholder_runs: []c.HowlVtGraphicsPlaceholderRun,
     graphics_payload_bytes: []u8,
 
     fn deinit(self: *VisibleCopy, allocator: std.mem.Allocator) void {
         if (self.graphics_images.len > 0) allocator.free(self.graphics_images);
         if (self.graphics_placements.len > 0) allocator.free(self.graphics_placements);
         if (self.graphics_virtual_placements.len > 0) allocator.free(self.graphics_virtual_placements);
+        if (self.graphics_placeholder_runs.len > 0) allocator.free(self.graphics_placeholder_runs);
         if (self.graphics_payload_bytes.len > 0) allocator.free(self.graphics_payload_bytes);
         self.* = undefined;
     }
@@ -161,6 +163,7 @@ fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
             .image_count = visible.graphics.image_count,
             .placement_count = visible.graphics.placement_count,
             .virtual_placement_count = visible.graphics.virtual_placement_count,
+            .placeholder_run_count = visible.graphics.placeholder_run_count,
             .is_alternate_screen = visible.graphics.is_alternate_screen,
             .reserved0 = 0,
             .publication_seq = visible.graphics.publication_seq,
@@ -169,6 +172,7 @@ fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
         .graphics_images = .{ .ptr = if (visible.graphics_images.len == 0) null else visible.graphics_images.ptr, .len = visible.graphics_images.len },
         .graphics_placements = .{ .ptr = if (visible.graphics_placements.len == 0) null else visible.graphics_placements.ptr, .len = visible.graphics_placements.len },
         .graphics_virtual_placements = .{ .ptr = if (visible.graphics_virtual_placements.len == 0) null else visible.graphics_virtual_placements.ptr, .len = visible.graphics_virtual_placements.len },
+        .graphics_placeholder_runs = .{ .ptr = if (visible.graphics_placeholder_runs.len == 0) null else visible.graphics_placeholder_runs.ptr, .len = visible.graphics_placeholder_runs.len },
         .graphics_payload_bytes = .{ .ptr = if (visible.graphics_payload_bytes.len == 0) null else visible.graphics_payload_bytes.ptr, .len = visible.graphics_payload_bytes.len },
     };
 }
@@ -302,6 +306,7 @@ fn vtAcquireVisibleAndGraphicsIntoSlotWith(allocator: std.mem.Allocator, handle:
             .graphics_images = items.images,
             .graphics_placements = items.placements,
             .graphics_virtual_placements = items.virtual_placements,
+            .graphics_placeholder_runs = items.placeholder_runs,
             .graphics_payload_bytes = items.payload_bytes,
         };
     }
@@ -320,11 +325,13 @@ const GraphicsItems = struct {
     placements: []c.HowlVtGraphicsPlacement,
     payload_bytes: []u8,
     virtual_placements: []c.HowlVtGraphicsVirtualPlacement,
+    placeholder_runs: []c.HowlVtGraphicsPlaceholderRun,
 
     fn deinit(self: *GraphicsItems, allocator: std.mem.Allocator) void {
         if (self.images.len > 0) allocator.free(self.images);
         if (self.placements.len > 0) allocator.free(self.placements);
         if (self.virtual_placements.len > 0) allocator.free(self.virtual_placements);
+        if (self.placeholder_runs.len > 0) allocator.free(self.placeholder_runs);
         if (self.payload_bytes.len > 0) allocator.free(self.payload_bytes);
         self.* = undefined;
     }
@@ -337,6 +344,8 @@ fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphic
     errdefer if (placements.len > 0) allocator.free(placements);
     var virtual_placements = try allocator.alloc(c.HowlVtGraphicsVirtualPlacement, graphics.virtual_placement_count);
     errdefer if (virtual_placements.len > 0) allocator.free(virtual_placements);
+    var placeholder_runs = try allocator.alloc(c.HowlVtGraphicsPlaceholderRun, graphics.placeholder_run_count);
+    errdefer if (placeholder_runs.len > 0) allocator.free(placeholder_runs);
 
     var image_idx: u32 = 0;
     while (image_idx < graphics.image_count) : (image_idx += 1) {
@@ -368,6 +377,16 @@ fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphic
         }
     }
 
+    placement_idx = 0;
+    while (placement_idx < graphics.placeholder_run_count) : (placement_idx += 1) {
+        const result = c.howl_vt_terminal_query_graphics_placeholder_run(handle, graphics.publication_seq, placement_idx);
+        switch (result.status) {
+            c.HOWL_VT_CALL_OK => placeholder_runs[placement_idx] = result.run,
+            c.HOWL_VT_CALL_INVALID_ARGUMENT => return error.InvalidPublication,
+            else => return error.VtCallFailed,
+        }
+    }
+
     const payload_len = try totalPayloadLen(images);
     const payload_bytes = try allocator.alloc(u8, payload_len);
     errdefer if (payload_bytes.len > 0) allocator.free(payload_bytes);
@@ -388,7 +407,7 @@ fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphic
     }
     std.debug.assert(payload_offset == payload_bytes.len);
 
-    return .{ .images = images, .placements = placements, .virtual_placements = virtual_placements, .payload_bytes = payload_bytes };
+    return .{ .images = images, .placements = placements, .virtual_placements = virtual_placements, .placeholder_runs = placeholder_runs, .payload_bytes = payload_bytes };
 }
 
 fn totalPayloadLen(images: []const c.HowlVtGraphicsImage) !usize {
