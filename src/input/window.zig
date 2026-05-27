@@ -19,25 +19,21 @@ pub const FrameTraceState = enum {
 pub const State = struct {
     quit_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_event_type: u32 = 0,
-    redraw_event_type: u32 = 0,
-    redraw_event_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     frame_trace_state: FrameTraceState = .unknown,
     window_wait_logged: bool = false,
     window_wake_logged: bool = false,
 
     pub fn init(self: *State) void {
         self.quit_requested.store(false, .release);
-        self.redraw_event_pending.store(false, .release);
         self.window_wait_logged = false;
         self.window_wake_logged = false;
     }
 
     pub fn initEventTypes(self: *State) void {
         if (self.wake_event_type != 0) return;
-        const event_base = c_win.SDL_RegisterEvents(2);
+        const event_base = c_win.SDL_RegisterEvents(1);
         assert(event_base != std.math.maxInt(@TypeOf(event_base)));
         self.wake_event_type = event_base;
-        self.redraw_event_type = event_base + 1;
     }
 
     pub fn quitRequested(self: *const State) bool {
@@ -54,27 +50,8 @@ pub const State = struct {
         self.wakeEventLoop();
     }
 
-    pub fn requestRedraw(self: *State) void {
-        if (self.redraw_event_pending.swap(true, .acq_rel)) return;
-        if (!self.pushEvent(self.redrawType())) {
-            self.redraw_event_pending.store(false, .release);
-        }
-    }
-
-    pub fn redrawRequested(self: *const State) bool {
-        return self.redraw_event_pending.load(.acquire);
-    }
-
     pub fn isWakeEventType(self: *const State, event_type: u32) bool {
         return self.wake_event_type != 0 and event_type == self.wake_event_type;
-    }
-
-    pub fn isRedrawEventType(self: *const State, event_type: u32) bool {
-        return self.redraw_event_type != 0 and event_type == self.redraw_event_type;
-    }
-
-    pub fn ackRedrawEvent(self: *State) void {
-        self.redraw_event_pending.store(false, .release);
     }
 
     pub fn logWindowWaitStartup(self: *State) void {
@@ -105,12 +82,6 @@ pub const State = struct {
         self.initEventTypes();
         assert(self.wake_event_type != 0);
         return self.wake_event_type;
-    }
-
-    fn redrawType(self: *State) u32 {
-        self.initEventTypes();
-        assert(self.redraw_event_type != 0);
-        return self.redraw_event_type;
     }
 
     fn pushEvent(self: *State, event_type: u32) bool {

@@ -179,14 +179,12 @@ pub const Input = struct {
         return out;
     }
 
-    pub fn hasPendingLoopWork(self: *const Input) bool {
+    pub fn hasPendingOwnerWork(self: *const Input) bool {
         return self.input_events.hasItems() or
             self.scroll_pages != 0 or
             self.binding_buf.hasItems() or
-            self.redraw_requested or
             self.window_geometry_changed or
-            self.window_focus_changed != null or
-            self.window_state.redrawRequested();
+            self.window_focus_changed != null;
     }
 
     pub fn drainWindowGeometryChanged(self: *Input) bool {
@@ -223,7 +221,7 @@ pub const Input = struct {
     }
 
     pub fn requestRedraw(self: *Input) void {
-        self.window_state.requestRedraw();
+        self.redraw_requested = true;
     }
 
     pub fn keyFromLabel(raw: []const u8) ?Key {
@@ -260,11 +258,6 @@ pub const Input = struct {
 
     fn processEvent(self: *Input, event: *const c.SDL_Event) void {
         if (self.window_state.isWakeEventType(event.type)) return;
-        if (self.window_state.isRedrawEventType(event.type)) {
-            self.redraw_requested = true;
-            self.window_state.ackRedrawEvent();
-            return;
-        }
 
         switch (event.type) {
             c.SDL_EVENT_QUIT,
@@ -448,7 +441,6 @@ fn processMouseMotion(input: *Input, event: *const c.SDL_Event) void {
         .buttons_down = buttons_down,
         .host_only = host_only,
     });
-    input.redraw_requested = true;
 }
 
 fn updateModifierState(input: *Input, next_mods: mouse.Mod) void {
@@ -477,7 +469,6 @@ fn maybeQueueModifierMouseMove(input: *Input, prev_mods: mouse.Mod, next_mods: m
         .buttons_down = .{},
         .host_only = !next_terminal_motion and !input.mouse_terminal_hover,
     });
-    input.redraw_requested = true;
 }
 
 fn processMouseButtonDown(input: *Input, event: *const c.SDL_Event) void {
@@ -496,7 +487,6 @@ fn processMouseButtonDown(input: *Input, event: *const c.SDL_Event) void {
         .mods = sdlMods(c.SDL_GetModState()),
         .buttons_down = .{},
     });
-    input.redraw_requested = true;
 }
 
 fn processMouseButtonUp(input: *Input, event: *const c.SDL_Event) void {
@@ -515,7 +505,6 @@ fn processMouseButtonUp(input: *Input, event: *const c.SDL_Event) void {
         .mods = sdlMods(c.SDL_GetModState()),
         .buttons_down = .{},
     });
-    input.redraw_requested = true;
 }
 
 fn processMouseWheel(input: *Input, event: *const c.SDL_Event) void {
@@ -539,7 +528,6 @@ fn processMouseWheel(input: *Input, event: *const c.SDL_Event) void {
             .buttons_down = .{},
         });
     }
-    input.redraw_requested = true;
 }
 
 fn sdlKey(sdl_key: c_uint) ?keys.Key {
@@ -776,6 +764,7 @@ test "modifier transitions synthesize passive move for ctrl hover" {
         },
         else => return error.UnexpectedEvent,
     }
+    try std.testing.expect(!input.drainRedrawRequested());
 }
 
 test "host policy forwards passive terminal hover motion" {
@@ -787,6 +776,46 @@ test "host policy forwards passive terminal hover motion" {
 
     maybeQueueModifierMouseMove(&input, .{}, .{});
     try std.testing.expectEqual(@as(?Input.Event, null), input.drainInputEvent());
+}
+
+test "terminal-bound modifier move does not request redraw by itself" {
+    var input: Input = undefined;
+    input.init();
+    input.setTerminalMousePolicy(.{ .bypass_mod = .{ .ctrl = true } });
+    input.last_mouse_x = 7;
+    input.last_mouse_y = 9;
+
+    updateModifierState(&input, .{ .ctrl = true });
+    const event = input.drainInputEvent() orelse return error.ExpectedEvent;
+    switch (event) {
+        .mouse => |mouse_event| {
+            try std.testing.expectEqual(mouse.Kind.move, mouse_event.kind);
+            try std.testing.expect(!mouse_event.host_only);
+        },
+        else => return error.UnexpectedEvent,
+    }
+    try std.testing.expect(!input.drainRedrawRequested());
+}
+
+test "terminal-bound mouse queueing does not request redraw by itself" {
+    var input: Input = undefined;
+    input.init();
+
+    appendMouseEvent(&input, .{
+        .kind = .press,
+        .button = .left,
+        .pixel_x = 12,
+        .pixel_y = 34,
+        .mods = .{},
+        .buttons_down = .{},
+    });
+
+    const event = input.drainInputEvent() orelse return error.ExpectedEvent;
+    switch (event) {
+        .mouse => |mouse_event| try std.testing.expectEqual(mouse.Button.left, mouse_event.button),
+        else => return error.UnexpectedEvent,
+    }
+    try std.testing.expect(!input.drainRedrawRequested());
 }
 
 test "byte chunking preserves order" {
@@ -888,4 +917,56 @@ test "pumpWindow bounds one SDL burst per turn" {
 
     try std.testing.expectEqual(Input.Signal.none, input.pumpWindow(false, null));
     try std.testing.expectEqual(@as(i32, @intCast(max_sdl_events_per_turn + 1)), input.scroll_pages);
+}
+
+test "redraw-only pending does not count as owner work" {
+    var input: Input = undefined;
+    input.init();
+
+    try std.testing.expect(!input.redraw_requested);
+    try std.testing.expect(!input.hasPendingOwnerWork());
+    try std.testing.expectEqual(@as(?bool, null), input.window_focus_changed);
+    try std.testing.expect(!input.window_geometry_changed);
+    try std.testing.expect(!input.input_events.hasItems());
+    try std.testing.expect(!input.binding_buf.hasItems());
+    try std.testing.expectEqual(@as(i32, 0), input.scroll_pages);
+
+    input.requestRedraw();
+
+    try std.testing.expect(input.redraw_requested);
+    try std.testing.expect(!input.hasPendingOwnerWork());
+    try std.testing.expectEqual(@as(?bool, null), input.window_focus_changed);
+    try std.testing.expect(!input.window_geometry_changed);
+    try std.testing.expect(!input.input_events.hasItems());
+    try std.testing.expect(!input.binding_buf.hasItems());
+    try std.testing.expectEqual(@as(i32, 0), input.scroll_pages);
+    try std.testing.expect(input.drainRedrawRequested());
+    try std.testing.expect(!input.redraw_requested);
+}
+
+test "queued input focus geometry and bindings count as owner work" {
+    var input: Input = undefined;
+    input.init();
+
+    try std.testing.expect(!input.hasPendingOwnerWork());
+
+    appendByteEvent(&input, 'x');
+    try std.testing.expect(input.hasPendingOwnerWork());
+    _ = input.drainInputEvent();
+    try std.testing.expect(!input.hasPendingOwnerWork());
+
+    input.window_focus_changed = true;
+    try std.testing.expect(input.hasPendingOwnerWork());
+    _ = input.drainWindowFocusChanged();
+    try std.testing.expect(!input.hasPendingOwnerWork());
+
+    input.window_geometry_changed = true;
+    try std.testing.expect(input.hasPendingOwnerWork());
+    _ = input.drainWindowGeometryChanged();
+    try std.testing.expect(!input.hasPendingOwnerWork());
+
+    appendBindingAction(&input, .terminal_next_tab);
+    try std.testing.expect(input.hasPendingOwnerWork());
+    _ = input.drainBindingAction();
+    try std.testing.expect(!input.hasPendingOwnerWork());
 }

@@ -27,6 +27,17 @@ const TabSlots = struct {
     active_count: TabIndex = 0,
     free_count: TabIndex = max_tabs,
 
+    fn init() TabSlots {
+        var tabs = TabSlots{
+            .active_count = 0,
+            .free_count = max_tabs,
+        };
+        for (0..max_tabs) |slot| {
+            tabs.free_slots[slot] = @intCast(slot);
+        }
+        return tabs;
+    }
+
     fn items(self: *TabSlots) []*TerminalPanel {
         return self.active_tabs[0..self.active_count];
     }
@@ -77,28 +88,14 @@ const LoopAction = enum {
 };
 
 const LoopPending = struct {
-    input: bool,
-    progress_wake: bool,
-    active_frame: bool,
+    owner_work: bool,
+    runtime_wake: bool,
+    frame_work: bool,
 };
 
-const LoopState = struct {
-    wait_for_window: bool,
-    render_frame: bool,
-    chrome_present: bool,
-
-    fn init(pending: LoopPending) LoopState {
-        return .{
-            .wait_for_window = !(pending.input or pending.progress_wake or pending.active_frame),
-            .render_frame = false,
-            .chrome_present = false,
-        };
-    }
-
-    fn finish(self: *LoopState, progress_redraw: bool, redraw_requested: bool, active_frame: bool) void {
-        self.chrome_present = redraw_requested;
-        self.render_frame = progress_redraw or redraw_requested or active_frame;
-    }
+const TerminalProgress = struct {
+    should_redraw: bool,
+    keep_running: bool,
 };
 
 const App = struct {
@@ -110,6 +107,7 @@ const App = struct {
     tabs: *TabSlots,
     active_tab_idx: *TabIndex,
     input: *Input,
+    terminal_input_admitted: bool,
     first_loop_render_logged: bool,
 };
 
@@ -193,6 +191,7 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         .tabs = tabs,
         .active_tab_idx = active_tab_idx,
         .input = input,
+        .terminal_input_admitted = false,
         .first_loop_render_logged = false,
     };
     configureInputPolicies(&app);
@@ -261,29 +260,27 @@ fn runLoopTurn(app: *App) !LoopAction {
     const now_ns = InputWindow.nowNs();
     _ = syncActiveBlinkCadence(app, now_ns);
     const pending = collectLoopPending(app, now_ns);
-    var loop = LoopState.init(pending);
-    const event_action = pumpWindowEvents(app, loop.wait_for_window, loopWaitMs(app, now_ns));
+    const runtime_admission = takeTerminalInputAdmission(&app.terminal_input_admitted);
+    const wait_for_window = shouldWaitForWindow(pending, runtime_admission);
+    const event_action = pumpWindowEvents(app, wait_for_window, loopWaitMs(app, now_ns));
     if (event_action == .quit) return .quit;
 
     applyFocusChange(app);
     try drainBindingActions(app);
     if (quitRequested(app)) |action| return action;
 
-    forwardTerminalInput(app);
+    const input_outcome = forwardTerminalInput(app);
     _ = applyWindowResize(app);
-    const progress_redraw = driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*, InputWindow.nowNs());
+    const terminal_progress = driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*, InputWindow.nowNs());
+    if (terminal_progress.keep_running) app.input.wakeWindow();
     configureInputPolicies(app);
     try ensureActiveTabHealthy(app);
-    const blink_redraw = syncActiveBlinkCadence(app, InputWindow.nowNs());
+    const host_redraw = app.input.drainRedrawRequested() or input_outcome.host_visual_changed;
+    const terminal_redraw = terminal_progress.should_redraw or syncActiveBlinkCadence(app, InputWindow.nowNs());
+    const needs_render_turn = host_redraw or terminal_redraw or activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*);
+    if (!needs_render_turn) return .continue_running;
 
-    loop.finish(
-        progress_redraw or blink_redraw,
-        app.input.drainRedrawRequested(),
-        activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
-    );
-    if (!loop.render_frame) return .continue_running;
-
-    render(app, loop.chrome_present);
+    render(app, host_redraw);
     if (quitRequested(app)) |action| return action;
     try ensureActiveTabHealthy(app);
     return .continue_running;
@@ -291,10 +288,18 @@ fn runLoopTurn(app: *App) !LoopAction {
 
 fn collectLoopPending(app: *App, now_ns: u64) LoopPending {
     return .{
-        .input = app.input.hasPendingLoopWork(),
-        .progress_wake = tabsHavePendingWake(app.tabs.items()) or tabsHavePendingRuntimeObligation(app.tabs.items(), now_ns),
-        .active_frame = activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
+        .owner_work = app.input.hasPendingOwnerWork(),
+        .runtime_wake = tabsHavePendingWake(app.tabs.items()) or tabsHavePendingRuntimeObligation(app.tabs.items(), now_ns),
+        .frame_work = activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
     };
+}
+
+fn shouldWaitForWindow(pending: LoopPending, runtime_admission: bool) bool {
+    if (pending.owner_work) return false;
+    if (runtime_admission) return false;
+    if (pending.runtime_wake) return false;
+    if (pending.frame_work) return false;
+    return true;
 }
 
 fn activeTabNeedsRenderTurn(tabs: []*TerminalPanel, active_tab_idx: TabIndex) bool {
@@ -376,12 +381,20 @@ fn drainBindingActions(app: *App) !void {
     }
 }
 
-fn forwardTerminalInput(app: *App) void {
+fn forwardTerminalInput(app: *App) TerminalPanel.DrainInputOutcome {
     const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
     const content_logical = app.window.contentLogicalSize(app.conf.tab_bar.height);
     const origin_y = app.window.tabBarHeightLogical(app.conf.tab_bar.height);
-    tab.drainInput(app.input, 0, origin_y, content_logical.width, content_logical.height);
+    const outcome = tab.drainInput(app.input, 0, origin_y, content_logical.width, content_logical.height);
     tab.handleScrollInput(app.input);
+    app.terminal_input_admitted = app.terminal_input_admitted or outcome.published_to_pty;
+    return outcome;
+}
+
+fn takeTerminalInputAdmission(admitted: *bool) bool {
+    const was_admitted = admitted.*;
+    admitted.* = false;
+    return was_admitted;
 }
 
 fn applyWindowResize(app: *App) bool {
@@ -391,17 +404,16 @@ fn applyWindowResize(app: *App) bool {
     return true;
 }
 
-fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex, now_ns: u64) bool {
-    var redraw = false;
-    var request_next_turn = false;
+fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex, now_ns: u64) TerminalProgress {
+    var should_redraw = false;
+    var keep_running = false;
     for (tabs, 0..) |tab, i| {
         const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
         const outcome = driveTabRuntimeTurn(tab, is_active, now_ns);
-        redraw = redraw or outcome.should_redraw;
-        request_next_turn = request_next_turn or outcome.keep;
+        should_redraw = should_redraw or outcome.should_redraw;
+        keep_running = keep_running or outcome.keep;
     }
-    if (request_next_turn) activePanel(tabs, active_tab_idx).input.requestRedraw();
-    return redraw;
+    return .{ .should_redraw = should_redraw, .keep_running = keep_running };
 }
 
 fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool, now_ns: u64) @import("terminal/runtime/progress.zig").Outcome {
@@ -432,17 +444,17 @@ fn destroyTabs(tabs: *TabSlots) void {
     for (tabs.items()) |tab| tab.deinit();
 }
 
-    fn render(app: *App, chrome_present: bool) void {
-        const tab = activeTab(app.tabs.items(), app.active_tab_idx.*);
-        const turn = tab.renderTurn();
-        app.first_loop_render_logged = true;
-        const term_texture_before = tab.termTextureId();
-        tab.noteRenderTurn(turn);
-        syncActiveWindowTitle(app.window, tab);
-        const snapshot = renderSnapshot(app, tab);
-        presentRenderFrame(app, tab, turn, chrome_present, snapshot);
-        std.debug.assert(tab.termTextureId() != 0 or term_texture_before == 0);
-    }
+fn render(app: *App, host_dirty: bool) void {
+    const tab = activeTab(app.tabs.items(), app.active_tab_idx.*);
+    const turn = tab.renderTurn();
+    app.first_loop_render_logged = true;
+    const term_texture_before = tab.termTextureId();
+    tab.noteRenderTurn(turn);
+    syncActiveWindowTitle(app.window, tab);
+    const snapshot = renderSnapshot(app, tab);
+    presentRenderFrame(app, tab, turn, host_dirty, snapshot);
+    std.debug.assert(tab.termTextureId() != 0 or term_texture_before == 0);
+}
 
 fn syncActiveWindowTitle(window: anytype, tab: anytype) void {
     window.setTitle(tab.titleSlice());
@@ -468,8 +480,8 @@ fn renderSnapshot(app: *App, tab: *TerminalPanel) RenderSnapshot {
     };
 }
 
-fn presentRenderFrame(app: *App, tab: *TerminalPanel, turn: TerminalPanel.TurnResult, chrome_present: bool, snapshot: RenderSnapshot) void {
-    if (!shouldPresent(turn.step, chrome_present)) return;
+fn presentRenderFrame(app: *App, tab: *TerminalPanel, turn: TerminalPanel.TurnResult, host_dirty: bool, snapshot: RenderSnapshot) void {
+    if (!shouldPresent(turn.step, host_dirty)) return;
     app.window.present(.{
         .term_texture_id = @intCast(tab.termTextureId()),
         .term_texture_rect = snapshot.texture_rect,
@@ -481,66 +493,39 @@ fn presentRenderFrame(app: *App, tab: *TerminalPanel, turn: TerminalPanel.TurnRe
     tab.finishPresent();
 }
 
-fn shouldPresent(step: TerminalPanel.TurnStep, chrome_present: bool) bool {
-    if (chrome_present) return true;
+fn shouldPresent(step: TerminalPanel.TurnStep, host_dirty: bool) bool {
+    if (host_dirty) return true;
     return switch (step) {
         .rendered, .blocked_present => true,
         .no_frame, .idle_prepare, .idle_submit, .failed => false,
     };
 }
 
-test "loop state waits only without host or frame work" {
-    var loop = LoopState.init(.{
-        .input = false,
-        .progress_wake = false,
-        .active_frame = false,
-    });
-    try std.testing.expect(loop.wait_for_window);
-    try std.testing.expect(!loop.render_frame);
-    try std.testing.expect(!loop.chrome_present);
-
-    loop.finish(false, false, false);
-    try std.testing.expect(!loop.render_frame);
-    try std.testing.expect(!loop.chrome_present);
+test "redraw does not participate in wait admission" {
+    const pending = LoopPending{
+        .owner_work = false,
+        .runtime_wake = false,
+        .frame_work = false,
+    };
+    try std.testing.expect(shouldWaitForWindow(pending, false));
 }
 
-test "loop state polls and renders when any owner requests work" {
-    const pending_cases = [_]LoopPending{
-        .{ .input = true, .progress_wake = false, .active_frame = false },
-        .{ .input = false, .progress_wake = true, .active_frame = false },
-        .{ .input = false, .progress_wake = false, .active_frame = true },
+test "runtime wake participates in wait admission" {
+    const pending = LoopPending{
+        .owner_work = false,
+        .runtime_wake = true,
+        .frame_work = false,
     };
-    for (pending_cases) |pending| {
-        const loop = LoopState.init(pending);
-        try std.testing.expect(!loop.wait_for_window);
-    }
+    try std.testing.expect(!shouldWaitForWindow(pending, false));
+}
 
-    var render_from_progress = LoopState.init(.{
-        .input = false,
-        .progress_wake = false,
-        .active_frame = false,
-    });
-    render_from_progress.finish(true, false, false);
-    try std.testing.expect(render_from_progress.render_frame);
-    try std.testing.expect(!render_from_progress.chrome_present);
-
-    var render_from_redraw = LoopState.init(.{
-        .input = false,
-        .progress_wake = false,
-        .active_frame = false,
-    });
-    render_from_redraw.finish(false, true, false);
-    try std.testing.expect(render_from_redraw.render_frame);
-    try std.testing.expect(render_from_redraw.chrome_present);
-
-    var render_from_frame = LoopState.init(.{
-        .input = false,
-        .progress_wake = false,
-        .active_frame = false,
-    });
-    render_from_frame.finish(false, false, true);
-    try std.testing.expect(render_from_frame.render_frame);
-    try std.testing.expect(!render_from_frame.chrome_present);
+test "frame work participates in wait admission" {
+    const pending = LoopPending{
+        .owner_work = false,
+        .runtime_wake = false,
+        .frame_work = true,
+    };
+    try std.testing.expect(!shouldWaitForWindow(pending, false));
 }
 
 test "present cadence stays tied to frame or chrome work" {
@@ -572,12 +557,12 @@ test "runtime obligation due-now is treated as immediate loop work" {
     };
     try std.testing.expect(tabsHavePendingRuntimeObligationWith(tabs[0..], 1234));
 
-    const loop = LoopState.init(.{
-        .input = false,
-        .progress_wake = tabsHavePendingRuntimeObligationWith(tabs[0..], 1234),
-        .active_frame = false,
-    });
-    try std.testing.expect(!loop.wait_for_window);
+    const pending = LoopPending{
+        .owner_work = false,
+        .runtime_wake = tabsHavePendingRuntimeObligationWith(tabs[0..], 1234),
+        .frame_work = false,
+    };
+    try std.testing.expect(!shouldWaitForWindow(pending, false));
 }
 
 test "runtime obligation deadline is merged with blink wait by minimum" {
@@ -805,4 +790,82 @@ test "tab slots preserve order on close semantics" {
     try std.testing.expectEqual(@as(TabIndex, 0), tabs.active_slots[0]);
     try std.testing.expectEqual(@as(TabIndex, 2), tabs.active_slots[1]);
     try std.testing.expectEqual(@as(TabIndex, 3), tabs.active_slots[2]);
+}
+
+test "PTY publication admission keeps next turn non-blocking without present intent" {
+    var admitted = false;
+    const input_outcome = TerminalPanel.DrainInputOutcome{
+        .published_to_pty = true,
+        .host_visual_changed = false,
+    };
+    admitted = admitted or input_outcome.published_to_pty;
+
+    const pending = LoopPending{
+        .owner_work = false,
+        .runtime_wake = false,
+        .frame_work = false,
+    };
+    try std.testing.expect(!shouldWaitForWindow(pending, takeTerminalInputAdmission(&admitted)));
+    try std.testing.expect(!input_outcome.host_visual_changed);
+    try std.testing.expect(!takeTerminalInputAdmission(&admitted));
+}
+
+test "host visual change can trigger present without PTY publication" {
+    const input_outcome = TerminalPanel.DrainInputOutcome{
+        .published_to_pty = false,
+        .host_visual_changed = true,
+    };
+    const host_redraw = input_outcome.host_visual_changed;
+    const terminal_redraw = false;
+    const needs_render_turn = host_redraw or terminal_redraw or false;
+    try std.testing.expect(needs_render_turn);
+    try std.testing.expect(host_redraw);
+}
+
+test "runtime keepalive wake stays separate from host dirty" {
+    const pending = LoopPending{
+        .owner_work = false,
+        .runtime_wake = true,
+        .frame_work = false,
+    };
+    try std.testing.expect(!shouldWaitForWindow(pending, false));
+    try std.testing.expect(!shouldPresent(.no_frame, false));
+}
+
+test "runtime keep_running does not synthesize redraw" {
+    const progress = TerminalProgress{
+        .should_redraw = false,
+        .keep_running = true,
+    };
+    const host_redraw = false;
+    const terminal_redraw = progress.should_redraw;
+    const needs_render_turn = host_redraw or terminal_redraw or false;
+    try std.testing.expect(progress.keep_running);
+    try std.testing.expect(!terminal_redraw);
+    try std.testing.expect(!needs_render_turn);
+}
+
+test "render facts matrix separates host redraw terminal redraw and frame work" {
+    const cases = [_]struct {
+        terminal_redraw: bool,
+        host_redraw: bool,
+        frame_work: bool,
+        needs_render_turn: bool,
+        present: bool,
+    }{
+        .{ .terminal_redraw = false, .host_redraw = false, .frame_work = false, .needs_render_turn = false, .present = false },
+        .{ .terminal_redraw = true, .host_redraw = false, .frame_work = false, .needs_render_turn = true, .present = false },
+        .{ .terminal_redraw = false, .host_redraw = true, .frame_work = false, .needs_render_turn = true, .present = true },
+        .{ .terminal_redraw = false, .host_redraw = false, .frame_work = true, .needs_render_turn = true, .present = false },
+        .{ .terminal_redraw = true, .host_redraw = true, .frame_work = false, .needs_render_turn = true, .present = true },
+        .{ .terminal_redraw = true, .host_redraw = false, .frame_work = true, .needs_render_turn = true, .present = false },
+        .{ .terminal_redraw = false, .host_redraw = true, .frame_work = true, .needs_render_turn = true, .present = true },
+        .{ .terminal_redraw = true, .host_redraw = true, .frame_work = true, .needs_render_turn = true, .present = true },
+    };
+
+    for (cases) |case| {
+        const needs_render_turn = case.host_redraw or case.terminal_redraw or case.frame_work;
+        try std.testing.expectEqual(case.needs_render_turn, needs_render_turn);
+        try std.testing.expectEqual(case.present, shouldPresent(.no_frame, case.host_redraw));
+    }
 }

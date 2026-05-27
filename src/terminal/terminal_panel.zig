@@ -50,6 +50,11 @@ const SelectionCell = struct {
 };
 
 pub const TerminalPanel = struct {
+    pub const DrainInputOutcome = struct {
+        published_to_pty: bool,
+        host_visual_changed: bool,
+    };
+
     pub const OverlaySnapshot = struct {
         scrollbar: window.ScrollbarLayout,
     };
@@ -359,47 +364,12 @@ pub const TerminalPanel = struct {
         _ = self.resetCursorBlinkActivity(InputWindow.nowNs());
     }
 
-    pub fn drainInput(self: *TerminalPanel, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) void {
+    pub fn drainInput(self: *TerminalPanel, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) DrainInputOutcome {
+        var outcome: DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
         while (input_events.drainInputEvent()) |event| {
-            switch (event) {
-                .bytes => |bytes| {
-                    if (publishTerminalBytes(self, bytes.slice())) {
-                        _ = self.resetCursorBlinkActivity(InputWindow.nowNs());
-                    }
-                },
-                .key => |key| {
-                    if (publishTerminalKey(self, key)) {
-                        _ = self.resetCursorBlinkActivity(InputWindow.nowNs());
-                    }
-                },
-                .mouse => |mouse_event| {
-                    if (scroll.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height)) continue;
-                    const local_mouse = Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.geometry.render_px_w, self.geometry.render_px_h) orelse {
-                        if (mouse_event.host_only and clearHoveredLink(self)) self.input.requestRedraw();
-                        continue;
-                    };
-                    if (local_mouse.kind == .wheel) {
-                        if (!publishTerminalMouse(self, local_mouse)) {
-                            const delta: i32 = switch (local_mouse.button) {
-                                .wheel_up => 3,
-                                .wheel_down => -3,
-                                else => 0,
-                            };
-                            if (delta != 0) scroll.byRows(self, delta);
-                        }
-                        continue;
-                    }
-                    if (handleHostSelectionMouse(self, local_mouse)) continue;
-                    if (handleHostLinkMouse(self, local_mouse)) continue;
-                    if (mouse_event.host_only) {
-                        if (clearHoveredLink(self)) self.input.requestRedraw();
-                        continue;
-                    }
-
-                    _ = publishTerminalMouse(self, local_mouse);
-                },
-            }
+            mergeDrainInputOutcome(&outcome, handleDrainInputEvent(self, event, origin_x, origin_y, logical_width, logical_height, TerminalPanelOps));
         }
+        return outcome;
     }
 
     pub fn handleScrollInput(self: *TerminalPanel, input_events: *HostInput) void {
@@ -1078,59 +1048,66 @@ pub const TerminalPanel = struct {
         }) catch false;
     }
 
-    fn handleHostLinkMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+    const MouseHandlingOutcome = struct {
+        consumed: bool,
+        host_visual_changed: bool,
+    };
+
+    fn handleHostLinkMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
         switch (mouse_event.kind) {
-            .move => updateHoveredLinkCell(self, mouse_event),
+            .move => return .{ .consumed = false, .host_visual_changed = updateHoveredLinkCell(self, mouse_event) },
             .press => {
                 if (mouse_event.button == .left and mouse_event.mods.ctrl and self.conf.links.open == .system) {
-                    if (openLinkAtCell(self, mouseEventCell(self, mouse_event))) return true;
+                    if (openLinkAtCell(self, mouseEventCell(self, mouse_event))) {
+                        return .{ .consumed = true, .host_visual_changed = false };
+                    }
                 }
             },
             else => {},
         }
-        return false;
+        return .{ .consumed = false, .host_visual_changed = false };
     }
 
-    fn handleHostSelectionMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+    fn handleHostSelectionMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
         switch (mouse_event.kind) {
             .press => {
-                if (mouse_event.button != .left or mouse_event.mods.ctrl) return false;
-                if (terminalOwnsMouse(self, mouse_event)) return false;
+                if (mouse_event.button != .left or mouse_event.mods.ctrl) return .{ .consumed = false, .host_visual_changed = false };
+                if (terminalOwnsMouse(self, mouse_event)) return .{ .consumed = false, .host_visual_changed = false };
                 self.selection_anchor = selectionEventCell(self, mouse_event);
                 self.selection_drag_active = false;
-                return true;
+                return .{ .consumed = true, .host_visual_changed = false };
             },
             .move => {
-                if (self.selection_anchor == null or !mouse_event.buttons_down.left) return false;
+                if (self.selection_anchor == null or !mouse_event.buttons_down.left) return .{ .consumed = false, .host_visual_changed = false };
                 const anchor = self.selection_anchor.?;
                 const cell = selectionEventCell(self, mouse_event);
                 if (!self.selection_drag_active) {
-                    if (anchor.row == cell.row and anchor.col == cell.col) return true;
-                    vt_retained.startSelection(&self.term, anchor.row, anchor.col) catch return false;
+                    if (anchor.row == cell.row and anchor.col == cell.col) {
+                        return .{ .consumed = true, .host_visual_changed = false };
+                    }
+                    vt_retained.startSelection(&self.term, anchor.row, anchor.col) catch return .{ .consumed = false, .host_visual_changed = false };
                     self.selection_drag_active = true;
                 }
-                vt_retained.updateSelection(&self.term, cell.row, cell.col) catch return false;
-                self.input.requestRedraw();
-                return true;
+                vt_retained.updateSelection(&self.term, cell.row, cell.col) catch return .{ .consumed = false, .host_visual_changed = false };
+                return .{ .consumed = true, .host_visual_changed = true };
             },
             .release => {
-                if (mouse_event.button != .left) return false;
-                if (self.selection_anchor == null) return false;
+                if (mouse_event.button != .left) return .{ .consumed = false, .host_visual_changed = false };
+                if (self.selection_anchor == null) return .{ .consumed = false, .host_visual_changed = false };
                 if (!self.selection_drag_active) {
                     self.selection_anchor = null;
-                    return true;
+                    return .{ .consumed = true, .host_visual_changed = false };
                 }
                 const cell = selectionEventCell(self, mouse_event);
-                vt_retained.updateSelection(&self.term, cell.row, cell.col) catch return false;
-                vt_retained.finishSelection(&self.term) catch return false;
+                vt_retained.updateSelection(&self.term, cell.row, cell.col) catch return .{ .consumed = false, .host_visual_changed = false };
+                vt_retained.finishSelection(&self.term) catch return .{ .consumed = false, .host_visual_changed = false };
                 self.selection_anchor = null;
                 self.selection_drag_active = false;
-                const text = vt_retained.copySelection(&self.term) catch return true;
+                const text = vt_retained.copySelection(&self.term) catch return .{ .consumed = true, .host_visual_changed = true };
                 if (text.len != 0) _ = window.setClipboardText(text);
-                self.input.requestRedraw();
-                return true;
+                return .{ .consumed = true, .host_visual_changed = true };
             },
-            else => return false,
+            else => return .{ .consumed = false, .host_visual_changed = false },
         }
     }
 
@@ -1147,13 +1124,13 @@ pub const TerminalPanel = struct {
         });
     }
 
-    fn updateHoveredLinkCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) void {
+    fn updateHoveredLinkCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
         if (self.conf.links.hover == .off or !mouse_event.mods.ctrl) {
             if (clearHoveredLink(self)) {
                 self.hover_publish_pending = true;
-                self.input.requestRedraw();
+                return true;
             }
-            return;
+            return false;
         }
 
         const cell = mouseEventCell(self, mouse_event);
@@ -1161,9 +1138,9 @@ pub const TerminalPanel = struct {
         if (uri == null or uri.?.len == 0) {
             if (clearHoveredLink(self)) {
                 self.hover_publish_pending = true;
-                self.input.requestRedraw();
+                return true;
             }
-            return;
+            return false;
         }
 
         var changed = false;
@@ -1179,9 +1156,87 @@ pub const TerminalPanel = struct {
         changed = syncLinkCursor(self, true) or changed;
         if (changed) {
             self.hover_publish_pending = true;
-            self.input.requestRedraw();
+            return true;
         }
+        return false;
     }
+
+    const ScrollMouseOutcome = struct {
+        consumed: bool,
+        host_visual_changed: bool,
+    };
+
+    const ScrollVisualState = struct {
+        mouse_logical_x: i32,
+        mouse_logical_y: i32,
+        dragging: bool,
+        grab_offset: f32,
+        scrollback_offset: u32,
+
+        fn capture(self: *TerminalPanel) ScrollVisualState {
+            return .{
+                .mouse_logical_x = self.scrollbar.mouse_logical_x,
+                .mouse_logical_y = self.scrollbar.mouse_logical_y,
+                .dragging = self.scrollbar.dragging,
+                .grab_offset = self.scrollbar.grab_offset,
+                .scrollback_offset = vt_retained.scrollState(&self.term).scrollback_offset,
+            };
+        }
+    };
+
+    const TerminalPanelOps = struct {
+        fn resetCursorBlinkActivity(self: *TerminalPanel, now_ns: u64) bool {
+            return self.resetCursorBlinkActivity(now_ns);
+        }
+
+        fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) bool {
+            return self.publishTerminalBytes(bytes);
+        }
+
+        fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) bool {
+            return self.publishTerminalKey(key);
+        }
+
+        fn publishTerminalMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+            return self.publishTerminalMouse(mouse_event);
+        }
+
+        fn handleScrollMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) ScrollMouseOutcome {
+            const before = ScrollVisualState.capture(self);
+            const consumed = scroll.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
+            const after = ScrollVisualState.capture(self);
+            return .{ .consumed = consumed, .host_visual_changed = !std.meta.eql(before, after) };
+        }
+
+        fn contentRelativeEvent(mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, render_px_w: c_int, render_px_h: c_int) ?HostInput.Mouse.Event {
+            return Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);
+        }
+
+        fn clearHoveredLinkOp(self: *TerminalPanel) bool {
+            return clearHoveredLink(self);
+        }
+
+        fn handleWheelFallback(self: *TerminalPanel, local_mouse: HostInput.Mouse.Event) bool {
+            const before = vt_retained.scrollState(&self.term).scrollback_offset;
+            const delta: i32 = switch (local_mouse.button) {
+                .wheel_up => 3,
+                .wheel_down => -3,
+                else => 0,
+            };
+            if (delta == 0) return false;
+            scroll.byRows(self, delta);
+            const after = vt_retained.scrollState(&self.term).scrollback_offset;
+            return before != after;
+        }
+
+        fn handleHostSelectionMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
+            return self.handleHostSelectionMouse(mouse_event);
+        }
+
+        fn handleHostLinkMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
+            return self.handleHostLinkMouse(mouse_event);
+        }
+    };
 
     fn clearHoveredLink(self: *TerminalPanel) bool {
         const had_hover = self.hovered_link_cell != null;
@@ -1312,6 +1367,68 @@ fn finishPresentLockedWith(term: anytype, comptime Ops: type) void {
     Ops.ack(term, snapshot_seq);
 }
 
+fn handleDrainInputEvent(self: anytype, event: HostInput.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, comptime Ops: type) TerminalPanel.DrainInputOutcome {
+    var outcome: TerminalPanel.DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
+    switch (event) {
+        .bytes => |bytes| {
+            if (Ops.publishTerminalBytes(self, bytes.slice())) {
+                outcome.published_to_pty = true;
+                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWindow.nowNs());
+            }
+        },
+        .key => |key| {
+            if (Ops.publishTerminalKey(self, key)) {
+                outcome.published_to_pty = true;
+                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWindow.nowNs());
+            }
+        },
+        .mouse => |mouse_event| {
+            const scroll_outcome = Ops.handleScrollMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
+            outcome.host_visual_changed = scroll_outcome.host_visual_changed;
+            if (scroll_outcome.consumed) return outcome;
+
+            const local_mouse = Ops.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.geometry.render_px_w, self.geometry.render_px_h) orelse {
+                if (mouse_event.host_only and Ops.clearHoveredLinkOp(self)) outcome.host_visual_changed = true;
+                return outcome;
+            };
+
+            if (local_mouse.kind == .wheel) {
+                if (Ops.publishTerminalMouse(self, local_mouse)) {
+                    outcome.published_to_pty = true;
+                    outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWindow.nowNs()) or outcome.host_visual_changed;
+                } else {
+                    outcome.host_visual_changed = Ops.handleWheelFallback(self, local_mouse) or outcome.host_visual_changed;
+                }
+                return outcome;
+            }
+
+            const selection_outcome = Ops.handleHostSelectionMouse(self, local_mouse);
+            outcome.host_visual_changed = selection_outcome.host_visual_changed or outcome.host_visual_changed;
+            if (selection_outcome.consumed) return outcome;
+
+            const link_outcome = Ops.handleHostLinkMouse(self, local_mouse);
+            outcome.host_visual_changed = link_outcome.host_visual_changed or outcome.host_visual_changed;
+            if (link_outcome.consumed) return outcome;
+
+            if (mouse_event.host_only) {
+                if (Ops.clearHoveredLinkOp(self)) outcome.host_visual_changed = true;
+                return outcome;
+            }
+
+            if (Ops.publishTerminalMouse(self, local_mouse)) {
+                outcome.published_to_pty = true;
+                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWindow.nowNs()) or outcome.host_visual_changed;
+            }
+        },
+    }
+    return outcome;
+}
+
+fn mergeDrainInputOutcome(total: *TerminalPanel.DrainInputOutcome, next: TerminalPanel.DrainInputOutcome) void {
+    total.published_to_pty = total.published_to_pty or next.published_to_pty;
+    total.host_visual_changed = total.host_visual_changed or next.host_visual_changed;
+}
+
 const WindowClipboardOps = struct {
     fn drainPendingClipboardLocked(term: *HowlTerm) !?[]const u8 {
         return vt_retained.drainPendingClipboardLocked(term);
@@ -1435,6 +1552,86 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(!panel.resetCursorBlinkActivity(1234));
     try std.testing.expectEqual(@as(u64, 1234) + cursor_blink_interval_ns, panel.cursor_blink_deadline_ns);
     try std.testing.expect(panel.cursor_blink_visible);
+}
+
+test "drain input keeps PTY publication separate from host visual mutation" {
+    const FakePanel = struct {
+        geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
+        publish_bytes_ok: bool = false,
+        publish_key_ok: bool = false,
+        publish_mouse_ok: bool = false,
+        blink_changed: bool = false,
+        clear_hover_changed: bool = false,
+        wheel_changed: bool = false,
+    };
+
+    const FakeOps = struct {
+        fn resetCursorBlinkActivity(self: *FakePanel, _: u64) bool {
+            return self.blink_changed;
+        }
+
+        fn publishTerminalBytes(self: *FakePanel, _: []const u8) bool {
+            return self.publish_bytes_ok;
+        }
+
+        fn publishTerminalKey(self: *FakePanel, _: HostInput.Keys.Event) bool {
+            return self.publish_key_ok;
+        }
+
+        fn publishTerminalMouse(self: *FakePanel, _: HostInput.Mouse.Event) bool {
+            return self.publish_mouse_ok;
+        }
+
+        fn handleScrollMouse(_: *FakePanel, _: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) TerminalPanel.ScrollMouseOutcome {
+            return .{ .consumed = false, .host_visual_changed = false };
+        }
+
+        fn contentRelativeEvent(mouse_event: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int, _: c_int, _: c_int) ?HostInput.Mouse.Event {
+            return mouse_event;
+        }
+
+        fn clearHoveredLink(self: *FakePanel) bool {
+            return self.clear_hover_changed;
+        }
+
+        fn handleWheelFallback(self: *FakePanel, _: HostInput.Mouse.Event) bool {
+            return self.wheel_changed;
+        }
+
+        fn handleHostSelectionMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+            return .{ .consumed = false, .host_visual_changed = false };
+        }
+
+        fn handleHostLinkMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+            return .{ .consumed = false, .host_visual_changed = false };
+        }
+    };
+
+    var key_only = FakePanel{ .publish_key_ok = true };
+    const key_outcome = handleDrainInputEvent(&key_only, .{ .key = .{ .key = .up, .mods = .{} } }, 0, 0, 80, 25, FakeOps);
+    try std.testing.expect(key_outcome.published_to_pty);
+    try std.testing.expect(!key_outcome.host_visual_changed);
+
+    var wheel_only = FakePanel{ .wheel_changed = true };
+    const wheel_outcome = handleDrainInputEvent(&wheel_only, .{ .mouse = .{
+        .kind = .wheel,
+        .button = .wheel_up,
+        .pixel_x = 2,
+        .pixel_y = 3,
+        .mods = .{},
+        .buttons_down = .{},
+        .host_only = false,
+    } }, 0, 0, 80, 25, FakeOps);
+    try std.testing.expect(!wheel_outcome.published_to_pty);
+    try std.testing.expect(wheel_outcome.host_visual_changed);
+
+    var bytes = std.mem.zeroes(HostInput.Keys.ByteInput);
+    bytes.len = 1;
+    bytes.buf[0] = 'a';
+    var both = FakePanel{ .publish_bytes_ok = true, .blink_changed = true };
+    const both_outcome = handleDrainInputEvent(&both, .{ .bytes = bytes }, 0, 0, 80, 25, FakeOps);
+    try std.testing.expect(both_outcome.published_to_pty);
+    try std.testing.expect(both_outcome.host_visual_changed);
 }
 
 test "present pending blocks submit path until host present ack" {
