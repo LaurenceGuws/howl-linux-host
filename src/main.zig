@@ -98,6 +98,39 @@ const TerminalProgress = struct {
     keep_running: bool,
 };
 
+const LoopAdmission = struct {
+    wait_for_window: bool,
+    wait_ms: ?u32,
+};
+
+const HostMutations = struct {
+    input_outcome: TerminalPanel.DrainInputOutcome,
+};
+
+const RedrawRenderIntent = struct {
+    host_redraw: bool,
+    terminal_redraw: bool,
+    render_work_pending: bool,
+
+    fn needsRender(self: RedrawRenderIntent) bool {
+        return self.host_redraw or self.terminal_redraw or self.render_work_pending;
+    }
+};
+
+const RenderFrame = struct {
+    tab: *TerminalPanel,
+    turn: TerminalPanel.TurnResult,
+    snapshot: RenderSnapshot,
+};
+
+const PresentIntent = struct {
+    submit: bool,
+};
+
+const PresentSubmission = struct {
+    submitted: bool,
+};
+
 const App = struct {
     conf: *const Config.State,
     feed_record_path: ?[]const u8,
@@ -258,32 +291,42 @@ fn runLoopTurn(app: *App) !LoopAction {
     if (quitRequested(app)) |action| return action;
 
     const now_ns = InputWindow.nowNs();
-    _ = syncActiveBlinkCadence(app, now_ns);
-    const pending = collectLoopPending(app, now_ns);
-    const runtime_admission = takeTerminalInputAdmission(&app.terminal_input_admitted);
-    const wait_for_window = shouldWaitForWindow(pending, runtime_admission);
-    const event_action = pumpWindowEvents(app, wait_for_window, loopWaitMs(app, now_ns));
+
+    const admission = computeLoopAdmission(app, now_ns);
+    const event_action = pumpWindowEvents(app, admission);
     if (event_action == .quit) return .quit;
 
-    applyFocusChange(app);
-    try drainBindingActions(app);
-    if (quitRequested(app)) |action| return action;
-
-    const input_outcome = forwardTerminalInput(app);
-    _ = applyWindowResize(app);
-    const terminal_progress = driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*, InputWindow.nowNs());
+    const host_mutations = (try applyHostOwnedMutations(app)) orelse return .quit;
+    const terminal_progress = driveRuntimeProgress(app);
     if (terminal_progress.keep_running) app.input.wakeWindow();
     configureInputPolicies(app);
     try ensureActiveTabHealthy(app);
-    const host_redraw = app.input.drainRedrawRequested() or input_outcome.host_visual_changed;
-    const terminal_redraw = terminal_progress.should_redraw or syncActiveBlinkCadence(app, InputWindow.nowNs());
-    const needs_render_turn = host_redraw or terminal_redraw or activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*);
-    if (!needs_render_turn) return .continue_running;
 
-    render(app, host_redraw);
+    const intent = deriveRedrawRenderIntent(
+        app.input.drainRedrawRequested(),
+        host_mutations.input_outcome.host_visual_changed,
+        terminal_progress,
+        syncActiveBlinkCadence(app, InputWindow.nowNs()),
+        activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
+    );
+    if (!intent.needsRender()) return .continue_running;
+
+    const frame = render(app);
+    const present_intent = derivePresentIntent(frame, intent);
+    const submission = submitPresent(app, frame, present_intent);
+    completePresent(frame.tab, submission);
     if (quitRequested(app)) |action| return action;
     try ensureActiveTabHealthy(app);
     return .continue_running;
+}
+
+fn computeLoopAdmission(app: *App, now_ns: u64) LoopAdmission {
+    const pending = collectLoopPending(app, now_ns);
+    const runtime_admission = takeTerminalInputAdmission(&app.terminal_input_admitted);
+    return .{
+        .wait_for_window = shouldWaitForWindow(pending, runtime_admission),
+        .wait_ms = loopWaitMs(app, now_ns),
+    };
 }
 
 fn collectLoopPending(app: *App, now_ns: u64) LoopPending {
@@ -331,11 +374,38 @@ fn quitRequested(app: *const App) ?LoopAction {
     return .quit;
 }
 
-fn pumpWindowEvents(app: *App, wait: bool, timeout_ms: ?u32) LoopAction {
-    const signal = app.input.pumpWindow(wait, timeout_ms);
+fn pumpWindowEvents(app: *App, admission: LoopAdmission) LoopAction {
+    const signal = app.input.pumpWindow(admission.wait_for_window, admission.wait_ms);
     return switch (signal) {
         .none => .continue_running,
         .quit => .quit,
+    };
+}
+
+fn applyHostOwnedMutations(app: *App) !?HostMutations {
+    applyFocusChange(app);
+    try drainBindingActions(app);
+    if (quitRequested(app) != null) return null;
+    const input_outcome = forwardTerminalInput(app);
+    _ = applyWindowResize(app);
+    return .{ .input_outcome = input_outcome };
+}
+
+fn driveRuntimeProgress(app: *App) TerminalProgress {
+    return driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*, InputWindow.nowNs());
+}
+
+fn deriveRedrawRenderIntent(
+    host_redraw_requested: bool,
+    host_visual_changed: bool,
+    terminal_progress: TerminalProgress,
+    blink_redraw: bool,
+    render_work_pending: bool,
+) RedrawRenderIntent {
+    return .{
+        .host_redraw = host_redraw_requested or host_visual_changed,
+        .terminal_redraw = terminal_progress.should_redraw or blink_redraw,
+        .render_work_pending = render_work_pending,
     };
 }
 
@@ -444,7 +514,7 @@ fn destroyTabs(tabs: *TabSlots) void {
     for (tabs.items()) |tab| tab.deinit();
 }
 
-fn render(app: *App, host_dirty: bool) void {
+fn render(app: *App) RenderFrame {
     const tab = activeTab(app.tabs.items(), app.active_tab_idx.*);
     const turn = tab.renderTurn();
     app.first_loop_render_logged = true;
@@ -452,8 +522,8 @@ fn render(app: *App, host_dirty: bool) void {
     tab.noteRenderTurn(turn);
     syncActiveWindowTitle(app.window, tab);
     const snapshot = renderSnapshot(app, tab);
-    presentRenderFrame(app, tab, turn, host_dirty, snapshot);
     std.debug.assert(tab.termTextureId() != 0 or term_texture_before == 0);
+    return .{ .tab = tab, .turn = turn, .snapshot = snapshot };
 }
 
 fn syncActiveWindowTitle(window: anytype, tab: anytype) void {
@@ -480,16 +550,25 @@ fn renderSnapshot(app: *App, tab: *TerminalPanel) RenderSnapshot {
     };
 }
 
-fn presentRenderFrame(app: *App, tab: *TerminalPanel, turn: TerminalPanel.TurnResult, host_dirty: bool, snapshot: RenderSnapshot) void {
-    if (!shouldPresent(turn.step, host_dirty)) return;
+fn derivePresentIntent(frame: RenderFrame, intent: RedrawRenderIntent) PresentIntent {
+    return .{ .submit = shouldPresent(frame.turn.step, intent.host_redraw) };
+}
+
+fn submitPresent(app: *App, frame: RenderFrame, intent: PresentIntent) PresentSubmission {
+    if (!intent.submit) return .{ .submitted = false };
     app.window.present(.{
-        .term_texture_id = @intCast(tab.termTextureId()),
-        .term_texture_rect = snapshot.texture_rect,
-        .scrollbar = snapshot.scrollbar,
-        .tab_count = @intCast(snapshot.labels.len),
-        .active_tab = snapshot.active_tab,
-        .tab_labels = snapshot.labels,
+        .term_texture_id = @intCast(frame.tab.termTextureId()),
+        .term_texture_rect = frame.snapshot.texture_rect,
+        .scrollbar = frame.snapshot.scrollbar,
+        .tab_count = @intCast(frame.snapshot.labels.len),
+        .active_tab = frame.snapshot.active_tab,
+        .tab_labels = frame.snapshot.labels,
     });
+    return .{ .submitted = true };
+}
+
+fn completePresent(tab: anytype, submission: PresentSubmission) void {
+    if (!submission.submitted) return;
     tab.finishPresent();
 }
 
@@ -837,12 +916,73 @@ test "runtime keep_running does not synthesize redraw" {
         .should_redraw = false,
         .keep_running = true,
     };
-    const host_redraw = false;
-    const terminal_redraw = progress.should_redraw;
-    const needs_render_turn = host_redraw or terminal_redraw or false;
+    const intent = deriveRedrawRenderIntent(false, false, progress, false, false);
     try std.testing.expect(progress.keep_running);
-    try std.testing.expect(!terminal_redraw);
-    try std.testing.expect(!needs_render_turn);
+    try std.testing.expect(!intent.terminal_redraw);
+    try std.testing.expect(!intent.needsRender());
+    try std.testing.expect(!shouldPresent(.no_frame, intent.host_redraw));
+}
+
+test "keep_running true should_redraw false keeps host non-blocking without redraw or present" {
+    const progress = TerminalProgress{
+        .should_redraw = false,
+        .keep_running = true,
+    };
+    const pending = LoopPending{
+        .owner_work = true,
+        .runtime_wake = false,
+        .frame_work = false,
+    };
+    const intent = deriveRedrawRenderIntent(false, false, progress, false, false);
+
+    try std.testing.expect(!shouldWaitForWindow(pending, false));
+    try std.testing.expect(!intent.needsRender());
+    try std.testing.expect(!shouldPresent(.no_frame, intent.host_redraw));
+}
+
+test "host_redraw_requested true can produce host-only present" {
+    const progress = TerminalProgress{
+        .should_redraw = false,
+        .keep_running = false,
+    };
+    const intent = deriveRedrawRenderIntent(true, false, progress, false, false);
+
+    try std.testing.expect(intent.host_redraw);
+    try std.testing.expect(!intent.terminal_redraw);
+    try std.testing.expect(!intent.render_work_pending);
+    try std.testing.expect(intent.needsRender());
+    try std.testing.expect(shouldPresent(.no_frame, intent.host_redraw));
+}
+
+test "render_work_pending true produces render without host redraw bit" {
+    const progress = TerminalProgress{
+        .should_redraw = false,
+        .keep_running = false,
+    };
+    const intent = deriveRedrawRenderIntent(false, false, progress, false, true);
+
+    try std.testing.expect(!intent.host_redraw);
+    try std.testing.expect(!intent.terminal_redraw);
+    try std.testing.expect(intent.render_work_pending);
+    try std.testing.expect(intent.needsRender());
+    try std.testing.expect(!shouldPresent(.no_frame, intent.host_redraw));
+}
+
+test "present completion only happens after present submission" {
+    const FakeTab = struct {
+        finish_count: u8 = 0,
+
+        fn finishPresent(self: *@This()) void {
+            self.finish_count += 1;
+        }
+    };
+
+    var tab = FakeTab{};
+    completePresent(&tab, .{ .submitted = false });
+    try std.testing.expectEqual(@as(u8, 0), tab.finish_count);
+
+    completePresent(&tab, .{ .submitted = true });
+    try std.testing.expectEqual(@as(u8, 1), tab.finish_count);
 }
 
 test "render facts matrix separates host redraw terminal redraw and frame work" {
