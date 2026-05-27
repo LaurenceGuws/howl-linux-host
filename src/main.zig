@@ -123,11 +123,12 @@ const RenderFrame = struct {
     snapshot: RenderSnapshot,
 };
 
-const PresentIntent = struct {
-    submit: bool,
-};
+const PresentReason = enum { none, host_damage, terminal_frame, terminal_retire };
+
+const PresentPlan = struct { reason: PresentReason, needs_render_turn: bool };
 
 const PresentSubmission = struct {
+    reason: PresentReason,
     submitted: bool,
 };
 
@@ -312,8 +313,8 @@ fn runLoopTurn(app: *App) !LoopAction {
     if (!intent.needsRender()) return .continue_running;
 
     const frame = render(app);
-    const present_intent = derivePresentIntent(frame, intent);
-    const submission = submitPresent(app, frame, present_intent);
+    const present_plan = derivePresentPlan(frame, intent);
+    const submission = submitPresent(app, frame, present_plan);
     completePresent(frame.tab, submission);
     if (quitRequested(app)) |action| return action;
     try ensureActiveTabHealthy(app);
@@ -550,34 +551,52 @@ fn renderSnapshot(app: *App, tab: *TerminalPanel) RenderSnapshot {
     };
 }
 
-fn derivePresentIntent(frame: RenderFrame, intent: RedrawRenderIntent) PresentIntent {
-    return .{ .submit = shouldPresent(frame.turn.step, intent.host_redraw) };
+fn derivePresentPlan(frame: RenderFrame, intent: RedrawRenderIntent) PresentPlan {
+    return .{
+        .reason = derivePresentReason(intent.host_redraw, frame.turn.step),
+        .needs_render_turn = intent.needsRender(),
+    };
 }
 
-fn submitPresent(app: *App, frame: RenderFrame, intent: PresentIntent) PresentSubmission {
-    if (!intent.submit) return .{ .submitted = false };
-    app.window.present(.{
-        .term_texture_id = @intCast(frame.tab.termTextureId()),
-        .term_texture_rect = frame.snapshot.texture_rect,
-        .scrollbar = frame.snapshot.scrollbar,
-        .tab_count = @intCast(frame.snapshot.labels.len),
-        .active_tab = frame.snapshot.active_tab,
-        .tab_labels = frame.snapshot.labels,
-    });
-    return .{ .submitted = true };
+fn derivePresentReason(host_redraw: bool, step: TerminalPanel.TurnStep) PresentReason {
+    return switch (step) {
+        .rendered => .terminal_frame,
+        .blocked_present => .terminal_retire,
+        .no_frame, .idle_prepare, .idle_submit, .failed => if (host_redraw) .host_damage else .none,
+    };
+}
+
+fn submitPresent(app: *App, frame: RenderFrame, plan: PresentPlan) PresentSubmission {
+    assert(plan.needs_render_turn);
+    return submitPresentWith(app.window, frame.tab, frame.snapshot, plan.reason);
+}
+
+fn submitPresentWith(window: anytype, tab: anytype, snapshot: RenderSnapshot, reason: PresentReason) PresentSubmission {
+    switch (reason) {
+        .none => return .{ .reason = reason, .submitted = false },
+        .host_damage, .terminal_frame, .terminal_retire => {
+            window.present(.{
+                .term_texture_id = @intCast(tab.termTextureId()),
+                .term_texture_rect = snapshot.texture_rect,
+                .scrollbar = snapshot.scrollbar,
+                .tab_count = @intCast(snapshot.labels.len),
+                .active_tab = snapshot.active_tab,
+                .tab_labels = snapshot.labels,
+            });
+            return .{ .reason = reason, .submitted = true };
+        },
+    }
 }
 
 fn completePresent(tab: anytype, submission: PresentSubmission) void {
-    if (!submission.submitted) return;
-    tab.finishPresent();
-}
-
-fn shouldPresent(step: TerminalPanel.TurnStep, host_dirty: bool) bool {
-    if (host_dirty) return true;
-    return switch (step) {
-        .rendered, .blocked_present => true,
-        .no_frame, .idle_prepare, .idle_submit, .failed => false,
-    };
+    switch (submission.reason) {
+        .none => assert(!submission.submitted),
+        .host_damage => assert(submission.submitted),
+        .terminal_frame, .terminal_retire => {
+            assert(submission.submitted);
+            tab.finishPresent();
+        },
+    }
 }
 
 test "redraw does not participate in wait admission" {
@@ -607,14 +626,29 @@ test "frame work participates in wait admission" {
     try std.testing.expect(!shouldWaitForWindow(pending, false));
 }
 
-test "present cadence stays tied to frame or chrome work" {
-    try std.testing.expect(!shouldPresent(.no_frame, false));
-    try std.testing.expect(!shouldPresent(.idle_prepare, false));
-    try std.testing.expect(!shouldPresent(.idle_submit, false));
-    try std.testing.expect(!shouldPresent(.failed, false));
-    try std.testing.expect(shouldPresent(.rendered, false));
-    try std.testing.expect(shouldPresent(.blocked_present, false));
-    try std.testing.expect(shouldPresent(.no_frame, true));
+test "derivePresentReason matrix names host and terminal present cadence" {
+    const cases = [_]struct {
+        host_redraw: bool,
+        step: TerminalPanel.TurnStep,
+        reason: PresentReason,
+    }{
+        .{ .host_redraw = false, .step = .no_frame, .reason = .none },
+        .{ .host_redraw = false, .step = .idle_prepare, .reason = .none },
+        .{ .host_redraw = false, .step = .idle_submit, .reason = .none },
+        .{ .host_redraw = false, .step = .failed, .reason = .none },
+        .{ .host_redraw = false, .step = .rendered, .reason = .terminal_frame },
+        .{ .host_redraw = false, .step = .blocked_present, .reason = .terminal_retire },
+        .{ .host_redraw = true, .step = .no_frame, .reason = .host_damage },
+        .{ .host_redraw = true, .step = .idle_prepare, .reason = .host_damage },
+        .{ .host_redraw = true, .step = .idle_submit, .reason = .host_damage },
+        .{ .host_redraw = true, .step = .failed, .reason = .host_damage },
+        .{ .host_redraw = true, .step = .rendered, .reason = .terminal_frame },
+        .{ .host_redraw = true, .step = .blocked_present, .reason = .terminal_retire },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(case.reason, derivePresentReason(case.host_redraw, case.step));
+    }
 }
 
 test "runtime obligation due-now is treated as immediate loop work" {
@@ -908,7 +942,7 @@ test "runtime keepalive wake stays separate from host dirty" {
         .frame_work = false,
     };
     try std.testing.expect(!shouldWaitForWindow(pending, false));
-    try std.testing.expect(!shouldPresent(.no_frame, false));
+    try std.testing.expectEqual(PresentReason.none, derivePresentReason(false, .no_frame));
 }
 
 test "runtime keep_running does not synthesize redraw" {
@@ -920,7 +954,7 @@ test "runtime keep_running does not synthesize redraw" {
     try std.testing.expect(progress.keep_running);
     try std.testing.expect(!intent.terminal_redraw);
     try std.testing.expect(!intent.needsRender());
-    try std.testing.expect(!shouldPresent(.no_frame, intent.host_redraw));
+    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .no_frame));
 }
 
 test "keep_running true should_redraw false keeps host non-blocking without redraw or present" {
@@ -937,7 +971,7 @@ test "keep_running true should_redraw false keeps host non-blocking without redr
 
     try std.testing.expect(!shouldWaitForWindow(pending, false));
     try std.testing.expect(!intent.needsRender());
-    try std.testing.expect(!shouldPresent(.no_frame, intent.host_redraw));
+    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .no_frame));
 }
 
 test "host_redraw_requested true can produce host-only present" {
@@ -951,7 +985,7 @@ test "host_redraw_requested true can produce host-only present" {
     try std.testing.expect(!intent.terminal_redraw);
     try std.testing.expect(!intent.render_work_pending);
     try std.testing.expect(intent.needsRender());
-    try std.testing.expect(shouldPresent(.no_frame, intent.host_redraw));
+    try std.testing.expectEqual(PresentReason.host_damage, derivePresentReason(intent.host_redraw, .no_frame));
 }
 
 test "render_work_pending true produces render without host redraw bit" {
@@ -965,24 +999,55 @@ test "render_work_pending true produces render without host redraw bit" {
     try std.testing.expect(!intent.terminal_redraw);
     try std.testing.expect(intent.render_work_pending);
     try std.testing.expect(intent.needsRender());
-    try std.testing.expect(!shouldPresent(.no_frame, intent.host_redraw));
+    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .no_frame));
 }
 
-test "present completion only happens after present submission" {
+test "present completion only follows terminal present reasons" {
     const FakeTab = struct {
         finish_count: u8 = 0,
+        texture_id: u32 = 7,
+
+        fn termTextureId(self: *const @This()) u32 {
+            return self.texture_id;
+        }
 
         fn finishPresent(self: *@This()) void {
             self.finish_count += 1;
         }
     };
+    const FakeWindow = struct {
+        present_count: u8 = 0,
+
+        fn present(self: *@This(), frame: anytype) void {
+            std.debug.assert(frame.term_texture_id == 7);
+            self.present_count += 1;
+        }
+    };
+    const snapshot = RenderSnapshot{
+        .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+        .active_tab = 0,
+        .labels = &.{"shell"},
+    };
 
     var tab = FakeTab{};
-    completePresent(&tab, .{ .submitted = false });
-    try std.testing.expectEqual(@as(u8, 0), tab.finish_count);
+    var window = FakeWindow{};
 
-    completePresent(&tab, .{ .submitted = true });
+    completePresent(&tab, submitPresentWith(&window, &tab, snapshot, .none));
+    try std.testing.expectEqual(@as(u8, 0), tab.finish_count);
+    try std.testing.expectEqual(@as(u8, 0), window.present_count);
+
+    completePresent(&tab, submitPresentWith(&window, &tab, snapshot, .host_damage));
+    try std.testing.expectEqual(@as(u8, 0), tab.finish_count);
+    try std.testing.expectEqual(@as(u8, 1), window.present_count);
+
+    completePresent(&tab, submitPresentWith(&window, &tab, snapshot, .terminal_frame));
     try std.testing.expectEqual(@as(u8, 1), tab.finish_count);
+    try std.testing.expectEqual(@as(u8, 2), window.present_count);
+
+    completePresent(&tab, submitPresentWith(&window, &tab, snapshot, .terminal_retire));
+    try std.testing.expectEqual(@as(u8, 2), tab.finish_count);
+    try std.testing.expectEqual(@as(u8, 3), window.present_count);
 }
 
 test "render facts matrix separates host redraw terminal redraw and frame work" {
@@ -991,21 +1056,21 @@ test "render facts matrix separates host redraw terminal redraw and frame work" 
         host_redraw: bool,
         frame_work: bool,
         needs_render_turn: bool,
-        present: bool,
+        reason: PresentReason,
     }{
-        .{ .terminal_redraw = false, .host_redraw = false, .frame_work = false, .needs_render_turn = false, .present = false },
-        .{ .terminal_redraw = true, .host_redraw = false, .frame_work = false, .needs_render_turn = true, .present = false },
-        .{ .terminal_redraw = false, .host_redraw = true, .frame_work = false, .needs_render_turn = true, .present = true },
-        .{ .terminal_redraw = false, .host_redraw = false, .frame_work = true, .needs_render_turn = true, .present = false },
-        .{ .terminal_redraw = true, .host_redraw = true, .frame_work = false, .needs_render_turn = true, .present = true },
-        .{ .terminal_redraw = true, .host_redraw = false, .frame_work = true, .needs_render_turn = true, .present = false },
-        .{ .terminal_redraw = false, .host_redraw = true, .frame_work = true, .needs_render_turn = true, .present = true },
-        .{ .terminal_redraw = true, .host_redraw = true, .frame_work = true, .needs_render_turn = true, .present = true },
+        .{ .terminal_redraw = false, .host_redraw = false, .frame_work = false, .needs_render_turn = false, .reason = .none },
+        .{ .terminal_redraw = true, .host_redraw = false, .frame_work = false, .needs_render_turn = true, .reason = .none },
+        .{ .terminal_redraw = false, .host_redraw = true, .frame_work = false, .needs_render_turn = true, .reason = .host_damage },
+        .{ .terminal_redraw = false, .host_redraw = false, .frame_work = true, .needs_render_turn = true, .reason = .none },
+        .{ .terminal_redraw = true, .host_redraw = true, .frame_work = false, .needs_render_turn = true, .reason = .host_damage },
+        .{ .terminal_redraw = true, .host_redraw = false, .frame_work = true, .needs_render_turn = true, .reason = .none },
+        .{ .terminal_redraw = false, .host_redraw = true, .frame_work = true, .needs_render_turn = true, .reason = .host_damage },
+        .{ .terminal_redraw = true, .host_redraw = true, .frame_work = true, .needs_render_turn = true, .reason = .host_damage },
     };
 
     for (cases) |case| {
         const needs_render_turn = case.host_redraw or case.terminal_redraw or case.frame_work;
         try std.testing.expectEqual(case.needs_render_turn, needs_render_turn);
-        try std.testing.expectEqual(case.present, shouldPresent(.no_frame, case.host_redraw));
+        try std.testing.expectEqual(case.reason, derivePresentReason(case.host_redraw, .no_frame));
     }
 }
