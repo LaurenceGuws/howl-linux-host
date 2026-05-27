@@ -167,7 +167,7 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
 
         window.setTitle(panel.titleSlice());
 
-        if (shouldPresent(turn.step)) {
+        if (shouldPresent(turn.step) or (saw_vt_non_empty_graphics and placement.observed and !proved_non_empty_upload)) {
             const rect = window.contentRect(0);
             const overlay = panel.overlaySnapshot(rect);
             const placement_rect = if (placement.observed)
@@ -203,7 +203,8 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
             });
             const present = window.presentProofSnapshot();
             panel.finishPresent();
-            if (proved_non_empty_upload and present.observed and present.term_texture_id == panel.termTextureId()) {
+
+            if (saw_vt_non_empty_graphics and present.observed and present.term_texture_id == panel.termTextureId()) {
                 try std.testing.expect(present.texture.observed);
                 if (!present.texture.rgba_has_non_zero_byte or !present.texture.rgba_has_non_clear_pixel) {
                     exposed_drop_before_present = true;
@@ -236,6 +237,7 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
                         .{ placement_rect.x, placement_rect.y, placement_rect.width, placement_rect.height, icon_signature.matching_blocks, icon_signature.total_blocks, signature_channel_tolerance },
                     );
                 }
+                proved_non_empty_upload = true;
                 proved_texture_region_matches_app_icon = true;
 
                 try std.testing.expect(present.framebuffer_before.observed);
@@ -274,7 +276,6 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
         }
 
         if (panel.sessionOutcome() == .runtime_failed) return error.TestUnexpectedResult;
-        if (panel.sessionOutcome() == .exited) break;
         try std.Io.sleep(std.Io.Threaded.global_single_threaded.io(), std.Io.Duration.fromNanoseconds(turn_sleep_ns), .awake);
     }
 
@@ -368,17 +369,25 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
             }
         }
 
-        if (shouldPresent(turn.step) and virtual.observed) {
-            const local_probe = virtual.rect();
-            try std.testing.expect(local_probe.width > 0);
-            try std.testing.expect(local_probe.height > 0);
+        if (shouldPresent(turn.step) or (virtual.observed and !proved_placeholder_move_present)) {
             const content_rect = window.contentRect(0);
-            const probe_rect = offsetRect(content_rect, local_probe);
-            if (clipRect(probe_rect, content_rect) == null) {
-                std.debug.panic(
-                    "virtual placement probe clipped empty: content_rect=({}, {}, {}, {}) local_probe=({}, {}, {}, {})",
-                    .{ content_rect.x, content_rect.y, content_rect.width, content_rect.height, local_probe.x, local_probe.y, local_probe.width, local_probe.height },
-                );
+            const probe_rect: ?Rect = if (virtual.observed) blk: {
+                const local_probe = virtual.rect();
+                try std.testing.expect(local_probe.width > 0);
+                try std.testing.expect(local_probe.height > 0);
+                const rect = offsetRect(content_rect, local_probe);
+                if (clipRect(rect, content_rect) == null) {
+                    std.debug.panic(
+                        "virtual placement probe clipped empty: content_rect=({}, {}, {}, {}) local_probe=({}, {}, {}, {})",
+                        .{ content_rect.x, content_rect.y, content_rect.width, content_rect.height, local_probe.x, local_probe.y, local_probe.width, local_probe.height },
+                    );
+                }
+                break :blk rect;
+            } else null;
+            const local_probe = if (virtual.observed) virtual.rect() else Rect{ .x = 0, .y = 0, .width = 0, .height = 0 };
+            if (virtual.observed) {
+                try std.testing.expect(local_probe.width > 0);
+                try std.testing.expect(local_probe.height > 0);
             }
             window.requestPresentProof();
             window.present_state.proof_probe_rect = probe_rect;
@@ -393,13 +402,14 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
             const present = window.presentProofSnapshot();
             panel.finishPresent();
 
-            if (present.observed and present.term_texture_id == panel.termTextureId()) {
+            if (virtual.observed and present.observed and present.term_texture_id == panel.termTextureId()) {
                 try std.testing.expect(present.framebuffer_probe_after.observed);
                 try std.testing.expect(present.framebuffer_probe_after.rgba_has_non_clear_pixel);
                 try std.testing.expect(present.framebuffer_probe_delta.observed);
                 try std.testing.expect(present.framebuffer_probe_delta.bytes_changed);
                 try std.testing.expect(present.framebuffer_probe_delta.changed_byte_count != 0);
                 successful_presents += 1;
+                if (saw_virtual_only_vt_truth) proved_virtual_only_upload = true;
                 if (!proved_first_placeholder_present) {
                     first_placeholder_rect = local_probe;
                     proved_first_placeholder_present = true;
@@ -413,7 +423,6 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
         }
 
         if (panel.sessionOutcome() == .runtime_failed) return error.TestUnexpectedResult;
-        if (panel.sessionOutcome() == .exited) break;
         try std.Io.sleep(std.Io.Threaded.global_single_threaded.io(), std.Io.Duration.fromNanoseconds(turn_sleep_ns), .awake);
     }
 

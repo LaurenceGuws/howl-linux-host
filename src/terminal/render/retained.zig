@@ -48,6 +48,7 @@ pub const State = struct {
     geometry_epoch: u64 = 0,
     surface_text: c.HowlRenderSurfaceTextHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
+    present_in_flight: ?u64 = null,
 
     pub fn init(
         surface_text: c.HowlRenderSurfaceTextHandle,
@@ -97,9 +98,25 @@ pub const State = struct {
             .source_pending = state.source_pending != 0,
             .prepare_pending = state.prepare_pending != 0,
             .submit_pending = state.submit_pending != 0,
-            .present_pending = state.present_pending != 0,
+            .present_pending = self.presentPending(),
             .bootstrap_surface = bootstrap_surface,
         };
+    }
+
+    pub fn beginPresent(self: *State, snapshot_seq: u64) void {
+        std.debug.assert(snapshot_seq != 0);
+        std.debug.assert(self.present_in_flight == null);
+        self.present_in_flight = snapshot_seq;
+    }
+
+    pub fn finishPresent(self: *State) ?u64 {
+        const snapshot_seq = self.present_in_flight orelse return null;
+        self.present_in_flight = null;
+        return snapshot_seq;
+    }
+
+    pub fn presentPending(self: *const State) bool {
+        return self.present_in_flight != null;
     }
 
     pub fn setGeometryEpoch(self: *State, geometry_epoch: u64) void {
@@ -139,6 +156,7 @@ pub const State = struct {
     }
 
     pub fn submit(self: *State, execution: *const c.HowlRenderSurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) SubmitResult {
+        if (self.presentPending()) return .idle;
         var prepared: c.HowlRenderPreparedSurfaceHandle = null;
         switch (c.howl_render_surface_text_take_submit_handle(self.surface_text, &prepared)) {
             c.HOWL_RENDER_SUBMIT_DECISION_IDLE => return .idle,
@@ -196,13 +214,6 @@ pub const State = struct {
         };
         if (!self.preparedInfo(&upload_out.info)) return false;
         return self.preparedBuffer(&upload_out.buffer);
-    }
-
-    pub fn retirePresented(self: *State) u64 {
-        var retire = std.mem.zeroes(c.HowlRenderPresentedRetire);
-        std.debug.assert(c.howl_render_surface_text_retire_presented(self.surface_text, &retire) == c.HOWL_RENDER_CALL_OK);
-        std.debug.assert(retire.status == c.HOWL_RENDER_CALL_OK);
-        return retire.snapshot_seq;
     }
 
     fn prepareReady(self: *State, request: c.HowlRenderPrepareRequest) PrepareResult {
@@ -281,6 +292,15 @@ fn assertPreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) void
     std.debug.assert(c.howl_render_prepared_surface_diagnostics(prepared, &diagnostics) == c.HOWL_RENDER_CALL_OK);
 }
 
+fn testState() State {
+    const handle = c.howl_render_surface_text_init(.{
+        .surface_px = .{ .width = 100, .height = 80 },
+        .font_size_px = 12,
+    });
+    std.debug.assert(handle != null);
+    return State.init(handle, testFrameLayout());
+}
+
 test "frame layout sync reports grid and cell changes" {
     const current = testFrameLayout();
     var state = State.init(null, current);
@@ -299,4 +319,48 @@ test "frame layout sync reports grid and cell changes" {
     const changed = state.frameLayoutSync(next);
     try std.testing.expect(changed.changed);
     try std.testing.expect(changed.grid_changed);
+}
+
+test "present in flight contributes host-owned pending state" {
+    var state = testState();
+    defer state.deinit();
+    try std.testing.expect(!state.presentPending());
+
+    state.beginPresent(7);
+    try std.testing.expect(state.presentPending());
+
+    const pending = state.pending(false);
+    try std.testing.expect(pending.present_pending);
+}
+
+test "finish present returns snapshot once and clears" {
+    var state = State.init(null, testFrameLayout());
+
+    state.beginPresent(9);
+    try std.testing.expectEqual(@as(?u64, 9), state.finishPresent());
+    try std.testing.expect(!state.presentPending());
+    try std.testing.expectEqual(@as(?u64, null), state.finishPresent());
+}
+
+test "submit is blocked while host present is pending" {
+    var state = State.init(null, testFrameLayout());
+    state.beginPresent(11);
+
+    const execution = c.HowlRenderSurfaceExecutionInput{
+        .surface = .{ .host_surface_id = 1, .width = 1, .height = 1 },
+        .uploads_committed = 0,
+        .render_us = 0,
+    };
+    var feedback = std.mem.zeroes(c.HowlRenderSurfaceFeedback);
+
+    try std.testing.expectEqual(SubmitResult.idle, state.submit(&execution, &feedback));
+    try std.testing.expect(state.presentPending());
+}
+
+test "submit is allowed after finish present clears pending state" {
+    var state = State.init(null, testFrameLayout());
+    state.beginPresent(13);
+
+    try std.testing.expectEqual(@as(?u64, 13), state.finishPresent());
+    try std.testing.expect(!state.presentPending());
 }

@@ -564,8 +564,7 @@ pub const TerminalPanel = struct {
     pub fn finishPresent(self: *TerminalPanel) void {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
-        const retired_snapshot_seq = self.term.render.retirePresented();
-        vt_surface.ackPublishedSourceLocked(&self.term, retired_snapshot_seq);
+        finishPresentLockedWith(&self.term, VtPresentAckOps);
     }
 
     pub fn noteRenderTurn(self: *TerminalPanel, turn: TurnResult) void {
@@ -896,8 +895,10 @@ pub const TerminalPanel = struct {
             .uploads_committed = upload.buffer.uploads_committed,
             .render_us = renderUs(start_ns),
         };
-        const result = self.submit(&execution, &feedback);
-        if (result == .rendered) self.term_texture = feedback.surface;
+        const result = self.submit(&execution, &feedback, upload.info.snapshot_seq);
+        if (result == .rendered) {
+            self.term_texture = feedback.surface;
+        }
         return result;
     }
 
@@ -991,10 +992,12 @@ pub const TerminalPanel = struct {
         return false;
     }
 
-    fn submit(self: *TerminalPanel, execution: *const terminal_c.HowlRenderSurfaceExecutionInput, feedback: *terminal_c.HowlRenderSurfaceFeedback) render_retained.SubmitResult {
+    fn submit(self: *TerminalPanel, execution: *const terminal_c.HowlRenderSurfaceExecutionInput, feedback: *terminal_c.HowlRenderSurfaceFeedback, snapshot_seq: u64) render_retained.SubmitResult {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
-        return self.term.render.submit(execution, feedback);
+        const result = self.term.render.submit(execution, feedback);
+        if (result == .rendered) self.term.render.beginPresent(snapshot_seq);
+        return result;
     }
 
     fn renderUs(start_ns: u64) u64 {
@@ -1297,6 +1300,18 @@ pub const TerminalPanel = struct {
     }
 };
 
+const VtPresentAckOps = struct {
+    fn ack(term: *HowlTerm, snapshot_seq: u64) void {
+        vt_surface.ackPublishedSourceLocked(term, snapshot_seq);
+    }
+};
+
+fn finishPresentLockedWith(term: anytype, comptime Ops: type) void {
+    const snapshot_seq = term.render.finishPresent() orelse return;
+    std.debug.assert(snapshot_seq != 0);
+    Ops.ack(term, snapshot_seq);
+}
+
 const WindowClipboardOps = struct {
     fn drainPendingClipboardLocked(term: *HowlTerm) !?[]const u8 {
         return vt_retained.drainPendingClipboardLocked(term);
@@ -1422,7 +1437,7 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(panel.cursor_blink_visible);
 }
 
-test "present pending blocks submit path until retire ack" {
+test "present pending blocks submit path until host present ack" {
     const work = render_retained.WorkState{
         .source_pending = false,
         .prepare_pending = false,
@@ -1434,7 +1449,7 @@ test "present pending blocks submit path until retire ack" {
     try std.testing.expectEqual(TerminalPanel.RenderAction.blocked_present, TerminalPanel.renderAction(work, false));
 }
 
-test "submit path runs once no presented frame is in flight" {
+test "submit path runs once no host present is in flight" {
     const work = render_retained.WorkState{
         .source_pending = false,
         .prepare_pending = false,
@@ -1444,4 +1459,77 @@ test "submit path runs once no presented frame is in flight" {
     };
 
     try std.testing.expectEqual(TerminalPanel.RenderAction.submit_pending, TerminalPanel.renderAction(work, false));
+}
+
+test "finish present acks host-owned snapshot once and clears" {
+    const FakeRender = struct {
+        present_in_flight: ?u64 = 17,
+
+        fn finishPresent(self: *@This()) ?u64 {
+            const snapshot_seq = self.present_in_flight orelse return null;
+            self.present_in_flight = null;
+            return snapshot_seq;
+        }
+    };
+    const FakeTerm = struct {
+        render: FakeRender = .{},
+    };
+    const FakeOps = struct {
+        var ack_calls: u8 = 0;
+        var last_snapshot_seq: u64 = 0;
+
+        fn reset() void {
+            ack_calls = 0;
+            last_snapshot_seq = 0;
+        }
+
+        fn ack(_: *FakeTerm, snapshot_seq: u64) void {
+            ack_calls += 1;
+            last_snapshot_seq = snapshot_seq;
+        }
+    };
+
+    FakeOps.reset();
+    var term = FakeTerm{};
+
+    finishPresentLockedWith(&term, FakeOps);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
+    try std.testing.expectEqual(@as(u64, 17), FakeOps.last_snapshot_seq);
+    try std.testing.expect(term.render.present_in_flight == null);
+
+    finishPresentLockedWith(&term, FakeOps);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
+    try std.testing.expectEqual(@as(u64, 17), FakeOps.last_snapshot_seq);
+}
+
+test "chrome-only finish present does not ack zero" {
+    const FakeRender = struct {
+        fn finishPresent(_: *@This()) ?u64 {
+            return null;
+        }
+    };
+    const FakeTerm = struct {
+        render: FakeRender = .{},
+    };
+    const FakeOps = struct {
+        var ack_calls: u8 = 0;
+        var last_snapshot_seq: u64 = 0;
+
+        fn reset() void {
+            ack_calls = 0;
+            last_snapshot_seq = 0;
+        }
+
+        fn ack(_: *FakeTerm, snapshot_seq: u64) void {
+            ack_calls += 1;
+            last_snapshot_seq = snapshot_seq;
+        }
+    };
+
+    FakeOps.reset();
+    var term = FakeTerm{};
+
+    finishPresentLockedWith(&term, FakeOps);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
+    try std.testing.expectEqual(@as(u64, 0), FakeOps.last_snapshot_seq);
 }
