@@ -41,14 +41,12 @@ pub const VisibleCopy = struct {
     graphics_images: []c.HowlVtGraphicsImage,
     graphics_placements: []c.HowlVtGraphicsPlacement,
     graphics_virtual_placements: []c.HowlVtGraphicsVirtualPlacement,
-    graphics_placeholder_runs: []c.HowlVtGraphicsPlaceholderRun,
     graphics_payload_bytes: []u8,
 
     fn deinit(self: *VisibleCopy, allocator: std.mem.Allocator) void {
         if (self.graphics_images.len > 0) allocator.free(self.graphics_images);
         if (self.graphics_placements.len > 0) allocator.free(self.graphics_placements);
         if (self.graphics_virtual_placements.len > 0) allocator.free(self.graphics_virtual_placements);
-        if (self.graphics_placeholder_runs.len > 0) allocator.free(self.graphics_placeholder_runs);
         if (self.graphics_payload_bytes.len > 0) allocator.free(self.graphics_payload_bytes);
         self.* = undefined;
     }
@@ -90,7 +88,7 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     if (hasGraphics(visible.graphics) or visible.graphics_payload_bytes.len != 0) {
         graphics_log.event(
             "host-render-publish",
-            "status={d} published={d} queued={d} damage={d} snapshot_seq={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} placeholders={d} payload_len={d} alt={d}",
+            "status={d} published={d} queued={d} damage={d} snapshot_seq={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} payload_len={d} alt={d}",
             .{
                 typed_response.status,
                 typed_response.published,
@@ -102,7 +100,6 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
                 visible.graphics.image_count,
                 visible.graphics.placement_count,
                 visible.graphics.virtual_placement_count,
-                visible.graphics.placeholder_run_count,
                 visible.graphics_payload_bytes.len,
                 visible.graphics.is_alternate_screen,
             },
@@ -173,7 +170,7 @@ fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
             .image_count = visible.graphics.image_count,
             .placement_count = visible.graphics.placement_count,
             .virtual_placement_count = visible.graphics.virtual_placement_count,
-            .placeholder_run_count = visible.graphics.placeholder_run_count,
+            .placeholder_run_count = 0,
             .is_alternate_screen = visible.graphics.is_alternate_screen,
             .reserved0 = 0,
             .publication_seq = visible.graphics.publication_seq,
@@ -182,7 +179,7 @@ fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
         .graphics_images = .{ .ptr = if (visible.graphics_images.len == 0) null else visible.graphics_images.ptr, .len = visible.graphics_images.len },
         .graphics_placements = .{ .ptr = if (visible.graphics_placements.len == 0) null else visible.graphics_placements.ptr, .len = visible.graphics_placements.len },
         .graphics_virtual_placements = .{ .ptr = if (visible.graphics_virtual_placements.len == 0) null else visible.graphics_virtual_placements.ptr, .len = visible.graphics_virtual_placements.len },
-        .graphics_placeholder_runs = .{ .ptr = if (visible.graphics_placeholder_runs.len == 0) null else visible.graphics_placeholder_runs.ptr, .len = visible.graphics_placeholder_runs.len },
+        .graphics_placeholder_runs = .{ .ptr = null, .len = 0 },
         .graphics_payload_bytes = .{ .ptr = if (visible.graphics_payload_bytes.len == 0) null else visible.graphics_payload_bytes.ptr, .len = visible.graphics_payload_bytes.len },
     };
 }
@@ -305,7 +302,7 @@ fn vtAcquireVisibleAndGraphicsIntoSlotWith(allocator: std.mem.Allocator, handle:
         if (hasGraphics(graphics) or items.payload_bytes.len != 0) {
             graphics_log.event(
                 "host-vt-acquire",
-                "snapshot_seq={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} placeholders={d} payload_len={d} alt={d} scroll_row={d} rows={d} cols={d}",
+                "snapshot_seq={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} payload_len={d} alt={d} scroll_row={d} rows={d} cols={d}",
                 .{
                     source.snapshot_seq,
                     graphics.publication_seq,
@@ -313,7 +310,6 @@ fn vtAcquireVisibleAndGraphicsIntoSlotWith(allocator: std.mem.Allocator, handle:
                     graphics.image_count,
                     graphics.placement_count,
                     graphics.virtual_placement_count,
-                    graphics.placeholder_run_count,
                     items.payload_bytes.len,
                     graphics.is_alternate_screen,
                     source.source.scroll_row,
@@ -336,7 +332,6 @@ fn vtAcquireVisibleAndGraphicsIntoSlotWith(allocator: std.mem.Allocator, handle:
             .graphics_images = items.images,
             .graphics_placements = items.placements,
             .graphics_virtual_placements = items.virtual_placements,
-            .graphics_placeholder_runs = items.placeholder_runs,
             .graphics_payload_bytes = items.payload_bytes,
         };
     }
@@ -355,13 +350,11 @@ const GraphicsItems = struct {
     placements: []c.HowlVtGraphicsPlacement,
     payload_bytes: []u8,
     virtual_placements: []c.HowlVtGraphicsVirtualPlacement,
-    placeholder_runs: []c.HowlVtGraphicsPlaceholderRun,
 
     fn deinit(self: *GraphicsItems, allocator: std.mem.Allocator) void {
         if (self.images.len > 0) allocator.free(self.images);
         if (self.placements.len > 0) allocator.free(self.placements);
         if (self.virtual_placements.len > 0) allocator.free(self.virtual_placements);
-        if (self.placeholder_runs.len > 0) allocator.free(self.placeholder_runs);
         if (self.payload_bytes.len > 0) allocator.free(self.payload_bytes);
         self.* = undefined;
     }
@@ -374,8 +367,6 @@ fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphic
     errdefer if (placements.len > 0) allocator.free(placements);
     var virtual_placements = try allocator.alloc(c.HowlVtGraphicsVirtualPlacement, graphics.virtual_placement_count);
     errdefer if (virtual_placements.len > 0) allocator.free(virtual_placements);
-    var placeholder_runs = try allocator.alloc(c.HowlVtGraphicsPlaceholderRun, graphics.placeholder_run_count);
-    errdefer if (placeholder_runs.len > 0) allocator.free(placeholder_runs);
 
     var image_idx: u32 = 0;
     while (image_idx < graphics.image_count) : (image_idx += 1) {
@@ -407,16 +398,6 @@ fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphic
         }
     }
 
-    placement_idx = 0;
-    while (placement_idx < graphics.placeholder_run_count) : (placement_idx += 1) {
-        const result = c.howl_vt_terminal_query_graphics_placeholder_run(handle, graphics.publication_seq, placement_idx);
-        switch (result.status) {
-            c.HOWL_VT_CALL_OK => placeholder_runs[placement_idx] = result.run,
-            c.HOWL_VT_CALL_INVALID_ARGUMENT => return error.InvalidPublication,
-            else => return error.VtCallFailed,
-        }
-    }
-
     const payload_len = try totalPayloadLen(images);
     const payload_bytes = try allocator.alloc(u8, payload_len);
     errdefer if (payload_bytes.len > 0) allocator.free(payload_bytes);
@@ -437,7 +418,7 @@ fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphic
     }
     std.debug.assert(payload_offset == payload_bytes.len);
 
-    return .{ .images = images, .placements = placements, .virtual_placements = virtual_placements, .placeholder_runs = placeholder_runs, .payload_bytes = payload_bytes };
+    return .{ .images = images, .placements = placements, .virtual_placements = virtual_placements, .payload_bytes = payload_bytes };
 }
 
 fn totalPayloadLen(images: []const c.HowlVtGraphicsImage) !usize {
@@ -455,8 +436,7 @@ fn renderCallOk(status: i32) !void {
 fn hasGraphics(meta: c.HowlVtGraphicsMeta) bool {
     return meta.image_count != 0 or
         meta.placement_count != 0 or
-        meta.virtual_placement_count != 0 or
-        meta.placeholder_run_count != 0;
+        meta.virtual_placement_count != 0;
 }
 
 fn applyHyperlinkHover(slot: ReservedPublishSlot, rows: u16, cols: u16, hover: HyperlinkHover) void {
@@ -663,7 +643,7 @@ test "zero snapshot sequence means no ack call" {
     try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
 }
 
-test "publish commit forwards graphics metadata exactly" {
+test "publish commit forwards placement metadata and empty placeholder runs" {
     const visible: VisibleCopy = .{
         .rows = 3,
         .cols = 8,
@@ -678,6 +658,7 @@ test "publish commit forwards graphics metadata exactly" {
             .image_count = 7,
             .placement_count = 5,
             .virtual_placement_count = 2,
+            .placeholder_run_count = 9,
             .is_alternate_screen = 1,
             .reserved0 = 0,
             .publication_seq = 33,
@@ -697,6 +678,9 @@ test "publish commit forwards graphics metadata exactly" {
     try std.testing.expectEqual(visible.graphics.image_count, commit.graphics.image_count);
     try std.testing.expectEqual(visible.graphics.placement_count, commit.graphics.placement_count);
     try std.testing.expectEqual(visible.graphics.virtual_placement_count, commit.graphics.virtual_placement_count);
+    try std.testing.expectEqual(@as(u32, 0), commit.graphics.placeholder_run_count);
+    try std.testing.expectEqual(@as(usize, 0), commit.graphics_placeholder_runs.len);
+    try std.testing.expectEqual(@as(?[*]const c.HowlVtGraphicsPlaceholderRun, null), commit.graphics_placeholder_runs.ptr);
     try std.testing.expectEqual(visible.graphics.is_alternate_screen, commit.graphics.is_alternate_screen);
     try std.testing.expectEqual(visible.graphics.publication_seq, commit.graphics.publication_seq);
     try std.testing.expectEqual(visible.graphics.dirty_generation, commit.graphics.dirty_generation);
@@ -951,7 +935,7 @@ test "paired acquisition retries whole attempt on stale graphics publication" {
             errdefer allocator.free(placements);
             images[0] = .{ .image_id = 7, .image_number = 1, .format = 24, .reserved0 = 0, .width = 2, .height = 1, .payload_len = 4 };
             placements[0] = .{ .image_id = 7, .placement_id = 4, .z_index = 0, .anchor = .{ .kind = c.HOWL_VT_GRAPHICS_ROW_ANCHOR_ON_SCREEN, .reserved0 = 0, .reserved1 = 0, .value = 1 }, .anchor_col = 2, .reserved0 = 0, .source_x = 0, .source_y = 0, .source_width = 2, .source_height = 1, .cell_x_offset = 0, .cell_y_offset = 0, .columns = 4, .rows = 2, .dest_left_cell_px = 3, .dest_top_cell_px = 5, .dest_right_cell_px = 35, .dest_bottom_cell_px = 37, .dest_grid_columns = 4, .dest_grid_rows = 2, .effective_columns = 4, .effective_rows = 2, .flags = 0 };
-            return .{ .images = images, .placements = placements };
+            return .{ .images = images, .placements = placements, .virtual_placements = &.{}, .payload_bytes = &.{} };
         }
     };
 

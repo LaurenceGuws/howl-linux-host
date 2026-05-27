@@ -639,7 +639,7 @@ fn submitPresent(app: *App, frame: RenderFrame, plan: PresentPlan) PresentSubmis
         if (graphics.vt_graphics.nonEmpty()) {
             graphics_log.event(
                 "host-present-submit",
-                "reason={s} token={d} snapshot_seq={d} texture_id={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} placeholders={d} last_upload_snapshot={d} rgba_len={d} rgba_nonzero={d}",
+                "reason={s} token={d} snapshot_seq={d} texture_id={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} last_upload_snapshot={d} rgba_len={d} rgba_nonzero={d}",
                 .{
                     @tagName(submission.reason),
                     submission.token.?,
@@ -650,7 +650,6 @@ fn submitPresent(app: *App, frame: RenderFrame, plan: PresentPlan) PresentSubmis
                     graphics.vt_graphics.image_count,
                     graphics.vt_graphics.placement_count,
                     graphics.vt_graphics.virtual_placement_count,
-                    graphics.vt_graphics.placeholder_run_count,
                     graphics.last_upload.prepared_snapshot_seq,
                     graphics.last_upload.rgba_len,
                     @intFromBool(graphics.last_upload.rgba_has_non_zero_byte),
