@@ -346,8 +346,8 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
     panel_live = true;
     defer if (panel_live) panel.deinit();
 
-    var saw_virtual_only_vt_truth = false;
-    var proved_virtual_only_upload = false;
+    var saw_generated_placement_vt_truth = false;
+    var proved_generated_placement_upload = false;
     var proved_first_placeholder_present = false;
     var proved_placeholder_move_present = false;
     var last_upload_snapshot_seq: u64 = 0;
@@ -361,16 +361,16 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
 
         const after = panel.graphicsProofSnapshot();
         const virtual = panel.firstGraphicsVirtualPlacementProofSnapshot();
-        if (after.vt_graphics.image_count != 0 and after.vt_graphics.placement_count == 0 and after.vt_graphics.virtual_placement_count != 0) {
-            saw_virtual_only_vt_truth = true;
+        if (virtual.observed and after.vt_graphics.image_count != 0 and after.vt_graphics.placement_count != 0) {
+            saw_generated_placement_vt_truth = true;
         }
         if (after.last_upload.observed and after.last_upload.prepared_snapshot_seq != last_upload_snapshot_seq) {
             last_upload_snapshot_seq = after.last_upload.prepared_snapshot_seq;
             try std.testing.expect(after.last_upload.prepared_snapshot_seq != 0);
             try std.testing.expect(after.last_upload.rgba_len != 0);
             try std.testing.expect(after.last_upload.rgba_has_non_zero_byte);
-            if (after.last_upload.vt_graphics.image_count != 0 and after.last_upload.vt_graphics.placement_count == 0 and after.last_upload.vt_graphics.virtual_placement_count != 0) {
-                proved_virtual_only_upload = true;
+            if (virtual.observed and after.last_upload.vt_graphics.image_count != 0 and after.last_upload.vt_graphics.placement_count != 0) {
+                proved_generated_placement_upload = true;
             }
         }
 
@@ -419,7 +419,7 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
                 try std.testing.expect(present.framebuffer_probe_delta.bytes_changed);
                 try std.testing.expect(present.framebuffer_probe_delta.changed_byte_count != 0);
                 successful_presents += 1;
-                if (saw_virtual_only_vt_truth) proved_virtual_only_upload = true;
+                if (saw_generated_placement_vt_truth) proved_generated_placement_upload = true;
                 if (!proved_first_placeholder_present) {
                     first_placeholder_rect = local_probe;
                     proved_first_placeholder_present = true;
@@ -436,8 +436,8 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
         try std.Io.sleep(std.Io.Threaded.global_single_threaded.io(), std.Io.Duration.fromNanoseconds(turn_sleep_ns), .awake);
     }
 
-    try std.testing.expect(saw_virtual_only_vt_truth);
-    try std.testing.expect(proved_virtual_only_upload);
+    try std.testing.expect(saw_generated_placement_vt_truth);
+    try std.testing.expect(proved_generated_placement_upload);
     try std.testing.expect(proved_first_placeholder_present);
     try std.testing.expect(proved_placeholder_move_present);
     try std.testing.expect(successful_presents >= 2);
