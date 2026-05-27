@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const howl_lua = @import("howl_lua");
 const Bindings = @import("../input/input.zig").Input.Bindings;

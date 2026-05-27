@@ -1,10 +1,10 @@
 const feed_record = @import("../pty/feed_record.zig");
+const latency = @import("../../latency_log.zig");
 const pty_session = @import("../pty/session.zig");
 const terminal_term = @import("../term.zig");
 const vt_api = @import("../vt/abi.zig");
 const vt_retained = @import("../vt/retained.zig");
 const vt_surface = @import("../vt/surface.zig");
-const log = @import("../../input/window.zig");
 const std = @import("std");
 
 const transport_mode: pty_session.TransportPumpMode = .normal;
@@ -40,20 +40,6 @@ fn driveOnceWith(term: anytype, now_ns: u64, comptime Ops: type) Outcome {
     const alive = Ops.isAlive(term);
     const keep = backlog or transport.hit_limit or runtime.pending_now;
     const should_redraw = transport.reads != 0 or transport.bytes_read != 0 or runtime.state_changed;
-    _ = Ops.takeProgressDriveStartup(term);
-    Ops.logFrame(
-        term,
-        "host-loop ts_ns={d} stage=progress-drive drained={d} pending={d} reads={d} read_bytes={d} wake={d} keep={}",
-        .{
-            log.nowNs(),
-            transport.drained_input_bytes,
-            transport.pending_input_bytes,
-            transport.reads,
-            transport.bytes_read,
-            @intFromBool(should_redraw or !alive),
-            keep,
-        },
-    );
     return .{ .keep = keep, .should_redraw = should_redraw, .alive = alive };
 }
 
@@ -72,18 +58,6 @@ const RealOps = struct {
 
     fn isAlive(term: *const terminal_term.Term) bool {
         return pty_session.isAlive(term);
-    }
-
-    fn takeProgressDriveStartup(term: *terminal_term.Term) bool {
-        if (term.trace.progress_drive_logged) return false;
-        term.trace.progress_drive_logged = true;
-        return true;
-    }
-
-    fn logFrame(term: *terminal_term.Term, comptime fmt: []const u8, args: anytype) void {
-        _ = term;
-        _ = fmt;
-        _ = args;
     }
 };
 
@@ -142,10 +116,12 @@ fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPump
 
 fn feedTermLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u32) bool {
     const history_before = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
+    latency.event("vt-feed-abi-begin", "len={d}", .{bytes.len});
     const result = vt_retained.feedLocked(term, bytes);
+    latency.event("vt-feed-abi-end", "status={d} state_changed={d} title_changed={d}", .{ result.status, result.state_changed, result.title_changed });
     if (!vt_api.isCallOk(result.status)) {
         term.pty.lifecycle = .failed;
-        log.logf("host-loop ts_ns={d} stage=transport-vt-feed-failed status={d} chunk_len={d}", .{ log.nowNs(), result.status, chunk_len });
+        latency.event("vt-feed-failed", "status={d} chunk_len={d}", .{ result.status, chunk_len });
         return false;
     }
     const title = if (result.title_changed != 0) vt_retained.copyTitleLocked(term) catch null else null;
@@ -161,7 +137,7 @@ fn feedTermLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u32) 
 fn recordChunkLocked(term: *terminal_term.Term, chunk: []const u8) bool {
     feed_record.writeChunkLocked(term, chunk) catch |err| {
         term.pty.lifecycle = .failed;
-        log.logf("host-loop ts_ns={d} stage=transport-record-failed err={s} chunk_len={d}", .{ log.nowNs(), @errorName(err), chunk.len });
+        latency.event("transport-record-failed", "err={s} chunk_len={d}", .{ @errorName(err), chunk.len });
         return false;
     };
     return true;
@@ -350,18 +326,4 @@ const FakeOps = struct {
     fn isAlive(_: *const FakeTerm) bool {
         return fake_state.is_alive;
     }
-
-    fn takeProgressDriveStartup(_: *FakeTerm) bool {
-        return true;
-    }
-
-    fn logFrame(_: *FakeTerm, comptime _: []const u8, _: anytype) void {}
 };
-
-fn frameTraceEnabled(term: *terminal_term.Term) bool {
-    if (term.trace.frame_trace_state == .unknown) {
-        const raw = std.c.getenv("HOWL_RUNTIME_TRACE_FRAMES");
-        term.trace.frame_trace_state = if (raw != null and raw.?[0] != 0 and raw.?[0] != '0') .enabled else .disabled;
-    }
-    return term.trace.frame_trace_state == .enabled;
-}

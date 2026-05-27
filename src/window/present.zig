@@ -1,7 +1,7 @@
 const builtin = @import("builtin");
 const Draw = @import("draw.zig");
 const Layout = @import("layout.zig");
-const InputWindow = @import("../input/window.zig");
+const latency = @import("../latency_log.zig");
 const Texture = @import("texture.zig");
 const std = @import("std");
 
@@ -51,8 +51,6 @@ pub fn State(comptime c: type) type {
         tab_cache_w: c_int,
         tab_cache_h: c_int,
         tab_cache_hash: u64,
-        first_present_attempt_logged: bool,
-        first_present_logged: bool,
         proof_capture_requested: bool,
         proof_probe_rect: ?Layout.Rect,
         last_present_proof: PresentProofSnapshot,
@@ -75,8 +73,6 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
         .tab_cache_w = 0,
         .tab_cache_h = 0,
         .tab_cache_hash = 0,
-        .first_present_attempt_logged = false,
-        .first_present_logged = false,
         .proof_capture_requested = false,
         .proof_probe_rect = null,
         .last_present_proof = emptyPresentProofSnapshot(),
@@ -113,6 +109,7 @@ pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) Pr
     state.next_present_token +%= 1;
     if (state.next_present_token == 0) state.next_present_token = 1;
     state.submitted_present = token;
+    latency.event("gl-present-begin", "token={d} texture_id={d} rect_w={d} rect_h={d}", .{ token, frame.term_texture_id, frame.term_texture_rect.width, frame.term_texture_rect.height });
 
     const handle = state.window orelse unreachable;
     var fb_w: c_int = 0;
@@ -141,14 +138,8 @@ pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) Pr
     Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.term_texture_id, frame.term_texture_rect.x, frame.term_texture_rect.y, frame.term_texture_rect.width, frame.term_texture_rect.height);
     if (capture_present_proof) capturePresentProof(c, state, frame, probe_rect, framebuffer_before, framebuffer_probe_before);
     Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
-    if (!state.first_present_attempt_logged) {
-        state.first_present_attempt_logged = true;
-    }
-    if (!state.first_present_logged and frame.term_texture_id != 0) {
-        state.first_present_logged = true;
-        InputWindow.logStartupf("stage=term-present-first term_texture_id={d} rect_w={d} rect_h={d}", .{ frame.term_texture_id, frame.term_texture_rect.width, frame.term_texture_rect.height });
-    }
     Texture.swapWindow(c, handle);
+    latency.event("gl-present-end", "token={d} texture_id={d}", .{ token, frame.term_texture_id });
     std.debug.assert(state.submitted_present == token);
     state.submitted_present = null;
     state.completed_present = token;
@@ -460,8 +451,6 @@ fn testState() State(FakeC) {
         .tab_cache_w = 0,
         .tab_cache_h = 0,
         .tab_cache_hash = 0,
-        .first_present_attempt_logged = false,
-        .first_present_logged = false,
         .proof_capture_requested = false,
         .proof_probe_rect = null,
         .last_present_proof = emptyPresentProofSnapshot(),

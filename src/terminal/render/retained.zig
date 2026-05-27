@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("../c.zig").c;
+const latency = @import("../../latency_log.zig");
 
 pub const PrepareResult = enum { idle, prepared, failed };
 
@@ -150,13 +151,19 @@ pub const State = struct {
 
     pub fn prepare(self: *State) PrepareResult {
         var request = std.mem.zeroes(c.HowlRenderPrepareRequest);
+        latency.event("render-prepare-take-abi-begin", "", .{});
         switch (c.howl_render_surface_text_take_prepare_request(self.surface_text, &request)) {
             c.HOWL_RENDER_PREPARE_IDLE => {
+                latency.event("render-prepare-take-abi-end", "result=idle", .{});
                 self.releasePreparedSurface();
                 return .idle;
             },
-            c.HOWL_RENDER_PREPARE_READY => return self.prepareReady(request),
+            c.HOWL_RENDER_PREPARE_READY => {
+                latency.event("render-prepare-take-abi-end", "result=ready snapshot_seq={d}", .{request.snapshot_seq});
+                return self.prepareReady(request);
+            },
             else => {
+                latency.event("render-prepare-take-abi-end", "result=failed", .{});
                 self.releasePreparedSurface();
                 return .failed;
             },
@@ -166,22 +173,30 @@ pub const State = struct {
     pub fn submit(self: *State, execution: *const c.HowlRenderSurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) SubmitResult {
         if (self.presentPending()) return .idle;
         var prepared: c.HowlRenderPreparedSurfaceHandle = null;
+        latency.event("render-submit-take-abi-begin", "", .{});
         switch (c.howl_render_surface_text_take_submit_handle(self.surface_text, &prepared)) {
-            c.HOWL_RENDER_SUBMIT_DECISION_IDLE => return .idle,
+            c.HOWL_RENDER_SUBMIT_DECISION_IDLE => {
+                latency.event("render-submit-take-abi-end", "decision=idle", .{});
+                return .idle;
+            },
             c.HOWL_RENDER_SUBMIT_DECISION_SUBMIT => {},
             c.HOWL_RENDER_SUBMIT_DECISION_STALE => {
+                latency.event("render-submit-take-abi-end", "decision=stale", .{});
                 self.releasePreparedSurface();
                 return .stale;
             },
             c.HOWL_RENDER_SUBMIT_DECISION_NEEDS_PREPARE => {
+                latency.event("render-submit-take-abi-end", "decision=needs_prepare", .{});
                 self.releasePreparedSurface();
                 return .needs_prepare;
             },
             else => {
+                latency.event("render-submit-take-abi-end", "decision=failed", .{});
                 self.releasePreparedSurface();
                 return .failed;
             },
         }
+        latency.event("render-submit-take-abi-end", "decision=submit", .{});
         return switch (self.submitHandle(prepared, execution, feedback)) {
             c.HOWL_RENDER_SUBMIT_IDLE => .idle,
             c.HOWL_RENDER_SUBMIT_STALE => blk: {
@@ -226,13 +241,19 @@ pub const State = struct {
 
     fn prepareReady(self: *State, request: c.HowlRenderPrepareRequest) PrepareResult {
         var prepared: c.HowlRenderPreparedSurfaceHandle = null;
+        latency.event("render-prepare-handle-abi-begin", "snapshot_seq={d}", .{request.snapshot_seq});
         return switch (c.howl_render_surface_text_prepare_handle(self.surface_text, request, &prepared)) {
             c.HOWL_RENDER_PREPARE_IDLE => blk: {
+                latency.event("render-prepare-handle-abi-end", "result=idle snapshot_seq={d}", .{request.snapshot_seq});
                 self.releasePreparedSurface();
                 break :blk .idle;
             },
-            c.HOWL_RENDER_PREPARE_READY => self.acceptPrepared(prepared, request),
+            c.HOWL_RENDER_PREPARE_READY => blk: {
+                latency.event("render-prepare-handle-abi-end", "result=ready snapshot_seq={d}", .{request.snapshot_seq});
+                break :blk self.acceptPrepared(prepared, request);
+            },
             else => blk: {
+                latency.event("render-prepare-handle-abi-end", "result=failed snapshot_seq={d}", .{request.snapshot_seq});
                 self.releasePreparedSurface();
                 break :blk .failed;
             },
@@ -241,14 +262,20 @@ pub const State = struct {
 
     fn acceptPrepared(self: *State, prepared: c.HowlRenderPreparedSurfaceHandle, request: c.HowlRenderPrepareRequest) PrepareResult {
         var info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo);
-        if (c.howl_render_prepared_surface_describe(prepared, &info) != c.HOWL_RENDER_CALL_OK) {
+        latency.event("render-prepared-describe-abi-begin", "", .{});
+        const describe_status = c.howl_render_prepared_surface_describe(prepared, &info);
+        latency.event("render-prepared-describe-abi-end", "status={d} snapshot_seq={d}", .{ describe_status, info.snapshot_seq });
+        if (describe_status != c.HOWL_RENDER_CALL_OK) {
             self.releasePreparedSurface();
             return .failed;
         }
         std.debug.assert(info.snapshot_seq == request.snapshot_seq);
         std.debug.assert(info.dirty_epoch == request.dirty_epoch);
         std.debug.assert(info.geometry_epoch == request.geometry_epoch);
-        std.debug.assert(c.howl_render_surface_text_publish_prepared_handle(self.surface_text, prepared) == c.HOWL_RENDER_CALL_OK);
+        latency.event("render-publish-prepared-abi-begin", "snapshot_seq={d}", .{info.snapshot_seq});
+        const publish_status = c.howl_render_surface_text_publish_prepared_handle(self.surface_text, prepared);
+        latency.event("render-publish-prepared-abi-end", "status={d} snapshot_seq={d}", .{ publish_status, info.snapshot_seq });
+        std.debug.assert(publish_status == c.HOWL_RENDER_CALL_OK);
         self.releasePreparedSurface();
         assertPreparedSurfaceHandle(prepared);
         self.storePreparedSurface(prepared);
@@ -258,7 +285,9 @@ pub const State = struct {
     fn submitHandle(self: *State, prepared: c.HowlRenderPreparedSurfaceHandle, execution: *const c.HowlRenderSurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) c.HowlRenderSubmitStatus {
         const current = self.prepared_surface orelse return c.HOWL_RENDER_SUBMIT_IDLE;
         std.debug.assert(prepared == current);
+        latency.event("render-submit-handle-abi-begin", "surface_id={d} width={d} height={d}", .{ execution.surface.host_surface_id, execution.surface.width, execution.surface.height });
         const result = c.howl_render_surface_text_submit_handle(self.surface_text, prepared, execution, feedback);
+        latency.event("render-submit-handle-abi-end", "result={d} texture_id={d}", .{ result, feedback.surface.host_surface_id });
         if (result == c.HOWL_RENDER_SUBMIT_RENDERED) {
             self.forgetPreparedSurface();
         }

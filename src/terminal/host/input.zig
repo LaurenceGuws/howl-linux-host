@@ -1,8 +1,8 @@
 const Input = @import("../../input/input.zig").Input;
 const api = @import("../vt/abi.zig");
+const latency = @import("../../latency_log.zig");
 const pty_session = @import("../pty/session.zig");
 const retained = @import("../vt/retained.zig");
-const log = @import("../../input/window.zig");
 const std = @import("std");
 const c = @import("../c.zig").c;
 
@@ -164,7 +164,9 @@ fn encodeFocusBytes(term: *Term, focused: bool) ![]const u8 {
 
 fn encodeKeyBytes(term: *Term, key_event: TermInput.KeyEvent) ![]const u8 {
     const out = retained.inputScratch(term);
+    latency.event("vt-input-encode-begin", "kind=key key={d} mods={d}", .{ key_event.key, key_event.mods });
     const result = c.howl_vt_terminal_encode_key(term.vt, key_event.key, @intCast(key_event.mods), out.ptr, out.len);
+    latency.event("vt-input-encode-end", "kind=key status={d} written={d}", .{ result.status, result.written });
     return encodedBytes(out, result);
 }
 

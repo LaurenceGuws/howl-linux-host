@@ -4,8 +4,8 @@ const cli_args = @import("cli/args.zig");
 const Config = @import("config/config.zig");
 const Input = @import("input/input.zig").Input;
 const InputWindow = @import("input/window.zig");
+const latency = @import("latency_log.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
-const pty_session = @import("terminal/pty/session.zig");
 const runtime_thread = @import("terminal/runtime/thread.zig");
 const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
 const Window = @import("window/window.zig");
@@ -95,6 +95,7 @@ const LoopPending = struct {
 const TerminalProgress = struct {
     should_redraw: bool,
     keep_running: bool,
+    had_wake: bool,
 };
 
 const LoopAdmission = struct {
@@ -210,7 +211,6 @@ const App = struct {
     active_tab_idx: *TabIndex,
     input: *Input,
     terminal_input_admitted: bool,
-    first_loop_render_logged: bool,
     pending_terminal_present: ?Window.PresentToken,
     frame_pacing: FramePacingState,
 };
@@ -230,7 +230,6 @@ pub fn startForTest(io: std.Io, options: Options, feed_record_path: ?[]const u8)
 
 noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     setCurrentThreadName("howl-main");
-    InputWindow.logStartup("app-start");
     try initVideo();
     defer Window.quit();
 
@@ -242,7 +241,6 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
     }
     conf.* = try loadConfig(options);
     conf_loaded = true;
-    InputWindow.logStartupf("stage=config-loaded shell_len={d} title_len={d}", .{ conf.term.shell.len, conf.window.title.len });
 
     const window = try std.heap.c_allocator.create(Window.State);
     var window_created = false;
@@ -252,7 +250,6 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
     }
     window.* = try createWindow(conf, options);
     window_created = true;
-    InputWindow.logStartupf("stage=window-ready px_w={d} px_h={d} logical_w={d} logical_h={d}", .{ window.px_w, window.px_h, window.logical_w, window.logical_h });
 
     const tab_bar = try std.heap.c_allocator.create(TabBar);
     tab_bar.* = .{};
@@ -277,11 +274,9 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
     input.* = try initInput();
     input.window_state.initEventTypes();
     input.setBindings(Input.Bindings.Configured.init(conf));
-    InputWindow.logStartup("input-ready");
 
     applyChildEnvironmentPolicy();
     try openTab(io, conf, input, feed_record_path, window, tabs, active_tab_idx);
-    InputWindow.logStartup("initial-tab-opened");
 
     const duration_timer = InputWindow.startQuitTimer(options.duration_ms);
     defer InputWindow.stopQuitTimer(duration_timer);
@@ -296,13 +291,10 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         .active_tab_idx = active_tab_idx,
         .input = input,
         .terminal_input_admitted = false,
-        .first_loop_render_logged = false,
         .pending_terminal_present = null,
         .frame_pacing = FramePacingState.init(),
     };
     configureInputPolicies(&app);
-    InputWindow.logStartup("policies-configured");
-    InputWindow.logStartup("loop-enter");
     try runLoop(&app);
 }
 
@@ -357,7 +349,6 @@ fn runLoop(app: *App) !void {
             .quit => break,
         }
     }
-    InputWindow.logStartup("loop-exit");
 }
 
 fn runLoopTurn(app: *App) !LoopAction {
@@ -388,6 +379,9 @@ fn runLoopTurn(app: *App) !LoopAction {
     if (!app.frame_pacing.renderPermission()) return .continue_running;
 
     const frame = render(app);
+    if (terminal_progress.had_wake and frame.turn.step == .rendered) {
+        latency.event("wake-new-texture", "snapshot_seq={d} texture_id={d}", .{ frame.turn.present_snapshot_seq, frame.tab.termTextureId() });
+    }
     const present_plan = derivePresentPlan(frame, intent);
     _ = submitPresent(app, frame, present_plan);
     if (quitRequested(app)) |action| return action;
@@ -437,7 +431,6 @@ fn tabsHavePendingRuntimeObligationWith(tabs: anytype, now_ns: u64) bool {
 
 fn quitRequested(app: *const App) ?LoopAction {
     if (!app.input.window_state.quitRequested()) return null;
-    InputWindow.logStartup("loop-quit-requested");
     return .quit;
 }
 
@@ -564,13 +557,16 @@ fn applyWindowResize(app: *App) bool {
 fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex, now_ns: u64) TerminalProgress {
     var should_redraw = false;
     var keep_running = false;
+    var had_wake = false;
     for (tabs, 0..) |tab, i| {
         const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
+        const wake_pending = runtime_thread.wakePending(tab);
         const outcome = driveTabRuntimeTurn(tab, is_active, now_ns);
         should_redraw = should_redraw or outcome.should_redraw;
         keep_running = keep_running or outcome.keep;
+        had_wake = had_wake or wake_pending;
     }
-    return .{ .should_redraw = should_redraw, .keep_running = keep_running };
+    return .{ .should_redraw = should_redraw, .keep_running = keep_running, .had_wake = had_wake };
 }
 
 fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool, now_ns: u64) @import("terminal/runtime/progress.zig").Outcome {
@@ -579,18 +575,6 @@ fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool, now_ns: u64) @import("
 
 fn ensureActiveTabHealthy(app: *App) !void {
     const problem = activeTabProblem(app.tabs.items(), app.active_tab_idx.*) orelse return;
-    const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
-    const state = tab.lifecycleState();
-    const pty = pty_session.snapshot(&tab.term);
-    const outcome = pty_session.outcome(&tab.term);
-    InputWindow.logStartupf("stage=active-tab-failed reason={s} lifecycle={s} outcome={s} status={s} terminal_reason={s} wait_outcome={s}", .{
-        @tagName(problem),
-        @tagName(state),
-        @tagName(outcome),
-        @tagName(pty.status),
-        @tagName(pty.terminal_reason),
-        @tagName(pty.last_wait_outcome),
-    });
     return switch (problem) {
         .exited => error.ActiveTabExited,
         .runtime_failed => error.ActiveTabRuntimeFailed,
@@ -604,7 +588,6 @@ fn destroyTabs(tabs: *TabSlots) void {
 fn render(app: *App) RenderFrame {
     const tab = activeTab(app.tabs.items(), app.active_tab_idx.*);
     const turn = tab.renderTurn();
-    app.first_loop_render_logged = true;
     const term_texture_before = tab.termTextureId();
     tab.noteRenderTurn(turn);
     syncActiveWindowTitle(app.window, tab);
@@ -1194,7 +1177,7 @@ test "forward terminal input drains text before pointer UI without present inten
     try std.testing.expect(outcome.published_to_pty);
     try std.testing.expect(!outcome.host_visual_changed);
 
-    const progress = TerminalProgress{ .should_redraw = false, .keep_running = false };
+    const progress = TerminalProgress{ .should_redraw = false, .keep_running = false, .had_wake = false };
     const intent = deriveRedrawRenderIntent(false, outcome.host_visual_changed, progress, false, false);
     var admitted = false;
     admitted = admitted or outcome.published_to_pty;
@@ -1231,6 +1214,7 @@ test "runtime keep_running does not synthesize redraw" {
     const progress = TerminalProgress{
         .should_redraw = false,
         .keep_running = true,
+        .had_wake = false,
     };
     const intent = deriveRedrawRenderIntent(false, false, progress, false, false);
     try std.testing.expect(progress.keep_running);
@@ -1243,6 +1227,7 @@ test "keep_running true should_redraw false keeps host non-blocking without redr
     const progress = TerminalProgress{
         .should_redraw = false,
         .keep_running = true,
+        .had_wake = false,
     };
     const pending = LoopPending{
         .owner_work = true,
@@ -1260,6 +1245,7 @@ test "host_redraw_requested true can produce host-only present" {
     const progress = TerminalProgress{
         .should_redraw = false,
         .keep_running = false,
+        .had_wake = false,
     };
     const intent = deriveRedrawRenderIntent(true, false, progress, false, false);
 
@@ -1274,6 +1260,7 @@ test "render_work_pending true produces render without host redraw bit" {
     const progress = TerminalProgress{
         .should_redraw = false,
         .keep_running = false,
+        .had_wake = false,
     };
     const intent = deriveRedrawRenderIntent(false, false, progress, false, true);
 

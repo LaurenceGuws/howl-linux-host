@@ -1,4 +1,3 @@
-
 pub fn drawRect(comptime c: type, fb_w: c_int, fb_h: c_int, texture_id: u32, x: c_int, y: c_int, width: c_int, height: c_int) void {
     drawSubRect(c, fb_w, fb_h, texture_id, x, y, width, height, 0, 0, width, height, width, height);
 }

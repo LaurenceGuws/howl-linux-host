@@ -300,7 +300,7 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
     try std.testing.expect(!exposed_missing_expected_region_in_present);
     try std.testing.expect(proved_present_probe_delta);
     try std.testing.expect(panel.termTextureId() != 0);
-    try std.testing.expect(window.present_state.first_present_logged);
+    try std.testing.expect(window.presentProofSnapshot().observed);
 
     panel.deinit();
     panel_live = false;
@@ -442,7 +442,7 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
     try std.testing.expect(proved_placeholder_move_present);
     try std.testing.expect(successful_presents >= 2);
     try std.testing.expect(panel.termTextureId() != 0);
-    try std.testing.expect(window.present_state.first_present_logged);
+    try std.testing.expect(window.presentProofSnapshot().observed);
 
     panel.deinit();
     panel_live = false;

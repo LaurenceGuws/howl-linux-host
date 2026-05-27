@@ -1,4 +1,3 @@
-
 pub const Mod = packed struct(u3) {
     shift: bool = false,
     alt: bool = false,

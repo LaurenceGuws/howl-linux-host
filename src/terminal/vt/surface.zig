@@ -1,8 +1,8 @@
 const std = @import("std");
 const c = @import("../c.zig").c;
+const latency = @import("../../latency_log.zig");
 const terminal_term = @import("../term.zig");
 const vt_abi = @import("abi.zig");
-const log = @import("../../input/window.zig");
 
 const damage_none: u8 = @intCast(c.HOWL_RENDER_DAMAGE_NONE);
 const damage_partial: u8 = @intCast(c.HOWL_RENDER_DAMAGE_PARTIAL);
@@ -86,7 +86,9 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     term.vt_state.cursor_visible = visible.cursor.visible != 0;
     term.vt_state.cursor_blink = visible.cursor.blink != 0;
 
+    latency.event("render-publish-vt-abi-begin", "visible_snapshot={d} rows={d} cols={d}", .{ visible.snapshot_seq, visible.rows, visible.cols });
     const typed_response = Ops.commitPublishSlot(term.render.surface_text, visible);
+    latency.event("render-publish-vt-abi-end", "status={d} published={d} queued={d} damage={d} snapshot_seq={d}", .{ typed_response.status, typed_response.published, typed_response.queued, typed_response.damage_kind, typed_response.snapshot_seq });
     if (typed_response.status != c.HOWL_RENDER_CALL_OK) {
         std.debug.panic(
             "render publish rejected: status={d} published={d} queued={d} damage={d} snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} rows={d} cols={d} history={d} scroll_row={d} graphics_pub={d} images={d} placements={d} virtuals={d} payload_len={d}",
@@ -112,17 +114,6 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
         );
     }
     recordPublishedSnapshot(visible, typed_response);
-    if (typed_response.published != 0) {
-        if (!term.trace.source_publish_logged) {
-            term.trace.source_publish_logged = true;
-            log.logStartupf("stage=term-source-publish-first queued={d} damage={d} snapshot_seq={d} geom_epoch={d}", .{
-                typed_response.queued,
-                typed_response.damage_kind,
-                typed_response.snapshot_seq,
-                typed_response.geometry_epoch,
-            });
-        }
-    }
     return typed_response;
 }
 
@@ -699,9 +690,6 @@ test "publish bridge forwards non-empty app-icon graphics metadata and coherent 
         render: struct {
             surface_text: c.HowlRenderSurfaceTextHandle = @ptrFromInt(2),
         } = .{},
-        trace: struct {
-            source_publish_logged: bool = false,
-        } = .{},
         mutex: struct {
             fn lock(_: *@This()) void {}
             fn unlock(_: *@This()) void {}
@@ -959,9 +947,6 @@ test "publish rejects reserved slot when paired acquisition fails" {
         } = .{},
         render: struct {
             surface_text: c.HowlRenderSurfaceTextHandle = @ptrFromInt(2),
-        } = .{},
-        trace: struct {
-            source_publish_logged: bool = false,
         } = .{},
         mutex: struct {
             fn lock(_: *@This()) void {}

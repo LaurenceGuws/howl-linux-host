@@ -5,6 +5,7 @@ const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
 const term_texture = @import("../window/term_texture.zig");
 const HostInput = @import("../input/input.zig").Input;
+const latency = @import("../latency_log.zig");
 const terminal_c = @import("c.zig").c;
 const runtime_progress = @import("runtime/progress.zig");
 const runtime_thread = @import("runtime/thread.zig");
@@ -244,13 +245,6 @@ pub const TerminalPanel = struct {
     selection_anchor: ?SelectionCell,
     selection_drag_active: bool,
     hover_publish_pending: bool,
-    first_submit_trace_logged: bool,
-    first_prepare_result_logged: bool,
-    first_non_idle_submit_logged: bool,
-    first_rendered_surface_logged: bool,
-    first_submit_work_logged: bool,
-    first_blocked_present_logged: bool,
-    first_idle_render_logged: bool,
     last_graphics_upload: GraphicsUploadObservation,
     cursor_blink_visible: bool,
     cursor_blink_deadline_ns: u64,
@@ -293,13 +287,6 @@ pub const TerminalPanel = struct {
         self.selection_anchor = null;
         self.selection_drag_active = false;
         self.hover_publish_pending = false;
-        self.first_submit_trace_logged = false;
-        self.first_prepare_result_logged = false;
-        self.first_non_idle_submit_logged = false;
-        self.first_rendered_surface_logged = false;
-        self.first_submit_work_logged = false;
-        self.first_blocked_present_logged = false;
-        self.first_idle_render_logged = false;
         self.last_graphics_upload = .{
             .observed = false,
             .prepared_snapshot_seq = 0,
@@ -577,16 +564,7 @@ pub const TerminalPanel = struct {
 
     pub fn noteRenderTurn(self: *TerminalPanel, turn: TurnResult) void {
         if (turn.step == .no_frame) return;
-        self.noteSubmitPendingEntry(turn.work_before);
         if (turn.prepared and turn.step != .rendered) self.notePreparedStep(turn.work_after);
-        switch (turn.step) {
-            .no_frame => unreachable,
-            .rendered => self.noteRenderedStep(turn.work_after),
-            .failed => self.noteFailedStep(turn.work_after),
-            .blocked_present => self.noteBlockedPresentStep(),
-            .idle_prepare => self.notePrepareIdleStep(turn.work_before.bootstrap_surface, turn.work_after),
-            .idle_submit => self.noteIdleStep(turn.work_after),
-        }
     }
 
     pub fn termTextureId(self: *const TerminalPanel) u64 {
@@ -750,7 +728,6 @@ pub const TerminalPanel = struct {
         self.term.vt_state.focused = true;
         self.term.vt_state.cursor_visible = true;
         self.term.vt_state.cursor_blink = false;
-        self.term.trace = .{};
         self.term.mutex = .{};
         self.live = true;
         try vt_retained.setCellPixelSize(&self.term, term_init.frame_layout.cell_px.width, term_init.frame_layout.cell_px.height);
@@ -891,8 +868,19 @@ pub const TerminalPanel = struct {
             &.{}
         else
             upload.buffer.rgba_pixels.ptr[0..upload.buffer.rgba_pixels.len];
-        if (!term_texture.ensureSurface(&self.term_texture, upload.info.render_px.width, upload.info.render_px.height)) return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
-        if (!term_texture.uploadPreparedBuffer(self.term_texture, pixels)) return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+        latency.event("gl-texture-ensure-begin", "snapshot_seq={d} width={d} height={d}", .{ upload.info.snapshot_seq, upload.info.render_px.width, upload.info.render_px.height });
+        if (!term_texture.ensureSurface(&self.term_texture, upload.info.render_px.width, upload.info.render_px.height)) {
+            latency.event("gl-texture-ensure-end", "snapshot_seq={d} ok=0", .{upload.info.snapshot_seq});
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+        }
+        latency.event("gl-texture-ensure-end", "snapshot_seq={d} ok=1 texture_id={d}", .{ upload.info.snapshot_seq, self.term_texture.host_surface_id });
+        latency.event("gl-texture-upload-begin", "snapshot_seq={d} texture_id={d} rgba_len={d}", .{ upload.info.snapshot_seq, self.term_texture.host_surface_id, pixels.len });
+        if (!term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
+            latency.event("gl-texture-upload-end", "snapshot_seq={d} ok=0 texture_id={d}", .{ upload.info.snapshot_seq, self.term_texture.host_surface_id });
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+        }
+        latency.event("gl-texture-upload-end", "snapshot_seq={d} ok=1 texture_id={d}", .{ upload.info.snapshot_seq, self.term_texture.host_surface_id });
+        latency.event("texture-repaint-complete", "snapshot_seq={d} texture_id={d}", .{ upload.info.snapshot_seq, self.term_texture.host_surface_id });
 
         var feedback = std.mem.zeroes(terminal_c.HowlRenderSurfaceFeedback);
         const execution = terminal_c.HowlRenderSurfaceExecutionInput{
@@ -1009,7 +997,10 @@ pub const TerminalPanel = struct {
     fn submit(self: *TerminalPanel, execution: *const terminal_c.HowlRenderSurfaceExecutionInput, feedback: *terminal_c.HowlRenderSurfaceFeedback) render_retained.SubmitResult {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
-        return self.term.render.submit(execution, feedback);
+        latency.event("render-submit-abi-begin", "surface_id={d} width={d} height={d}", .{ execution.surface.host_surface_id, execution.surface.width, execution.surface.height });
+        const result = self.term.render.submit(execution, feedback);
+        latency.event("render-submit-abi-end", "result={s} texture_id={d}", .{ @tagName(result), feedback.surface.host_surface_id });
+        return result;
     }
 
     fn renderUs(start_ns: u64) u64 {
@@ -1034,41 +1025,6 @@ pub const TerminalPanel = struct {
         };
     }
 
-    fn noteSubmitPendingEntry(self: *TerminalPanel, work: render_retained.WorkState) void {
-        _ = self;
-        _ = work;
-    }
-
-    fn noteRenderedStep(self: *TerminalPanel, work: render_retained.WorkState) void {
-        _ = work;
-        if (!self.first_rendered_surface_logged) {
-            self.first_rendered_surface_logged = true;
-            InputWindow.logStartupf("stage=term-rendered-surface-first term_texture_id={d}", .{self.term_texture.host_surface_id});
-        }
-    }
-
-    fn noteFailedStep(_: *TerminalPanel, work: render_retained.WorkState) void {
-        InputWindow.logf("host-loop ts_ns={d} stage=term-render-step result=failed source_pending={} prepare_pending={} submit_pending={} present_pending={}", .{ InputWindow.nowNs(), work.source_pending, work.prepare_pending, work.submit_pending, work.present_pending });
-    }
-
-    fn noteIdleStep(self: *TerminalPanel, work: render_retained.WorkState) void {
-        _ = self;
-        _ = work;
-    }
-
-    fn noteBlockedPresentStep(self: *TerminalPanel) void {
-        if (!self.first_blocked_present_logged) {
-            self.first_blocked_present_logged = true;
-            InputWindow.logStartup("term-present-blocked-first");
-        }
-    }
-
-    fn notePrepareIdleStep(self: *TerminalPanel, bootstrap_surface: bool, work: render_retained.WorkState) void {
-        _ = self;
-        _ = bootstrap_surface;
-        _ = work;
-    }
-
     fn notePreparedStep(self: *TerminalPanel, work: render_retained.WorkState) void {
         _ = self;
         std.debug.assert(work.submit_pending or work.present_pending);
@@ -1076,13 +1032,23 @@ pub const TerminalPanel = struct {
 
     fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) bool {
         _ = vt_retained.followLiveBottom(&self.term);
-        pty_session.publishInputBytes(&self.term, bytes) catch return false;
+        latency.event("host-pty-publish-begin", "kind=bytes len={d}", .{bytes.len});
+        pty_session.publishInputBytes(&self.term, bytes) catch |err| {
+            latency.event("host-pty-publish-end", "kind=bytes len={d} ok=0 err={s}", .{ bytes.len, @errorName(err) });
+            return false;
+        };
+        latency.event("host-pty-publish-end", "kind=bytes len={d} ok=1", .{bytes.len});
         return true;
     }
 
     fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) bool {
         const terminal_key = term_input.key(key.key) orelse return false;
-        term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return false;
+        latency.event("host-pty-publish-begin", "kind=key key={s}", .{@tagName(key.key)});
+        term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch |err| {
+            latency.event("host-pty-publish-end", "kind=key key={s} ok=0 err={s}", .{ @tagName(key.key), @errorName(err) });
+            return false;
+        };
+        latency.event("host-pty-publish-end", "kind=key key={s} ok=1", .{@tagName(key.key)});
         return true;
     }
 
@@ -1599,13 +1565,6 @@ test "cursor activity pushes blink deadline while visible" {
         .selection_anchor = null,
         .selection_drag_active = false,
         .hover_publish_pending = false,
-        .first_submit_trace_logged = false,
-        .first_prepare_result_logged = false,
-        .first_non_idle_submit_logged = false,
-        .first_rendered_surface_logged = false,
-        .first_submit_work_logged = false,
-        .first_blocked_present_logged = false,
-        .first_idle_render_logged = false,
         .cursor_blink_visible = true,
         .cursor_blink_deadline_ns = 0,
     };

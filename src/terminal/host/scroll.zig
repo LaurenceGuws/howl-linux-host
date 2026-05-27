@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const vt_retained = @import("../vt/retained.zig");
 const window = @import("../../window/window.zig");

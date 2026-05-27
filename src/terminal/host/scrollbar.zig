@@ -1,4 +1,3 @@
-
 const std = @import("std");
 const window = @import("../../window/window.zig");
 const Layout = @import("../../window/layout.zig");
