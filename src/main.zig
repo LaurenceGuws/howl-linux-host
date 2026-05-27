@@ -531,10 +531,21 @@ fn forwardTerminalInput(app: *App) TerminalPanel.DrainInputOutcome {
     const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
     const content_logical = app.window.contentLogicalSize(app.conf.tab_bar.height);
     const origin_y = app.window.tabBarHeightLogical(app.conf.tab_bar.height);
-    const outcome = tab.drainInput(app.input, 0, origin_y, content_logical.width, content_logical.height);
-    tab.handleScrollInput(app.input);
+    const outcome = forwardTerminalInputFlow(tab, app.input, 0, origin_y, content_logical.width, content_logical.height);
     app.terminal_input_admitted = app.terminal_input_admitted or outcome.published_to_pty;
     return outcome;
+}
+
+fn forwardTerminalInputFlow(tab: anytype, input: anytype, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) TerminalPanel.DrainInputOutcome {
+    var outcome = tab.drainTextInputFastPath(input);
+    mergeDrainInputOutcome(&outcome, tab.drainPointerAndUiInput(input, origin_x, origin_y, logical_width, logical_height));
+    tab.handleScrollInput(input);
+    return outcome;
+}
+
+fn mergeDrainInputOutcome(total: *TerminalPanel.DrainInputOutcome, next: TerminalPanel.DrainInputOutcome) void {
+    total.published_to_pty = total.published_to_pty or next.published_to_pty;
+    total.host_visual_changed = total.host_visual_changed or next.host_visual_changed;
 }
 
 fn takeTerminalInputAdmission(admitted: *bool) bool {
@@ -1145,6 +1156,53 @@ test "PTY publication admission keeps next turn non-blocking without present int
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, takeTerminalInputAdmission(&admitted)));
     try std.testing.expect(!input_outcome.host_visual_changed);
     try std.testing.expect(!takeTerminalInputAdmission(&admitted));
+}
+
+test "forward terminal input drains text before pointer UI without present intent" {
+    const FakeInput = struct {};
+    const FakeTab = struct {
+        order: *[3]u8,
+        order_len: *u8,
+
+        fn append(self: *@This(), value: u8) void {
+            self.order[self.order_len.*] = value;
+            self.order_len.* += 1;
+        }
+
+        fn drainTextInputFastPath(self: *@This(), _: *FakeInput) TerminalPanel.DrainInputOutcome {
+            self.append('t');
+            return .{ .published_to_pty = true, .host_visual_changed = false };
+        }
+
+        fn drainPointerAndUiInput(self: *@This(), _: *FakeInput, _: i32, _: i32, _: c_int, _: c_int) TerminalPanel.DrainInputOutcome {
+            self.append('p');
+            return .{ .published_to_pty = false, .host_visual_changed = false };
+        }
+
+        fn handleScrollInput(self: *@This(), _: *FakeInput) void {
+            self.append('s');
+        }
+    };
+
+    var order: [3]u8 = undefined;
+    var order_len: u8 = 0;
+    var input = FakeInput{};
+    var tab = FakeTab{ .order = &order, .order_len = &order_len };
+    const outcome = forwardTerminalInputFlow(&tab, &input, 0, 5, 80, 25);
+
+    try std.testing.expectEqualStrings("tps", order[0..order_len]);
+    try std.testing.expect(outcome.published_to_pty);
+    try std.testing.expect(!outcome.host_visual_changed);
+
+    const progress = TerminalProgress{ .should_redraw = false, .keep_running = false };
+    const intent = deriveRedrawRenderIntent(false, outcome.host_visual_changed, progress, false, false);
+    var admitted = false;
+    admitted = admitted or outcome.published_to_pty;
+    const pending = LoopPending{ .owner_work = false, .runtime_wake = false };
+    const pacing = FramePacingState.init();
+    try std.testing.expect(!pacing.shouldWaitForWindow(pending, takeTerminalInputAdmission(&admitted)));
+    try std.testing.expect(!intent.needsRender());
+    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .no_frame));
 }
 
 test "host visual change can trigger present without PTY publication" {

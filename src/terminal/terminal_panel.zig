@@ -32,7 +32,6 @@ const scroll = @import("host/scroll.zig");
 
 const cursor_blink_interval_ms: u64 = 600;
 const cursor_blink_interval_ns: u64 = cursor_blink_interval_ms * std.time.ns_per_ms;
-
 const CursorBlinkPlan = struct {
     visible: bool,
     deadline_ns: u64,
@@ -365,10 +364,40 @@ pub const TerminalPanel = struct {
         _ = self.resetCursorBlinkActivity(InputWindow.nowNs());
     }
 
-    pub fn drainInput(self: *TerminalPanel, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) DrainInputOutcome {
+    pub fn drainTextInputFastPath(self: *TerminalPanel, input_events: *HostInput) DrainInputOutcome {
+        return drainTextInputFastPathWith(self, input_events, TerminalPanelOps);
+    }
+
+    fn drainTextInputFastPathWith(self: anytype, input_events: *HostInput, comptime Ops: type) DrainInputOutcome {
+        var outcome: DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
+        var read_index: u16 = 0;
+        var write_index: u16 = 0;
+        const event_count = input_events.input_events.len;
+        while (read_index < event_count) : (read_index += 1) {
+            const source_index = (input_events.input_events.head + read_index) % input_events.input_events.buf.len;
+            const event = input_events.input_events.buf[source_index];
+            switch (event) {
+                .bytes, .key => mergeDrainInputOutcome(&outcome, handleTextInputFastPathEvent(self, event, Ops)),
+                .mouse => {
+                    const target_index = (input_events.input_events.head + write_index) % input_events.input_events.buf.len;
+                    input_events.input_events.buf[target_index] = event;
+                    write_index += 1;
+                },
+            }
+        }
+        input_events.input_events.len = write_index;
+        if (write_index == 0) input_events.input_events.head = 0;
+        return outcome;
+    }
+
+    pub fn drainPointerAndUiInput(self: *TerminalPanel, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) DrainInputOutcome {
+        return drainPointerAndUiInputWith(self, input_events, origin_x, origin_y, logical_width, logical_height, TerminalPanelOps);
+    }
+
+    fn drainPointerAndUiInputWith(self: anytype, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, comptime Ops: type) DrainInputOutcome {
         var outcome: DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
         while (input_events.drainInputEvent()) |event| {
-            mergeDrainInputOutcome(&outcome, handleDrainInputEvent(self, event, origin_x, origin_y, logical_width, logical_height, TerminalPanelOps));
+            mergeDrainInputOutcome(&outcome, handlePointerAndUiInputEvent(self, event, origin_x, origin_y, logical_width, logical_height, Ops));
         }
         return outcome;
     }
@@ -1389,7 +1418,7 @@ fn completePresentLockedWith(term: anytype, token: u64, comptime Ops: type) void
     Ops.ack(term, snapshot_seq);
 }
 
-fn handleDrainInputEvent(self: anytype, event: HostInput.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, comptime Ops: type) TerminalPanel.DrainInputOutcome {
+fn handleTextInputFastPathEvent(self: anytype, event: HostInput.Event, comptime Ops: type) TerminalPanel.DrainInputOutcome {
     var outcome: TerminalPanel.DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
     switch (event) {
         .bytes => |bytes| {
@@ -1404,6 +1433,15 @@ fn handleDrainInputEvent(self: anytype, event: HostInput.Event, origin_x: i32, o
                 outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWindow.nowNs());
             }
         },
+        .mouse => {},
+    }
+    return outcome;
+}
+
+fn handlePointerAndUiInputEvent(self: anytype, event: HostInput.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, comptime Ops: type) TerminalPanel.DrainInputOutcome {
+    var outcome: TerminalPanel.DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
+    switch (event) {
+        .bytes, .key => {},
         .mouse => |mouse_event| {
             const scroll_outcome = Ops.handleScrollMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
             outcome.host_visual_changed = scroll_outcome.host_visual_changed;
@@ -1560,6 +1598,7 @@ test "cursor activity pushes blink deadline while visible" {
         .hovered_link_cell = null,
         .selection_anchor = null,
         .selection_drag_active = false,
+        .hover_publish_pending = false,
         .first_submit_trace_logged = false,
         .first_prepare_result_logged = false,
         .first_non_idle_submit_logged = false,
@@ -1576,7 +1615,7 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(panel.cursor_blink_visible);
 }
 
-test "drain input keeps PTY publication separate from host visual mutation" {
+test "text input fast path publishes text without pointer or UI operations" {
     const FakePanel = struct {
         geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
         publish_bytes_ok: bool = false,
@@ -1588,16 +1627,233 @@ test "drain input keeps PTY publication separate from host visual mutation" {
     };
 
     const FakeOps = struct {
+        var bytes_calls: u8 = 0;
+        var key_calls: u8 = 0;
+        var blink_calls: u8 = 0;
+        var mouse_calls: u8 = 0;
+        var scroll_calls: u8 = 0;
+        var hover_calls: u8 = 0;
+        var selection_calls: u8 = 0;
+
+        fn reset() void {
+            bytes_calls = 0;
+            key_calls = 0;
+            blink_calls = 0;
+            mouse_calls = 0;
+            scroll_calls = 0;
+            hover_calls = 0;
+            selection_calls = 0;
+        }
+
         fn resetCursorBlinkActivity(self: *FakePanel, _: u64) bool {
+            blink_calls += 1;
             return self.blink_changed;
         }
 
         fn publishTerminalBytes(self: *FakePanel, _: []const u8) bool {
+            bytes_calls += 1;
             return self.publish_bytes_ok;
         }
 
         fn publishTerminalKey(self: *FakePanel, _: HostInput.Keys.Event) bool {
+            key_calls += 1;
             return self.publish_key_ok;
+        }
+
+        fn publishTerminalMouse(self: *FakePanel, _: HostInput.Mouse.Event) bool {
+            mouse_calls += 1;
+            return self.publish_mouse_ok;
+        }
+
+        fn handleScrollMouse(_: *FakePanel, _: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) TerminalPanel.ScrollMouseOutcome {
+            scroll_calls += 1;
+            return .{ .consumed = false, .host_visual_changed = false };
+        }
+
+        fn contentRelativeEvent(mouse_event: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int, _: c_int, _: c_int) ?HostInput.Mouse.Event {
+            return mouse_event;
+        }
+
+        fn clearHoveredLink(self: *FakePanel) bool {
+            hover_calls += 1;
+            return self.clear_hover_changed;
+        }
+
+        fn handleWheelFallback(self: *FakePanel, _: HostInput.Mouse.Event) bool {
+            return self.wheel_changed;
+        }
+
+        fn handleHostSelectionMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+            selection_calls += 1;
+            return .{ .consumed = false, .host_visual_changed = false };
+        }
+
+        fn handleHostLinkMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+            hover_calls += 1;
+            return .{ .consumed = false, .host_visual_changed = false };
+        }
+    };
+
+    FakeOps.reset();
+    var bytes = std.mem.zeroes(HostInput.Keys.ByteInput);
+    bytes.len = 1;
+    bytes.buf[0] = 'a';
+    var bytes_panel = FakePanel{ .publish_bytes_ok = true, .blink_changed = true };
+    const bytes_outcome = handleTextInputFastPathEvent(&bytes_panel, .{ .bytes = bytes }, FakeOps);
+    try std.testing.expect(bytes_outcome.published_to_pty);
+    try std.testing.expect(bytes_outcome.host_visual_changed);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.bytes_calls);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.blink_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.mouse_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.scroll_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.hover_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.selection_calls);
+
+    FakeOps.reset();
+    var key_only = FakePanel{ .publish_key_ok = true };
+    const key_outcome = handleTextInputFastPathEvent(&key_only, .{ .key = .{ .key = .up, .mods = .{} } }, FakeOps);
+    try std.testing.expect(key_outcome.published_to_pty);
+    try std.testing.expect(!key_outcome.host_visual_changed);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.key_calls);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.blink_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.mouse_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.scroll_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.hover_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.selection_calls);
+
+    FakeOps.reset();
+    var mouse_panel = FakePanel{};
+    const mouse_outcome = handleTextInputFastPathEvent(&mouse_panel, .{ .mouse = .{
+        .kind = .move,
+        .button = .none,
+        .pixel_x = 2,
+        .pixel_y = 3,
+        .mods = .{},
+        .buttons_down = .{},
+        .host_only = true,
+    } }, FakeOps);
+    try std.testing.expect(!mouse_outcome.published_to_pty);
+    try std.testing.expect(!mouse_outcome.host_visual_changed);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.bytes_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.key_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.blink_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.mouse_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.scroll_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.hover_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.selection_calls);
+}
+
+test "text fast path compacts mixed input before pointer UI drain" {
+    const FakePanel = struct {
+        geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
+        order: *[8]u8,
+        order_len: *u8,
+
+        fn append(self: *@This(), value: u8) void {
+            self.order[self.order_len.*] = value;
+            self.order_len.* += 1;
+        }
+    };
+
+    const FakeOps = struct {
+        fn resetCursorBlinkActivity(self: *FakePanel, _: u64) bool {
+            self.append('r');
+            return false;
+        }
+
+        fn publishTerminalBytes(self: *FakePanel, bytes: []const u8) bool {
+            std.testing.expectEqualStrings("a", bytes) catch unreachable;
+            self.append('b');
+            return true;
+        }
+
+        fn publishTerminalKey(self: *FakePanel, key: HostInput.Keys.Event) bool {
+            std.testing.expectEqual(HostInput.Keys.Key.up, key.key) catch unreachable;
+            self.append('k');
+            return true;
+        }
+
+        fn publishTerminalMouse(_: *FakePanel, _: HostInput.Mouse.Event) bool {
+            unreachable;
+        }
+
+        fn handleScrollMouse(self: *FakePanel, mouse_event: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) TerminalPanel.ScrollMouseOutcome {
+            std.testing.expectEqual(HostInput.Mouse.Kind.move, mouse_event.kind) catch unreachable;
+            self.append('p');
+            return .{ .consumed = true, .host_visual_changed = false };
+        }
+
+        fn contentRelativeEvent(_: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int, _: c_int, _: c_int) ?HostInput.Mouse.Event {
+            unreachable;
+        }
+
+        fn clearHoveredLinkOp(_: *FakePanel) bool {
+            unreachable;
+        }
+
+        fn handleWheelFallback(_: *FakePanel, _: HostInput.Mouse.Event) bool {
+            unreachable;
+        }
+
+        fn handleHostSelectionMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+            unreachable;
+        }
+
+        fn handleHostLinkMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+            unreachable;
+        }
+    };
+
+    var input: HostInput = undefined;
+    input.init();
+    var bytes = std.mem.zeroes(HostInput.Keys.ByteInput);
+    bytes.len = 1;
+    bytes.buf[0] = 'a';
+    const mouse_event = HostInput.Event{ .mouse = .{
+        .kind = .move,
+        .button = .none,
+        .pixel_x = 2,
+        .pixel_y = 3,
+        .mods = .{},
+        .buttons_down = .{},
+        .host_only = true,
+    } };
+    input.input_events.buf[0] = .{ .bytes = bytes };
+    input.input_events.buf[1] = mouse_event;
+    input.input_events.buf[2] = .{ .key = .{ .key = .up, .mods = .{} } };
+    input.input_events.len = 3;
+
+    var order: [8]u8 = undefined;
+    var order_len: u8 = 0;
+    var panel = FakePanel{ .order = &order, .order_len = &order_len };
+    const text_outcome = TerminalPanel.drainTextInputFastPathWith(&panel, &input, FakeOps);
+    try std.testing.expect(text_outcome.published_to_pty);
+    try std.testing.expect(!text_outcome.host_visual_changed);
+    try std.testing.expectEqual(@as(u16, 1), input.input_events.len);
+    switch (input.input_events.buf[input.input_events.head]) {
+        .mouse => {},
+        else => return error.UnexpectedEvent,
+    }
+
+    const pointer_outcome = TerminalPanel.drainPointerAndUiInputWith(&panel, &input, 0, 0, 80, 25, FakeOps);
+    try std.testing.expect(!pointer_outcome.published_to_pty);
+    try std.testing.expect(!pointer_outcome.host_visual_changed);
+    try std.testing.expectEqual(@as(u16, 0), input.input_events.len);
+    try std.testing.expectEqualStrings("brkrp", order[0..order_len]);
+}
+
+test "pointer UI drain keeps PTY publication separate from host visual mutation" {
+    const FakePanel = struct {
+        geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
+        publish_mouse_ok: bool = false,
+        blink_changed: bool = false,
+        clear_hover_changed: bool = false,
+        wheel_changed: bool = false,
+    };
+
+    const FakeOps = struct {
+        fn resetCursorBlinkActivity(self: *FakePanel, _: u64) bool {
+            return self.blink_changed;
         }
 
         fn publishTerminalMouse(self: *FakePanel, _: HostInput.Mouse.Event) bool {
@@ -1612,7 +1868,7 @@ test "drain input keeps PTY publication separate from host visual mutation" {
             return mouse_event;
         }
 
-        fn clearHoveredLink(self: *FakePanel) bool {
+        fn clearHoveredLinkOp(self: *FakePanel) bool {
             return self.clear_hover_changed;
         }
 
@@ -1629,13 +1885,8 @@ test "drain input keeps PTY publication separate from host visual mutation" {
         }
     };
 
-    var key_only = FakePanel{ .publish_key_ok = true };
-    const key_outcome = handleDrainInputEvent(&key_only, .{ .key = .{ .key = .up, .mods = .{} } }, 0, 0, 80, 25, FakeOps);
-    try std.testing.expect(key_outcome.published_to_pty);
-    try std.testing.expect(!key_outcome.host_visual_changed);
-
     var wheel_only = FakePanel{ .wheel_changed = true };
-    const wheel_outcome = handleDrainInputEvent(&wheel_only, .{ .mouse = .{
+    const wheel_outcome = handlePointerAndUiInputEvent(&wheel_only, .{ .mouse = .{
         .kind = .wheel,
         .button = .wheel_up,
         .pixel_x = 2,
@@ -1646,14 +1897,6 @@ test "drain input keeps PTY publication separate from host visual mutation" {
     } }, 0, 0, 80, 25, FakeOps);
     try std.testing.expect(!wheel_outcome.published_to_pty);
     try std.testing.expect(wheel_outcome.host_visual_changed);
-
-    var bytes = std.mem.zeroes(HostInput.Keys.ByteInput);
-    bytes.len = 1;
-    bytes.buf[0] = 'a';
-    var both = FakePanel{ .publish_bytes_ok = true, .blink_changed = true };
-    const both_outcome = handleDrainInputEvent(&both, .{ .bytes = bytes }, 0, 0, 80, 25, FakeOps);
-    try std.testing.expect(both_outcome.published_to_pty);
-    try std.testing.expect(both_outcome.host_visual_changed);
 }
 
 test "present pending blocks submit path until host present ack" {
