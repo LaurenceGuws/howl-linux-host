@@ -5,7 +5,6 @@ const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
 const term_texture = @import("../window/term_texture.zig");
 const HostInput = @import("../input/input.zig").Input;
-const graphics_log = @import("../graphics_log.zig");
 const terminal_c = @import("c.zig").c;
 const runtime_progress = @import("runtime/progress.zig");
 const runtime_thread = @import("runtime/thread.zig");
@@ -831,53 +830,16 @@ pub const TerminalPanel = struct {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.takePreparedUpload(&upload)) return .{ .result = .failed, .snapshot_seq = 0 };
         self.recordGraphicsUploadObservation(upload);
-        const graphics_observation = self.last_graphics_upload;
 
         const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
             &.{}
         else
             upload.buffer.rgba_pixels.ptr[0..upload.buffer.rgba_pixels.len];
-        if (graphics_observation.vt_graphics.nonEmpty()) {
-            graphics_log.event(
-                "host-upload-begin",
-                "snapshot_seq={d} dirty_epoch={d} required_base_seq={d} uploads_committed={d} rgba_len={d} rgba_nonzero={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d}",
-                .{
-                    graphics_observation.prepared_snapshot_seq,
-                    graphics_observation.prepared_dirty_epoch,
-                    graphics_observation.prepared_required_base_seq,
-                    graphics_observation.uploads_committed,
-                    graphics_observation.rgba_len,
-                    @intFromBool(graphics_observation.rgba_has_non_zero_byte),
-                    graphics_observation.vt_graphics.publication_seq,
-                    graphics_observation.vt_graphics.dirty_generation,
-                    graphics_observation.vt_graphics.image_count,
-                    graphics_observation.vt_graphics.placement_count,
-                    graphics_observation.vt_graphics.virtual_placement_count,
-                },
-            );
-        }
         if (!term_texture.ensureSurface(&self.term_texture, upload.info.render_px.width, upload.info.render_px.height)) {
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
         if (!term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
-        }
-        if (graphics_observation.vt_graphics.nonEmpty()) {
-            graphics_log.event(
-                "host-upload-end",
-                "snapshot_seq={d} texture_id={d} texture_w={d} texture_h={d} rgba_len={d} publication_seq={d} images={d} placements={d} virtuals={d}",
-                .{
-                    upload.info.snapshot_seq,
-                    self.term_texture.host_surface_id,
-                    self.term_texture.width,
-                    self.term_texture.height,
-                    pixels.len,
-                    graphics_observation.vt_graphics.publication_seq,
-                    graphics_observation.vt_graphics.image_count,
-                    graphics_observation.vt_graphics.placement_count,
-                    graphics_observation.vt_graphics.virtual_placement_count,
-                },
-            );
         }
 
         var feedback = std.mem.zeroes(terminal_c.HowlRenderSurfaceFeedback);
@@ -891,23 +853,6 @@ pub const TerminalPanel = struct {
             .render_us = renderUs(start_ns),
         };
         const result = self.submit(&execution, &feedback);
-        if (graphics_observation.vt_graphics.nonEmpty()) {
-            graphics_log.event(
-                "host-render-submit",
-                "snapshot_seq={d} result={s} texture_id={d} feedback_w={d} feedback_h={d} publication_seq={d} images={d} placements={d} virtuals={d}",
-                .{
-                    upload.info.snapshot_seq,
-                    @tagName(result),
-                    feedback.surface.host_surface_id,
-                    feedback.surface.width,
-                    feedback.surface.height,
-                    graphics_observation.vt_graphics.publication_seq,
-                    graphics_observation.vt_graphics.image_count,
-                    graphics_observation.vt_graphics.placement_count,
-                    graphics_observation.vt_graphics.virtual_placement_count,
-                },
-            );
-        }
         if (result == .rendered) {
             self.term_texture = feedback.surface;
         }

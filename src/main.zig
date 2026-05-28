@@ -2,7 +2,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const cli_args = @import("cli/args.zig");
 const Config = @import("config/config.zig");
-const graphics_log = @import("graphics_log.zig");
 const Input = @import("input/input.zig").Input;
 const InputWindow = @import("input/window.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
@@ -634,29 +633,6 @@ fn submitPresent(app: *App, frame: RenderFrame, plan: PresentPlan) PresentSubmis
         submitPresentWith(app.window, frame.tab, frame.snapshot, plan.reason)
     else
         PresentSubmission{ .reason = .none, .submitted = false, .token = null };
-    if (submission.submitted) {
-        const graphics = frame.tab.graphicsProofSnapshot();
-        if (graphics.vt_graphics.nonEmpty()) {
-            graphics_log.event(
-                "host-present-submit",
-                "reason={s} token={d} snapshot_seq={d} texture_id={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} last_upload_snapshot={d} rgba_len={d} rgba_nonzero={d}",
-                .{
-                    @tagName(submission.reason),
-                    submission.token.?,
-                    frame.turn.present_snapshot_seq,
-                    graphics.term_texture_id,
-                    graphics.vt_graphics.publication_seq,
-                    graphics.vt_graphics.dirty_generation,
-                    graphics.vt_graphics.image_count,
-                    graphics.vt_graphics.placement_count,
-                    graphics.vt_graphics.virtual_placement_count,
-                    graphics.last_upload.prepared_snapshot_seq,
-                    graphics.last_upload.rgba_len,
-                    @intFromBool(graphics.last_upload.rgba_has_non_zero_byte),
-                },
-            );
-        }
-    }
     recordPresentSubmission(app, frame, submission);
     app.frame_pacing.noteRenderSubmitted(submission);
     return submission;

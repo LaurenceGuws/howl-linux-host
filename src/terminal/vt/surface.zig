@@ -1,6 +1,5 @@
 const std = @import("std");
 const c = @import("../c.zig").c;
-const graphics_log = @import("../../graphics_log.zig");
 const terminal_term = @import("../term.zig");
 const vt_abi = @import("abi.zig");
 
@@ -85,26 +84,6 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     term.vt_state.cursor_blink = visible.cursor.blink != 0;
 
     const typed_response = Ops.commitPublishSlot(term.render.surface_text, visible);
-    if (hasGraphics(visible.graphics) or visible.graphics_payload_bytes.len != 0) {
-        graphics_log.event(
-            "host-render-publish",
-            "status={d} published={d} queued={d} damage={d} snapshot_seq={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} payload_len={d} alt={d}",
-            .{
-                typed_response.status,
-                typed_response.published,
-                typed_response.queued,
-                typed_response.damage_kind,
-                typed_response.snapshot_seq,
-                visible.graphics.publication_seq,
-                visible.graphics.dirty_generation,
-                visible.graphics.image_count,
-                visible.graphics.placement_count,
-                visible.graphics.virtual_placement_count,
-                visible.graphics_payload_bytes.len,
-                visible.graphics.is_alternate_screen,
-            },
-        );
-    }
     if (typed_response.status != c.HOWL_RENDER_CALL_OK) {
         std.debug.panic(
             "render publish rejected: status={d} published={d} queued={d} damage={d} snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} rows={d} cols={d} history={d} scroll_row={d} graphics_pub={d} images={d} placements={d} virtuals={d} payload_len={d}",
@@ -297,25 +276,6 @@ fn vtAcquireVisibleAndGraphicsIntoSlotWith(allocator: std.mem.Allocator, handle:
             error.InvalidPublication => continue,
             else => return err,
         };
-        if (hasGraphics(graphics) or items.payload_bytes.len != 0) {
-            graphics_log.event(
-                "host-vt-acquire",
-                "snapshot_seq={d} publication_seq={d} graphics_dirty={d} images={d} placements={d} virtuals={d} payload_len={d} alt={d} scroll_row={d} rows={d} cols={d}",
-                .{
-                    source.snapshot_seq,
-                    graphics.publication_seq,
-                    graphics.dirty_generation,
-                    graphics.image_count,
-                    graphics.placement_count,
-                    graphics.virtual_placement_count,
-                    items.payload_bytes.len,
-                    graphics.is_alternate_screen,
-                    source.source.scroll_row,
-                    source.source.rows,
-                    source.source.cols,
-                },
-            );
-        }
         return .{
             .rows = source.source.rows,
             .cols = source.source.cols,
@@ -429,12 +389,6 @@ fn totalPayloadLen(images: []const c.HowlVtGraphicsImage) !usize {
 
 fn renderCallOk(status: i32) !void {
     if (status != c.HOWL_RENDER_CALL_OK) return error.RenderCallFailed;
-}
-
-fn hasGraphics(meta: c.HowlVtGraphicsMeta) bool {
-    return meta.image_count != 0 or
-        meta.placement_count != 0 or
-        meta.virtual_placement_count != 0;
 }
 
 fn applyHyperlinkHover(slot: ReservedPublishSlot, rows: u16, cols: u16, hover: HyperlinkHover) void {
