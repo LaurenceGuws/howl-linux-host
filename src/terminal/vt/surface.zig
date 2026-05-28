@@ -37,7 +37,7 @@ pub const VisibleCopy = struct {
     colors: c.HowlVtRenderColorState,
     selection: c.HowlVtSelection,
     graphics: c.HowlVtGraphicsMeta,
-    graphics_images: []c.HowlVtGraphicsImage,
+    graphics_images: []c.HowlVtGraphicsDecodedImage,
     graphics_placements: []c.HowlVtGraphicsPlacement,
     graphics_virtual_placements: []c.HowlVtGraphicsVirtualPlacement,
     graphics_payload_bytes: []u8,
@@ -126,7 +126,7 @@ const RealOps = struct {
     }
 
     fn commitPublishSlot(handle: c.HowlRenderSurfaceTextHandle, visible: VisibleCopy) c.HowlRenderVtPublishResult {
-        return c.howl_render_surface_text_commit_publish_slot(handle, publishSlotCommit(visible));
+        return c.howl_render_surface_text_commit_publish_decoded_graphics_slot(handle, publishDecodedGraphicsSlotCommit(visible));
     }
 
     fn rejectPublish(handle: c.HowlRenderSurfaceTextHandle, snapshot_seq: u64) c.HowlRenderVtPublishResult {
@@ -134,7 +134,7 @@ const RealOps = struct {
     }
 };
 
-fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
+fn publishDecodedGraphicsSlotCommit(visible: VisibleCopy) c.HowlRenderPublishDecodedGraphicsSlotCommit {
     return .{
         .history_count = visible.history_count,
         .scroll_row = visible.scroll_row,
@@ -304,7 +304,7 @@ fn vtGraphicsMeta(handle: c.HowlVtHandle) c.HowlVtGraphicsMeta {
 }
 
 const GraphicsItems = struct {
-    images: []c.HowlVtGraphicsImage,
+    images: []c.HowlVtGraphicsDecodedImage,
     placements: []c.HowlVtGraphicsPlacement,
     payload_bytes: []u8,
     virtual_placements: []c.HowlVtGraphicsVirtualPlacement,
@@ -319,7 +319,7 @@ const GraphicsItems = struct {
 };
 
 fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphics: c.HowlVtGraphicsMeta) error{ InvalidPublication, VtCallFailed, OutOfMemory }!GraphicsItems {
-    var images = try allocator.alloc(c.HowlVtGraphicsImage, graphics.image_count);
+    var images = try allocator.alloc(c.HowlVtGraphicsDecodedImage, graphics.image_count);
     errdefer if (images.len > 0) allocator.free(images);
     var placements = try allocator.alloc(c.HowlVtGraphicsPlacement, graphics.placement_count);
     errdefer if (placements.len > 0) allocator.free(placements);
@@ -328,7 +328,7 @@ fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphic
 
     var image_idx: u32 = 0;
     while (image_idx < graphics.image_count) : (image_idx += 1) {
-        const result = c.howl_vt_terminal_query_graphics_image(handle, graphics.publication_seq, image_idx);
+        const result = c.howl_vt_terminal_query_graphics_decoded_image(handle, graphics.publication_seq, image_idx);
         switch (result.status) {
             c.HOWL_VT_CALL_OK => images[image_idx] = result.image,
             c.HOWL_VT_CALL_INVALID_ARGUMENT => return error.InvalidPublication,
@@ -365,7 +365,7 @@ fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphic
         const image = images[image_idx];
         const image_payload_len = std.math.cast(usize, image.payload_len) orelse return error.OutOfMemory;
         const payload = payload_bytes[payload_offset..][0..image_payload_len];
-        const copied = c.howl_vt_terminal_copy_graphics_payload(handle, graphics.publication_seq, image_idx, payload.ptr, payload.len);
+        const copied = c.howl_vt_terminal_copy_graphics_decoded_payload(handle, graphics.publication_seq, image_idx, payload.ptr, payload.len);
         switch (copied.status) {
             c.HOWL_VT_CALL_OK => {},
             c.HOWL_VT_CALL_INVALID_ARGUMENT => return error.InvalidPublication,
@@ -379,7 +379,7 @@ fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphic
     return .{ .images = images, .placements = placements, .virtual_placements = virtual_placements, .payload_bytes = payload_bytes };
 }
 
-fn totalPayloadLen(images: []const c.HowlVtGraphicsImage) !usize {
+fn totalPayloadLen(images: []const c.HowlVtGraphicsDecodedImage) !usize {
     var total: u64 = 0;
     for (images) |image| {
         total = std.math.add(u64, total, image.payload_len) catch return error.OutOfMemory;
@@ -622,7 +622,7 @@ test "publish commit forwards placement metadata" {
         .graphics_payload_bytes = &.{},
     };
 
-    const commit = publishSlotCommit(visible);
+    const commit = publishDecodedGraphicsSlotCommit(visible);
     try std.testing.expectEqual(@as(u64, visible.history_count), commit.history_count);
     try std.testing.expectEqual(visible.scroll_row, commit.scroll_row);
     try std.testing.expectEqual(visible.snapshot_seq, commit.snapshot_seq);
@@ -635,7 +635,7 @@ test "publish commit forwards placement metadata" {
     try std.testing.expectEqual(visible.graphics.dirty_generation, commit.graphics.dirty_generation);
 }
 
-test "publish commit forwards graphics payload bytes exactly" {
+test "decoded publish commit forwards graphics payload bytes exactly" {
     const visible: VisibleCopy = .{
         .rows = 1,
         .cols = 1,
@@ -650,14 +650,14 @@ test "publish commit forwards graphics payload bytes exactly" {
         .graphics_images = &.{},
         .graphics_placements = &.{},
         .graphics_virtual_placements = &.{},
-        .graphics_payload_bytes = "QUJDREVG",
+        .graphics_payload_bytes = "ABCDEF",
     };
 
-    const commit = publishSlotCommit(visible);
-    try std.testing.expectEqualStrings("QUJDREVG", commit.graphics_payload_bytes.ptr[0..commit.graphics_payload_bytes.len]);
+    const commit = publishDecodedGraphicsSlotCommit(visible);
+    try std.testing.expectEqualStrings("ABCDEF", commit.graphics_payload_bytes.ptr[0..commit.graphics_payload_bytes.len]);
 }
 
-test "publish bridge forwards non-empty app-icon graphics metadata and coherent payload bytes" {
+test "publish bridge forwards non-empty app-icon decoded graphics metadata and coherent payload bytes" {
     const FakeTerm = struct {
         allocator: std.mem.Allocator,
         vt: c.HowlVtHandle,
@@ -679,6 +679,8 @@ test "publish bridge forwards non-empty app-icon graphics metadata and coherent 
         var commit_called = false;
         var published_image_count: u32 = 0;
         var published_placement_count: u32 = 0;
+        var published_first_format: u16 = 0;
+        var published_first_payload_len: u64 = 0;
         var published_payload_len: usize = 0;
         var published_image_payload_total: usize = 0;
 
@@ -710,11 +712,15 @@ test "publish bridge forwards non-empty app-icon graphics metadata and coherent 
         }
 
         fn commitPublishSlot(_: c.HowlRenderSurfaceTextHandle, visible: VisibleCopy) c.HowlRenderVtPublishResult {
-            const commit = publishSlotCommit(visible);
+            const commit = publishDecodedGraphicsSlotCommit(visible);
             const images = commit.graphics_images.ptr[0..commit.graphics_images.len];
             commit_called = true;
             published_image_count = commit.graphics.image_count;
             published_placement_count = commit.graphics.placement_count;
+            if (images.len > 0) {
+                published_first_format = images[0].format;
+                published_first_payload_len = images[0].payload_len;
+            }
             published_payload_len = commit.graphics_payload_bytes.len;
             published_image_payload_total = totalPayloadLen(images) catch unreachable;
             return .{
@@ -757,6 +763,8 @@ test "publish bridge forwards non-empty app-icon graphics metadata and coherent 
     try std.testing.expect(FakeOps.commit_called);
     try std.testing.expect(FakeOps.published_image_count != 0);
     try std.testing.expect(FakeOps.published_placement_count != 0);
+    try std.testing.expectEqual(@as(u16, 32), FakeOps.published_first_format);
+    try std.testing.expect(FakeOps.published_first_payload_len != 0);
     try std.testing.expect(FakeOps.published_payload_len != 0);
     try std.testing.expectEqual(FakeOps.published_image_payload_total, FakeOps.published_payload_len);
 }
@@ -806,7 +814,7 @@ test "paired acquisition returns surface and graphics truth from real vt state" 
     try std.testing.expectEqual(@as(u32, 2), placement.dest_grid_rows);
 }
 
-test "paired acquisition copies graphics payload bytes in image order" {
+test "paired acquisition copies decoded graphics payload bytes in image order" {
     const handle = try vt_abi.init(4, 16);
     defer vt_abi.deinit(handle);
 
@@ -832,7 +840,9 @@ test "paired acquisition copies graphics payload bytes in image order" {
     try std.testing.expectEqual(@as(usize, 2), visible.graphics_images.len);
     try std.testing.expectEqual(@as(u32, 7), visible.graphics_images[0].image_id);
     try std.testing.expectEqual(@as(u32, 8), visible.graphics_images[1].image_id);
-    try std.testing.expectEqualStrings("QUJDREVG", visible.graphics_payload_bytes);
+    try std.testing.expectEqual(@as(u64, 3), visible.graphics_images[0].payload_len);
+    try std.testing.expectEqual(@as(u64, 3), visible.graphics_images[1].payload_len);
+    try std.testing.expectEqualStrings("ABCDEF", visible.graphics_payload_bytes);
 }
 
 test "paired acquisition retries whole attempt on stale graphics publication" {
@@ -878,7 +888,7 @@ test "paired acquisition retries whole attempt on stale graphics publication" {
         fn graphicsItems(allocator: std.mem.Allocator, _: c.HowlVtHandle, _: c.HowlVtGraphicsMeta) error{ InvalidPublication, VtCallFailed, OutOfMemory }!GraphicsItems {
             graphics_item_calls += 1;
             if (graphics_item_calls == 1) return error.InvalidPublication;
-            const images = try allocator.alloc(c.HowlVtGraphicsImage, 1);
+            const images = try allocator.alloc(c.HowlVtGraphicsDecodedImage, 1);
             errdefer allocator.free(images);
             const placements = try allocator.alloc(c.HowlVtGraphicsPlacement, 1);
             errdefer allocator.free(placements);
