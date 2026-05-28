@@ -170,7 +170,6 @@ fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
             .image_count = visible.graphics.image_count,
             .placement_count = visible.graphics.placement_count,
             .virtual_placement_count = visible.graphics.virtual_placement_count,
-            .placeholder_run_count = 0,
             .is_alternate_screen = visible.graphics.is_alternate_screen,
             .reserved0 = 0,
             .publication_seq = visible.graphics.publication_seq,
@@ -179,7 +178,6 @@ fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
         .graphics_images = .{ .ptr = if (visible.graphics_images.len == 0) null else visible.graphics_images.ptr, .len = visible.graphics_images.len },
         .graphics_placements = .{ .ptr = if (visible.graphics_placements.len == 0) null else visible.graphics_placements.ptr, .len = visible.graphics_placements.len },
         .graphics_virtual_placements = .{ .ptr = if (visible.graphics_virtual_placements.len == 0) null else visible.graphics_virtual_placements.ptr, .len = visible.graphics_virtual_placements.len },
-        .graphics_placeholder_runs = .{ .ptr = null, .len = 0 },
         .graphics_payload_bytes = .{ .ptr = if (visible.graphics_payload_bytes.len == 0) null else visible.graphics_payload_bytes.ptr, .len = visible.graphics_payload_bytes.len },
     };
 }
@@ -643,7 +641,7 @@ test "zero snapshot sequence means no ack call" {
     try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
 }
 
-test "publish commit forwards placement metadata and empty placeholder runs" {
+test "publish commit forwards placement metadata" {
     const visible: VisibleCopy = .{
         .rows = 3,
         .cols = 8,
@@ -654,15 +652,15 @@ test "publish commit forwards placement metadata and empty placeholder runs" {
         .cursor = .{ .row = 1, .col = 2, .visible = 1, .shape = 2, .blink = 1 },
         .colors = std.mem.zeroes(c.HowlVtRenderColorState),
         .selection = std.mem.zeroes(c.HowlVtSelection),
-        .graphics = .{
-            .image_count = 7,
-            .placement_count = 5,
-            .virtual_placement_count = 2,
-            .placeholder_run_count = 9,
-            .is_alternate_screen = 1,
-            .reserved0 = 0,
-            .publication_seq = 33,
-            .dirty_generation = 44,
+        .graphics = blk: {
+            var graphics = std.mem.zeroes(c.HowlVtGraphicsMeta);
+            graphics.image_count = 7;
+            graphics.placement_count = 5;
+            graphics.virtual_placement_count = 2;
+            graphics.is_alternate_screen = 1;
+            graphics.publication_seq = 33;
+            graphics.dirty_generation = 44;
+            break :blk graphics;
         },
         .graphics_images = &.{},
         .graphics_placements = &.{},
@@ -678,9 +676,6 @@ test "publish commit forwards placement metadata and empty placeholder runs" {
     try std.testing.expectEqual(visible.graphics.image_count, commit.graphics.image_count);
     try std.testing.expectEqual(visible.graphics.placement_count, commit.graphics.placement_count);
     try std.testing.expectEqual(visible.graphics.virtual_placement_count, commit.graphics.virtual_placement_count);
-    try std.testing.expectEqual(@as(u32, 0), commit.graphics.placeholder_run_count);
-    try std.testing.expectEqual(@as(usize, 0), commit.graphics_placeholder_runs.len);
-    try std.testing.expectEqual(@as(?[*]const c.HowlVtGraphicsPlaceholderRun, null), commit.graphics_placeholder_runs.ptr);
     try std.testing.expectEqual(visible.graphics.is_alternate_screen, commit.graphics.is_alternate_screen);
     try std.testing.expectEqual(visible.graphics.publication_seq, commit.graphics.publication_seq);
     try std.testing.expectEqual(visible.graphics.dirty_generation, commit.graphics.dirty_generation);
