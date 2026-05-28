@@ -108,3 +108,8 @@ pub fn progressRuntime(handle: c.HowlVtHandle, now_ns: u64) !RuntimeProgress {
         },
     };
 }
+
+pub fn noteDrawnGraphics(handle: c.HowlVtHandle, publication_seq: u64, image_ref_ids: []const u32) !void {
+    const ptr = if (image_ref_ids.len == 0) null else image_ref_ids.ptr;
+    try requireOk(c.howl_vt_terminal_note_drawn_graphics(handle, publication_seq, ptr, image_ref_ids.len));
+}

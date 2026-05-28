@@ -821,7 +821,7 @@ pub const TerminalPanel = struct {
     fn takePreparedUpload(self: *TerminalPanel, upload_out: *render_retained.PreparedUpload) bool {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
-        return self.term.render.preparedUpload(upload_out);
+        return self.term.render.preparedUpload(self.term.allocator, upload_out);
     }
 
     fn submitPrepared(self: *TerminalPanel) SubmitPreparedResult {
@@ -829,6 +829,7 @@ pub const TerminalPanel = struct {
 
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.takePreparedUpload(&upload)) return .{ .result = .failed, .snapshot_seq = 0 };
+        defer upload.deinit(self.term.allocator);
         self.recordGraphicsUploadObservation(upload);
 
         const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
@@ -855,8 +856,15 @@ pub const TerminalPanel = struct {
         const result = self.submit(&execution, &feedback);
         if (result == .rendered) {
             self.term_texture = feedback.surface;
+            self.noteDrawnGraphics(upload);
         }
         return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq };
+    }
+
+    fn noteDrawnGraphics(self: *TerminalPanel, upload: render_retained.PreparedUpload) void {
+        self.term.mutex.lock();
+        defer self.term.mutex.unlock();
+        vt_api.noteDrawnGraphics(self.term.vt, upload.info.graphics_publication_seq, upload.drawn_graphics_image_refs) catch {};
     }
 
     fn recordGraphicsUploadObservation(self: *TerminalPanel, upload: render_retained.PreparedUpload) void {
