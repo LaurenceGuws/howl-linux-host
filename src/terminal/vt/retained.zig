@@ -35,12 +35,35 @@ pub const State = struct {
     title_len: u16 = 0,
     output_scratch: [output_max_bytes]u8 = undefined,
     input_scratch: [input_max_bytes]u8 = undefined,
+    surface_cells_scratch: []c.HowlVtSurfaceCell = &.{},
     scrollback_offset: u32 = 0,
     focused: bool = true,
     cursor_visible: bool = true,
     cursor_blink: bool = false,
 
-    pub fn deinit(_: *State, _: std.mem.Allocator) void {}
+    pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
+        if (self.surface_cells_scratch.len > 0) allocator.free(self.surface_cells_scratch);
+        self.surface_cells_scratch = &.{};
+    }
+
+    pub fn ensureSurfaceCellScratch(
+        self: *State,
+        allocator: std.mem.Allocator,
+        cols: u16,
+        rows: u16,
+    ) ![]c.HowlVtSurfaceCell {
+        std.debug.assert(cols > 0);
+        std.debug.assert(rows > 0);
+        const cell_count = try std.math.mul(usize, cols, rows);
+        if (self.surface_cells_scratch.len >= cell_count) {
+            return self.surface_cells_scratch[0..cell_count];
+        }
+
+        const next = try allocator.alloc(c.HowlVtSurfaceCell, cell_count);
+        if (self.surface_cells_scratch.len > 0) allocator.free(self.surface_cells_scratch);
+        self.surface_cells_scratch = next;
+        return self.surface_cells_scratch[0..cell_count];
+    }
 };
 
 pub fn resetTitleFromLaunch(term: anytype) !void {

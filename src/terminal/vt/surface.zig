@@ -42,7 +42,7 @@ pub const VisibleCopy = struct {
 };
 
 const ReservedVtSurfaceSlot = struct {
-    cells: []c.HowlVtSurfaceCell,
+    cells: []c.HowlRenderSourceCell,
     dirty_rows: []u8,
     dirty_cols_start: []u16,
     dirty_cols_end: []u16,
@@ -65,7 +65,7 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     const meta = Ops.visibleMeta(term.vt, term.vt_state.scrollback_offset);
     const slot = Ops.reserveSlot(term.render.text_session, meta.cols, meta.rows) catch return Ops.rejectPublish(term.render.text_session, meta.snapshot_seq);
 
-    var visible = Ops.acquireVisible(term.allocator, term.vt, term.vt_state.scrollback_offset, meta, slot) catch return Ops.rejectPublish(term.render.text_session, meta.snapshot_seq);
+    var visible = Ops.acquireVisible(term.allocator, &term.vt_state, term.vt, term.vt_state.scrollback_offset, meta, slot) catch return Ops.rejectPublish(term.render.text_session, meta.snapshot_seq);
     defer visible.deinit(term.allocator);
     if (hover) |value| applyHyperlinkHover(slot, visible.rows, visible.cols, value);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
@@ -106,9 +106,9 @@ const RealOps = struct {
         return reserveVtSurfaceSlot(handle, cols, rows);
     }
 
-    fn acquireVisible(allocator: std.mem.Allocator, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedVtSurfaceSlot) !VisibleCopy {
-        _ = allocator;
-        return vtAcquireVisibleIntoSlot(handle, scrollback_offset, meta, slot);
+    fn acquireVisible(allocator: std.mem.Allocator, vt_state: anytype, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedVtSurfaceSlot) !VisibleCopy {
+        const vt_cells = try vt_state.ensureSurfaceCellScratch(allocator, meta.cols, meta.rows);
+        return vtAcquireVisibleIntoSlot(handle, scrollback_offset, meta, vt_cells, slot);
     }
 
     fn commitVtSurface(handle: c.HowlRenderTextSessionHandle, visible: VisibleCopy) c.HowlRenderVtSurfacePublishResult {
@@ -128,9 +128,9 @@ fn vtSurfaceCommit(visible: VisibleCopy) c.HowlRenderVtSurfaceCommit {
         .is_alternate_screen = @intFromBool(visible.is_alternate_screen),
         .reserved0 = 0,
         .reserved1 = 0,
-        .cursor = visible.cursor,
-        .colors = visible.colors,
-        .selection = visible.selection,
+        .cursor = renderCursorFromVt(visible.cursor),
+        .colors = renderColorsFromVt(visible.colors),
+        .selection = renderSelectionFromVt(visible.selection),
     };
 }
 
@@ -204,17 +204,17 @@ fn reserveVtSurfaceSlot(handle: c.HowlRenderTextSessionHandle, cols: u16, rows: 
     };
 }
 
-fn vtAcquireVisibleIntoSlot(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedVtSurfaceSlot) !VisibleCopy {
-    return vtAcquireVisibleIntoSlotWith(handle, scrollback_offset, meta, slot, RealAcquireOps);
+fn vtAcquireVisibleIntoSlot(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, vt_cells: []c.HowlVtSurfaceCell, slot: ReservedVtSurfaceSlot) !VisibleCopy {
+    return vtAcquireVisibleIntoSlotWith(handle, scrollback_offset, meta, vt_cells, slot, RealAcquireOps);
 }
 
 const RealAcquireOps = struct {
-    fn copySurface(handle: c.HowlVtHandle, scrollback_offset: u32, slot: ReservedVtSurfaceSlot) c.HowlVtSurfaceResult {
+    fn copySurface(handle: c.HowlVtHandle, scrollback_offset: u32, vt_cells: []c.HowlVtSurfaceCell, slot: ReservedVtSurfaceSlot) c.HowlVtSurfaceResult {
         return c.howl_vt_terminal_copy_surface(
             handle,
             scrollback_offset,
-            slot.cells.ptr,
-            slot.cells.len,
+            vt_cells.ptr,
+            vt_cells.len,
             slot.dirty_rows.ptr,
             slot.dirty_rows.len,
             slot.dirty_cols_start.ptr,
@@ -225,14 +225,17 @@ const RealAcquireOps = struct {
     }
 };
 
-fn vtAcquireVisibleIntoSlotWith(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedVtSurfaceSlot, comptime Ops: type) !VisibleCopy {
-    const source = Ops.copySurface(handle, scrollback_offset, slot);
+fn vtAcquireVisibleIntoSlotWith(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, vt_cells: []c.HowlVtSurfaceCell, slot: ReservedVtSurfaceSlot, comptime Ops: type) !VisibleCopy {
+    std.debug.assert(vt_cells.len == slot.cells.len);
+    const source = Ops.copySurface(handle, scrollback_offset, vt_cells, slot);
     try requireVtOk(source.status);
     std.debug.assert(source.source.rows == meta.rows);
     std.debug.assert(source.source.cols == meta.cols);
     std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
     std.debug.assert(source.source.scroll_row <= source.history_count + source.source.rows);
     std.debug.assert(scrollback_offset <= source.history_count);
+    std.debug.assert(source.source.surface_cells.len == slot.cells.len);
+    renderCellsFromVt(source.source.surface_cells.ptr[0..source.source.surface_cells.len], slot.cells);
     return .{
         .rows = source.source.rows,
         .cols = source.source.cols,
@@ -244,6 +247,100 @@ fn vtAcquireVisibleIntoSlotWith(handle: c.HowlVtHandle, scrollback_offset: u32, 
         .colors = source.source.colors,
         .selection = source.source.selection,
     };
+}
+
+fn renderCellsFromVt(vt_cells: []const c.HowlVtSurfaceCell, render_cells: []c.HowlRenderSourceCell) void {
+    std.debug.assert(vt_cells.len == render_cells.len);
+    for (vt_cells, render_cells) |vt_cell, *render_cell| {
+        render_cell.* = renderCellFromVt(vt_cell);
+    }
+}
+
+fn renderCellFromVt(value: c.HowlVtSurfaceCell) c.HowlRenderSourceCell {
+    return .{
+        .codepoint = value.codepoint,
+        .combining_len = value.combining_len,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .reserved2 = 0,
+        .combining = value.combining,
+        .flags = .{
+            .continuation = value.flags.continuation,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .reserved2 = 0,
+        },
+        .fg_color = renderColorFromVt(value.fg_color),
+        .bg_color = renderColorFromVt(value.bg_color),
+        .underline_color = renderColorFromVt(value.underline_color),
+        .underline_style = value.underline_style,
+        .reserved3 = 0,
+        .reserved4 = 0,
+        .reserved5 = 0,
+        .attrs = renderCellAttrsFromVt(value.attrs),
+        .link_id = value.link_id,
+    };
+}
+
+fn renderCellAttrsFromVt(value: c.HowlVtSurfaceCellAttrs) c.HowlRenderSourceCellAttrs {
+    return .{
+        .bold = value.bold,
+        .dim = value.dim,
+        .italic = value.italic,
+        .underline = value.underline,
+        .underline_color_set = value.underline_color_set,
+        .blink = value.blink,
+        .inverse = value.inverse,
+        .invisible = value.invisible,
+        .strikethrough = value.strikethrough,
+        .selected = value.selected,
+    };
+}
+
+fn renderColorFromVt(value: c.HowlVtColor) c.HowlRenderSourceColor {
+    return .{ .kind = value.kind, .reserved0 = 0, .reserved1 = 0, .reserved2 = 0, .value = value.value };
+}
+
+fn renderCursorFromVt(value: c.HowlVtCursor) c.HowlRenderSourceCursor {
+    return .{
+        .row = value.row,
+        .col = value.col,
+        .visible = value.visible,
+        .shape = value.shape,
+        .blink = value.blink,
+        .reserved0 = 0,
+    };
+}
+
+fn renderColorsFromVt(value: c.HowlVtRenderColorState) c.HowlRenderSourceColors {
+    var palette: [256]c.HowlRenderSourceRgb = undefined;
+    for (value.palette, 0..) |color, index| {
+        palette[index] = renderRgbFromVt(color);
+    }
+    return .{
+        .foreground = renderRgbFromVt(value.foreground),
+        .background = renderRgbFromVt(value.background),
+        .cursor = renderRgbFromVt(value.cursor),
+        .palette = palette,
+    };
+}
+
+fn renderRgbFromVt(value: c.HowlVtRgb8) c.HowlRenderSourceRgb {
+    return .{ .r = value.r, .g = value.g, .b = value.b };
+}
+
+fn renderSelectionFromVt(value: c.HowlVtSelection) c.HowlRenderSourceSelection {
+    return .{
+        .active = value.active,
+        .selecting = value.selecting,
+        .reserved0 = 0,
+        .start = renderSelectionPosFromVt(value.start),
+        .end = renderSelectionPosFromVt(value.end),
+    };
+}
+
+fn renderSelectionPosFromVt(value: c.HowlVtSelectionPos) c.HowlRenderSourceSelectionPos {
+    return .{ .row = value.row, .col = value.col, .reserved0 = 0 };
 }
 
 fn renderCallOk(status: i32) !void {
@@ -343,11 +440,11 @@ test "publish forwards vt snapshot sequence" {
 }
 
 test "hover decoration underlines the hovered hyperlink span" {
-    var cells = [_]c.HowlVtSurfaceCell{
-        std.mem.zeroes(c.HowlVtSurfaceCell),
-        std.mem.zeroes(c.HowlVtSurfaceCell),
-        std.mem.zeroes(c.HowlVtSurfaceCell),
-        std.mem.zeroes(c.HowlVtSurfaceCell),
+    var cells = [_]c.HowlRenderSourceCell{
+        std.mem.zeroes(c.HowlRenderSourceCell),
+        std.mem.zeroes(c.HowlRenderSourceCell),
+        std.mem.zeroes(c.HowlRenderSourceCell),
+        std.mem.zeroes(c.HowlRenderSourceCell),
     };
     cells[1].link_id = 7;
     cells[2].link_id = 7;
@@ -449,7 +546,7 @@ test "publish rejects reserved slot when paired acquisition fails" {
             return .{ .cells = &.{}, .dirty_rows = &.{}, .dirty_cols_start = &.{}, .dirty_cols_end = &.{} };
         }
 
-        fn acquireVisible(_: std.mem.Allocator, _: c.HowlVtHandle, _: u32, _: VisibleMeta, _: ReservedVtSurfaceSlot) error{AcquisitionFailed}!VisibleCopy {
+        fn acquireVisible(_: std.mem.Allocator, _: anytype, _: c.HowlVtHandle, _: u32, _: VisibleMeta, _: ReservedVtSurfaceSlot) error{AcquisitionFailed}!VisibleCopy {
             return error.AcquisitionFailed;
         }
 
