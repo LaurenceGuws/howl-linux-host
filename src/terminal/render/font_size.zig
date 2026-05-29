@@ -1,5 +1,5 @@
 const std = @import("std");
-const render_api = @import("../render/abi.zig");
+const render_api = @import("abi.zig");
 
 const min_font_px: u16 = 2;
 const max_font_px: u16 = 256;

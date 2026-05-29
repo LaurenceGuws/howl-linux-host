@@ -1,9 +1,9 @@
 const std = @import("std");
 const window = @import("../../window/window.zig");
 const pty_session = @import("../pty/session.zig");
-const render_api = @import("../render/abi.zig");
+const render_api = @import("abi.zig");
 const vt_retained = @import("../vt/retained.zig");
-const scroll = @import("scroll.zig");
+const viewport = @import("../vt/viewport.zig");
 
 pub const State = struct {
     render_px_w: c_int,
@@ -65,7 +65,7 @@ pub fn resize(panel: anytype, render_width: c_int, render_height: c_int, logical
     panel.geometry.pending_grid_px_w = rw;
     panel.geometry.pending_grid_px_h = rh;
     panel.geometry.last_resize_ns = window.c_win.SDL_GetTicksNS();
-    scroll.invalidate(panel);
+    viewport.invalidate(panel);
 }
 
 pub fn maybeCommitGridResize(panel: anytype) void {

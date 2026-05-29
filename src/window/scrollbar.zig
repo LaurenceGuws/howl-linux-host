@@ -1,7 +1,7 @@
 const std = @import("std");
-const window = @import("../../window/window.zig");
-const Layout = @import("../../window/layout.zig");
-const HostInput = @import("../../input/input.zig").Input;
+const window = @import("window.zig");
+const Layout = @import("layout.zig");
+const HostInput = @import("../input/input.zig").Input;
 
 const min_width_logical: c_int = 3;
 const max_width_logical: c_int = 11;

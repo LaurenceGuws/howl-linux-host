@@ -25,10 +25,10 @@ const TerminalConfig = Config.Terminal;
 const ClipboardOsc52Policy = @import("../config/terminal.zig").ClipboardOsc52Policy;
 const LinkHoverPolicy = @import("../config/terminal.zig").LinkHoverPolicy;
 const LinkUnderlineStyle = @import("../config/terminal.zig").LinkUnderlineStyle;
-const font_size = @import("host/font_size.zig");
-const geometry = @import("host/geometry.zig");
-const term_input = @import("host/input.zig");
-const scroll = @import("host/scroll.zig");
+const font_size = @import("render/font_size.zig");
+const frame_layout = @import("render/frame_layout.zig");
+const term_input = @import("vt/input.zig");
+const viewport = @import("vt/viewport.zig");
 
 const cursor_blink_interval_ms: u64 = 600;
 const cursor_blink_interval_ns: u64 = cursor_blink_interval_ms * std.time.ns_per_ms;
@@ -83,12 +83,12 @@ pub const TerminalPanel = struct {
     input: *HostInput,
     title_buf: [128]u8,
     title_len: u8,
-    geometry: geometry.State,
+    geometry: frame_layout.State,
     font_size_px: u16,
     default_font_size_px: u16,
     window_focused: bool,
     widget_focused: bool,
-    scrollbar: scroll.State,
+    scrollbar: viewport.State,
     link_cursor_active: bool,
     hovered_link_cell: ?HoveredLinkCell,
     selection_anchor: ?SelectionCell,
@@ -124,7 +124,7 @@ pub const TerminalPanel = struct {
         self.input = input;
         self.title_buf = undefined;
         self.title_len = 0;
-        self.geometry = geometry.init(render_width, render_height, logical_width, logical_height);
+        self.geometry = frame_layout.init(render_width, render_height, logical_width, logical_height);
         self.font_size_px = start_font_px;
         self.default_font_size_px = start_font_px;
         self.window_focused = true;
@@ -163,19 +163,19 @@ pub const TerminalPanel = struct {
     }
 
     pub fn resize(self: *TerminalPanel, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
-        geometry.resize(self, render_width, render_height, logical_width, logical_height);
+        frame_layout.resize(self, render_width, render_height, logical_width, logical_height);
     }
 
     pub fn maybeCommitGridResize(self: *TerminalPanel) void {
-        geometry.maybeCommitGridResize(self);
+        frame_layout.maybeCommitGridResize(self);
     }
 
     pub fn syncFrameLayout(self: *TerminalPanel, request: FrameLayoutRequest) !void {
-        try geometry.syncFrameLayout(self, request);
+        try frame_layout.syncFrameLayout(self, request);
     }
 
     pub fn frameLayoutSnapshot(self: *TerminalPanel) FrameLayoutRequest {
-        return geometry.frameLayoutSnapshot(self);
+        return frame_layout.frameLayoutSnapshot(self);
     }
 
     pub fn paste(self: *TerminalPanel, payload: []const u8) void {
@@ -222,11 +222,11 @@ pub const TerminalPanel = struct {
     }
 
     pub fn handleScrollInput(self: *TerminalPanel, input_events: *HostInput) void {
-        scroll.handlePages(self, input_events);
+        viewport.handlePages(self, input_events);
     }
 
     pub fn wantsPassiveHoverWake(self: *const TerminalPanel, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-        return scroll.wantsPassiveHoverWake(self, origin_x, origin_y, logical_width, logical_height);
+        return viewport.wantsPassiveHoverWake(self, origin_x, origin_y, logical_width, logical_height);
     }
 
     /// Report whether this terminal needs unpressed mouse motion for link hover.
@@ -241,7 +241,7 @@ pub const TerminalPanel = struct {
 
     pub fn overlaySnapshot(self: *const TerminalPanel, texture_rect: window.Rect) OverlaySnapshot {
         return .{
-            .scrollbar = scroll.layout(@constCast(self), texture_rect),
+            .scrollbar = viewport.layout(@constCast(self), texture_rect),
         };
     }
 
@@ -278,7 +278,7 @@ pub const TerminalPanel = struct {
         if (self.window_focused == focused) return;
         self.window_focused = focused;
         if (!focused and clearHoveredLink(self)) self.input.requestRedraw();
-        scroll.setFocused(self, focused);
+        viewport.setFocused(self, focused);
         self.syncInputFocus();
     }
 
@@ -286,7 +286,7 @@ pub const TerminalPanel = struct {
         if (self.widget_focused == focused) return;
         self.widget_focused = focused;
         if (!focused and clearHoveredLink(self)) self.input.requestRedraw();
-        scroll.invalidate(self);
+        viewport.invalidate(self);
         self.syncInputFocus();
     }
 
@@ -296,17 +296,17 @@ pub const TerminalPanel = struct {
 
     pub fn adjustFontSize(self: *TerminalPanel, delta: i16) bool {
         if (!font_size.adjust(self, delta)) return false;
-        return geometry.syncCurrentFrameLayout(self);
+        return frame_layout.syncCurrentFrameLayout(self);
     }
 
     pub fn toggleStressFontSize(self: *TerminalPanel) bool {
         if (!font_size.toggleStress(self)) return false;
-        return geometry.syncCurrentFrameLayout(self);
+        return frame_layout.syncCurrentFrameLayout(self);
     }
 
     pub fn resetFontSize(self: *TerminalPanel) bool {
         if (!font_size.reset(self)) return false;
-        return geometry.syncCurrentFrameLayout(self);
+        return frame_layout.syncCurrentFrameLayout(self);
     }
 
     pub fn wantsRenderTurn(self: *const TerminalPanel) bool {
@@ -807,7 +807,7 @@ pub const TerminalPanel = struct {
 
         fn handleScrollMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) ScrollMouseOutcome {
             const before = ScrollVisualState.capture(self);
-            const consumed = scroll.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
+            const consumed = viewport.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
             const after = ScrollVisualState.capture(self);
             return .{ .consumed = consumed, .host_visual_changed = !std.meta.eql(before, after) };
         }
@@ -828,7 +828,7 @@ pub const TerminalPanel = struct {
                 else => 0,
             };
             if (delta == 0) return false;
-            scroll.byRows(self, delta);
+            viewport.byRows(self, delta);
             const after = vt_retained.scrollState(&self.term).scrollback_offset;
             return before != after;
         }
@@ -940,10 +940,10 @@ pub const TerminalPanel = struct {
     fn initTermState(conf: *const TerminalConfig, launch: pty_retained.LaunchConfig, render_init: render_api.RenderInit) !TermInit {
         const surface_text = try render_api.initSurfaceText(render_init);
         errdefer if (surface_text) |handle| terminal_c.howl_render_surface_text_deinit(handle);
-        const frame_layout = try render_api.initFrameLayout(surface_text, render_init);
-        const session_handle = try pty_session.initHandle(launch, frame_layout.cols, frame_layout.rows);
+        const layout = try render_api.initFrameLayout(surface_text, render_init);
+        const session_handle = try pty_session.initHandle(launch, layout.cols, layout.rows);
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
-        const vt = try vt_api.initWithOptions(frame_layout.rows, frame_layout.cols, .{
+        const vt = try vt_api.initWithOptions(layout.rows, layout.cols, .{
             .default_cursor_style = .{
                 .shape = conf.cursor.style,
                 .blink = conf.cursor.blink,
@@ -952,7 +952,7 @@ pub const TerminalPanel = struct {
         errdefer if (vt) |handle| vt_api.deinit(handle);
         return .{
             .surface_text = surface_text.?,
-            .frame_layout = frame_layout,
+            .frame_layout = layout,
             .session = session_handle.?,
             .vt = vt.?,
         };
@@ -1064,7 +1064,7 @@ fn applyPendingClipboardWrite(term: anytype, policy: ClipboardOsc52Policy, compt
 }
 
 test "frame layout request ignores logical size" {
-    var state = geometry.State{
+    var state = frame_layout.State{
         .render_px_w = 640,
         .render_px_h = 480,
         .logical_w = 321,
@@ -1075,7 +1075,7 @@ test "frame layout request ignores logical size" {
         .pending_grid_px_h = 440,
     };
 
-    const request = geometry.snapshotFrameLayoutLocked(&state);
+    const request = frame_layout.snapshotFrameLayoutLocked(&state);
     try std.testing.expectEqual(@as(u16, 640), request.render_px.width);
     try std.testing.expectEqual(@as(u16, 480), request.render_px.height);
     try std.testing.expectEqual(@as(u16, 600), request.grid_px.width);

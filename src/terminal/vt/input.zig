@@ -1,7 +1,7 @@
 const Input = @import("../../input/input.zig").Input;
-const api = @import("../vt/abi.zig");
+const api = @import("abi.zig");
 const pty_session = @import("../pty/session.zig");
-const retained = @import("../vt/retained.zig");
+const retained = @import("retained.zig");
 const std = @import("std");
 const c = @import("../c.zig").c;
 
