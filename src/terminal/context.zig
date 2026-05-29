@@ -452,7 +452,7 @@ pub const Context = struct {
         const mut: *Context = @constCast(self);
         mut.term.mutex.lock();
         defer mut.term.mutex.unlock();
-        return self.term.render.pending(self.term_texture.host_surface_id == 0);
+        return self.term.render.workState(self.term_texture.host_surface_id == 0);
     }
 
     fn cursorBlinkShouldAnimate(self: *Context) bool {

@@ -100,9 +100,9 @@ pub const State = struct {
         self.setGeometryEpoch(geometry.geometry_epoch);
     }
 
-    pub fn pending(self: *const State, bootstrap_surface: bool) WorkState {
-        var state = std.mem.zeroes(c.HowlRenderPendingState);
-        std.debug.assert(c.howl_render_text_session_pending_state(self.text_session, &state) == c.HOWL_RENDER_CALL_OK);
+    pub fn workState(self: *const State, bootstrap_surface: bool) WorkState {
+        var state = std.mem.zeroes(c.HowlRenderSessionWorkState);
+        std.debug.assert(c.howl_render_text_session_work_state(self.text_session, &state) == c.HOWL_RENDER_CALL_OK);
         return .{
             .source_pending = state.source_pending != 0,
             .prepare_pending = state.prepare_pending != 0,
@@ -350,8 +350,8 @@ test "present in flight contributes host-owned pending state" {
     state.notePresentSubmitted(7, 70);
     try std.testing.expect(state.presentPending());
 
-    const pending = state.pending(false);
-    try std.testing.expect(pending.present_pending);
+    const work = state.workState(false);
+    try std.testing.expect(work.present_pending);
 }
 
 test "matching complete present returns snapshot once and clears" {
