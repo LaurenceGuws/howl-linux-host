@@ -12,16 +12,15 @@ const fonts_linux = @import("render/fonts_linux.zig");
 const pty_retained = @import("pty/retained.zig");
 const pty_session = @import("pty/session.zig");
 const render_retained = @import("render/retained.zig");
-const render_api = @import("render/abi.zig");
-const vt_api = @import("vt/abi.zig");
 const vt_surface = @import("vt/surface.zig");
 const terminal_term = @import("term.zig");
 const vt_retained = @import("vt/retained.zig");
 const HowlTerm = terminal_term.Term;
 const LifecycleState = pty_retained.LifecycleState;
-const SurfaceLayoutRequest = render_api.SurfaceLayoutRequest;
+const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
+const CursorStyle = @import("../config/terminal.zig").CursorStyle;
 const ClipboardOsc52Policy = @import("../config/terminal.zig").ClipboardOsc52Policy;
 const LinkHoverPolicy = @import("../config/terminal.zig").LinkHoverPolicy;
 const LinkUnderlineStyle = @import("../config/terminal.zig").LinkUnderlineStyle;
@@ -32,6 +31,24 @@ const viewport = @import("vt/viewport.zig");
 
 const cursor_blink_interval_ms: u64 = 600;
 const cursor_blink_interval_ns: u64 = cursor_blink_interval_ms * std.time.ns_per_ms;
+const default_history_capacity: u16 = 4096;
+const max_fallback_font_paths: u8 = @intCast(terminal_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
+
+const RenderInit = struct {
+    render_px: terminal_c.HowlRenderPixelSize,
+    grid_px: terminal_c.HowlRenderPixelSize,
+    font_size_px: u16,
+    primary_font_path: ?[:0]const u8 = null,
+    fallback_font_paths: []const [:0]const u8 = &.{},
+};
+
+const VtInitOptions = struct {
+    default_cursor_style: struct {
+        shape: CursorStyle,
+        blink: bool,
+    } = .{ .shape = .block, .blink = true },
+};
+
 const CursorBlinkPlan = struct {
     visible: bool,
     deadline_ns: u64,
@@ -78,7 +95,7 @@ pub const Context = struct {
     term: HowlTerm,
     progress: pty_wait_thread.State = .{},
     live: bool,
-    term_texture: render_api.HostSurface,
+    term_texture: terminal_c.HowlRenderHostSurface,
     conf: *const TerminalConfig,
     input: *HostInput,
     title_buf: [128]u8,
@@ -155,7 +172,7 @@ pub const Context = struct {
             feed_record.deinit(&self.term);
             self.term.render.deinit();
             self.term.vt_state.deinit(self.term.allocator);
-            vt_api.deinit(self.term.vt);
+            deinitVt(self.term.vt);
             pty_session.deinitHandle(self.term.session);
         }
         self.live = false;
@@ -466,7 +483,7 @@ pub const Context = struct {
 
     fn setCursorBlinkVisible(self: *Context, visible: bool) bool {
         if (self.cursor_blink_visible == visible) return false;
-        if (!render_api.setCursorBlinkVisible(&self.term, visible)) return false;
+        if (!setRenderCursorBlinkVisible(&self.term, visible)) return false;
         self.cursor_blink_visible = visible;
         return true;
     }
@@ -645,8 +662,8 @@ pub const Context = struct {
         return term_input.publishMouse(&self.term, .{
             .kind = term_input.mouseKind(mouse_event.kind),
             .button = term_input.mouseButton(mouse_event.button),
-            .row = render_api.pixelToRow(&self.term, mouse_event.pixel_y),
-            .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
+            .row = pixelToRow(&self.term, mouse_event.pixel_y),
+            .col = pixelToCol(&self.term, mouse_event.pixel_x),
             .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
             .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
             .mods = term_input.mods(mouse_event.mods),
@@ -719,8 +736,8 @@ pub const Context = struct {
         return term_input.wouldReportMouse(&self.term, .{
             .kind = term_input.mouseKind(mouse_event.kind),
             .button = term_input.mouseButton(mouse_event.button),
-            .row = render_api.pixelToRow(&self.term, mouse_event.pixel_y),
-            .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
+            .row = pixelToRow(&self.term, mouse_event.pixel_y),
+            .col = pixelToCol(&self.term, mouse_event.pixel_x),
             .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
             .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
             .mods = term_input.mods(mouse_event.mods),
@@ -872,17 +889,17 @@ pub const Context = struct {
 
     fn mouseEventCell(self: *Context, mouse_event: HostInput.Mouse.Event) HoveredLinkCell {
         return .{
-            .row = @intCast(render_api.pixelToRow(&self.term, mouse_event.pixel_y)),
-            .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
+            .row = @intCast(pixelToRow(&self.term, mouse_event.pixel_y)),
+            .col = pixelToCol(&self.term, mouse_event.pixel_x),
         };
     }
 
     fn selectionEventCell(self: *Context, mouse_event: HostInput.Mouse.Event) SelectionCell {
-        const row = render_api.pixelToRow(&self.term, mouse_event.pixel_y);
+        const row = pixelToRow(&self.term, mouse_event.pixel_y);
         const scrollback_offset: i32 = @intCast(self.term.vt_state.scrollback_offset);
         return .{
             .row = row - scrollback_offset,
-            .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
+            .col = pixelToCol(&self.term, mouse_event.pixel_x),
         };
     }
 
@@ -914,7 +931,7 @@ pub const Context = struct {
 
     const TermInit = struct {
         text_session: terminal_c.HowlRenderTextSessionHandle,
-        surface_layout: render_api.SurfaceLayout,
+        surface_layout: render_retained.SurfaceLayout,
         session: terminal_c.HowlPtySessionHandle,
         vt: terminal_c.HowlVtHandle,
     };
@@ -927,7 +944,7 @@ pub const Context = struct {
         };
     }
 
-    fn renderInit(self: *Context, surface_request: render_api.SurfaceLayoutRequest, resolved_fonts: *const fonts_linux.ResolvedFonts) render_api.RenderInit {
+    fn renderInit(self: *Context, surface_request: SurfaceLayoutRequest, resolved_fonts: *const fonts_linux.ResolvedFonts) RenderInit {
         return .{
             .render_px = surface_request.render_px,
             .grid_px = surface_request.grid_px,
@@ -937,19 +954,19 @@ pub const Context = struct {
         };
     }
 
-    fn initTermState(conf: *const TerminalConfig, launch: pty_retained.LaunchConfig, render_init: render_api.RenderInit) !TermInit {
-        const text_session = try render_api.initTextSession(render_init);
+    fn initTermState(conf: *const TerminalConfig, launch: pty_retained.LaunchConfig, render_init: RenderInit) !TermInit {
+        const text_session = try initTextSession(render_init);
         errdefer if (text_session) |handle| terminal_c.howl_render_text_session_deinit(handle);
-        const layout = try render_api.initSurfaceLayout(text_session, render_init);
+        const layout = try initSurfaceLayout(text_session, render_init);
         const session_handle = try pty_session.initHandle(launch, layout.cols, layout.rows);
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
-        const vt = try vt_api.initWithOptions(layout.rows, layout.cols, .{
+        const vt = try initVt(layout.rows, layout.cols, .{
             .default_cursor_style = .{
                 .shape = conf.cursor.style,
                 .blink = conf.cursor.blink,
             },
         });
-        errdefer if (vt) |handle| vt_api.deinit(handle);
+        errdefer if (vt) |handle| deinitVt(handle);
         return .{
             .text_session = text_session.?,
             .surface_layout = layout,
@@ -958,6 +975,110 @@ pub const Context = struct {
         };
     }
 };
+
+fn initTextSession(render_init: RenderInit) !terminal_c.HowlRenderTextSessionHandle {
+    assertRenderInit(render_init);
+    const text_session = terminal_c.howl_render_text_session_init(.{
+        .surface_px = render_init.render_px,
+        .font_size_px = render_init.font_size_px,
+    }) orelse return error.RendererInitFailed;
+    errdefer terminal_c.howl_render_text_session_deinit(text_session);
+    if (!applyPrimaryFontPath(text_session, render_init.primary_font_path)) return error.RenderConfigFailed;
+    if (!applyFallbackFontPaths(text_session, render_init.fallback_font_paths)) return error.RenderConfigFailed;
+    if (!renderFontValid(text_session)) return error.RenderConfigFailed;
+    return text_session;
+}
+
+fn initSurfaceLayout(text_session: terminal_c.HowlRenderTextSessionHandle, render_init: RenderInit) !render_retained.SurfaceLayout {
+    const layout = terminal_c.howl_render_text_session_derive_layout(text_session, render_init.render_px, render_init.grid_px);
+    if (layout.status != terminal_c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
+    return .{
+        .render_px = render_init.render_px,
+        .grid_px = render_init.grid_px,
+        .cols = layout.grid.cols,
+        .rows = layout.grid.rows,
+        .cell_px = .{ .width = layout.cell_px.width, .height = layout.cell_px.height },
+    };
+}
+
+fn initVt(rows: u16, cols: u16, options: VtInitOptions) !terminal_c.HowlVtHandle {
+    std.debug.assert(rows > 0);
+    std.debug.assert(cols > 0);
+    const handle = terminal_c.howl_vt_terminal_init_with_options(rows, cols, default_history_capacity, .{
+        .default_cursor_style = .{
+            .shape = switch (options.default_cursor_style.shape) {
+                .block => 0,
+                .underline => 1,
+                .bar => 2,
+            },
+            .blink = @intFromBool(options.default_cursor_style.blink),
+        },
+    });
+    if (handle == null) return error.VtInitFailed;
+    return handle;
+}
+
+fn deinitVt(handle: terminal_c.HowlVtHandle) void {
+    std.debug.assert(handle != null);
+    terminal_c.howl_vt_terminal_deinit(handle);
+}
+
+fn setRenderCursorBlinkVisible(term: *HowlTerm, visible: bool) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return renderCallOk(terminal_c.howl_render_text_session_set_cursor_blink_visible(term.render.text_session, @intFromBool(visible)));
+}
+
+fn pixelToCol(term: *const HowlTerm, pixel_x: i32) u16 {
+    const current_layout = term.render.surface_layout;
+    if (current_layout.cols == 0 or current_layout.cell_px.width == 0) return 0;
+    if (pixel_x <= 0) return 0;
+    const x: u32 = @intCast(pixel_x);
+    const col = x / @as(u32, current_layout.cell_px.width);
+    return @min(@as(u16, @intCast(col)), current_layout.cols -| 1);
+}
+
+fn pixelToRow(term: *const HowlTerm, pixel_y: i32) i32 {
+    const current_layout = term.render.surface_layout;
+    if (current_layout.rows == 0 or current_layout.cell_px.height == 0) return 0;
+    if (pixel_y <= 0) return 0;
+    const y: u32 = @intCast(pixel_y);
+    const row = y / @as(u32, current_layout.cell_px.height);
+    return @min(@as(i32, @intCast(row)), @as(i32, current_layout.rows -| 1));
+}
+
+fn assertRenderInit(render_init: RenderInit) void {
+    std.debug.assert(render_init.render_px.width > 0);
+    std.debug.assert(render_init.render_px.height > 0);
+    std.debug.assert(render_init.grid_px.width > 0);
+    std.debug.assert(render_init.grid_px.height > 0);
+    std.debug.assert(render_init.font_size_px > 0);
+    std.debug.assert(render_init.fallback_font_paths.len <= max_fallback_font_paths);
+}
+
+fn applyPrimaryFontPath(text_session: terminal_c.HowlRenderTextSessionHandle, font_path: ?[:0]const u8) bool {
+    const path = font_path orelse return renderCallOk(terminal_c.howl_render_text_session_set_font_path(text_session, null, 0));
+    if (path.len == 0) return renderCallOk(terminal_c.howl_render_text_session_set_font_path(text_session, null, 0));
+    return renderCallOk(terminal_c.howl_render_text_session_set_font_path(text_session, path.ptr, path.len));
+}
+
+fn applyFallbackFontPaths(text_session: terminal_c.HowlRenderTextSessionHandle, paths: []const [:0]const u8) bool {
+    std.debug.assert(paths.len <= max_fallback_font_paths);
+    if (paths.len == 0) return renderCallOk(terminal_c.howl_render_text_session_set_fallback_font_paths(text_session, null, 0));
+    const path_count: u8 = @intCast(paths.len);
+    var raw: [max_fallback_font_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_fallback_font_paths;
+    var index: u8 = 0;
+    while (index < path_count) : (index += 1) raw[index] = paths[index].ptr;
+    return renderCallOk(terminal_c.howl_render_text_session_set_fallback_font_paths(text_session, &raw, path_count));
+}
+
+fn renderFontValid(text_session: terminal_c.HowlRenderTextSessionHandle) bool {
+    return renderCallOk(terminal_c.howl_render_text_session_is_valid_font(text_session));
+}
+
+fn renderCallOk(status: i32) bool {
+    return status == terminal_c.HOWL_RENDER_CALL_OK;
+}
 
 const VtPresentAckOps = struct {
     fn ack(term: *HowlTerm, snapshot_seq: u64) void {

@@ -1,12 +1,28 @@
 const Input = @import("../../input/input.zig").Input;
-const api = @import("abi.zig");
 const pty_session = @import("../pty/session.zig");
 const retained = @import("retained.zig");
 const std = @import("std");
 const c = @import("../c.zig").c;
+const terminal_term = @import("../term.zig");
 
-const Term = api.Term;
-const TermInput = api.Input;
+const Term = terminal_term.Term;
+const TermInput = struct {
+    const Key = u32;
+    const Modifier = u32;
+    const MouseEventKind = u8;
+    const MouseButton = u8;
+    const KeyEvent = struct { key: Key, mods: Modifier = 0 };
+    const MouseEvent = struct {
+        kind: MouseEventKind,
+        button: MouseButton,
+        row: i32,
+        col: u16,
+        pixel_x: ?u32 = null,
+        pixel_y: ?u32 = null,
+        mods: Modifier = 0,
+        buttons_down: u8 = 0,
+    };
+};
 
 pub fn key(key_event: Input.Key) ?TermInput.Key {
     return switch (key_event) {
@@ -128,7 +144,7 @@ pub fn wouldReportUnpressedMouseMotion(term: *Term) bool {
         out.ptr,
         out.len,
     );
-    if (!api.isCallOk(result.status)) return false;
+    if (result.status != c.HOWL_VT_CALL_OK) return false;
     return result.written != 0;
 }
 
@@ -151,7 +167,7 @@ pub fn wouldReportMouse(term: *Term, mouse: TermInput.MouseEvent) bool {
         out.ptr,
         out.len,
     );
-    if (!api.isCallOk(result.status)) return false;
+    if (result.status != c.HOWL_VT_CALL_OK) return false;
     return result.written != 0;
 }
 
@@ -200,8 +216,13 @@ fn encodePasteEndBytes(term: *Term) ![]const u8 {
 }
 
 fn encodedBytes(out: []u8, result: c.HowlVtBytesResult) ![]const u8 {
-    if (result.status == api.callShortBuffer()) return error.HostInputScratchTooSmall;
-    try api.requireOk(result.status);
+    if (result.status == c.HOWL_VT_CALL_SHORT_BUFFER) return error.HostInputScratchTooSmall;
+    try requireVtOk(result.status);
     std.debug.assert(result.written <= out.len);
     return out[0..@intCast(result.written)];
+}
+
+fn requireVtOk(status: i32) !void {
+    if (status == c.HOWL_VT_CALL_OK) return;
+    return error.VtCallFailed;
 }

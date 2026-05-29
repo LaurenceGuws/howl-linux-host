@@ -1,5 +1,5 @@
 const std = @import("std");
-const render_api = @import("abi.zig");
+const c = @import("../c.zig").c;
 
 const min_font_px: u16 = 2;
 const max_font_px: u16 = 256;
@@ -47,7 +47,11 @@ fn termRef(self: anytype) TermRef(@TypeOf(self.term)) {
 
 const RealOps = struct {
     fn setFontSizePx(term: anytype, next: u16) bool {
-        return render_api.setFontSizePx(term, next);
+        std.debug.assert(next > 0);
+        term.mutex.lock();
+        defer term.mutex.unlock();
+        return c.howl_render_text_session_set_font_size_px(term.render.text_session, next) ==
+            c.HOWL_RENDER_CALL_OK;
     }
 };
 

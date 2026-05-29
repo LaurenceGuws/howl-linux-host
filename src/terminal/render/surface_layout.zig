@@ -1,9 +1,15 @@
 const std = @import("std");
 const window = @import("../../window/window.zig");
+const c = @import("../c.zig").c;
 const pty_session = @import("../pty/session.zig");
-const render_api = @import("abi.zig");
+const retained = @import("retained.zig");
 const vt_retained = @import("../vt/retained.zig");
 const viewport = @import("../vt/viewport.zig");
+
+pub const SurfaceLayoutRequest = struct {
+    render_px: c.HowlRenderPixelSize,
+    grid_px: c.HowlRenderPixelSize,
+};
 
 pub const State = struct {
     render_px_w: c_int,
@@ -81,18 +87,18 @@ pub fn maybeCommitGridResize(context: anytype) void {
     syncSurfaceLayout(context, surface_layout) catch return;
 }
 
-pub fn syncSurfaceLayout(context: anytype, request: render_api.SurfaceLayoutRequest) !void {
-    const sync = try render_api.deriveSurfaceLayout(&context.term, request);
+pub fn syncSurfaceLayout(context: anytype, request: SurfaceLayoutRequest) !void {
+    const sync = try deriveSurfaceLayout(&context.term, request);
     if (!sync.changed) return;
     if (sync.grid_changed) {
         try pty_session.resize(&context.term, sync.layout.cols, sync.layout.rows);
         try vt_retained.resize(&context.term, sync.layout.rows, sync.layout.cols);
     }
     try vt_retained.setCellPixelSize(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
-    render_api.commitSurfaceLayout(&context.term, sync.layout);
+    commitSurfaceLayout(&context.term, sync.layout);
 }
 
-pub fn surfaceLayoutSnapshot(context: anytype) render_api.SurfaceLayoutRequest {
+pub fn surfaceLayoutSnapshot(context: anytype) SurfaceLayoutRequest {
     context.geometry.mutex.lock();
     defer context.geometry.mutex.unlock();
     return snapshotSurfaceLayoutLocked(&context.geometry);
@@ -104,9 +110,40 @@ pub fn syncCurrentSurfaceLayout(context: anytype) bool {
     return true;
 }
 
-pub fn snapshotSurfaceLayoutLocked(geometry: *const State) render_api.SurfaceLayoutRequest {
+pub fn snapshotSurfaceLayoutLocked(geometry: *const State) SurfaceLayoutRequest {
     return .{
         .render_px = .{ .width = @as(u16, @intCast(@max(geometry.render_px_w, 1))), .height = @as(u16, @intCast(@max(geometry.render_px_h, 1))) },
         .grid_px = .{ .width = @as(u16, @intCast(@max(geometry.grid_px_w, 1))), .height = @as(u16, @intCast(@max(geometry.grid_px_h, 1))) },
     };
+}
+
+fn deriveSurfaceLayout(term: anytype, request: SurfaceLayoutRequest) !retained.SurfaceLayoutSync {
+    std.debug.assert(request.render_px.width > 0);
+    std.debug.assert(request.render_px.height > 0);
+    std.debug.assert(request.grid_px.width > 0);
+    std.debug.assert(request.grid_px.height > 0);
+
+    term.mutex.lock();
+    defer term.mutex.unlock();
+
+    const layout = c.howl_render_text_session_derive_layout(
+        term.render.text_session,
+        request.render_px,
+        request.grid_px,
+    );
+    if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
+    const next = retained.SurfaceLayout{
+        .render_px = request.render_px,
+        .grid_px = request.grid_px,
+        .cols = layout.grid.cols,
+        .rows = layout.grid.rows,
+        .cell_px = .{ .width = layout.cell_px.width, .height = layout.cell_px.height },
+    };
+    return term.render.surfaceLayoutSync(next);
+}
+
+fn commitSurfaceLayout(term: anytype, layout: retained.SurfaceLayout) void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    term.render.syncSurfaceLayout(layout);
 }

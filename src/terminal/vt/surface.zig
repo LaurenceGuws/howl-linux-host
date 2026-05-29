@@ -1,7 +1,6 @@
 const std = @import("std");
 const c = @import("../c.zig").c;
 const terminal_term = @import("../term.zig");
-const vt_abi = @import("abi.zig");
 
 const damage_none: u8 = @intCast(c.HOWL_RENDER_DAMAGE_NONE);
 const damage_partial: u8 = @intCast(c.HOWL_RENDER_DAMAGE_PARTIAL);
@@ -141,7 +140,7 @@ pub fn ackPublishedSourceLocked(term: *terminal_term.Term, snapshot_seq: u64) vo
 
 fn ackPublishedSourceLockedWith(term: anytype, snapshot_seq: u64, comptime Ops: type) void {
     if (snapshot_seq == 0) return;
-    vt_abi.requireStructOk(Ops.ack(term.vt, snapshot_seq));
+    requireVtStructOk(Ops.ack(term.vt, snapshot_seq));
 }
 
 fn rejectPublishSource(handle: c.HowlRenderTextSessionHandle, snapshot_seq: u64) c.HowlRenderVtSurfacePublishResult {
@@ -177,7 +176,7 @@ const VisibleMeta = struct {
 fn vtVisibleMeta(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
     std.debug.assert(handle != null);
     const view = c.howl_vt_terminal_query_visible_meta(handle, scrollback_offset);
-    vt_abi.requireStructOk(view.status);
+    requireVtStructOk(view.status);
     std.debug.assert(scrollback_offset <= view.meta.history_count);
     return .{
         .rows = view.meta.rows,
@@ -228,7 +227,7 @@ const RealAcquireOps = struct {
 
 fn vtAcquireVisibleIntoSlotWith(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedVtSurfaceSlot, comptime Ops: type) !VisibleCopy {
     const source = Ops.copySurface(handle, scrollback_offset, slot);
-    try vt_abi.requireOk(source.status);
+    try requireVtOk(source.status);
     std.debug.assert(source.source.rows == meta.rows);
     std.debug.assert(source.source.cols == meta.cols);
     std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
@@ -249,6 +248,15 @@ fn vtAcquireVisibleIntoSlotWith(handle: c.HowlVtHandle, scrollback_offset: u32, 
 
 fn renderCallOk(status: i32) !void {
     if (status != c.HOWL_RENDER_CALL_OK) return error.RenderCallFailed;
+}
+
+fn requireVtOk(status: i32) !void {
+    if (status == c.HOWL_VT_CALL_OK) return;
+    return error.VtCallFailed;
+}
+
+fn requireVtStructOk(status: i32) void {
+    std.debug.assert(status == c.HOWL_VT_CALL_OK);
 }
 
 fn applyHyperlinkHover(slot: ReservedVtSurfaceSlot, rows: u16, cols: u16, hover: HyperlinkHover) void {
