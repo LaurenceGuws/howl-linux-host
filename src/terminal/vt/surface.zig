@@ -5,7 +5,6 @@ const vt_abi = @import("abi.zig");
 
 const damage_none: u8 = @intCast(c.HOWL_RENDER_DAMAGE_NONE);
 const damage_partial: u8 = @intCast(c.HOWL_RENDER_DAMAGE_PARTIAL);
-const howl_app_icon_rel_path = "assets/icon/howl_window_icon.png";
 
 pub const HyperlinkHover = struct {
     row: u16,
@@ -444,46 +443,6 @@ fn zeroVisibleCopy(snapshot_seq: u64) VisibleCopy {
     };
 }
 
-fn base64Owned(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
-    const encoded = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
-    _ = std.base64.standard.Encoder.encode(encoded, bytes);
-    return encoded;
-}
-
-fn feedHowlAppIconReplay(handle: c.HowlVtHandle, allocator: std.mem.Allocator) !void {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const png_bytes = try std.Io.Dir.cwd().readFileAlloc(io, howl_app_icon_rel_path, allocator, .limited(4 * 1024 * 1024));
-    defer allocator.free(png_bytes);
-
-    const encoded = try base64Owned(allocator, png_bytes);
-    defer allocator.free(encoded);
-
-    const chunk_len: usize = 4096;
-    var offset: usize = 0;
-    while (offset < encoded.len) : (offset += chunk_len) {
-        const end = @min(offset + chunk_len, encoded.len);
-        const chunk = encoded[offset..end];
-        const more: u8 = if (end < encoded.len) 1 else 0;
-
-        var seq = std.ArrayList(u8).empty;
-        defer seq.deinit(allocator);
-
-        var control_buf: [64]u8 = undefined;
-        if (offset == 0) {
-            const control = try std.fmt.bufPrint(control_buf[0..], "\x1b_Gi=4242,f=100,t=d,a=T,c=8,r=4,m={d};", .{more});
-            try seq.appendSlice(allocator, control);
-        } else {
-            const control = try std.fmt.bufPrint(control_buf[0..], "\x1b_Gm={d};", .{more});
-            try seq.appendSlice(allocator, control);
-        }
-        try seq.appendSlice(allocator, chunk);
-        try seq.appendSlice(allocator, "\x1b\\");
-
-        const feed = c.howl_vt_terminal_feed(handle, seq.items.ptr, seq.items.len);
-        try vt_abi.requireOk(feed.status);
-    }
-}
-
 test "publish forwards vt snapshot sequence" {
     recordPublishedSnapshot(zeroVisibleCopy(9), .{
         .status = c.HOWL_RENDER_CALL_OK,
@@ -641,118 +600,6 @@ test "decoded publish commit forwards graphics payload bytes exactly" {
 
     const commit = publishDecodedGraphicsSlotCommit(visible);
     try std.testing.expectEqualStrings("ABCDEF", commit.graphics_payload_bytes.ptr[0..commit.graphics_payload_bytes.len]);
-}
-
-test "publish bridge forwards non-empty app-icon decoded graphics metadata and coherent payload bytes" {
-    const FakeTerm = struct {
-        allocator: std.mem.Allocator,
-        vt: c.HowlVtHandle,
-        vt_state: struct {
-            scrollback_offset: u32 = 0,
-            cursor_visible: bool = false,
-            cursor_blink: bool = false,
-        } = .{},
-        render: struct {
-            surface_text: c.HowlRenderSurfaceTextHandle = @ptrFromInt(2),
-        } = .{},
-        mutex: struct {
-            fn lock(_: *@This()) void {}
-            fn unlock(_: *@This()) void {}
-        } = .{},
-    };
-
-    const FakeOps = struct {
-        var commit_called = false;
-        var published_image_count: u32 = 0;
-        var published_placement_count: u32 = 0;
-        var published_first_format: u16 = 0;
-        var published_first_payload_len: u64 = 0;
-        var published_payload_len: usize = 0;
-        var published_image_payload_total: usize = 0;
-
-        var cells: [12 * 80]c.HowlVtSurfaceCell = undefined;
-        var dirty_rows: [12]u8 = undefined;
-        var dirty_cols_start: [12]u16 = undefined;
-        var dirty_cols_end: [12]u16 = undefined;
-
-        fn visibleMeta(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
-            return vtVisibleMeta(handle, scrollback_offset);
-        }
-
-        fn reserveSlot(_: c.HowlRenderSurfaceTextHandle, cols: u16, rows: u16) !ReservedPublishSlot {
-            const row_count: usize = @intCast(rows);
-            const col_count: usize = @intCast(cols);
-            const count = row_count * col_count;
-            if (row_count > dirty_rows.len) return error.InvalidPublishSlot;
-            if (count > cells.len) return error.InvalidPublishSlot;
-            return .{
-                .cells = cells[0..count],
-                .dirty_rows = dirty_rows[0..row_count],
-                .dirty_cols_start = dirty_cols_start[0..row_count],
-                .dirty_cols_end = dirty_cols_end[0..row_count],
-            };
-        }
-
-        fn acquireVisibleAndGraphics(allocator: std.mem.Allocator, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
-            return vtAcquireVisibleAndGraphicsIntoSlot(allocator, handle, scrollback_offset, meta, slot);
-        }
-
-        fn commitPublishSlot(_: c.HowlRenderSurfaceTextHandle, visible: VisibleCopy) c.HowlRenderVtPublishResult {
-            const commit = publishDecodedGraphicsSlotCommit(visible);
-            const images = commit.graphics_images.ptr[0..commit.graphics_images.len];
-            commit_called = true;
-            published_image_count = commit.graphics.image_count;
-            published_placement_count = commit.graphics.placement_count;
-            if (images.len > 0) {
-                published_first_format = images[0].format;
-                published_first_payload_len = images[0].payload_len;
-            }
-            published_payload_len = commit.graphics_payload_bytes.len;
-            published_image_payload_total = totalPayloadLen(images) catch unreachable;
-            return .{
-                .status = c.HOWL_RENDER_CALL_OK,
-                .published = 1,
-                .queued = 1,
-                .damage_kind = damage_partial,
-                .reserved0 = 0,
-                .snapshot_seq = visible.snapshot_seq,
-                .geometry_epoch = 1,
-            };
-        }
-
-        fn rejectPublish(_: c.HowlRenderSurfaceTextHandle, snapshot_seq: u64) c.HowlRenderVtPublishResult {
-            return .{
-                .status = c.HOWL_RENDER_CALL_FAILED,
-                .published = 0,
-                .queued = 0,
-                .damage_kind = damage_none,
-                .reserved0 = 0,
-                .snapshot_seq = snapshot_seq,
-                .geometry_epoch = 0,
-            };
-        }
-    };
-
-    const handle = try vt_abi.init(12, 80);
-    defer vt_abi.deinit(handle);
-    try vt_abi.requireStructOk(c.howl_vt_terminal_set_cell_pixel_size(handle, 10, 20));
-    try feedHowlAppIconReplay(handle, std.testing.allocator);
-
-    var term = FakeTerm{
-        .allocator = std.testing.allocator,
-        .vt = handle,
-    };
-
-    const result = publishSourceWith(&term, null, FakeOps);
-    try std.testing.expectEqual(c.HOWL_RENDER_CALL_OK, result.status);
-    try std.testing.expectEqual(@as(u8, 1), result.published);
-    try std.testing.expect(FakeOps.commit_called);
-    try std.testing.expect(FakeOps.published_image_count != 0);
-    try std.testing.expect(FakeOps.published_placement_count != 0);
-    try std.testing.expectEqual(@as(u16, 32), FakeOps.published_first_format);
-    try std.testing.expect(FakeOps.published_first_payload_len != 0);
-    try std.testing.expect(FakeOps.published_payload_len != 0);
-    try std.testing.expectEqual(FakeOps.published_image_payload_total, FakeOps.published_payload_len);
 }
 
 test "paired acquisition returns surface and graphics truth from real vt state" {

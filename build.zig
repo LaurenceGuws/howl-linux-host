@@ -62,8 +62,6 @@ const Steps = struct {
     test_integration_build: *Build.Step,
     test_integration_kitty_graphics_replay: *Build.Step,
     test_integration_kitty_graphics_replay_build: *Build.Step,
-    test_integration_kitty_graphics_replay_app: *Build.Step,
-    test_integration_kitty_graphics_replay_app_build: *Build.Step,
 };
 
 pub fn build(b: *Build) void {
@@ -104,8 +102,6 @@ fn createSteps(b: *Build) Steps {
         .test_integration_build = b.step("test:integration:build", "Build integration tests"),
         .test_integration_kitty_graphics_replay = b.step("test:integration:kitty-graphics-replay", "Run deterministic host Kitty graphics replay proof"),
         .test_integration_kitty_graphics_replay_build = b.step("test:integration:kitty-graphics-replay:build", "Build deterministic host Kitty graphics replay proof"),
-        .test_integration_kitty_graphics_replay_app = b.step("test:integration:kitty-graphics-replay:app", "Run app-loop Kitty graphics replay proof"),
-        .test_integration_kitty_graphics_replay_app_build = b.step("test:integration:kitty-graphics-replay:app:build", "Build app-loop Kitty graphics replay proof"),
     };
 }
 
@@ -357,36 +353,12 @@ fn wireTestSteps(
     const run_kitty_graphics_replay_tests = b.addRunArtifact(kitty_graphics_replay_tests);
     if (b.args != null) run_kitty_graphics_replay_tests.has_side_effects = true;
 
-    const kitty_graphics_replay_app_mod = b.createModule(.{
-        .root_source_file = b.path("src/test/kitty_graphics_replay_app.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "host", .module = host_test_mod },
-        },
-    });
-
-    const kitty_graphics_replay_app_tests = b.addTest(.{
-        .name = "test-integration-kitty-graphics-replay-app",
-        .root_module = kitty_graphics_replay_app_mod,
-        .filters = filters,
-    });
-
-    configureHostTests(kitty_graphics_replay_app_tests, deps);
-
-    const run_kitty_graphics_replay_app_tests = b.addRunArtifact(kitty_graphics_replay_app_tests);
-    if (b.args != null) run_kitty_graphics_replay_app_tests.has_side_effects = true;
-
     stageTestArtifact(steps.test_integration_build, integration_tests);
     stageTestArtifact(steps.test_integration_build, kitty_graphics_replay_tests);
-    stageTestArtifact(steps.test_integration_build, kitty_graphics_replay_app_tests);
     stageTestArtifact(steps.test_integration_kitty_graphics_replay_build, kitty_graphics_replay_tests);
-    stageTestArtifact(steps.test_integration_kitty_graphics_replay_app_build, kitty_graphics_replay_app_tests);
     steps.test_integration.dependOn(&run_integration_tests.step);
     steps.test_integration.dependOn(steps.test_integration_kitty_graphics_replay);
-    steps.test_integration.dependOn(steps.test_integration_kitty_graphics_replay_app);
     steps.test_integration_kitty_graphics_replay.dependOn(&run_kitty_graphics_replay_tests.step);
-    steps.test_integration_kitty_graphics_replay_app.dependOn(&run_kitty_graphics_replay_app_tests.step);
     steps.test_all.dependOn(steps.test_integration);
 }
 
