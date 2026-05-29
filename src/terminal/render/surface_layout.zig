@@ -4,7 +4,7 @@ const c = @import("../c.zig").c;
 const pty_session = @import("../pty/session.zig");
 const retained = @import("retained.zig");
 const vt_retained = @import("../vt/retained.zig");
-const viewport = @import("../vt/viewport.zig");
+const terminal_scrollbar = @import("../scrollbar.zig");
 
 pub const SurfaceLayoutRequest = struct {
     render_px: c.HowlRenderPixelSize,
@@ -71,7 +71,7 @@ pub fn resize(context: anytype, render_width: c_int, render_height: c_int, logic
     context.geometry.pending_grid_px_w = rw;
     context.geometry.pending_grid_px_h = rh;
     context.geometry.last_resize_ns = window.c_win.SDL_GetTicksNS();
-    viewport.invalidate(context);
+    terminal_scrollbar.invalidate(context);
 }
 
 pub fn maybeCommitGridResize(context: anytype) void {

@@ -1,8 +1,8 @@
 const std = @import("std");
-const vt_retained = @import("retained.zig");
-const window = @import("../../window/window.zig");
-const HostInput = @import("../../input/input.zig").Input;
-const scrollbar = @import("../../window/scrollbar.zig");
+const vt_retained = @import("vt/retained.zig");
+const window = @import("../window/window.zig");
+const HostInput = @import("../input/input.zig").Input;
+const scrollbar = @import("../window/scrollbar.zig");
 
 pub const State = scrollbar.State;
 

@@ -27,7 +27,7 @@ const LinkUnderlineStyle = @import("../config/terminal.zig").LinkUnderlineStyle;
 const font_size = @import("render/font_size.zig");
 const surface_layout = @import("render/surface_layout.zig");
 const term_input = @import("vt/input.zig");
-const viewport = @import("vt/viewport.zig");
+const terminal_scrollbar = @import("scrollbar.zig");
 
 const cursor_blink_interval_ms: u64 = 600;
 const cursor_blink_interval_ns: u64 = cursor_blink_interval_ms * std.time.ns_per_ms;
@@ -105,7 +105,7 @@ pub const Context = struct {
     default_font_size_px: u16,
     window_focused: bool,
     widget_focused: bool,
-    scrollbar: viewport.State,
+    scrollbar: terminal_scrollbar.State,
     link_cursor_active: bool,
     hovered_link_cell: ?HoveredLinkCell,
     selection_anchor: ?SelectionCell,
@@ -239,11 +239,11 @@ pub const Context = struct {
     }
 
     pub fn handleScrollInput(self: *Context, input_events: *HostInput) void {
-        viewport.handlePages(self, input_events);
+        terminal_scrollbar.handlePages(self, input_events);
     }
 
     pub fn wantsPassiveHoverWake(self: *const Context, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-        return viewport.wantsPassiveHoverWake(self, origin_x, origin_y, logical_width, logical_height);
+        return terminal_scrollbar.wantsPassiveHoverWake(self, origin_x, origin_y, logical_width, logical_height);
     }
 
     /// Report whether this terminal needs unpressed mouse motion for link hover.
@@ -258,7 +258,7 @@ pub const Context = struct {
 
     pub fn overlaySnapshot(self: *const Context, texture_rect: window.Rect) OverlaySnapshot {
         return .{
-            .scrollbar = viewport.layout(@constCast(self), texture_rect),
+            .scrollbar = terminal_scrollbar.layout(@constCast(self), texture_rect),
         };
     }
 
@@ -295,7 +295,7 @@ pub const Context = struct {
         if (self.window_focused == focused) return;
         self.window_focused = focused;
         if (!focused and clearHoveredLink(self)) self.input.requestRedraw();
-        viewport.setFocused(self, focused);
+        terminal_scrollbar.setFocused(self, focused);
         self.syncInputFocus();
     }
 
@@ -303,7 +303,7 @@ pub const Context = struct {
         if (self.widget_focused == focused) return;
         self.widget_focused = focused;
         if (!focused and clearHoveredLink(self)) self.input.requestRedraw();
-        viewport.invalidate(self);
+        terminal_scrollbar.invalidate(self);
         self.syncInputFocus();
     }
 
@@ -826,7 +826,7 @@ pub const Context = struct {
 
         fn handleScrollMouse(self: *Context, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) ScrollMouseOutcome {
             const before = ScrollVisualState.capture(self);
-            const consumed = viewport.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
+            const consumed = terminal_scrollbar.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
             const after = ScrollVisualState.capture(self);
             return .{ .consumed = consumed, .host_visual_changed = !std.meta.eql(before, after) };
         }
@@ -847,7 +847,7 @@ pub const Context = struct {
                 else => 0,
             };
             if (delta == 0) return false;
-            viewport.byRows(self, delta);
+            terminal_scrollbar.byRows(self, delta);
             const after = vt_retained.scrollState(&self.term).scrollback_offset;
             return before != after;
         }
