@@ -35,15 +35,9 @@ pub const VisibleCopy = struct {
     cursor: c.HowlVtCursor,
     colors: c.HowlVtRenderColorState,
     selection: c.HowlVtSelection,
-    graphics: c.HowlVtGraphicsMeta,
-    graphics_images: []c.HowlVtGraphicsDecodedImage,
-    graphics_placements: []c.HowlVtGraphicsPlacement,
-    graphics_payload_bytes: []u8,
 
     fn deinit(self: *VisibleCopy, allocator: std.mem.Allocator) void {
-        if (self.graphics_images.len > 0) allocator.free(self.graphics_images);
-        if (self.graphics_placements.len > 0) allocator.free(self.graphics_placements);
-        if (self.graphics_payload_bytes.len > 0) allocator.free(self.graphics_payload_bytes);
+        _ = allocator;
         self.* = undefined;
     }
 };
@@ -72,7 +66,7 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     const meta = Ops.visibleMeta(term.vt, term.vt_state.scrollback_offset);
     const slot = Ops.reserveSlot(term.render.surface_text, meta.cols, meta.rows) catch return Ops.rejectPublish(term.render.surface_text, meta.snapshot_seq);
 
-    var visible = Ops.acquireVisibleAndGraphics(term.allocator, term.vt, term.vt_state.scrollback_offset, meta, slot) catch return Ops.rejectPublish(term.render.surface_text, meta.snapshot_seq);
+    var visible = Ops.acquireVisible(term.allocator, term.vt, term.vt_state.scrollback_offset, meta, slot) catch return Ops.rejectPublish(term.render.surface_text, meta.snapshot_seq);
     defer visible.deinit(term.allocator);
     if (hover) |value| applyHyperlinkHover(slot, visible.rows, visible.cols, value);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
@@ -80,10 +74,10 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     term.vt_state.cursor_visible = visible.cursor.visible != 0;
     term.vt_state.cursor_blink = visible.cursor.blink != 0;
 
-    const typed_response = Ops.commitDecodedPublishSlot(term.render.surface_text, visible);
+    const typed_response = Ops.commitPublishSlot(term.render.surface_text, visible);
     if (typed_response.status != c.HOWL_RENDER_CALL_OK) {
         std.debug.panic(
-            "render publish rejected: status={d} published={d} queued={d} damage={d} snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} rows={d} cols={d} history={d} scroll_row={d} graphics_pub={d} images={d} placements={d} payload_len={d}",
+            "render publish rejected: status={d} published={d} queued={d} damage={d} snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} rows={d} cols={d} history={d} scroll_row={d}",
             .{
                 typed_response.status,
                 typed_response.published,
@@ -97,10 +91,6 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
                 visible.cols,
                 visible.history_count,
                 visible.scroll_row,
-                visible.graphics.publication_seq,
-                visible.graphics.image_count,
-                visible.graphics.placement_count,
-                visible.graphics_payload_bytes.len,
             },
         );
     }
@@ -117,12 +107,13 @@ const RealOps = struct {
         return reservePublishSlot(handle, cols, rows);
     }
 
-    fn acquireVisibleAndGraphics(allocator: std.mem.Allocator, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
-        return vtAcquireVisibleAndGraphicsIntoSlot(allocator, handle, scrollback_offset, meta, slot);
+    fn acquireVisible(allocator: std.mem.Allocator, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
+        _ = allocator;
+        return vtAcquireVisibleIntoSlot(handle, scrollback_offset, meta, slot);
     }
 
-    fn commitDecodedPublishSlot(handle: c.HowlRenderSurfaceTextHandle, visible: VisibleCopy) c.HowlRenderVtPublishResult {
-        return c.howl_render_surface_text_commit_publish_decoded_graphics_slot(handle, publishDecodedGraphicsSlotCommit(visible));
+    fn commitPublishSlot(handle: c.HowlRenderSurfaceTextHandle, visible: VisibleCopy) c.HowlRenderVtPublishResult {
+        return c.howl_render_surface_text_commit_publish_slot(handle, publishSlotCommit(visible));
     }
 
     fn rejectPublish(handle: c.HowlRenderSurfaceTextHandle, snapshot_seq: u64) c.HowlRenderVtPublishResult {
@@ -130,8 +121,7 @@ const RealOps = struct {
     }
 };
 
-fn publishDecodedGraphicsSlotCommit(visible: VisibleCopy) c.HowlRenderPublishDecodedGraphicsSlotCommit {
-    const graphics = renderGraphicsMeta(visible.graphics);
+fn publishSlotCommit(visible: VisibleCopy) c.HowlRenderPublishSlotCommit {
     return .{
         .history_count = visible.history_count,
         .scroll_row = visible.scroll_row,
@@ -142,23 +132,6 @@ fn publishDecodedGraphicsSlotCommit(visible: VisibleCopy) c.HowlRenderPublishDec
         .cursor = visible.cursor,
         .colors = visible.colors,
         .selection = visible.selection,
-        .graphics = graphics,
-        .graphics_images = .{ .ptr = if (visible.graphics_images.len == 0) null else visible.graphics_images.ptr, .len = visible.graphics_images.len },
-        .graphics_placements = .{ .ptr = if (visible.graphics_placements.len == 0) null else visible.graphics_placements.ptr, .len = visible.graphics_placements.len },
-        .graphics_payload_bytes = .{ .ptr = if (visible.graphics_payload_bytes.len == 0) null else visible.graphics_payload_bytes.ptr, .len = visible.graphics_payload_bytes.len },
-    };
-}
-
-fn renderGraphicsMeta(graphics: c.HowlVtGraphicsMeta) c.HowlRenderVtGraphicsMeta {
-    return .{
-        .image_count = graphics.image_count,
-        .placement_count = graphics.placement_count,
-        .is_alternate_screen = graphics.is_alternate_screen,
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .reserved2 = 0,
-        .publication_seq = graphics.publication_seq,
-        .dirty_generation = graphics.dirty_generation,
     };
 }
 
@@ -232,8 +205,8 @@ fn reservePublishSlot(handle: c.HowlRenderSurfaceTextHandle, cols: u16, rows: u1
     };
 }
 
-fn vtAcquireVisibleAndGraphicsIntoSlot(allocator: std.mem.Allocator, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
-    return vtAcquireVisibleAndGraphicsIntoSlotWith(allocator, handle, scrollback_offset, meta, slot, RealAcquireOps);
+fn vtAcquireVisibleIntoSlot(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot) !VisibleCopy {
+    return vtAcquireVisibleIntoSlotWith(handle, scrollback_offset, meta, slot, RealAcquireOps);
 }
 
 const RealAcquireOps = struct {
@@ -252,125 +225,27 @@ const RealAcquireOps = struct {
         );
     }
 
-    fn graphicsMeta(handle: c.HowlVtHandle) c.HowlVtGraphicsMeta {
-        return vtGraphicsMeta(handle);
-    }
-
-    fn graphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphics: c.HowlVtGraphicsMeta) error{ InvalidPublication, VtCallFailed, OutOfMemory }!GraphicsItems {
-        return vtGraphicsItems(allocator, handle, graphics);
-    }
 };
 
-fn vtAcquireVisibleAndGraphicsIntoSlotWith(allocator: std.mem.Allocator, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot, comptime Ops: type) !VisibleCopy {
-    var attempts: u8 = 0;
-    while (attempts < 2) : (attempts += 1) {
-        const source = Ops.copySurface(handle, scrollback_offset, slot);
-        try vt_abi.requireOk(source.status);
-        std.debug.assert(source.source.rows == meta.rows);
-        std.debug.assert(source.source.cols == meta.cols);
-        std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
-        std.debug.assert(source.source.scroll_row <= source.history_count + source.source.rows);
-        std.debug.assert(scrollback_offset <= source.history_count);
-        const graphics = Ops.graphicsMeta(handle);
-        std.debug.assert((graphics.is_alternate_screen != 0) == (source.source.is_alternate_screen != 0));
-        const items = Ops.graphicsItems(allocator, handle, graphics) catch |err| switch (err) {
-            error.InvalidPublication => continue,
-            else => return err,
-        };
-        return .{
-            .rows = source.source.rows,
-            .cols = source.source.cols,
-            .is_alternate_screen = source.source.is_alternate_screen != 0,
-            .history_count = @intCast(source.history_count),
-            .scroll_row = source.source.scroll_row,
-            .snapshot_seq = source.snapshot_seq,
-            .cursor = source.source.cursor,
-            .colors = source.source.colors,
-            .selection = source.source.selection,
-            .graphics = graphics,
-            .graphics_images = items.images,
-            .graphics_placements = items.placements,
-            .graphics_payload_bytes = items.payload_bytes,
-        };
-    }
-    return error.InvalidPublication;
-}
-
-fn vtGraphicsMeta(handle: c.HowlVtHandle) c.HowlVtGraphicsMeta {
-    std.debug.assert(handle != null);
-    const result = c.howl_vt_terminal_query_graphics_meta(handle);
-    vt_abi.requireStructOk(result.status);
-    return result.meta;
-}
-
-const GraphicsItems = struct {
-    images: []c.HowlVtGraphicsDecodedImage,
-    placements: []c.HowlVtGraphicsPlacement,
-    payload_bytes: []u8,
-
-    fn deinit(self: *GraphicsItems, allocator: std.mem.Allocator) void {
-        if (self.images.len > 0) allocator.free(self.images);
-        if (self.placements.len > 0) allocator.free(self.placements);
-        if (self.payload_bytes.len > 0) allocator.free(self.payload_bytes);
-        self.* = undefined;
-    }
-};
-
-fn vtGraphicsItems(allocator: std.mem.Allocator, handle: c.HowlVtHandle, graphics: c.HowlVtGraphicsMeta) error{ InvalidPublication, VtCallFailed, OutOfMemory }!GraphicsItems {
-    var images = try allocator.alloc(c.HowlVtGraphicsDecodedImage, graphics.image_count);
-    errdefer if (images.len > 0) allocator.free(images);
-    var placements = try allocator.alloc(c.HowlVtGraphicsPlacement, graphics.placement_count);
-    errdefer if (placements.len > 0) allocator.free(placements);
-
-    var image_idx: u32 = 0;
-    while (image_idx < graphics.image_count) : (image_idx += 1) {
-        const result = c.howl_vt_terminal_query_graphics_decoded_image(handle, graphics.publication_seq, image_idx);
-        switch (result.status) {
-            c.HOWL_VT_CALL_OK => images[image_idx] = result.image,
-            c.HOWL_VT_CALL_INVALID_ARGUMENT => return error.InvalidPublication,
-            else => return error.VtCallFailed,
-        }
-    }
-
-    var placement_idx: u32 = 0;
-    while (placement_idx < graphics.placement_count) : (placement_idx += 1) {
-        const result = c.howl_vt_terminal_query_graphics_placement(handle, graphics.publication_seq, placement_idx);
-        switch (result.status) {
-            c.HOWL_VT_CALL_OK => placements[placement_idx] = result.placement,
-            c.HOWL_VT_CALL_INVALID_ARGUMENT => return error.InvalidPublication,
-            else => return error.VtCallFailed,
-        }
-    }
-
-    const payload_len = try totalPayloadLen(images);
-    const payload_bytes = try allocator.alloc(u8, payload_len);
-    errdefer if (payload_bytes.len > 0) allocator.free(payload_bytes);
-    var payload_offset: usize = 0;
-    image_idx = 0;
-    while (image_idx < graphics.image_count) : (image_idx += 1) {
-        const image = images[image_idx];
-        const image_payload_len = std.math.cast(usize, image.payload_len) orelse return error.OutOfMemory;
-        const payload = payload_bytes[payload_offset..][0..image_payload_len];
-        const copied = c.howl_vt_terminal_copy_graphics_decoded_payload(handle, graphics.publication_seq, image_idx, payload.ptr, payload.len);
-        switch (copied.status) {
-            c.HOWL_VT_CALL_OK => {},
-            c.HOWL_VT_CALL_INVALID_ARGUMENT => return error.InvalidPublication,
-            else => return error.VtCallFailed,
-        }
-        if (copied.written != image.payload_len) return error.VtCallFailed;
-        payload_offset += image_payload_len;
-    }
-    std.debug.assert(payload_offset == payload_bytes.len);
-
-    return .{ .images = images, .placements = placements, .payload_bytes = payload_bytes };
-}
-
-fn totalPayloadLen(images: []const c.HowlVtGraphicsDecodedImage) !usize {
-    var total: u64 = 0;
-    for (images) |image| {
-        total = std.math.add(u64, total, image.payload_len) catch return error.OutOfMemory;
-    }
-    return std.math.cast(usize, total) orelse return error.OutOfMemory;
+fn vtAcquireVisibleIntoSlotWith(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedPublishSlot, comptime Ops: type) !VisibleCopy {
+    const source = Ops.copySurface(handle, scrollback_offset, slot);
+    try vt_abi.requireOk(source.status);
+    std.debug.assert(source.source.rows == meta.rows);
+    std.debug.assert(source.source.cols == meta.cols);
+    std.debug.assert(source.source.surface_cells.len == cellCount(source.source.rows, source.source.cols));
+    std.debug.assert(source.source.scroll_row <= source.history_count + source.source.rows);
+    std.debug.assert(scrollback_offset <= source.history_count);
+    return .{
+        .rows = source.source.rows,
+        .cols = source.source.cols,
+        .is_alternate_screen = source.source.is_alternate_screen != 0,
+        .history_count = @intCast(source.history_count),
+        .scroll_row = source.source.scroll_row,
+        .snapshot_seq = source.snapshot_seq,
+        .cursor = source.source.cursor,
+        .colors = source.source.colors,
+        .selection = source.source.selection,
+    };
 }
 
 fn renderCallOk(status: i32) !void {
@@ -435,10 +310,6 @@ fn zeroVisibleCopy(snapshot_seq: u64) VisibleCopy {
         .cursor = std.mem.zeroes(c.HowlVtCursor),
         .colors = std.mem.zeroes(c.HowlVtRenderColorState),
         .selection = std.mem.zeroes(c.HowlVtSelection),
-        .graphics = std.mem.zeroes(c.HowlVtGraphicsMeta),
-        .graphics_images = &.{},
-        .graphics_placements = &.{},
-        .graphics_payload_bytes = &.{},
     };
 }
 
@@ -540,220 +411,6 @@ test "zero snapshot sequence means no ack call" {
     try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
 }
 
-test "publish commit forwards placement metadata" {
-    const visible: VisibleCopy = .{
-        .rows = 3,
-        .cols = 8,
-        .is_alternate_screen = true,
-        .history_count = 1,
-        .scroll_row = 4,
-        .snapshot_seq = 9,
-        .cursor = .{ .row = 1, .col = 2, .visible = 1, .shape = 2, .blink = 1 },
-        .colors = std.mem.zeroes(c.HowlVtRenderColorState),
-        .selection = std.mem.zeroes(c.HowlVtSelection),
-        .graphics = blk: {
-            var graphics = std.mem.zeroes(c.HowlVtGraphicsMeta);
-            graphics.image_count = 7;
-            graphics.placement_count = 5;
-            graphics.is_alternate_screen = 1;
-            graphics.publication_seq = 33;
-            graphics.dirty_generation = 44;
-            break :blk graphics;
-        },
-        .graphics_images = &.{},
-        .graphics_placements = &.{},
-        .graphics_payload_bytes = &.{},
-    };
-
-    const commit = publishDecodedGraphicsSlotCommit(visible);
-    try std.testing.expectEqual(@as(u64, visible.history_count), commit.history_count);
-    try std.testing.expectEqual(visible.scroll_row, commit.scroll_row);
-    try std.testing.expectEqual(visible.snapshot_seq, commit.snapshot_seq);
-    try std.testing.expectEqual(@as(u8, 1), commit.is_alternate_screen);
-    try std.testing.expectEqual(visible.graphics.image_count, commit.graphics.image_count);
-    try std.testing.expectEqual(visible.graphics.placement_count, commit.graphics.placement_count);
-    try std.testing.expectEqual(visible.graphics.is_alternate_screen, commit.graphics.is_alternate_screen);
-    try std.testing.expectEqual(visible.graphics.publication_seq, commit.graphics.publication_seq);
-    try std.testing.expectEqual(visible.graphics.dirty_generation, commit.graphics.dirty_generation);
-}
-
-test "decoded publish commit forwards graphics payload bytes exactly" {
-    const visible: VisibleCopy = .{
-        .rows = 1,
-        .cols = 1,
-        .is_alternate_screen = false,
-        .history_count = 0,
-        .scroll_row = 0,
-        .snapshot_seq = 1,
-        .cursor = std.mem.zeroes(c.HowlVtCursor),
-        .colors = std.mem.zeroes(c.HowlVtRenderColorState),
-        .selection = std.mem.zeroes(c.HowlVtSelection),
-        .graphics = std.mem.zeroes(c.HowlVtGraphicsMeta),
-        .graphics_images = &.{},
-        .graphics_placements = &.{},
-        .graphics_payload_bytes = "ABCDEF",
-    };
-
-    const commit = publishDecodedGraphicsSlotCommit(visible);
-    try std.testing.expectEqualStrings("ABCDEF", commit.graphics_payload_bytes.ptr[0..commit.graphics_payload_bytes.len]);
-}
-
-test "paired acquisition returns surface and graphics truth from real vt state" {
-    const handle = try vt_abi.init(4, 16);
-    defer vt_abi.deinit(handle);
-
-    try vt_abi.requireStructOk(c.howl_vt_terminal_set_cell_pixel_size(handle, 10, 20));
-
-    const command = "\x1b[2;3H\x1b_Gi=7,p=4,s=40,v=20,a=T,t=d,f=24,X=3,Y=5,r=2;AAAA\x1b\\";
-    const feed = c.howl_vt_terminal_feed(handle, command.ptr, command.len);
-    try vt_abi.requireOk(feed.status);
-
-    const meta = vtVisibleMeta(handle, 0);
-    var cells: [64]c.HowlVtSurfaceCell = undefined;
-    var dirty_rows: [4]u8 = undefined;
-    var dirty_cols_start: [4]u16 = undefined;
-    var dirty_cols_end: [4]u16 = undefined;
-    const slot: ReservedPublishSlot = .{
-        .cells = cells[0 .. @as(usize, meta.rows) * @as(usize, meta.cols)],
-        .dirty_rows = dirty_rows[0..meta.rows],
-        .dirty_cols_start = dirty_cols_start[0..meta.rows],
-        .dirty_cols_end = dirty_cols_end[0..meta.rows],
-    };
-
-    var visible = try vtAcquireVisibleAndGraphicsIntoSlot(std.testing.allocator, handle, 0, meta, slot);
-    defer visible.deinit(std.testing.allocator);
-    try std.testing.expectEqual(meta.snapshot_seq, visible.snapshot_seq);
-    try std.testing.expectEqual(@as(u32, 1), visible.graphics.image_count);
-    try std.testing.expectEqual(@as(u32, 1), visible.graphics.placement_count);
-    try std.testing.expectEqual(visible.is_alternate_screen, visible.graphics.is_alternate_screen != 0);
-    try std.testing.expect(visible.graphics.publication_seq != 0);
-    try std.testing.expectEqual(@as(usize, 1), visible.graphics_images.len);
-    try std.testing.expectEqual(@as(usize, 1), visible.graphics_placements.len);
-
-    const placement = visible.graphics_placements[0];
-    try std.testing.expectEqual(@as(u32, 7), placement.image_id);
-    try std.testing.expectEqual(@as(u32, 4), placement.placement_id);
-    try std.testing.expectEqual(@as(u32, 0), placement.columns);
-    try std.testing.expectEqual(@as(u32, 2), placement.rows);
-    try std.testing.expectEqual(@as(u32, 3), placement.dest_left_cell_px);
-    try std.testing.expectEqual(@as(u32, 5), placement.dest_top_cell_px);
-    try std.testing.expectEqual(@as(u32, 93), placement.dest_right_cell_px);
-    try std.testing.expectEqual(@as(u32, 45), placement.dest_bottom_cell_px);
-    try std.testing.expectEqual(@as(u32, 9), placement.dest_grid_columns);
-    try std.testing.expectEqual(@as(u32, 2), placement.dest_grid_rows);
-}
-
-test "paired acquisition copies decoded graphics payload bytes in image order" {
-    const handle = try vt_abi.init(4, 16);
-    defer vt_abi.deinit(handle);
-
-    const first = "\x1b_Gi=7,s=1,v=1,t=d,f=24;QUJD\x1b\\";
-    const second = "\x1b_Gi=8,s=1,v=1,t=d,f=24;REVG\x1b\\";
-    try vt_abi.requireOk(c.howl_vt_terminal_feed(handle, first.ptr, first.len).status);
-    try vt_abi.requireOk(c.howl_vt_terminal_feed(handle, second.ptr, second.len).status);
-
-    const meta = vtVisibleMeta(handle, 0);
-    var cells: [64]c.HowlVtSurfaceCell = undefined;
-    var dirty_rows: [4]u8 = undefined;
-    var dirty_cols_start: [4]u16 = undefined;
-    var dirty_cols_end: [4]u16 = undefined;
-    const slot: ReservedPublishSlot = .{
-        .cells = cells[0 .. @as(usize, meta.rows) * @as(usize, meta.cols)],
-        .dirty_rows = dirty_rows[0..meta.rows],
-        .dirty_cols_start = dirty_cols_start[0..meta.rows],
-        .dirty_cols_end = dirty_cols_end[0..meta.rows],
-    };
-
-    var visible = try vtAcquireVisibleAndGraphicsIntoSlot(std.testing.allocator, handle, 0, meta, slot);
-    defer visible.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(usize, 2), visible.graphics_images.len);
-    try std.testing.expectEqual(@as(u32, 7), visible.graphics_images[0].image_id);
-    try std.testing.expectEqual(@as(u32, 8), visible.graphics_images[1].image_id);
-    try std.testing.expectEqual(@as(u64, 3), visible.graphics_images[0].payload_len);
-    try std.testing.expectEqual(@as(u64, 3), visible.graphics_images[1].payload_len);
-    try std.testing.expectEqualStrings("ABCDEF", visible.graphics_payload_bytes);
-}
-
-test "paired acquisition retries whole attempt on stale graphics publication" {
-    const FakeOps = struct {
-        var copy_calls: u8 = 0;
-        var graphics_meta_calls: u8 = 0;
-        var graphics_item_calls: u8 = 0;
-
-        fn copySurface(_: c.HowlVtHandle, _: u32, slot: ReservedPublishSlot) c.HowlVtSurfaceResult {
-            copy_calls += 1;
-            slot.cells[0] = std.mem.zeroes(c.HowlVtSurfaceCell);
-            slot.cells[0].codepoint = 'A';
-            slot.dirty_rows[0] = 1;
-            slot.dirty_cols_start[0] = 0;
-            slot.dirty_cols_end[0] = 0;
-            return .{
-                .status = c.HOWL_VT_CALL_OK,
-                .history_count = 0,
-                .scrollback_offset = 0,
-                .snapshot_seq = 5,
-                .dirty_generation = 7,
-                .source = .{
-                    .surface_cells = .{ .ptr = slot.cells.ptr, .len = slot.cells.len },
-                    .cols = 1,
-                    .rows = 1,
-                    .scroll_row = 0,
-                    .is_alternate_screen = 0,
-                    .dirty_rows = .{ .ptr = slot.dirty_rows.ptr, .len = slot.dirty_rows.len },
-                    .dirty_cols_start = .{ .ptr = slot.dirty_cols_start.ptr, .len = slot.dirty_cols_start.len },
-                    .dirty_cols_end = .{ .ptr = slot.dirty_cols_end.ptr, .len = slot.dirty_cols_end.len },
-                    .cursor = std.mem.zeroes(c.HowlVtCursor),
-                    .colors = std.mem.zeroes(c.HowlVtRenderColorState),
-                    .selection = std.mem.zeroes(c.HowlVtSelection),
-                },
-            };
-        }
-
-        fn graphicsMeta(_: c.HowlVtHandle) c.HowlVtGraphicsMeta {
-            graphics_meta_calls += 1;
-            return .{ .image_count = 1, .placement_count = 1, .is_alternate_screen = 0, .reserved0 = 0, .reserved1 = 0, .publication_seq = 9, .dirty_generation = 7 };
-        }
-
-        fn graphicsItems(allocator: std.mem.Allocator, _: c.HowlVtHandle, _: c.HowlVtGraphicsMeta) error{ InvalidPublication, VtCallFailed, OutOfMemory }!GraphicsItems {
-            graphics_item_calls += 1;
-            if (graphics_item_calls == 1) return error.InvalidPublication;
-            const images = try allocator.alloc(c.HowlVtGraphicsDecodedImage, 1);
-            errdefer allocator.free(images);
-            const placements = try allocator.alloc(c.HowlVtGraphicsPlacement, 1);
-            errdefer allocator.free(placements);
-            images[0] = .{ .image_id = 7, .image_number = 1, .format = 24, .reserved0 = 0, .width = 2, .height = 1, .payload_len = 4 };
-            placements[0] = .{ .image_id = 7, .placement_id = 4, .z_index = 0, .anchor = .{ .kind = c.HOWL_VT_GRAPHICS_ROW_ANCHOR_ON_SCREEN, .reserved0 = 0, .reserved1 = 0, .value = 1 }, .anchor_col = 2, .reserved0 = 0, .source_x = 0, .source_y = 0, .source_width = 2, .source_height = 1, .cell_x_offset = 0, .cell_y_offset = 0, .columns = 4, .rows = 2, .dest_left_cell_px = 3, .dest_top_cell_px = 5, .dest_right_cell_px = 35, .dest_bottom_cell_px = 37, .dest_grid_columns = 4, .dest_grid_rows = 2, .effective_columns = 4, .effective_rows = 2 };
-            return .{ .images = images, .placements = placements, .payload_bytes = &.{} };
-        }
-    };
-
-    const meta: VisibleMeta = .{ .rows = 1, .cols = 1, .history_count = 0, .is_alternate_screen = false, .snapshot_seq = 5, .dirty_generation = 7 };
-    var cells: [1]c.HowlVtSurfaceCell = undefined;
-    var dirty_rows: [1]u8 = undefined;
-    var dirty_cols_start: [1]u16 = undefined;
-    var dirty_cols_end: [1]u16 = undefined;
-    const slot: ReservedPublishSlot = .{
-        .cells = cells[0..],
-        .dirty_rows = dirty_rows[0..],
-        .dirty_cols_start = dirty_cols_start[0..],
-        .dirty_cols_end = dirty_cols_end[0..],
-    };
-
-    var visible = try vtAcquireVisibleAndGraphicsIntoSlotWith(std.testing.allocator, @ptrFromInt(1), 0, meta, slot, FakeOps);
-    defer visible.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(u8, 2), FakeOps.copy_calls);
-    try std.testing.expectEqual(@as(u8, 2), FakeOps.graphics_meta_calls);
-    try std.testing.expectEqual(@as(u8, 2), FakeOps.graphics_item_calls);
-    try std.testing.expectEqual(@as(usize, 1), visible.graphics_images.len);
-    try std.testing.expectEqual(@as(usize, 1), visible.graphics_placements.len);
-    try std.testing.expectEqual(@as(u32, 3), visible.graphics_placements[0].dest_left_cell_px);
-    try std.testing.expectEqual(@as(u32, 5), visible.graphics_placements[0].dest_top_cell_px);
-    try std.testing.expectEqual(@as(u32, 35), visible.graphics_placements[0].dest_right_cell_px);
-    try std.testing.expectEqual(@as(u32, 37), visible.graphics_placements[0].dest_bottom_cell_px);
-    try std.testing.expectEqual(@as(u32, 4), visible.graphics_placements[0].dest_grid_columns);
-    try std.testing.expectEqual(@as(u32, 2), visible.graphics_placements[0].dest_grid_rows);
-}
-
 test "publish rejects reserved slot when paired acquisition fails" {
     const FakeTerm = struct {
         allocator: std.mem.Allocator = std.testing.allocator,
@@ -785,11 +442,11 @@ test "publish rejects reserved slot when paired acquisition fails" {
             return .{ .cells = &.{}, .dirty_rows = &.{}, .dirty_cols_start = &.{}, .dirty_cols_end = &.{} };
         }
 
-        fn acquireVisibleAndGraphics(_: std.mem.Allocator, _: c.HowlVtHandle, _: u32, _: VisibleMeta, _: ReservedPublishSlot) error{AcquisitionFailed}!VisibleCopy {
+        fn acquireVisible(_: std.mem.Allocator, _: c.HowlVtHandle, _: u32, _: VisibleMeta, _: ReservedPublishSlot) error{AcquisitionFailed}!VisibleCopy {
             return error.AcquisitionFailed;
         }
 
-        fn commitDecodedPublishSlot(_: c.HowlRenderSurfaceTextHandle, _: VisibleCopy) c.HowlRenderVtPublishResult {
+        fn commitPublishSlot(_: c.HowlRenderSurfaceTextHandle, _: VisibleCopy) c.HowlRenderVtPublishResult {
             commit_calls += 1;
             return .{ .status = c.HOWL_RENDER_CALL_OK, .published = 1, .queued = 1, .damage_kind = damage_partial, .reserved0 = 0, .snapshot_seq = 12, .geometry_epoch = 1 };
         }

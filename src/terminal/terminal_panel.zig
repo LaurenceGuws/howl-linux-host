@@ -709,8 +709,6 @@ pub const TerminalPanel = struct {
                 vt_retained.finishSelection(&self.term) catch return .{ .consumed = false, .host_visual_changed = false };
                 self.selection_anchor = null;
                 self.selection_drag_active = false;
-                const text = vt_retained.copySelection(&self.term) catch return .{ .consumed = true, .host_visual_changed = true };
-                if (text.len != 0) _ = window.setClipboardText(text);
                 return .{ .consumed = true, .host_visual_changed = true };
             },
             else => return .{ .consumed = false, .host_visual_changed = false },
