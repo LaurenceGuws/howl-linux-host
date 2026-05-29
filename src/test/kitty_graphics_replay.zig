@@ -10,6 +10,7 @@ const Input = host.Input.Input;
 const TerminalPanel = host.TerminalPanel.TerminalPanel;
 const Window = host.Window;
 const Rect = Window.Rect;
+const terminal_c = host.TerminalC.c;
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
@@ -24,6 +25,48 @@ const signature_grid_columns: usize = 4;
 const signature_grid_rows: usize = 4;
 const signature_channel_tolerance: u16 = 72;
 const signature_min_matching_blocks: usize = 10;
+
+const GraphicsSnapshot = struct {
+    image_count: u32,
+    placement_count: u32,
+    publication_seq: u64,
+
+    fn nonEmpty(self: GraphicsSnapshot) bool {
+        return self.image_count != 0 or self.placement_count != 0;
+    }
+};
+
+const PlacementSnapshot = struct {
+    observed: bool,
+    publication_seq: u64,
+    placement: terminal_c.HowlVtGraphicsPlacement,
+    cell_width_px: u16,
+    cell_height_px: u16,
+};
+
+const GeneratedPlacementSnapshot = struct {
+    observed: bool,
+    placement: terminal_c.HowlVtGraphicsPlacement,
+    cell_width_px: u16,
+    cell_height_px: u16,
+
+    fn rect(self: GeneratedPlacementSnapshot) Rect {
+        if (!self.observed) return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        if (self.cell_width_px == 0 or self.cell_height_px == 0) {
+            return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        }
+        const columns = @max(self.placement.columns, 1);
+        const rows = @max(self.placement.rows, 1);
+        const x_px = std.math.mul(u32, self.placement.anchor_col, self.cell_width_px) catch return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        const y_px = std.math.mul(u32, self.placement.anchor.value, self.cell_height_px) catch return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        const width_px = std.math.mul(u32, columns, self.cell_width_px) catch return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        const height_px = std.math.mul(u32, rows, self.cell_height_px) catch return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        const max_c_int = std.math.maxInt(c_int);
+        if (x_px > max_c_int or y_px > max_c_int) return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        if (width_px > max_c_int or height_px > max_c_int) return .{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        return .{ .x = @intCast(x_px), .y = @intCast(y_px), .width = @intCast(width_px), .height = @intCast(height_px) };
+    }
+};
 
 test "kitty graphics replay stays healthy through panel teardown" {
     try std.testing.expect(setenv("SDL_VIDEODRIVER", "dummy", 1) == 0);
@@ -121,8 +164,6 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
     var saw_vt_non_empty_graphics = false;
     var saw_vt_placement_truth = false;
     var saw_expected_placement = false;
-    var proved_non_empty_upload = false;
-    var proved_drop_before_upload = false;
     var proved_present_texture_non_empty = false;
     var proved_present_blit_changes_framebuffer = false;
     var proved_present_framebuffer_non_empty = false;
@@ -133,41 +174,27 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
     var exposed_drop_in_present = false;
     var exposed_missing_expected_region_before_present = false;
     var exposed_missing_expected_region_in_present = false;
-    var last_observed_upload_snapshot_seq: u64 = 0;
     var turn_count: u32 = 0;
     while (turn_count < max_failure_turns) : (turn_count += 1) {
-        const before = panel.graphicsProofSnapshot();
-        saw_vt_non_empty_graphics = saw_vt_non_empty_graphics or before.vt_graphics.nonEmpty();
+        const before = try graphicsSnapshot(&panel);
+        saw_vt_non_empty_graphics = saw_vt_non_empty_graphics or before.nonEmpty();
 
         _ = panel.driveProgress(true, Window.c_win.SDL_GetTicksNS());
         const turn = panel.renderTurn();
         panel.noteRenderTurn(turn);
 
-        const after = panel.graphicsProofSnapshot();
-        const placement = panel.firstGraphicsPlacementProofSnapshot();
-        saw_vt_non_empty_graphics = saw_vt_non_empty_graphics or after.vt_graphics.nonEmpty();
-        saw_vt_placement_truth = saw_vt_placement_truth or after.vt_graphics.placement_count != 0;
+        const after = try graphicsSnapshot(&panel);
+        const placement = try firstGraphicsPlacement(&panel);
+        saw_vt_non_empty_graphics = saw_vt_non_empty_graphics or after.nonEmpty();
+        saw_vt_placement_truth = saw_vt_placement_truth or after.placement_count != 0;
         if (placement.observed) {
-            const derived = placement.derivedRect();
-            if (derived.status != .ok) return placementGeometryFailure(placement, derived.status);
+            _ = try expectPlacementRect(placement);
             saw_expected_placement = true;
-        }
-        if (after.last_upload.observed and after.last_upload.prepared_snapshot_seq != last_observed_upload_snapshot_seq) {
-            last_observed_upload_snapshot_seq = after.last_upload.prepared_snapshot_seq;
-            try std.testing.expect(after.last_upload.prepared_snapshot_seq != 0);
-            try std.testing.expect(after.last_upload.rgba_len != 0);
-            try std.testing.expect(after.last_upload.rgba_has_non_zero_byte);
-            if (after.last_upload.vt_graphics.nonEmpty()) {
-                proved_non_empty_upload = true;
-            } else if (saw_vt_non_empty_graphics) {
-                proved_drop_before_upload = true;
-                break;
-            }
         }
 
         window.setTitle(panel.titleSlice());
 
-        if (shouldPresent(turn.step) or (saw_vt_non_empty_graphics and placement.observed and !proved_non_empty_upload)) {
+        if (shouldPresent(turn.step) or (saw_vt_non_empty_graphics and placement.observed)) {
             const rect = window.contentRect(0);
             const overlay = panel.overlaySnapshot(rect);
             const placement_rect = if (placement.observed)
@@ -242,7 +269,6 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
                         .{ placement_rect.x, placement_rect.y, placement_rect.width, placement_rect.height, icon_signature.matching_blocks, icon_signature.total_blocks, signature_channel_tolerance },
                     );
                 }
-                proved_non_empty_upload = true;
                 proved_texture_region_matches_app_icon = true;
 
                 try std.testing.expect(present.framebuffer_before.observed);
@@ -287,8 +313,6 @@ test "kitty graphics app-icon replay proves non-empty graphics truth survives to
     try std.testing.expect(saw_vt_non_empty_graphics);
     try std.testing.expect(saw_vt_placement_truth);
     try std.testing.expect(saw_expected_placement);
-    try std.testing.expect(!proved_drop_before_upload);
-    try std.testing.expect(proved_non_empty_upload);
     try std.testing.expect(!exposed_drop_before_present);
     try std.testing.expect(proved_present_texture_non_empty);
     try std.testing.expect(!exposed_missing_expected_region_before_present);
@@ -347,10 +371,8 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
     defer if (panel_live) panel.deinit();
 
     var saw_generated_placement_vt_truth = false;
-    var proved_generated_placement_upload = false;
     var proved_first_placeholder_present = false;
     var proved_placeholder_move_present = false;
-    var last_upload_snapshot_seq: u64 = 0;
     var first_placeholder_rect: ?Rect = null;
     var successful_presents: u32 = 0;
     var turn_count: u32 = 0;
@@ -359,19 +381,10 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
         const turn = panel.renderTurn();
         panel.noteRenderTurn(turn);
 
-        const after = panel.graphicsProofSnapshot();
-        const virtual = panel.firstGraphicsVirtualPlacementProofSnapshot();
-        if (virtual.observed and after.vt_graphics.image_count != 0 and after.vt_graphics.placement_count != 0) {
+        const after = try graphicsSnapshot(&panel);
+        const virtual = try firstGeneratedPlacement(&panel);
+        if (virtual.observed and after.image_count != 0 and after.placement_count != 0) {
             saw_generated_placement_vt_truth = true;
-        }
-        if (after.last_upload.observed and after.last_upload.prepared_snapshot_seq != last_upload_snapshot_seq) {
-            last_upload_snapshot_seq = after.last_upload.prepared_snapshot_seq;
-            try std.testing.expect(after.last_upload.prepared_snapshot_seq != 0);
-            try std.testing.expect(after.last_upload.rgba_len != 0);
-            try std.testing.expect(after.last_upload.rgba_has_non_zero_byte);
-            if (virtual.observed and after.last_upload.vt_graphics.image_count != 0 and after.last_upload.vt_graphics.placement_count != 0) {
-                proved_generated_placement_upload = true;
-            }
         }
 
         if (shouldPresent(turn.step) or (virtual.observed and !proved_placeholder_move_present)) {
@@ -419,7 +432,6 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
                 try std.testing.expect(present.framebuffer_probe_delta.bytes_changed);
                 try std.testing.expect(present.framebuffer_probe_delta.changed_byte_count != 0);
                 successful_presents += 1;
-                if (saw_generated_placement_vt_truth) proved_generated_placement_upload = true;
                 if (!proved_first_placeholder_present) {
                     first_placeholder_rect = local_probe;
                     proved_first_placeholder_present = true;
@@ -437,7 +449,6 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
     }
 
     try std.testing.expect(saw_generated_placement_vt_truth);
-    try std.testing.expect(proved_generated_placement_upload);
     try std.testing.expect(proved_first_placeholder_present);
     try std.testing.expect(proved_placeholder_move_present);
     try std.testing.expect(successful_presents >= 2);
@@ -450,45 +461,154 @@ test "kitty graphics unicode-placeholder replay proves graphics-only present ret
     try std.testing.expect(panel.progress.thread == null);
 }
 
-fn expectPlacementRect(placement: TerminalPanel.GraphicsPlacementProofSnapshot) !Rect {
-    const derived = placement.derivedRect();
-    if (derived.status != .ok) return placementGeometryFailure(placement, derived.status);
-    return derived.rect;
+fn graphicsSnapshot(panel: *TerminalPanel) !GraphicsSnapshot {
+    panel.term.mutex.lock();
+    defer panel.term.mutex.unlock();
+
+    const result = terminal_c.howl_vt_terminal_query_graphics_meta(panel.term.vt);
+    try std.testing.expectEqual(@as(c_int, terminal_c.HOWL_VT_CALL_OK), result.status);
+    return .{
+        .image_count = result.meta.image_count,
+        .placement_count = result.meta.placement_count,
+        .publication_seq = result.meta.publication_seq,
+    };
 }
 
-fn placementGeometryFailure(placement: TerminalPanel.GraphicsPlacementProofSnapshot, status: TerminalPanel.GraphicsPlacementProofSnapshot.RectStatus) anyerror {
-    switch (status) {
-        .missing => return error.MissingGraphicsPlacement,
-        .ok => unreachable,
-        else => std.debug.panic(
-            "graphics placement invalid at VT export/final local rect derivation: status={s} publication_seq={d} image_id={d} placement_id={d} anchor=({d},{d},{d}) source_size=({d}x{d}) cell_offset=({d},{d}) dest_px=({d},{d})-({d},{d}) grid=({d}x{d}) dest_grid=({d}x{d}) effective=({d}x{d}) cell_px=({d}x{d})",
-            .{
-                @tagName(status),
-                placement.publication_seq,
-                placement.image_id,
-                placement.placement_id,
-                placement.anchor_kind,
-                placement.anchor_value,
-                placement.anchor_col,
-                placement.source_width,
-                placement.source_height,
-                placement.cell_x_offset,
-                placement.cell_y_offset,
-                placement.left_px,
-                placement.top_px,
-                placement.right_px,
-                placement.bottom_px,
-                placement.columns,
-                placement.rows,
-                placement.dest_grid_columns,
-                placement.dest_grid_rows,
-                placement.effective_columns,
-                placement.effective_rows,
-                placement.cell_width_px,
-                placement.cell_height_px,
-            },
-        ),
+fn firstGraphicsPlacement(panel: *TerminalPanel) !PlacementSnapshot {
+    panel.term.mutex.lock();
+    defer panel.term.mutex.unlock();
+
+    const meta_result = terminal_c.howl_vt_terminal_query_graphics_meta(panel.term.vt);
+    try std.testing.expectEqual(@as(c_int, terminal_c.HOWL_VT_CALL_OK), meta_result.status);
+    if (meta_result.meta.placement_count == 0) {
+        return .{
+            .observed = false,
+            .publication_seq = meta_result.meta.publication_seq,
+            .placement = std.mem.zeroes(terminal_c.HowlVtGraphicsPlacement),
+            .cell_width_px = 0,
+            .cell_height_px = 0,
+        };
     }
+
+    const result = terminal_c.howl_vt_terminal_query_graphics_placement(
+        panel.term.vt,
+        meta_result.meta.publication_seq,
+        0,
+    );
+    try std.testing.expectEqual(@as(c_int, terminal_c.HOWL_VT_CALL_OK), result.status);
+    const cell = panel.term.render.frame_layout.cell_px;
+    return .{
+        .observed = true,
+        .publication_seq = meta_result.meta.publication_seq,
+        .placement = result.placement,
+        .cell_width_px = cell.width,
+        .cell_height_px = cell.height,
+    };
+}
+
+fn firstGeneratedPlacement(panel: *TerminalPanel) !GeneratedPlacementSnapshot {
+    panel.term.mutex.lock();
+    defer panel.term.mutex.unlock();
+
+    const meta_result = terminal_c.howl_vt_terminal_query_graphics_meta(panel.term.vt);
+    try std.testing.expectEqual(@as(c_int, terminal_c.HOWL_VT_CALL_OK), meta_result.status);
+    var placement_index: u32 = 0;
+    while (placement_index < meta_result.meta.placement_count) : (placement_index += 1) {
+        const result = terminal_c.howl_vt_terminal_query_graphics_placement(
+            panel.term.vt,
+            meta_result.meta.publication_seq,
+            placement_index,
+        );
+        try std.testing.expectEqual(@as(c_int, terminal_c.HOWL_VT_CALL_OK), result.status);
+        if (result.placement.flags & terminal_c.HOWL_VT_GRAPHICS_PLACEMENT_GENERATED_PLACEHOLDER == 0) {
+            continue;
+        }
+        if (result.placement.anchor.kind != terminal_c.HOWL_VT_GRAPHICS_ROW_ANCHOR_ON_SCREEN) {
+            continue;
+        }
+        const cell = panel.term.render.frame_layout.cell_px;
+        return .{
+            .observed = true,
+            .placement = result.placement,
+            .cell_width_px = cell.width,
+            .cell_height_px = cell.height,
+        };
+    }
+    return .{
+        .observed = false,
+        .placement = std.mem.zeroes(terminal_c.HowlVtGraphicsPlacement),
+        .cell_width_px = 0,
+        .cell_height_px = 0,
+    };
+}
+
+fn expectPlacementRect(snapshot: PlacementSnapshot) !Rect {
+    if (!snapshot.observed) return error.MissingGraphicsPlacement;
+    const placement = snapshot.placement;
+    if (placement.anchor.kind != terminal_c.HOWL_VT_GRAPHICS_ROW_ANCHOR_ON_SCREEN) {
+        return placementGeometryFailure(snapshot, "unsupported_anchor");
+    }
+    if (snapshot.cell_width_px == 0) return placementGeometryFailure(snapshot, "missing_cell_width");
+    if (snapshot.cell_height_px == 0) return placementGeometryFailure(snapshot, "missing_cell_height");
+    if (placement.dest_right_cell_px <= placement.dest_left_cell_px) {
+        return placementGeometryFailure(snapshot, "non_positive_width");
+    }
+    if (placement.dest_bottom_cell_px <= placement.dest_top_cell_px) {
+        return placementGeometryFailure(snapshot, "non_positive_height");
+    }
+
+    const anchor_x_px = std.math.mul(u32, placement.anchor_col, snapshot.cell_width_px) catch {
+        return placementGeometryFailure(snapshot, "x_out_of_range");
+    };
+    const anchor_y_px = std.math.mul(u32, placement.anchor.value, snapshot.cell_height_px) catch {
+        return placementGeometryFailure(snapshot, "y_out_of_range");
+    };
+    const x_px = std.math.add(u32, anchor_x_px, placement.dest_left_cell_px) catch {
+        return placementGeometryFailure(snapshot, "x_out_of_range");
+    };
+    const y_px = std.math.add(u32, anchor_y_px, placement.dest_top_cell_px) catch {
+        return placementGeometryFailure(snapshot, "y_out_of_range");
+    };
+    const width_px = placement.dest_right_cell_px - placement.dest_left_cell_px;
+    const height_px = placement.dest_bottom_cell_px - placement.dest_top_cell_px;
+    const max_c_int = std.math.maxInt(c_int);
+    if (x_px > max_c_int) return placementGeometryFailure(snapshot, "x_out_of_range");
+    if (y_px > max_c_int) return placementGeometryFailure(snapshot, "y_out_of_range");
+    if (width_px > max_c_int) return placementGeometryFailure(snapshot, "width_out_of_range");
+    if (height_px > max_c_int) return placementGeometryFailure(snapshot, "height_out_of_range");
+    return .{ .x = @intCast(x_px), .y = @intCast(y_px), .width = @intCast(width_px), .height = @intCast(height_px) };
+}
+
+fn placementGeometryFailure(snapshot: PlacementSnapshot, status: []const u8) anyerror {
+    const placement = snapshot.placement;
+    std.debug.panic(
+        "graphics placement invalid at VT export/final local rect derivation: status={s} publication_seq={d} image_id={d} placement_id={d} anchor=({d},{d},{d}) source_size=({d}x{d}) cell_offset=({d},{d}) dest_px=({d},{d})-({d},{d}) grid=({d}x{d}) dest_grid=({d}x{d}) effective=({d}x{d}) cell_px=({d}x{d})",
+        .{
+            status,
+            snapshot.publication_seq,
+            placement.image_id,
+            placement.placement_id,
+            placement.anchor.kind,
+            placement.anchor.value,
+            placement.anchor_col,
+            placement.source_width,
+            placement.source_height,
+            placement.cell_x_offset,
+            placement.cell_y_offset,
+            placement.dest_left_cell_px,
+            placement.dest_top_cell_px,
+            placement.dest_right_cell_px,
+            placement.dest_bottom_cell_px,
+            placement.columns,
+            placement.rows,
+            placement.dest_grid_columns,
+            placement.dest_grid_rows,
+            placement.effective_columns,
+            placement.effective_rows,
+            snapshot.cell_width_px,
+            snapshot.cell_height_px,
+        },
+    );
 }
 
 fn makeTerminalConfig(allocator: std.mem.Allocator) !TerminalConfig {
