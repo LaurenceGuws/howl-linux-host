@@ -18,7 +18,7 @@ pub const FrameLayoutRequest = struct {
     render_px: c.HowlRenderPixelSize,
     grid_px: c.HowlRenderPixelSize,
 };
-pub const RenderSurface = c.HowlRenderSurfaceHandle;
+pub const HostSurface = c.HowlRenderHostSurface;
 pub const RenderCellSize = c.HowlRenderCellSize;
 pub const FrameLayoutSync = retained.FrameLayoutSync;
 
@@ -31,7 +31,7 @@ const ExpectedPreparedSurfaceBuffer = extern struct {
 const ExpectedPreparedSurfaceDiagnostics = extern struct {
     status: i32,
     missing_glyphs: u64,
-    resolve_metrics: c.HowlRenderSurfaceMetrics,
+    resolve_metrics: c.HowlRenderMetrics,
 };
 
 comptime {

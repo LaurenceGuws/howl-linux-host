@@ -78,7 +78,7 @@ pub const Context = struct {
     term: HowlTerm,
     progress: pty_wait_thread.State = .{},
     live: bool,
-    term_texture: render_api.RenderSurface,
+    term_texture: render_api.HostSurface,
     conf: *const TerminalConfig,
     input: *HostInput,
     title_buf: [128]u8,
@@ -570,9 +570,9 @@ pub const Context = struct {
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
 
-        var feedback = std.mem.zeroes(terminal_c.HowlRenderSurfaceFeedback);
-        const execution = terminal_c.HowlRenderSurfaceExecutionInput{
-            .surface = .{
+        var submit_result = std.mem.zeroes(terminal_c.HowlRenderSubmitResult);
+        const execution = terminal_c.HowlRenderSubmitExecution{
+            .host_surface = .{
                 .host_surface_id = self.term_texture.host_surface_id,
                 .width = upload.info.render_px.width,
                 .height = upload.info.render_px.height,
@@ -580,9 +580,9 @@ pub const Context = struct {
             .uploads_committed = upload.buffer.uploads_committed,
             .render_us = renderUs(start_ns),
         };
-        const result = self.submit(&execution, &feedback);
+        const result = self.submit(&execution, &submit_result);
         if (result == .rendered) {
-            self.term_texture = feedback.surface;
+            self.term_texture = submit_result.host_surface;
         }
         return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq };
     }
@@ -592,10 +592,10 @@ pub const Context = struct {
         snapshot_seq: u64,
     };
 
-    fn submit(self: *Context, execution: *const terminal_c.HowlRenderSurfaceExecutionInput, feedback: *terminal_c.HowlRenderSurfaceFeedback) render_retained.SubmitResult {
+    fn submit(self: *Context, execution: *const terminal_c.HowlRenderSubmitExecution, result: *terminal_c.HowlRenderSubmitResult) render_retained.SubmitResult {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
-        return self.term.render.submit(execution, feedback);
+        return self.term.render.submit(execution, result);
     }
 
     fn renderUs(start_ns: u64) u64 {

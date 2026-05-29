@@ -169,7 +169,7 @@ pub const State = struct {
         }
     }
 
-    pub fn submit(self: *State, execution: *const c.HowlRenderSurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) SubmitResult {
+    pub fn submit(self: *State, execution: *const c.HowlRenderSubmitExecution, result: *c.HowlRenderSubmitResult) SubmitResult {
         if (self.presentPending()) return .idle;
         var prepared: c.HowlRenderPreparedSurfaceHandle = null;
         switch (c.howl_render_surface_text_take_submit_handle(self.surface_text, &prepared)) {
@@ -190,7 +190,7 @@ pub const State = struct {
                 return .failed;
             },
         }
-        return switch (self.submitHandle(prepared, execution, feedback)) {
+        return switch (self.submitHandle(prepared, execution, result)) {
             c.HOWL_RENDER_SUBMIT_IDLE => .idle,
             c.HOWL_RENDER_SUBMIT_STALE => blk: {
                 self.releasePreparedSurface();
@@ -201,9 +201,9 @@ pub const State = struct {
                 break :blk .needs_prepare;
             },
             c.HOWL_RENDER_SUBMIT_RENDERED => blk: {
-                std.debug.assert(feedback.surface.host_surface_id != 0);
-                std.debug.assert(feedback.surface.width > 0);
-                std.debug.assert(feedback.surface.height > 0);
+                std.debug.assert(result.host_surface.host_surface_id != 0);
+                std.debug.assert(result.host_surface.width > 0);
+                std.debug.assert(result.host_surface.height > 0);
                 break :blk .rendered;
             },
             else => blk: {
@@ -268,14 +268,14 @@ pub const State = struct {
         return .prepared;
     }
 
-    fn submitHandle(self: *State, prepared: c.HowlRenderPreparedSurfaceHandle, execution: *const c.HowlRenderSurfaceExecutionInput, feedback: *c.HowlRenderSurfaceFeedback) c.HowlRenderSubmitStatus {
+    fn submitHandle(self: *State, prepared: c.HowlRenderPreparedSurfaceHandle, execution: *const c.HowlRenderSubmitExecution, result: *c.HowlRenderSubmitResult) c.HowlRenderSubmitStatus {
         const current = self.prepared_surface orelse return c.HOWL_RENDER_SUBMIT_IDLE;
         std.debug.assert(prepared == current);
-        const result = c.howl_render_surface_text_submit_handle(self.surface_text, prepared, execution, feedback);
-        if (result == c.HOWL_RENDER_SUBMIT_RENDERED) {
+        const status = c.howl_render_surface_text_submit_handle(self.surface_text, prepared, execution, result);
+        if (status == c.HOWL_RENDER_SUBMIT_RENDERED) {
             self.forgetPreparedSurface();
         }
-        return result;
+        return status;
     }
 };
 
@@ -367,14 +367,14 @@ test "submit is blocked while host present is pending" {
     var state = State.init(null, testFrameLayout());
     state.notePresentSubmitted(11, 110);
 
-    const execution = c.HowlRenderSurfaceExecutionInput{
-        .surface = .{ .host_surface_id = 1, .width = 1, .height = 1 },
+    const execution = c.HowlRenderSubmitExecution{
+        .host_surface = .{ .host_surface_id = 1, .width = 1, .height = 1 },
         .uploads_committed = 0,
         .render_us = 0,
     };
-    var feedback = std.mem.zeroes(c.HowlRenderSurfaceFeedback);
+    var result = std.mem.zeroes(c.HowlRenderSubmitResult);
 
-    try std.testing.expectEqual(SubmitResult.idle, state.submit(&execution, &feedback));
+    try std.testing.expectEqual(SubmitResult.idle, state.submit(&execution, &result));
     try std.testing.expect(state.presentPending());
 }
 

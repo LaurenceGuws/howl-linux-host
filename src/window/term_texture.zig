@@ -2,7 +2,7 @@ const std = @import("std");
 const c = @import("window.zig").c_win;
 const render_c = @import("../terminal/c.zig").c;
 
-pub fn ensureSurface(surface: *render_c.HowlRenderSurfaceHandle, width: u16, height: u16) bool {
+pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) bool {
     std.debug.assert(width > 0);
     std.debug.assert(height > 0);
     if (surface.host_surface_id == 0) {
@@ -24,7 +24,7 @@ pub fn ensureSurface(surface: *render_c.HowlRenderSurfaceHandle, width: u16, hei
     return true;
 }
 
-pub fn uploadPreparedBuffer(surface: render_c.HowlRenderSurfaceHandle, rgba_pixels: []const u8) bool {
+pub fn uploadPreparedBuffer(surface: render_c.HowlRenderHostSurface, rgba_pixels: []const u8) bool {
     if (surface.host_surface_id == 0) return false;
     std.debug.assert(surface.width > 0);
     std.debug.assert(surface.height > 0);
