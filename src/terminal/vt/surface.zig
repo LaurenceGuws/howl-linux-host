@@ -80,7 +80,7 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     term.vt_state.cursor_visible = visible.cursor.visible != 0;
     term.vt_state.cursor_blink = visible.cursor.blink != 0;
 
-    const typed_response = Ops.commitPublishSlot(term.render.surface_text, visible);
+    const typed_response = Ops.commitDecodedPublishSlot(term.render.surface_text, visible);
     if (typed_response.status != c.HOWL_RENDER_CALL_OK) {
         std.debug.panic(
             "render publish rejected: status={d} published={d} queued={d} damage={d} snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} rows={d} cols={d} history={d} scroll_row={d} graphics_pub={d} images={d} placements={d} virtuals={d} payload_len={d}",
@@ -122,7 +122,7 @@ const RealOps = struct {
         return vtAcquireVisibleAndGraphicsIntoSlot(allocator, handle, scrollback_offset, meta, slot);
     }
 
-    fn commitPublishSlot(handle: c.HowlRenderSurfaceTextHandle, visible: VisibleCopy) c.HowlRenderVtPublishResult {
+    fn commitDecodedPublishSlot(handle: c.HowlRenderSurfaceTextHandle, visible: VisibleCopy) c.HowlRenderVtPublishResult {
         return c.howl_render_surface_text_commit_publish_decoded_graphics_slot(handle, publishDecodedGraphicsSlotCommit(visible));
     }
 
@@ -793,7 +793,7 @@ test "publish rejects reserved slot when paired acquisition fails" {
             return error.AcquisitionFailed;
         }
 
-        fn commitPublishSlot(_: c.HowlRenderSurfaceTextHandle, _: VisibleCopy) c.HowlRenderVtPublishResult {
+        fn commitDecodedPublishSlot(_: c.HowlRenderSurfaceTextHandle, _: VisibleCopy) c.HowlRenderVtPublishResult {
             commit_calls += 1;
             return .{ .status = c.HOWL_RENDER_CALL_OK, .published = 1, .queued = 1, .damage_kind = damage_partial, .reserved0 = 0, .snapshot_seq = 12, .geometry_epoch = 1 };
         }
