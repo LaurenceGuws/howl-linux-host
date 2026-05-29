@@ -46,10 +46,8 @@ pub const FrameLayout = struct {
 pub const PreparedUpload = struct {
     info: c.HowlRenderPreparedSurfaceInfo,
     buffer: c.HowlRenderPreparedSurfaceBuffer,
-    drawn_graphics_image_refs: []u32 = &.{},
 
-    pub fn deinit(self: *PreparedUpload, allocator: std.mem.Allocator) void {
-        if (self.drawn_graphics_image_refs.len > 0) allocator.free(self.drawn_graphics_image_refs);
+    pub fn deinit(self: *PreparedUpload) void {
         self.* = undefined;
     }
 };
@@ -225,30 +223,13 @@ pub const State = struct {
         return c.howl_render_prepared_surface_buffer(prepared, buffer_out) == c.HOWL_RENDER_CALL_OK;
     }
 
-    pub fn preparedUpload(self: *const State, allocator: std.mem.Allocator, upload_out: *PreparedUpload) bool {
+    pub fn preparedUpload(self: *const State, upload_out: *PreparedUpload) bool {
         upload_out.* = .{
             .info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo),
             .buffer = std.mem.zeroes(c.HowlRenderPreparedSurfaceBuffer),
-            .drawn_graphics_image_refs = &.{},
         };
         if (!self.preparedInfo(&upload_out.info)) return false;
         if (!self.preparedBuffer(&upload_out.buffer)) return false;
-        return self.preparedDrawnGraphicsImageRefs(allocator, upload_out);
-    }
-
-    fn preparedDrawnGraphicsImageRefs(self: *const State, allocator: std.mem.Allocator, upload_out: *PreparedUpload) bool {
-        const count = std.math.cast(usize, upload_out.info.graphics_image_ref_count) orelse return false;
-        const refs = allocator.alloc(u32, count) catch return false;
-        var idx: u32 = 0;
-        while (idx < upload_out.info.graphics_image_ref_count) : (idx += 1) {
-            const result = c.howl_render_prepared_surface_graphics_image_ref(self.prepared_surface, idx);
-            if (result.status != c.HOWL_RENDER_CALL_OK) {
-                if (refs.len > 0) allocator.free(refs);
-                return false;
-            }
-            refs[@intCast(idx)] = result.image_ref_id;
-        }
-        upload_out.drawn_graphics_image_refs = refs;
         return true;
     }
 
