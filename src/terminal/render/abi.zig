@@ -55,7 +55,7 @@ pub fn initSurfaceText(render_init: RenderInit) !c.HowlRenderSurfaceTextHandle {
 }
 
 pub fn initFrameLayout(surface_text: c.HowlRenderSurfaceTextHandle, render_init: RenderInit) !FrameLayout {
-    const layout = c.howl_render_surface_text_derive_frame_layout(surface_text, render_init.render_px, render_init.grid_px);
+    const layout: c.HowlRenderLayoutResult = c.howl_render_surface_text_derive_layout(surface_text, render_init.render_px, render_init.grid_px);
     if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     return .{
         .render_px = render_init.render_px,
@@ -82,7 +82,7 @@ pub fn deriveFrameLayout(term: *Term, request: FrameLayoutRequest) !FrameLayoutS
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const layout = c.howl_render_surface_text_derive_frame_layout(term.render.surface_text, request.render_px, request.grid_px);
+    const layout: c.HowlRenderLayoutResult = c.howl_render_surface_text_derive_layout(term.render.surface_text, request.render_px, request.grid_px);
     if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     const grid = layout.grid;
     const cell_px = layout.cell_px;
