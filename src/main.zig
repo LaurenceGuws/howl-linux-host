@@ -6,7 +6,7 @@ const Input = @import("input/input.zig").Input;
 const InputWindow = @import("input/window.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const pty_wait_thread = @import("terminal/pty/wait_thread.zig");
-const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
+const TerminalContext = @import("terminal/context.zig").Context;
 const Window = @import("window/window.zig");
 
 pub const Options = cli_args.Options;
@@ -19,8 +19,8 @@ const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
 
 const TabSlots = struct {
-    panels: [max_tabs]TerminalPanel = undefined,
-    active_tabs: [max_tabs]*TerminalPanel = undefined,
+    contexts: [max_tabs]TerminalContext = undefined,
+    active_tabs: [max_tabs]*TerminalContext = undefined,
     active_slots: [max_tabs]TabIndex = undefined,
     free_slots: [max_tabs]TabIndex = undefined,
     active_count: TabIndex = 0,
@@ -37,20 +37,20 @@ const TabSlots = struct {
         return tabs;
     }
 
-    fn items(self: *TabSlots) []*TerminalPanel {
+    fn items(self: *TabSlots) []*TerminalContext {
         return self.active_tabs[0..self.active_count];
     }
 
-    fn acquireSlot(self: *TabSlots) ?struct { slot_idx: TabIndex, tab: *TerminalPanel } {
+    fn acquireSlot(self: *TabSlots) ?struct { slot_idx: TabIndex, tab: *TerminalContext } {
         assert(self.active_count <= max_tabs);
         assert(self.free_count <= max_tabs);
         if (self.free_count == 0) return null;
         self.free_count -= 1;
         const slot_idx = self.free_slots[self.free_count];
-        return .{ .slot_idx = slot_idx, .tab = &self.panels[slot_idx] };
+        return .{ .slot_idx = slot_idx, .tab = &self.contexts[slot_idx] };
     }
 
-    fn appendActive(self: *TabSlots, slot_idx: TabIndex, tab: *TerminalPanel) void {
+    fn appendActive(self: *TabSlots, slot_idx: TabIndex, tab: *TerminalContext) void {
         assert(self.active_count < max_tabs);
         assert(slot_idx < max_tabs);
         self.active_slots[self.active_count] = slot_idx;
@@ -67,7 +67,7 @@ const TabSlots = struct {
         assert(self.free_count <= max_tabs);
     }
 
-    fn orderedRemoveActive(self: *TabSlots, idx: TabIndex) struct { slot_idx: TabIndex, tab: *TerminalPanel } {
+    fn orderedRemoveActive(self: *TabSlots, idx: TabIndex) struct { slot_idx: TabIndex, tab: *TerminalContext } {
         assert(idx < self.active_count);
         const slot_idx = self.active_slots[idx];
         const tab = self.active_tabs[idx];
@@ -102,7 +102,7 @@ const LoopAdmission = struct {
 };
 
 const HostMutations = struct {
-    input_outcome: TerminalPanel.DrainInputOutcome,
+    input_outcome: TerminalContext.DrainInputOutcome,
 };
 
 const RedrawRenderIntent = struct {
@@ -116,8 +116,8 @@ const RedrawRenderIntent = struct {
 };
 
 const RenderFrame = struct {
-    tab: *TerminalPanel,
-    turn: TerminalPanel.TurnResult,
+    tab: *TerminalContext,
+    turn: TerminalContext.TurnResult,
     snapshot: RenderSnapshot,
 };
 
@@ -325,7 +325,7 @@ fn initInput() !Input {
 }
 
 fn configureInputPolicies(app: *App) void {
-    const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
+    const tab = activeContext(app.tabs.items(), app.active_tab_idx.*);
     app.input.setHostMousePolicy(.{
         .listen_always = app.conf.window.mouse.listen_always,
         .link_hover = tab.wantsLinkHover(),
@@ -401,19 +401,19 @@ fn collectLoopPending(app: *App, now_ns: u64) LoopPending {
     };
 }
 
-fn activeTabNeedsRenderTurn(tabs: []*TerminalPanel, active_tab_idx: TabIndex) bool {
+fn activeTabNeedsRenderTurn(tabs: []*TerminalContext, active_tab_idx: TabIndex) bool {
     const tab = activeTab(tabs, active_tab_idx);
     return tab.wantsRenderTurn();
 }
 
-fn tabsHavePendingWake(tabs: []*TerminalPanel) bool {
+fn tabsHavePendingWake(tabs: []*TerminalContext) bool {
     for (tabs) |tab| {
         if (pty_wait_thread.wakePending(tab)) return true;
     }
     return false;
 }
 
-fn tabsHavePendingRuntimeObligation(tabs: []*TerminalPanel, now_ns: u64) bool {
+fn tabsHavePendingRuntimeObligation(tabs: []*TerminalContext, now_ns: u64) bool {
     return tabsHavePendingRuntimeObligationWith(tabs, now_ns);
 }
 
@@ -465,12 +465,12 @@ fn deriveRedrawRenderIntent(
 }
 
 fn syncActiveBlinkCadence(app: *App, now_ns: u64) bool {
-    const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
+    const tab = activeContext(app.tabs.items(), app.active_tab_idx.*);
     return tab.syncCursorBlinkCadence(now_ns);
 }
 
 fn activeBlinkWaitMs(app: *App, now_ns: u64) ?u32 {
-    const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
+    const tab = activeContext(app.tabs.items(), app.active_tab_idx.*);
     return tab.nextCursorBlinkWaitMs(now_ns);
 }
 
@@ -484,7 +484,7 @@ fn loopWaitMsWith(blink_wait_ms: ?u32, tabs: anytype, now_ns: u64, frame_pacer_w
     return wait_ms;
 }
 
-fn minRuntimeObligationWaitMs(current_wait_ms: ?u32, tabs: []*TerminalPanel, now_ns: u64) ?u32 {
+fn minRuntimeObligationWaitMs(current_wait_ms: ?u32, tabs: []*TerminalContext, now_ns: u64) ?u32 {
     return minRuntimeObligationWaitMsWith(current_wait_ms, tabs, now_ns);
 }
 
@@ -515,8 +515,8 @@ fn drainBindingActions(app: *App) !void {
     }
 }
 
-fn forwardTerminalInput(app: *App) TerminalPanel.DrainInputOutcome {
-    const tab = activePanel(app.tabs.items(), app.active_tab_idx.*);
+fn forwardTerminalInput(app: *App) TerminalContext.DrainInputOutcome {
+    const tab = activeContext(app.tabs.items(), app.active_tab_idx.*);
     const content_logical = app.window.contentLogicalSize(app.conf.tab_bar.height);
     const origin_y = app.window.tabBarHeightLogical(app.conf.tab_bar.height);
     const outcome = forwardTerminalInputFlow(tab, app.input, 0, origin_y, content_logical.width, content_logical.height);
@@ -524,14 +524,14 @@ fn forwardTerminalInput(app: *App) TerminalPanel.DrainInputOutcome {
     return outcome;
 }
 
-fn forwardTerminalInputFlow(tab: anytype, input: anytype, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) TerminalPanel.DrainInputOutcome {
+fn forwardTerminalInputFlow(tab: anytype, input: anytype, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) TerminalContext.DrainInputOutcome {
     var outcome = tab.drainTextInputFastPath(input);
     mergeDrainInputOutcome(&outcome, tab.drainPointerAndUiInput(input, origin_x, origin_y, logical_width, logical_height));
     tab.handleScrollInput(input);
     return outcome;
 }
 
-fn mergeDrainInputOutcome(total: *TerminalPanel.DrainInputOutcome, next: TerminalPanel.DrainInputOutcome) void {
+fn mergeDrainInputOutcome(total: *TerminalContext.DrainInputOutcome, next: TerminalContext.DrainInputOutcome) void {
     total.published_to_pty = total.published_to_pty or next.published_to_pty;
     total.host_visual_changed = total.host_visual_changed or next.host_visual_changed;
 }
@@ -549,7 +549,7 @@ fn applyWindowResize(app: *App) bool {
     return true;
 }
 
-fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex, now_ns: u64) TerminalProgress {
+fn driveTerminalProgress(tabs: []*TerminalContext, active_tab_idx: TabIndex, now_ns: u64) TerminalProgress {
     var should_redraw = false;
     var keep_running = false;
     for (tabs, 0..) |tab, i| {
@@ -561,7 +561,7 @@ fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex, now_n
     return .{ .should_redraw = should_redraw, .keep_running = keep_running };
 }
 
-fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool, now_ns: u64) @import("terminal/pty/pump.zig").Outcome {
+fn driveTabRuntimeTurn(tab: *TerminalContext, active: bool, now_ns: u64) @import("terminal/pty/pump.zig").Outcome {
     return tab.driveProgress(active, now_ns);
 }
 
@@ -599,7 +599,7 @@ const RenderSnapshot = struct {
     labels: []const []const u8,
 };
 
-fn renderSnapshot(app: *App, tab: *TerminalPanel) RenderSnapshot {
+fn renderSnapshot(app: *App, tab: *TerminalContext) RenderSnapshot {
     const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
     const overlay = tab.overlaySnapshot(texture_rect);
     var title_buf: [TabBar.max_tabs][]const u8 = undefined;
@@ -619,7 +619,7 @@ fn derivePresentPlan(frame: RenderFrame, intent: RedrawRenderIntent) PresentPlan
     };
 }
 
-fn derivePresentReason(host_redraw: bool, step: TerminalPanel.TurnStep) PresentReason {
+fn derivePresentReason(host_redraw: bool, step: TerminalContext.TurnStep) PresentReason {
     return switch (step) {
         .rendered => .terminal_frame,
         .blocked_present => .terminal_retire,
@@ -659,7 +659,7 @@ fn recordPresentSubmission(app: anytype, frame: RenderFrame, submission: Present
     recordPresentSubmissionFor(app, frame.tab, frame.turn.step, frame.turn.present_snapshot_seq, submission);
 }
 
-fn recordPresentSubmissionFor(app: anytype, tab: anytype, step: TerminalPanel.TurnStep, present_snapshot_seq: u64, submission: PresentSubmission) void {
+fn recordPresentSubmissionFor(app: anytype, tab: anytype, step: TerminalContext.TurnStep, present_snapshot_seq: u64, submission: PresentSubmission) void {
     switch (submission.reason) {
         .none => assert(!submission.submitted),
         .host_damage => assert(submission.submitted),
@@ -820,7 +820,7 @@ test "submitted present cannot make next turn block before completion drain" {
 test "derivePresentReason matrix names host and terminal present cadence" {
     const cases = [_]struct {
         host_redraw: bool,
-        step: TerminalPanel.TurnStep,
+        step: TerminalContext.TurnStep,
         reason: PresentReason,
     }{
         .{ .host_redraw = false, .step = .no_frame, .reason = .none },
@@ -912,7 +912,7 @@ test "frame deadlines participate in wait calculation" {
     try std.testing.expectEqual(@as(?u32, 30), loopWaitMsWith(null, tabs[0..], 99, null));
 }
 
-test "active window title sync uses the active panel title" {
+test "active window title sync uses the active context title" {
     const FakeWindow = struct {
         last_title: []const u8 = "",
 
@@ -921,7 +921,7 @@ test "active window title sync uses the active panel title" {
         }
     };
 
-    const FakePanel = struct {
+    const FakeContext = struct {
         title: []const u8,
 
         fn titleSlice(self: *@This()) []const u8 {
@@ -930,18 +930,18 @@ test "active window title sync uses the active panel title" {
     };
 
     var window = FakeWindow{};
-    var panel = FakePanel{ .title = "top" };
-    syncActiveWindowTitle(&window, &panel);
+    var context = FakeContext{ .title = "top" };
+    syncActiveWindowTitle(&window, &context);
     try std.testing.expectEqualStrings("top", window.last_title);
 }
 
-fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*TerminalPanel) void {
+fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*TerminalContext) void {
     const px = window.contentPixelSize(conf.tab_bar.height);
     const logical = window.contentLogicalSize(conf.tab_bar.height);
     for (tabs) |tab| tab.resize(px.width, px.height, logical.width, logical.height);
 }
 
-fn setWindowFocused(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: TabIndex, focused: bool) void {
+fn setWindowFocused(window: *Window.State, tabs: []*TerminalContext, active_tab_idx: TabIndex, focused: bool) void {
     assert(tabIndexInRange(tabs, active_tab_idx));
     _ = window.setFocused(focused);
     syncTerminalFocus(window, tabs, active_tab_idx);
@@ -952,9 +952,9 @@ const ActiveTabProblem = enum {
     runtime_failed,
 };
 
-fn activeTabProblem(tabs: []*TerminalPanel, active_tab_idx: TabIndex) ?ActiveTabProblem {
+fn activeTabProblem(tabs: []*TerminalContext, active_tab_idx: TabIndex) ?ActiveTabProblem {
     if (tabs.len == 0) return .exited;
-    const tab = activePanel(tabs, active_tab_idx);
+    const tab = activeContext(tabs, active_tab_idx);
     return switch (tab.sessionOutcome()) {
         .active => null,
         .exited => .exited,
@@ -962,23 +962,23 @@ fn activeTabProblem(tabs: []*TerminalPanel, active_tab_idx: TabIndex) ?ActiveTab
     };
 }
 
-fn activeTab(tabs: []*TerminalPanel, active_tab_idx: TabIndex) *TerminalPanel {
+fn activeTab(tabs: []*TerminalContext, active_tab_idx: TabIndex) *TerminalContext {
     assert(tabs.len > 0);
     assert(tabIndexInRange(tabs, active_tab_idx));
     return tabs[@intCast(active_tab_idx)];
 }
 
-fn activePanel(tabs: []*TerminalPanel, active_tab_idx: TabIndex) *TerminalPanel {
+fn activeContext(tabs: []*TerminalContext, active_tab_idx: TabIndex) *TerminalContext {
     return activeTab(tabs, active_tab_idx);
 }
 
 fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8, io: std.Io, input: *Input, window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex, action: Input.Bindings.Action) !void {
     switch (action) {
-        .zoom_in => _ = activePanel(tabs.items(), active_tab_idx.*).adjustFontSize(1),
-        .zoom_out => _ = activePanel(tabs.items(), active_tab_idx.*).adjustFontSize(-1),
-        .zoom_reset => _ = activePanel(tabs.items(), active_tab_idx.*).resetFontSize(),
-        .zoom_stress_toggle => _ = activePanel(tabs.items(), active_tab_idx.*).toggleStressFontSize(),
-        .terminal_paste => pasteIntoActiveTab(activePanel(tabs.items(), active_tab_idx.*)),
+        .zoom_in => _ = activeContext(tabs.items(), active_tab_idx.*).adjustFontSize(1),
+        .zoom_out => _ = activeContext(tabs.items(), active_tab_idx.*).adjustFontSize(-1),
+        .zoom_reset => _ = activeContext(tabs.items(), active_tab_idx.*).resetFontSize(),
+        .zoom_stress_toggle => _ = activeContext(tabs.items(), active_tab_idx.*).toggleStressFontSize(),
+        .terminal_paste => pasteIntoActiveTab(activeContext(tabs.items(), active_tab_idx.*)),
         .terminal_new_tab => try openTab(io, conf, input, feed_record_path, window, tabs, active_tab_idx),
         .terminal_close_tab => closeActiveTab(window, tabs, active_tab_idx),
         .terminal_next_tab => selectRelative(window, tabs.items(), active_tab_idx, 1),
@@ -1006,7 +1006,7 @@ noinline fn openTab(io: std.Io, conf: *const Config.State, input: *Input, feed_r
     active_tab_idx.* = @intCast(updated.len - 1);
     assert(tabIndexInRange(updated, active_tab_idx.*));
     syncTerminalFocus(window, updated, active_tab_idx.*);
-    syncActiveWindowTitle(window, activePanel(updated, active_tab_idx.*));
+    syncActiveWindowTitle(window, activeContext(updated, active_tab_idx.*));
 }
 
 fn closeActiveTab(window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex) void {
@@ -1021,10 +1021,10 @@ fn closeActiveTab(window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIn
     if (!tabIndexInRange(updated, active_tab_idx.*)) active_tab_idx.* = @intCast(updated.len - 1);
     assert(tabIndexInRange(updated, active_tab_idx.*));
     syncTerminalFocus(window, updated, active_tab_idx.*);
-    syncActiveWindowTitle(window, activePanel(updated, active_tab_idx.*));
+    syncActiveWindowTitle(window, activeContext(updated, active_tab_idx.*));
 }
 
-fn selectRelative(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: *TabIndex, delta: i32) void {
+fn selectRelative(window: *Window.State, tabs: []*TerminalContext, active_tab_idx: *TabIndex, delta: i32) void {
     if (tabs.len <= 1) return;
     const len_i: i32 = @intCast(tabs.len);
     var idx: i32 = @intCast(active_tab_idx.*);
@@ -1032,16 +1032,16 @@ fn selectRelative(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx:
     selectTab(window, tabs, active_tab_idx, @intCast(idx));
 }
 
-fn selectTab(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: *TabIndex, idx: TabIndex) void {
+fn selectTab(window: *Window.State, tabs: []*TerminalContext, active_tab_idx: *TabIndex, idx: TabIndex) void {
     if (!tabIndexInRange(tabs, idx)) return;
     if (idx == active_tab_idx.*) return;
     active_tab_idx.* = idx;
     assert(tabIndexInRange(tabs, active_tab_idx.*));
     syncTerminalFocus(window, tabs, active_tab_idx.*);
-    syncActiveWindowTitle(window, activePanel(tabs, active_tab_idx.*));
+    syncActiveWindowTitle(window, activeContext(tabs, active_tab_idx.*));
 }
 
-fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalPanel, active_tab_idx: TabIndex) void {
+fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalContext, active_tab_idx: TabIndex) void {
     assert(tabIndexInRange(tabs, active_tab_idx));
     for (tabs, 0..) |tab, i| {
         tab.setWindowFocused(window.focused);
@@ -1049,13 +1049,13 @@ fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalPanel, active_tab_i
     }
 }
 
-fn tabTitles(tabs: []*TerminalPanel, buf: [][]const u8) []const []const u8 {
+fn tabTitles(tabs: []*TerminalContext, buf: [][]const u8) []const []const u8 {
     assert(buf.len >= tabs.len);
     for (tabs, 0..) |tab, i| buf[i] = tab.titleSlice();
     return buf[0..tabs.len];
 }
 
-fn pasteIntoActiveTab(tab: *TerminalPanel) void {
+fn pasteIntoActiveTab(tab: *TerminalContext) void {
     const text = Window.getClipboardText(std.heap.c_allocator) catch return;
     defer if (text) |buf| std.heap.c_allocator.free(buf);
     const payload = text orelse return;
@@ -1066,7 +1066,7 @@ fn setCurrentThreadName(name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(std.c.pthread_self(), name.ptr);
 }
 
-fn tabIndexInRange(tabs: []*TerminalPanel, idx: TabIndex) bool {
+fn tabIndexInRange(tabs: []*TerminalContext, idx: TabIndex) bool {
     return idx < tabs.len;
 }
 
@@ -1117,7 +1117,7 @@ test "tab slots preserve order on close semantics" {
 
 test "PTY publication admission keeps next turn non-blocking without present intent" {
     var admitted = false;
-    const input_outcome = TerminalPanel.DrainInputOutcome{
+    const input_outcome = TerminalContext.DrainInputOutcome{
         .published_to_pty = true,
         .host_visual_changed = false,
     };
@@ -1144,12 +1144,12 @@ test "forward terminal input drains text before pointer UI without present inten
             self.order_len.* += 1;
         }
 
-        fn drainTextInputFastPath(self: *@This(), _: *FakeInput) TerminalPanel.DrainInputOutcome {
+        fn drainTextInputFastPath(self: *@This(), _: *FakeInput) TerminalContext.DrainInputOutcome {
             self.append('t');
             return .{ .published_to_pty = true, .host_visual_changed = false };
         }
 
-        fn drainPointerAndUiInput(self: *@This(), _: *FakeInput, _: i32, _: i32, _: c_int, _: c_int) TerminalPanel.DrainInputOutcome {
+        fn drainPointerAndUiInput(self: *@This(), _: *FakeInput, _: i32, _: i32, _: c_int, _: c_int) TerminalContext.DrainInputOutcome {
             self.append('p');
             return .{ .published_to_pty = false, .host_visual_changed = false };
         }
@@ -1181,7 +1181,7 @@ test "forward terminal input drains text before pointer UI without present inten
 }
 
 test "host visual change can trigger present without PTY publication" {
-    const input_outcome = TerminalPanel.DrainInputOutcome{
+    const input_outcome = TerminalContext.DrainInputOutcome{
         .published_to_pty = false,
         .host_visual_changed = true,
     };

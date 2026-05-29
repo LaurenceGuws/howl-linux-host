@@ -53,7 +53,7 @@ const RealOps = struct {
 
 test "font size change keeps host state unchanged when render rejects update" {
     const FakeTerm = struct {};
-    const FakePanel = struct {
+    const FakeContext = struct {
         term: FakeTerm = .{},
         font_size_px: u16 = 12,
         default_font_size_px: u16 = 12,
@@ -64,14 +64,14 @@ test "font size change keeps host state unchanged when render rejects update" {
         }
     };
 
-    var panel = FakePanel{};
-    try std.testing.expect(!setWith(&panel, 14, FakeOps));
-    try std.testing.expectEqual(@as(u16, 12), panel.font_size_px);
+    var context = FakeContext{};
+    try std.testing.expect(!setWith(&context, 14, FakeOps));
+    try std.testing.expectEqual(@as(u16, 12), context.font_size_px);
 }
 
 test "font size change updates host state after render accepts update" {
     const FakeTerm = struct {};
-    const FakePanel = struct {
+    const FakeContext = struct {
         term: FakeTerm = .{},
         font_size_px: u16 = 12,
         default_font_size_px: u16 = 12,
@@ -82,7 +82,7 @@ test "font size change updates host state after render accepts update" {
         }
     };
 
-    var panel = FakePanel{};
-    try std.testing.expect(setWith(&panel, 14, FakeOps));
-    try std.testing.expectEqual(@as(u16, 14), panel.font_size_px);
+    var context = FakeContext{};
+    try std.testing.expect(setWith(&context, 14, FakeOps));
+    try std.testing.expectEqual(@as(u16, 14), context.font_size_px);
 }

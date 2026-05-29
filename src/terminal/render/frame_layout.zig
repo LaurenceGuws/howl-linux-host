@@ -47,60 +47,60 @@ pub fn init(render_width: c_int, render_height: c_int, logical_width: c_int, log
     };
 }
 
-pub fn resize(panel: anytype, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
+pub fn resize(context: anytype, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
     const rw = @max(render_width, 1);
     const rh = @max(render_height, 1);
     const lw = @max(logical_width, 1);
     const lh = @max(logical_height, 1);
-    panel.geometry.mutex.lock();
-    defer panel.geometry.mutex.unlock();
-    if (rw == panel.geometry.render_px_w and rh == panel.geometry.render_px_h and rw == panel.geometry.pending_grid_px_w and rh == panel.geometry.pending_grid_px_h and lw == panel.geometry.logical_w and lh == panel.geometry.logical_h) return;
-    panel.geometry.render_px_w = rw;
-    panel.geometry.render_px_h = rh;
-    panel.geometry.logical_w = lw;
-    panel.geometry.logical_h = lh;
+    context.geometry.mutex.lock();
+    defer context.geometry.mutex.unlock();
+    if (rw == context.geometry.render_px_w and rh == context.geometry.render_px_h and rw == context.geometry.pending_grid_px_w and rh == context.geometry.pending_grid_px_h and lw == context.geometry.logical_w and lh == context.geometry.logical_h) return;
+    context.geometry.render_px_w = rw;
+    context.geometry.render_px_h = rh;
+    context.geometry.logical_w = lw;
+    context.geometry.logical_h = lh;
     // Keep terminal grid geometry pixel-owned. SDL logical size can change with
     // scale/reporting quirks without a real framebuffer resize, and feeding that
     // into the PTY grid can falsely halve the visible row count.
-    panel.geometry.pending_grid_px_w = rw;
-    panel.geometry.pending_grid_px_h = rh;
-    panel.geometry.last_resize_ns = window.c_win.SDL_GetTicksNS();
-    viewport.invalidate(panel);
+    context.geometry.pending_grid_px_w = rw;
+    context.geometry.pending_grid_px_h = rh;
+    context.geometry.last_resize_ns = window.c_win.SDL_GetTicksNS();
+    viewport.invalidate(context);
 }
 
-pub fn maybeCommitGridResize(panel: anytype) void {
+pub fn maybeCommitGridResize(context: anytype) void {
     const frame_layout = blk: {
-        panel.geometry.mutex.lock();
-        defer panel.geometry.mutex.unlock();
-        if (panel.geometry.pending_grid_px_w == panel.geometry.grid_px_w and panel.geometry.pending_grid_px_h == panel.geometry.grid_px_h) return;
-        panel.geometry.grid_px_w = panel.geometry.pending_grid_px_w;
-        panel.geometry.grid_px_h = panel.geometry.pending_grid_px_h;
-        panel.geometry.last_resize_ns = 0;
-        break :blk snapshotFrameLayoutLocked(&panel.geometry);
+        context.geometry.mutex.lock();
+        defer context.geometry.mutex.unlock();
+        if (context.geometry.pending_grid_px_w == context.geometry.grid_px_w and context.geometry.pending_grid_px_h == context.geometry.grid_px_h) return;
+        context.geometry.grid_px_w = context.geometry.pending_grid_px_w;
+        context.geometry.grid_px_h = context.geometry.pending_grid_px_h;
+        context.geometry.last_resize_ns = 0;
+        break :blk snapshotFrameLayoutLocked(&context.geometry);
     };
-    syncFrameLayout(panel, frame_layout) catch return;
+    syncFrameLayout(context, frame_layout) catch return;
 }
 
-pub fn syncFrameLayout(panel: anytype, request: render_api.FrameLayoutRequest) !void {
-    const sync = try render_api.deriveFrameLayout(&panel.term, request);
+pub fn syncFrameLayout(context: anytype, request: render_api.FrameLayoutRequest) !void {
+    const sync = try render_api.deriveFrameLayout(&context.term, request);
     if (!sync.changed) return;
     if (sync.grid_changed) {
-        try pty_session.resize(&panel.term, sync.layout.cols, sync.layout.rows);
-        try vt_retained.resize(&panel.term, sync.layout.rows, sync.layout.cols);
+        try pty_session.resize(&context.term, sync.layout.cols, sync.layout.rows);
+        try vt_retained.resize(&context.term, sync.layout.rows, sync.layout.cols);
     }
-    try vt_retained.setCellPixelSize(&panel.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
-    render_api.commitFrameLayout(&panel.term, sync.layout);
+    try vt_retained.setCellPixelSize(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
+    render_api.commitFrameLayout(&context.term, sync.layout);
 }
 
-pub fn frameLayoutSnapshot(panel: anytype) render_api.FrameLayoutRequest {
-    panel.geometry.mutex.lock();
-    defer panel.geometry.mutex.unlock();
-    return snapshotFrameLayoutLocked(&panel.geometry);
+pub fn frameLayoutSnapshot(context: anytype) render_api.FrameLayoutRequest {
+    context.geometry.mutex.lock();
+    defer context.geometry.mutex.unlock();
+    return snapshotFrameLayoutLocked(&context.geometry);
 }
 
-pub fn syncCurrentFrameLayout(panel: anytype) bool {
-    const request = frameLayoutSnapshot(panel);
-    syncFrameLayout(panel, request) catch return false;
+pub fn syncCurrentFrameLayout(context: anytype) bool {
+    const request = frameLayoutSnapshot(context);
+    syncFrameLayout(context, request) catch return false;
     return true;
 }
 

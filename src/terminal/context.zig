@@ -48,7 +48,7 @@ const SelectionCell = struct {
     col: u16,
 };
 
-pub const TerminalPanel = struct {
+pub const Context = struct {
     pub const DrainInputOutcome = struct {
         published_to_pty: bool,
         host_visual_changed: bool,
@@ -98,7 +98,7 @@ pub const TerminalPanel = struct {
     cursor_blink_deadline_ns: u64,
 
     pub noinline fn init(
-        self: *TerminalPanel,
+        self: *Context,
         io: std.Io,
         input: *HostInput,
         feed_record_path: ?[]const u8,
@@ -114,7 +114,7 @@ pub const TerminalPanel = struct {
         try self.startRuntime(io, feed_record_path);
     }
 
-    noinline fn initial(self: *TerminalPanel, conf: *const TerminalConfig, input: *HostInput, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
+    noinline fn initial(self: *Context, conf: *const TerminalConfig, input: *HostInput, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
         const start_font_px = @max(conf.font_size, 1);
         self.term = undefined;
         self.progress = .{};
@@ -139,7 +139,7 @@ pub const TerminalPanel = struct {
         self.cursor_blink_deadline_ns = 0;
     }
 
-    pub fn deinit(self: *TerminalPanel) void {
+    pub fn deinit(self: *Context) void {
         if (self.link_cursor_active) window.useDefaultCursor();
         self.link_cursor_active = false;
         window.deleteTexture(&self.term_texture.host_surface_id);
@@ -162,29 +162,29 @@ pub const TerminalPanel = struct {
         self.progress.deinit();
     }
 
-    pub fn resize(self: *TerminalPanel, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
+    pub fn resize(self: *Context, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
         frame_layout.resize(self, render_width, render_height, logical_width, logical_height);
     }
 
-    pub fn maybeCommitGridResize(self: *TerminalPanel) void {
+    pub fn maybeCommitGridResize(self: *Context) void {
         frame_layout.maybeCommitGridResize(self);
     }
 
-    pub fn syncFrameLayout(self: *TerminalPanel, request: FrameLayoutRequest) !void {
+    pub fn syncFrameLayout(self: *Context, request: FrameLayoutRequest) !void {
         try frame_layout.syncFrameLayout(self, request);
     }
 
-    pub fn frameLayoutSnapshot(self: *TerminalPanel) FrameLayoutRequest {
+    pub fn frameLayoutSnapshot(self: *Context) FrameLayoutRequest {
         return frame_layout.frameLayoutSnapshot(self);
     }
 
-    pub fn paste(self: *TerminalPanel, payload: []const u8) void {
+    pub fn paste(self: *Context, payload: []const u8) void {
         term_input.publishPaste(&self.term, payload) catch return;
         _ = self.resetCursorBlinkActivity(InputWindow.nowNs());
     }
 
-    pub fn drainTextInputFastPath(self: *TerminalPanel, input_events: *HostInput) DrainInputOutcome {
-        return drainTextInputFastPathWith(self, input_events, TerminalPanelOps);
+    pub fn drainTextInputFastPath(self: *Context, input_events: *HostInput) DrainInputOutcome {
+        return drainTextInputFastPathWith(self, input_events, ContextOps);
     }
 
     fn drainTextInputFastPathWith(self: anytype, input_events: *HostInput, comptime Ops: type) DrainInputOutcome {
@@ -209,8 +209,8 @@ pub const TerminalPanel = struct {
         return outcome;
     }
 
-    pub fn drainPointerAndUiInput(self: *TerminalPanel, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) DrainInputOutcome {
-        return drainPointerAndUiInputWith(self, input_events, origin_x, origin_y, logical_width, logical_height, TerminalPanelOps);
+    pub fn drainPointerAndUiInput(self: *Context, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) DrainInputOutcome {
+        return drainPointerAndUiInputWith(self, input_events, origin_x, origin_y, logical_width, logical_height, ContextOps);
     }
 
     fn drainPointerAndUiInputWith(self: anytype, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, comptime Ops: type) DrainInputOutcome {
@@ -221,52 +221,52 @@ pub const TerminalPanel = struct {
         return outcome;
     }
 
-    pub fn handleScrollInput(self: *TerminalPanel, input_events: *HostInput) void {
+    pub fn handleScrollInput(self: *Context, input_events: *HostInput) void {
         viewport.handlePages(self, input_events);
     }
 
-    pub fn wantsPassiveHoverWake(self: *const TerminalPanel, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    pub fn wantsPassiveHoverWake(self: *const Context, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         return viewport.wantsPassiveHoverWake(self, origin_x, origin_y, logical_width, logical_height);
     }
 
     /// Report whether this terminal needs unpressed mouse motion for link hover.
-    pub fn wantsLinkHover(self: *const TerminalPanel) bool {
+    pub fn wantsLinkHover(self: *const Context) bool {
         return self.conf.links.hover != .off;
     }
 
-    pub fn wantsTerminalHoverReporting(self: *TerminalPanel) bool {
+    pub fn wantsTerminalHoverReporting(self: *Context) bool {
         if (!self.live) return false;
         return term_input.wouldReportUnpressedMouseMotion(&self.term);
     }
 
-    pub fn overlaySnapshot(self: *const TerminalPanel, texture_rect: window.Rect) OverlaySnapshot {
+    pub fn overlaySnapshot(self: *const Context, texture_rect: window.Rect) OverlaySnapshot {
         return .{
             .scrollbar = viewport.layout(@constCast(self), texture_rect),
         };
     }
 
-    pub fn lifecycleState(self: *const TerminalPanel) LifecycleState {
+    pub fn lifecycleState(self: *const Context) LifecycleState {
         return pty_session.lifecycleState(&self.term);
     }
 
-    pub fn isAlive(self: *const TerminalPanel) bool {
+    pub fn isAlive(self: *const Context) bool {
         return pty_session.isAlive(&self.term);
     }
 
-    pub fn ptySnapshot(self: *const TerminalPanel) pty_session.Snapshot {
+    pub fn ptySnapshot(self: *const Context) pty_session.Snapshot {
         return pty_session.snapshot(&self.term);
     }
 
-    pub fn sessionOutcome(self: *const TerminalPanel) pty_session.SessionOutcome {
+    pub fn sessionOutcome(self: *const Context) pty_session.SessionOutcome {
         return pty_session.outcome(&self.term);
     }
 
-    pub fn titleSlice(self: *TerminalPanel) []const u8 {
+    pub fn titleSlice(self: *Context) []const u8 {
         self.refreshTitle();
         return self.title_buf[0..self.title_len];
     }
 
-    pub fn refreshTitle(self: *TerminalPanel) void {
+    pub fn refreshTitle(self: *Context) void {
         self.title_len = @intCast(vt_retained.copyCurrentTitle(&self.term, self.title_buf[0..]));
         if (self.title_len != 0) return;
         const fallback = self.conf.command orelse self.conf.shell;
@@ -274,7 +274,7 @@ pub const TerminalPanel = struct {
         if (self.title_len != 0) @memcpy(self.title_buf[0..self.title_len], fallback[0..self.title_len]);
     }
 
-    pub fn setWindowFocused(self: *TerminalPanel, focused: bool) void {
+    pub fn setWindowFocused(self: *Context, focused: bool) void {
         if (self.window_focused == focused) return;
         self.window_focused = focused;
         if (!focused and clearHoveredLink(self)) self.input.requestRedraw();
@@ -282,7 +282,7 @@ pub const TerminalPanel = struct {
         self.syncInputFocus();
     }
 
-    pub fn setWidgetFocused(self: *TerminalPanel, focused: bool) void {
+    pub fn setWidgetFocused(self: *Context, focused: bool) void {
         if (self.widget_focused == focused) return;
         self.widget_focused = focused;
         if (!focused and clearHoveredLink(self)) self.input.requestRedraw();
@@ -290,51 +290,51 @@ pub const TerminalPanel = struct {
         self.syncInputFocus();
     }
 
-    pub fn syncInputFocus(self: *TerminalPanel) void {
+    pub fn syncInputFocus(self: *Context) void {
         _ = term_input.publishFocus(&self.term, self.window_focused and self.widget_focused) catch return;
     }
 
-    pub fn adjustFontSize(self: *TerminalPanel, delta: i16) bool {
+    pub fn adjustFontSize(self: *Context, delta: i16) bool {
         if (!font_size.adjust(self, delta)) return false;
         return frame_layout.syncCurrentFrameLayout(self);
     }
 
-    pub fn toggleStressFontSize(self: *TerminalPanel) bool {
+    pub fn toggleStressFontSize(self: *Context) bool {
         if (!font_size.toggleStress(self)) return false;
         return frame_layout.syncCurrentFrameLayout(self);
     }
 
-    pub fn resetFontSize(self: *TerminalPanel) bool {
+    pub fn resetFontSize(self: *Context) bool {
         if (!font_size.reset(self)) return false;
         return frame_layout.syncCurrentFrameLayout(self);
     }
 
-    pub fn wantsRenderTurn(self: *const TerminalPanel) bool {
+    pub fn wantsRenderTurn(self: *const Context) bool {
         return self.workState().wantsFrame();
     }
 
-    pub fn syncCursorBlinkCadence(self: *TerminalPanel, now_ns: u64) bool {
+    pub fn syncCursorBlinkCadence(self: *Context, now_ns: u64) bool {
         const plan = planCursorBlink(self.cursor_blink_visible, self.cursor_blink_deadline_ns, self.cursorBlinkShouldAnimate(), now_ns);
         self.cursor_blink_deadline_ns = plan.deadline_ns;
         if (!plan.changed) return false;
         return self.setCursorBlinkVisible(plan.visible);
     }
 
-    pub fn resetCursorBlinkActivity(self: *TerminalPanel, now_ns: u64) bool {
+    pub fn resetCursorBlinkActivity(self: *Context, now_ns: u64) bool {
         self.cursor_blink_deadline_ns = nextCursorBlinkDeadline(now_ns);
         return self.setCursorBlinkVisible(true);
     }
 
-    pub fn nextCursorBlinkWaitMs(self: *TerminalPanel, now_ns: u64) ?u32 {
+    pub fn nextCursorBlinkWaitMs(self: *Context, now_ns: u64) ?u32 {
         return cursorBlinkWaitMs(self.cursor_blink_deadline_ns, self.cursorBlinkShouldAnimate(), now_ns);
     }
 
-    pub fn runtimeObligationDueNow(self: *TerminalPanel, now_ns: u64) bool {
+    pub fn runtimeObligationDueNow(self: *Context, now_ns: u64) bool {
         const obligation = vt_retained.queryRuntimeObligation(&self.term, now_ns) catch return false;
         return obligation.pending_now;
     }
 
-    pub fn nextRuntimeObligationWaitMs(self: *TerminalPanel, now_ns: u64) ?u32 {
+    pub fn nextRuntimeObligationWaitMs(self: *Context, now_ns: u64) ?u32 {
         const obligation = vt_retained.queryRuntimeObligation(&self.term, now_ns) catch return null;
         if (obligation.pending_now or obligation.deadline_ns == 0) return null;
         const remaining_ns = obligation.deadline_ns -| now_ns;
@@ -342,7 +342,7 @@ pub const TerminalPanel = struct {
         return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
     }
 
-    pub fn driveProgress(self: *TerminalPanel, active: bool, now_ns: u64) pty_pump.Outcome {
+    pub fn driveProgress(self: *Context, active: bool, now_ns: u64) pty_pump.Outcome {
         if (!active and !pty_wait_thread.wakePending(self) and !self.runtimeObligationDueNow(now_ns)) {
             return .{ .keep = false, .should_redraw = false, .alive = pty_session.isAlive(&self.term) };
         }
@@ -357,7 +357,7 @@ pub const TerminalPanel = struct {
         return outcome;
     }
 
-    pub fn renderTurn(self: *TerminalPanel) TurnResult {
+    pub fn renderTurn(self: *Context) TurnResult {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         const publish_work = self.workState();
         self.maybePublishSource(bootstrap_surface, publish_work);
@@ -382,28 +382,28 @@ pub const TerminalPanel = struct {
         };
     }
 
-    pub fn notePresentSubmitted(self: *TerminalPanel, snapshot_seq: u64, token: u64) void {
+    pub fn notePresentSubmitted(self: *Context, snapshot_seq: u64, token: u64) void {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
         self.term.render.notePresentSubmitted(snapshot_seq, token);
     }
 
-    pub fn completePresent(self: *TerminalPanel, token: u64) void {
+    pub fn completePresent(self: *Context, token: u64) void {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
         completePresentLockedWith(&self.term, token, VtPresentAckOps);
     }
 
-    pub fn noteRenderTurn(self: *TerminalPanel, turn: TurnResult) void {
+    pub fn noteRenderTurn(self: *Context, turn: TurnResult) void {
         if (turn.step == .no_frame) return;
         if (turn.prepared and turn.step != .rendered) self.notePreparedStep(turn.work_after);
     }
 
-    pub fn termTextureId(self: *const TerminalPanel) u64 {
+    pub fn termTextureId(self: *const Context) u64 {
         return self.term_texture.host_surface_id;
     }
 
-    fn initTerm(self: *TerminalPanel) !void {
+    fn initTerm(self: *Context) !void {
         const frame_request = self.frameLayoutSnapshot();
         var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, self.conf.fonts);
         defer resolved_fonts.deinit(std.heap.c_allocator);
@@ -430,7 +430,7 @@ pub const TerminalPanel = struct {
         self.term.render.syncFrameLayout(term_init.frame_layout);
     }
 
-    fn startRuntime(self: *TerminalPanel, io: std.Io, feed_record_path: ?[]const u8) !void {
+    fn startRuntime(self: *Context, io: std.Io, feed_record_path: ?[]const u8) !void {
         try vt_retained.resetTitleFromLaunch(&self.term);
         _ = try feed_record.start(&self.term, io, feed_record_path);
         try pty_session.start(&self.term);
@@ -444,18 +444,18 @@ pub const TerminalPanel = struct {
         self.progress.thread = progress_thread;
     }
 
-    fn applyPendingClipboardWrites(self: *TerminalPanel) void {
+    fn applyPendingClipboardWrites(self: *Context) void {
         applyPendingClipboardWrite(&self.term, self.conf.clipboard.osc_52, WindowClipboardOps);
     }
 
-    fn workState(self: *const TerminalPanel) render_retained.WorkState {
-        const mut: *TerminalPanel = @constCast(self);
+    fn workState(self: *const Context) render_retained.WorkState {
+        const mut: *Context = @constCast(self);
         mut.term.mutex.lock();
         defer mut.term.mutex.unlock();
         return self.term.render.pending(self.term_texture.host_surface_id == 0);
     }
 
-    fn cursorBlinkShouldAnimate(self: *TerminalPanel) bool {
+    fn cursorBlinkShouldAnimate(self: *Context) bool {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
         return self.window_focused and
@@ -464,7 +464,7 @@ pub const TerminalPanel = struct {
             self.term.vt_state.cursor_blink;
     }
 
-    fn setCursorBlinkVisible(self: *TerminalPanel, visible: bool) bool {
+    fn setCursorBlinkVisible(self: *Context, visible: bool) bool {
         if (self.cursor_blink_visible == visible) return false;
         if (!render_api.setCursorBlinkVisible(&self.term, visible)) return false;
         self.cursor_blink_visible = visible;
@@ -511,7 +511,7 @@ pub const TerminalPanel = struct {
         idle_submit,
     };
 
-    fn driveRender(self: *TerminalPanel, work: render_retained.WorkState) DriveResult {
+    fn driveRender(self: *Context, work: render_retained.WorkState) DriveResult {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         std.debug.assert(work.bootstrap_surface == bootstrap_surface);
         return switch (renderAction(work, bootstrap_surface)) {
@@ -533,7 +533,7 @@ pub const TerminalPanel = struct {
         return .prepare_or_idle;
     }
 
-    fn maybePublishSource(self: *TerminalPanel, bootstrap_surface: bool, work: render_retained.WorkState) void {
+    fn maybePublishSource(self: *Context, bootstrap_surface: bool, work: render_retained.WorkState) void {
         self.maybeCommitGridResize();
         if (bootstrap_surface or !work.wantsFrame() or self.hover_publish_pending) {
             _ = vt_surface.publishSource(&self.term, hoverDecoration(self));
@@ -541,19 +541,19 @@ pub const TerminalPanel = struct {
         }
     }
 
-    fn prepare(self: *TerminalPanel) render_retained.PrepareResult {
+    fn prepare(self: *Context) render_retained.PrepareResult {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
         return self.term.render.prepare();
     }
 
-    fn takePreparedUpload(self: *TerminalPanel, upload_out: *render_retained.PreparedUpload) bool {
+    fn takePreparedUpload(self: *Context, upload_out: *render_retained.PreparedUpload) bool {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
         return self.term.render.preparedUpload(upload_out);
     }
 
-    fn submitPrepared(self: *TerminalPanel) SubmitPreparedResult {
+    fn submitPrepared(self: *Context) SubmitPreparedResult {
         const start_ns = window.c_win.SDL_GetTicksNS();
 
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
@@ -592,7 +592,7 @@ pub const TerminalPanel = struct {
         snapshot_seq: u64,
     };
 
-    fn submit(self: *TerminalPanel, execution: *const terminal_c.HowlRenderSurfaceExecutionInput, feedback: *terminal_c.HowlRenderSurfaceFeedback) render_retained.SubmitResult {
+    fn submit(self: *Context, execution: *const terminal_c.HowlRenderSurfaceExecutionInput, feedback: *terminal_c.HowlRenderSurfaceFeedback) render_retained.SubmitResult {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
         return self.term.render.submit(execution, feedback);
@@ -620,12 +620,12 @@ pub const TerminalPanel = struct {
         };
     }
 
-    fn notePreparedStep(self: *TerminalPanel, work: render_retained.WorkState) void {
+    fn notePreparedStep(self: *Context, work: render_retained.WorkState) void {
         _ = self;
         std.debug.assert(work.submit_pending or work.present_pending);
     }
 
-    fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) bool {
+    fn publishTerminalBytes(self: *Context, bytes: []const u8) bool {
         _ = vt_retained.followLiveBottom(&self.term);
         pty_session.publishInputBytes(&self.term, bytes) catch {
             return false;
@@ -633,7 +633,7 @@ pub const TerminalPanel = struct {
         return true;
     }
 
-    fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) bool {
+    fn publishTerminalKey(self: *Context, key: HostInput.Keys.Event) bool {
         const terminal_key = term_input.key(key.key) orelse return false;
         term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch {
             return false;
@@ -641,7 +641,7 @@ pub const TerminalPanel = struct {
         return true;
     }
 
-    fn publishTerminalMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+    fn publishTerminalMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
         return term_input.publishMouse(&self.term, .{
             .kind = term_input.mouseKind(mouse_event.kind),
             .button = term_input.mouseButton(mouse_event.button),
@@ -659,7 +659,7 @@ pub const TerminalPanel = struct {
         host_visual_changed: bool,
     };
 
-    fn handleHostLinkMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
+    fn handleHostLinkMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
         switch (mouse_event.kind) {
             .move => return .{ .consumed = false, .host_visual_changed = updateHoveredLinkCell(self, mouse_event) },
             .press => {
@@ -674,7 +674,7 @@ pub const TerminalPanel = struct {
         return .{ .consumed = false, .host_visual_changed = false };
     }
 
-    fn handleHostSelectionMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
+    fn handleHostSelectionMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
         switch (mouse_event.kind) {
             .press => {
                 if (mouse_event.button != .left or mouse_event.mods.ctrl) return .{ .consumed = false, .host_visual_changed = false };
@@ -715,7 +715,7 @@ pub const TerminalPanel = struct {
         }
     }
 
-    fn terminalOwnsMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+    fn terminalOwnsMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
         return term_input.wouldReportMouse(&self.term, .{
             .kind = term_input.mouseKind(mouse_event.kind),
             .button = term_input.mouseButton(mouse_event.button),
@@ -728,7 +728,7 @@ pub const TerminalPanel = struct {
         });
     }
 
-    fn updateHoveredLinkCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+    fn updateHoveredLinkCell(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
         if (self.conf.links.hover == .off or !mouse_event.mods.ctrl) {
             if (clearHoveredLink(self)) {
                 self.hover_publish_pending = true;
@@ -777,7 +777,7 @@ pub const TerminalPanel = struct {
         grab_offset: f32,
         scrollback_offset: u32,
 
-        fn capture(self: *TerminalPanel) ScrollVisualState {
+        fn capture(self: *Context) ScrollVisualState {
             return .{
                 .mouse_logical_x = self.scrollbar.mouse_logical_x,
                 .mouse_logical_y = self.scrollbar.mouse_logical_y,
@@ -788,24 +788,24 @@ pub const TerminalPanel = struct {
         }
     };
 
-    const TerminalPanelOps = struct {
-        fn resetCursorBlinkActivity(self: *TerminalPanel, now_ns: u64) bool {
+    const ContextOps = struct {
+        fn resetCursorBlinkActivity(self: *Context, now_ns: u64) bool {
             return self.resetCursorBlinkActivity(now_ns);
         }
 
-        fn publishTerminalBytes(self: *TerminalPanel, bytes: []const u8) bool {
+        fn publishTerminalBytes(self: *Context, bytes: []const u8) bool {
             return self.publishTerminalBytes(bytes);
         }
 
-        fn publishTerminalKey(self: *TerminalPanel, key: HostInput.Keys.Event) bool {
+        fn publishTerminalKey(self: *Context, key: HostInput.Keys.Event) bool {
             return self.publishTerminalKey(key);
         }
 
-        fn publishTerminalMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) bool {
+        fn publishTerminalMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
             return self.publishTerminalMouse(mouse_event);
         }
 
-        fn handleScrollMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) ScrollMouseOutcome {
+        fn handleScrollMouse(self: *Context, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) ScrollMouseOutcome {
             const before = ScrollVisualState.capture(self);
             const consumed = viewport.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
             const after = ScrollVisualState.capture(self);
@@ -816,11 +816,11 @@ pub const TerminalPanel = struct {
             return Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);
         }
 
-        fn clearHoveredLinkOp(self: *TerminalPanel) bool {
+        fn clearHoveredLinkOp(self: *Context) bool {
             return clearHoveredLink(self);
         }
 
-        fn handleWheelFallback(self: *TerminalPanel, local_mouse: HostInput.Mouse.Event) bool {
+        fn handleWheelFallback(self: *Context, local_mouse: HostInput.Mouse.Event) bool {
             const before = vt_retained.scrollState(&self.term).scrollback_offset;
             const delta: i32 = switch (local_mouse.button) {
                 .wheel_up => 3,
@@ -833,22 +833,22 @@ pub const TerminalPanel = struct {
             return before != after;
         }
 
-        fn handleHostSelectionMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
+        fn handleHostSelectionMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
             return self.handleHostSelectionMouse(mouse_event);
         }
 
-        fn handleHostLinkMouse(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
+        fn handleHostLinkMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
             return self.handleHostLinkMouse(mouse_event);
         }
     };
 
-    fn clearHoveredLink(self: *TerminalPanel) bool {
+    fn clearHoveredLink(self: *Context) bool {
         const had_hover = self.hovered_link_cell != null;
         self.hovered_link_cell = null;
         return syncLinkCursor(self, false) or had_hover;
     }
 
-    fn syncLinkCursor(self: *TerminalPanel, active: bool) bool {
+    fn syncLinkCursor(self: *Context, active: bool) bool {
         const wants_cursor = switch (self.conf.links.hover) {
             .cursor, .underline_and_cursor => active,
             .off, .underline => false,
@@ -863,21 +863,21 @@ pub const TerminalPanel = struct {
         return true;
     }
 
-    fn openLinkAtCell(self: *TerminalPanel, cell: HoveredLinkCell) bool {
+    fn openLinkAtCell(self: *Context, cell: HoveredLinkCell) bool {
         const uri = vt_retained.copyVisibleHyperlinkAt(&self.term, cell.row, cell.col) catch return false;
         const target = uri orelse return false;
         if (target.len == 0) return false;
         return window.openUrl(target);
     }
 
-    fn mouseEventCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) HoveredLinkCell {
+    fn mouseEventCell(self: *Context, mouse_event: HostInput.Mouse.Event) HoveredLinkCell {
         return .{
             .row = @intCast(render_api.pixelToRow(&self.term, mouse_event.pixel_y)),
             .col = render_api.pixelToCol(&self.term, mouse_event.pixel_x),
         };
     }
 
-    fn selectionEventCell(self: *TerminalPanel, mouse_event: HostInput.Mouse.Event) SelectionCell {
+    fn selectionEventCell(self: *Context, mouse_event: HostInput.Mouse.Event) SelectionCell {
         const row = render_api.pixelToRow(&self.term, mouse_event.pixel_y);
         const scrollback_offset: i32 = @intCast(self.term.vt_state.scrollback_offset);
         return .{
@@ -886,7 +886,7 @@ pub const TerminalPanel = struct {
         };
     }
 
-    fn hoverDecoration(self: *const TerminalPanel) ?vt_surface.HyperlinkHover {
+    fn hoverDecoration(self: *const Context) ?vt_surface.HyperlinkHover {
         const cell = self.hovered_link_cell orelse return null;
         if (!hoverShowsUnderline(self.conf.links.hover)) return null;
         return .{
@@ -927,7 +927,7 @@ pub const TerminalPanel = struct {
         };
     }
 
-    fn renderInit(self: *TerminalPanel, frame_request: render_api.FrameLayoutRequest, resolved_fonts: *const fonts_linux.ResolvedFonts) render_api.RenderInit {
+    fn renderInit(self: *Context, frame_request: render_api.FrameLayoutRequest, resolved_fonts: *const fonts_linux.ResolvedFonts) render_api.RenderInit {
         return .{
             .render_px = frame_request.render_px,
             .grid_px = frame_request.grid_px,
@@ -971,8 +971,8 @@ fn completePresentLockedWith(term: anytype, token: u64, comptime Ops: type) void
     Ops.ack(term, snapshot_seq);
 }
 
-fn handleTextInputFastPathEvent(self: anytype, event: HostInput.Event, comptime Ops: type) TerminalPanel.DrainInputOutcome {
-    var outcome: TerminalPanel.DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
+fn handleTextInputFastPathEvent(self: anytype, event: HostInput.Event, comptime Ops: type) Context.DrainInputOutcome {
+    var outcome: Context.DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
     switch (event) {
         .bytes => |bytes| {
             if (Ops.publishTerminalBytes(self, bytes.slice())) {
@@ -991,8 +991,8 @@ fn handleTextInputFastPathEvent(self: anytype, event: HostInput.Event, comptime 
     return outcome;
 }
 
-fn handlePointerAndUiInputEvent(self: anytype, event: HostInput.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, comptime Ops: type) TerminalPanel.DrainInputOutcome {
-    var outcome: TerminalPanel.DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
+fn handlePointerAndUiInputEvent(self: anytype, event: HostInput.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, comptime Ops: type) Context.DrainInputOutcome {
+    var outcome: Context.DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
     switch (event) {
         .bytes, .key => {},
         .mouse => |mouse_event| {
@@ -1037,7 +1037,7 @@ fn handlePointerAndUiInputEvent(self: anytype, event: HostInput.Event, origin_x:
     return outcome;
 }
 
-fn mergeDrainInputOutcome(total: *TerminalPanel.DrainInputOutcome, next: TerminalPanel.DrainInputOutcome) void {
+fn mergeDrainInputOutcome(total: *Context.DrainInputOutcome, next: Context.DrainInputOutcome) void {
     total.published_to_pty = total.published_to_pty or next.published_to_pty;
     total.host_visual_changed = total.host_visual_changed or next.host_visual_changed;
 }
@@ -1132,7 +1132,7 @@ test "pending VT clipboard write follows OSC 52 policy" {
 }
 
 test "cursor activity pushes blink deadline while visible" {
-    var panel = TerminalPanel{
+    var context = Context{
         .term = undefined,
         .progress = .{},
         .live = false,
@@ -1156,13 +1156,13 @@ test "cursor activity pushes blink deadline while visible" {
         .cursor_blink_deadline_ns = 0,
     };
 
-    try std.testing.expect(!panel.resetCursorBlinkActivity(1234));
-    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink_interval_ns, panel.cursor_blink_deadline_ns);
-    try std.testing.expect(panel.cursor_blink_visible);
+    try std.testing.expect(!context.resetCursorBlinkActivity(1234));
+    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink_interval_ns, context.cursor_blink_deadline_ns);
+    try std.testing.expect(context.cursor_blink_visible);
 }
 
 test "text input fast path publishes text without pointer or UI operations" {
-    const FakePanel = struct {
+    const FakeContext = struct {
         geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
         publish_bytes_ok: bool = false,
         publish_key_ok: bool = false,
@@ -1191,27 +1191,27 @@ test "text input fast path publishes text without pointer or UI operations" {
             selection_calls = 0;
         }
 
-        fn resetCursorBlinkActivity(self: *FakePanel, _: u64) bool {
+        fn resetCursorBlinkActivity(self: *FakeContext, _: u64) bool {
             blink_calls += 1;
             return self.blink_changed;
         }
 
-        fn publishTerminalBytes(self: *FakePanel, _: []const u8) bool {
+        fn publishTerminalBytes(self: *FakeContext, _: []const u8) bool {
             bytes_calls += 1;
             return self.publish_bytes_ok;
         }
 
-        fn publishTerminalKey(self: *FakePanel, _: HostInput.Keys.Event) bool {
+        fn publishTerminalKey(self: *FakeContext, _: HostInput.Keys.Event) bool {
             key_calls += 1;
             return self.publish_key_ok;
         }
 
-        fn publishTerminalMouse(self: *FakePanel, _: HostInput.Mouse.Event) bool {
+        fn publishTerminalMouse(self: *FakeContext, _: HostInput.Mouse.Event) bool {
             mouse_calls += 1;
             return self.publish_mouse_ok;
         }
 
-        fn handleScrollMouse(_: *FakePanel, _: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) TerminalPanel.ScrollMouseOutcome {
+        fn handleScrollMouse(_: *FakeContext, _: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) Context.ScrollMouseOutcome {
             scroll_calls += 1;
             return .{ .consumed = false, .host_visual_changed = false };
         }
@@ -1220,21 +1220,21 @@ test "text input fast path publishes text without pointer or UI operations" {
             return mouse_event;
         }
 
-        fn clearHoveredLink(self: *FakePanel) bool {
+        fn clearHoveredLink(self: *FakeContext) bool {
             hover_calls += 1;
             return self.clear_hover_changed;
         }
 
-        fn handleWheelFallback(self: *FakePanel, _: HostInput.Mouse.Event) bool {
+        fn handleWheelFallback(self: *FakeContext, _: HostInput.Mouse.Event) bool {
             return self.wheel_changed;
         }
 
-        fn handleHostSelectionMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+        fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
             selection_calls += 1;
             return .{ .consumed = false, .host_visual_changed = false };
         }
 
-        fn handleHostLinkMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+        fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
             hover_calls += 1;
             return .{ .consumed = false, .host_visual_changed = false };
         }
@@ -1244,8 +1244,8 @@ test "text input fast path publishes text without pointer or UI operations" {
     var bytes = std.mem.zeroes(HostInput.Keys.ByteInput);
     bytes.len = 1;
     bytes.buf[0] = 'a';
-    var bytes_panel = FakePanel{ .publish_bytes_ok = true, .blink_changed = true };
-    const bytes_outcome = handleTextInputFastPathEvent(&bytes_panel, .{ .bytes = bytes }, FakeOps);
+    var bytes_context = FakeContext{ .publish_bytes_ok = true, .blink_changed = true };
+    const bytes_outcome = handleTextInputFastPathEvent(&bytes_context, .{ .bytes = bytes }, FakeOps);
     try std.testing.expect(bytes_outcome.published_to_pty);
     try std.testing.expect(bytes_outcome.host_visual_changed);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.bytes_calls);
@@ -1256,7 +1256,7 @@ test "text input fast path publishes text without pointer or UI operations" {
     try std.testing.expectEqual(@as(u8, 0), FakeOps.selection_calls);
 
     FakeOps.reset();
-    var key_only = FakePanel{ .publish_key_ok = true };
+    var key_only = FakeContext{ .publish_key_ok = true };
     const key_outcome = handleTextInputFastPathEvent(&key_only, .{ .key = .{ .key = .up, .mods = .{} } }, FakeOps);
     try std.testing.expect(key_outcome.published_to_pty);
     try std.testing.expect(!key_outcome.host_visual_changed);
@@ -1268,8 +1268,8 @@ test "text input fast path publishes text without pointer or UI operations" {
     try std.testing.expectEqual(@as(u8, 0), FakeOps.selection_calls);
 
     FakeOps.reset();
-    var mouse_panel = FakePanel{};
-    const mouse_outcome = handleTextInputFastPathEvent(&mouse_panel, .{ .mouse = .{
+    var mouse_context = FakeContext{};
+    const mouse_outcome = handleTextInputFastPathEvent(&mouse_context, .{ .mouse = .{
         .kind = .move,
         .button = .none,
         .pixel_x = 2,
@@ -1290,7 +1290,7 @@ test "text input fast path publishes text without pointer or UI operations" {
 }
 
 test "text fast path compacts mixed input before pointer UI drain" {
-    const FakePanel = struct {
+    const FakeContext = struct {
         geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
         order: *[8]u8,
         order_len: *u8,
@@ -1302,28 +1302,28 @@ test "text fast path compacts mixed input before pointer UI drain" {
     };
 
     const FakeOps = struct {
-        fn resetCursorBlinkActivity(self: *FakePanel, _: u64) bool {
+        fn resetCursorBlinkActivity(self: *FakeContext, _: u64) bool {
             self.append('r');
             return false;
         }
 
-        fn publishTerminalBytes(self: *FakePanel, bytes: []const u8) bool {
+        fn publishTerminalBytes(self: *FakeContext, bytes: []const u8) bool {
             std.testing.expectEqualStrings("a", bytes) catch unreachable;
             self.append('b');
             return true;
         }
 
-        fn publishTerminalKey(self: *FakePanel, key: HostInput.Keys.Event) bool {
+        fn publishTerminalKey(self: *FakeContext, key: HostInput.Keys.Event) bool {
             std.testing.expectEqual(HostInput.Keys.Key.up, key.key) catch unreachable;
             self.append('k');
             return true;
         }
 
-        fn publishTerminalMouse(_: *FakePanel, _: HostInput.Mouse.Event) bool {
+        fn publishTerminalMouse(_: *FakeContext, _: HostInput.Mouse.Event) bool {
             unreachable;
         }
 
-        fn handleScrollMouse(self: *FakePanel, mouse_event: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) TerminalPanel.ScrollMouseOutcome {
+        fn handleScrollMouse(self: *FakeContext, mouse_event: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) Context.ScrollMouseOutcome {
             std.testing.expectEqual(HostInput.Mouse.Kind.move, mouse_event.kind) catch unreachable;
             self.append('p');
             return .{ .consumed = true, .host_visual_changed = false };
@@ -1333,19 +1333,19 @@ test "text fast path compacts mixed input before pointer UI drain" {
             unreachable;
         }
 
-        fn clearHoveredLinkOp(_: *FakePanel) bool {
+        fn clearHoveredLinkOp(_: *FakeContext) bool {
             unreachable;
         }
 
-        fn handleWheelFallback(_: *FakePanel, _: HostInput.Mouse.Event) bool {
+        fn handleWheelFallback(_: *FakeContext, _: HostInput.Mouse.Event) bool {
             unreachable;
         }
 
-        fn handleHostSelectionMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+        fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
             unreachable;
         }
 
-        fn handleHostLinkMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+        fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
             unreachable;
         }
     };
@@ -1371,8 +1371,8 @@ test "text fast path compacts mixed input before pointer UI drain" {
 
     var order: [8]u8 = undefined;
     var order_len: u8 = 0;
-    var panel = FakePanel{ .order = &order, .order_len = &order_len };
-    const text_outcome = TerminalPanel.drainTextInputFastPathWith(&panel, &input, FakeOps);
+    var context = FakeContext{ .order = &order, .order_len = &order_len };
+    const text_outcome = Context.drainTextInputFastPathWith(&context, &input, FakeOps);
     try std.testing.expect(text_outcome.published_to_pty);
     try std.testing.expect(!text_outcome.host_visual_changed);
     try std.testing.expectEqual(@as(u16, 1), input.input_events.len);
@@ -1381,7 +1381,7 @@ test "text fast path compacts mixed input before pointer UI drain" {
         else => return error.UnexpectedEvent,
     }
 
-    const pointer_outcome = TerminalPanel.drainPointerAndUiInputWith(&panel, &input, 0, 0, 80, 25, FakeOps);
+    const pointer_outcome = Context.drainPointerAndUiInputWith(&context, &input, 0, 0, 80, 25, FakeOps);
     try std.testing.expect(!pointer_outcome.published_to_pty);
     try std.testing.expect(!pointer_outcome.host_visual_changed);
     try std.testing.expectEqual(@as(u16, 0), input.input_events.len);
@@ -1389,7 +1389,7 @@ test "text fast path compacts mixed input before pointer UI drain" {
 }
 
 test "pointer UI drain keeps PTY publication separate from host visual mutation" {
-    const FakePanel = struct {
+    const FakeContext = struct {
         geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
         publish_mouse_ok: bool = false,
         blink_changed: bool = false,
@@ -1398,15 +1398,15 @@ test "pointer UI drain keeps PTY publication separate from host visual mutation"
     };
 
     const FakeOps = struct {
-        fn resetCursorBlinkActivity(self: *FakePanel, _: u64) bool {
+        fn resetCursorBlinkActivity(self: *FakeContext, _: u64) bool {
             return self.blink_changed;
         }
 
-        fn publishTerminalMouse(self: *FakePanel, _: HostInput.Mouse.Event) bool {
+        fn publishTerminalMouse(self: *FakeContext, _: HostInput.Mouse.Event) bool {
             return self.publish_mouse_ok;
         }
 
-        fn handleScrollMouse(_: *FakePanel, _: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) TerminalPanel.ScrollMouseOutcome {
+        fn handleScrollMouse(_: *FakeContext, _: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) Context.ScrollMouseOutcome {
             return .{ .consumed = false, .host_visual_changed = false };
         }
 
@@ -1414,24 +1414,24 @@ test "pointer UI drain keeps PTY publication separate from host visual mutation"
             return mouse_event;
         }
 
-        fn clearHoveredLinkOp(self: *FakePanel) bool {
+        fn clearHoveredLinkOp(self: *FakeContext) bool {
             return self.clear_hover_changed;
         }
 
-        fn handleWheelFallback(self: *FakePanel, _: HostInput.Mouse.Event) bool {
+        fn handleWheelFallback(self: *FakeContext, _: HostInput.Mouse.Event) bool {
             return self.wheel_changed;
         }
 
-        fn handleHostSelectionMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+        fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
             return .{ .consumed = false, .host_visual_changed = false };
         }
 
-        fn handleHostLinkMouse(_: *FakePanel, _: HostInput.Mouse.Event) TerminalPanel.MouseHandlingOutcome {
+        fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
             return .{ .consumed = false, .host_visual_changed = false };
         }
     };
 
-    var wheel_only = FakePanel{ .wheel_changed = true };
+    var wheel_only = FakeContext{ .wheel_changed = true };
     const wheel_outcome = handlePointerAndUiInputEvent(&wheel_only, .{ .mouse = .{
         .kind = .wheel,
         .button = .wheel_up,
@@ -1454,7 +1454,7 @@ test "present pending blocks submit path until host present ack" {
         .bootstrap_surface = false,
     };
 
-    try std.testing.expectEqual(TerminalPanel.RenderAction.blocked_present, TerminalPanel.renderAction(work, false));
+    try std.testing.expectEqual(Context.RenderAction.blocked_present, Context.renderAction(work, false));
 }
 
 test "submit path runs once no host present is in flight" {
@@ -1466,7 +1466,7 @@ test "submit path runs once no host present is in flight" {
         .bootstrap_surface = false,
     };
 
-    try std.testing.expectEqual(TerminalPanel.RenderAction.submit_pending, TerminalPanel.renderAction(work, false));
+    try std.testing.expectEqual(Context.RenderAction.submit_pending, Context.renderAction(work, false));
 }
 
 test "complete present acks matching host-owned token once and clears" {
