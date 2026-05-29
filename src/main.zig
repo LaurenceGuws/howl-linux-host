@@ -332,7 +332,8 @@ fn configureInputPolicies(app: *App) void {
         .terminal_hover = tab.wantsTerminalHoverReporting(),
     });
     app.input.setTerminalMousePolicy(.{
-        .bypass_mod = app.conf.term.mouse.bypass_mod,
+        .bypass_mod = app.conf.term
+            .mouse_bypass_mod,
     });
 }
 

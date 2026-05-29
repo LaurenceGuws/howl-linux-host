@@ -248,7 +248,7 @@ pub const Context = struct {
 
     /// Report whether this terminal needs unpressed mouse motion for link hover.
     pub fn wantsLinkHover(self: *const Context) bool {
-        return self.conf.links.hover != .off;
+        return self.conf.link_hover != .off;
     }
 
     pub fn wantsTerminalHoverReporting(self: *Context) bool {
@@ -462,7 +462,9 @@ pub const Context = struct {
     }
 
     fn applyPendingClipboardWrites(self: *Context) void {
-        applyPendingClipboardWrite(&self.term, self.conf.clipboard.osc_52, WindowClipboardOps);
+        const policy = self.conf
+            .clipboard_osc_52;
+        applyPendingClipboardWrite(&self.term, policy, WindowClipboardOps);
     }
 
     fn workState(self: *const Context) render_retained.WorkState {
@@ -680,7 +682,7 @@ pub const Context = struct {
         switch (mouse_event.kind) {
             .move => return .{ .consumed = false, .host_visual_changed = updateHoveredLinkCell(self, mouse_event) },
             .press => {
-                if (mouse_event.button == .left and mouse_event.mods.ctrl and self.conf.links.open == .system) {
+                if (mouse_event.button == .left and mouse_event.mods.ctrl and self.conf.link_open == .system) {
                     if (openLinkAtCell(self, mouseEventCell(self, mouse_event))) {
                         return .{ .consumed = true, .host_visual_changed = false };
                     }
@@ -746,7 +748,7 @@ pub const Context = struct {
     }
 
     fn updateHoveredLinkCell(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
-        if (self.conf.links.hover == .off or !mouse_event.mods.ctrl) {
+        if (self.conf.link_hover == .off or !mouse_event.mods.ctrl) {
             if (clearHoveredLink(self)) {
                 self.hover_publish_pending = true;
                 return true;
@@ -866,7 +868,7 @@ pub const Context = struct {
     }
 
     fn syncLinkCursor(self: *Context, active: bool) bool {
-        const wants_cursor = switch (self.conf.links.hover) {
+        const wants_cursor = switch (self.conf.link_hover) {
             .cursor, .underline_and_cursor => active,
             .off, .underline => false,
         };
@@ -905,11 +907,11 @@ pub const Context = struct {
 
     fn hoverDecoration(self: *const Context) ?vt_surface.HyperlinkHover {
         const cell = self.hovered_link_cell orelse return null;
-        if (!hoverShowsUnderline(self.conf.links.hover)) return null;
+        if (!hoverShowsUnderline(self.conf.link_hover)) return null;
         return .{
             .row = cell.row,
             .col = cell.col,
-            .underline_style = underlineStyleValue(self.conf.links.underline),
+            .underline_style = underlineStyleValue(self.conf.link_underline),
         };
     }
 
@@ -962,8 +964,8 @@ pub const Context = struct {
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
         const vt = try initVt(layout.rows, layout.cols, .{
             .default_cursor_style = .{
-                .shape = conf.cursor.style,
-                .blink = conf.cursor.blink,
+                .shape = conf.cursor_style,
+                .blink = conf.cursor_blink,
             },
         });
         errdefer if (vt) |handle| deinitVt(handle);

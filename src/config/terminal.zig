@@ -24,10 +24,6 @@ pub const ClipboardOsc52Policy = enum {
     allow,
 };
 
-pub const Clipboard = struct {
-    osc_52: ClipboardOsc52Policy = .deny,
-};
-
 pub const LinkOpenPolicy = enum {
     disabled,
     system,
@@ -47,25 +43,10 @@ pub const LinkUnderlineStyle = enum {
     dashed,
 };
 
-pub const Links = struct {
-    open: LinkOpenPolicy = .disabled,
-    hover: LinkHoverPolicy = .underline_and_cursor,
-    underline: LinkUnderlineStyle = .straight,
-};
-
-pub const MousePolicy = struct {
-    bypass_mod: Input.Mod = .{},
-};
-
 pub const CursorStyle = enum {
     block,
     underline,
     bar,
-};
-
-pub const Cursor = struct {
-    style: CursorStyle = .block,
-    blink: bool = true,
 };
 
 pub const Config = struct {
@@ -74,10 +55,13 @@ pub const Config = struct {
     command: ?[]u8,
     font_size: u16,
     fonts: FontStack,
-    cursor: Cursor,
-    clipboard: Clipboard,
-    links: Links,
-    mouse: MousePolicy,
+    cursor_style: CursorStyle,
+    cursor_blink: bool,
+    clipboard_osc_52: ClipboardOsc52Policy,
+    link_open: LinkOpenPolicy,
+    link_hover: LinkHoverPolicy,
+    link_underline: LinkUnderlineStyle,
+    mouse_bypass_mod: Input.Mod,
     bindings: Input.Bindings,
 
     pub fn load(alloc: std.mem.Allocator, reader: Lua.Reader) !Config {
@@ -107,10 +91,15 @@ pub const Config = struct {
             fonts_mut.deinit(alloc);
         }
 
-        const clipboard_policy = loadClipboardPolicy(reader);
-        const cursor = loadCursor(reader);
-        const links = loadLinkPolicies(reader);
-        const mouse = try loadMousePolicy(reader);
+        const clipboard_osc_52 = loadClipboardPolicy(reader);
+        const cursor_style = loadCursorStyle(reader);
+        const cursor_blink = loadCursorBlink(reader);
+        var links_child = reader.childTable("links");
+        defer if (links_child) |*child| child.finish();
+        const link_open = readLinkOpenPolicy(links_child);
+        const link_hover = readLinkHoverPolicy(links_child);
+        const link_underline = readLinkUnderlineStyle(links_child);
+        const mouse_bypass_mod = try loadMouseBypassModPolicy(reader);
 
         var bindings_child = reader.childTable("bindings");
         const bindings = if (bindings_child) |*child|
@@ -128,10 +117,13 @@ pub const Config = struct {
             .command = command,
             .font_size = @intCast(reader.intField("font_size") orelse 16),
             .fonts = fonts,
-            .cursor = cursor,
-            .clipboard = .{ .osc_52 = clipboard_policy },
-            .links = links,
-            .mouse = mouse,
+            .cursor_style = cursor_style,
+            .cursor_blink = cursor_blink,
+            .clipboard_osc_52 = clipboard_osc_52,
+            .link_open = link_open,
+            .link_hover = link_hover,
+            .link_underline = link_underline,
+            .mouse_bypass_mod = mouse_bypass_mod,
             .bindings = bindings,
         };
     }
@@ -243,36 +235,27 @@ fn loadClipboardPolicy(reader: Lua.Reader) ClipboardOsc52Policy {
     return .deny;
 }
 
-fn loadCursor(reader: Lua.Reader) Cursor {
+fn loadCursorStyle(reader: Lua.Reader) CursorStyle {
     var style_raw: ?[]u8 = null;
     reader.optionalStringOwned("cursor_style", &style_raw) catch {};
     defer if (style_raw) |owned| reader.allocator.free(owned);
-    return .{
-        .style = parseCursorStyle(style_raw orelse "block"),
-        .blink = reader.boolField("cursor_style_blink") orelse true,
-    };
+    return parseCursorStyle(style_raw orelse "block");
 }
 
-fn loadLinkPolicies(reader: Lua.Reader) Links {
-    var links_child = reader.childTable("links");
-    defer if (links_child) |*child| child.finish();
-    return .{
-        .open = readLinkOpenPolicy(links_child),
-        .hover = readLinkHoverPolicy(links_child),
-        .underline = readLinkUnderlineStyle(links_child),
-    };
+fn loadCursorBlink(reader: Lua.Reader) bool {
+    return reader.boolField("cursor_style_blink") orelse true;
 }
 
-fn loadMousePolicy(reader: Lua.Reader) !MousePolicy {
+fn loadMouseBypassModPolicy(reader: Lua.Reader) !Input.Mod {
     var mouse_child = reader.childTable("mouse");
     defer if (mouse_child) |*child| child.finish();
-    return .{ .bypass_mod = if (mouse_child) |*child| blk: {
+    return if (mouse_child) |*child| blk: {
         var raw: ?[]u8 = null;
         try child.view().optionalStringOwned("bypass_mod", &raw);
         defer if (raw) |owned| allocFreeViewString(child.view(), owned);
         if (raw) |value| break :blk try parseMouseBypassMod(value);
         break :blk Input.Mod{};
-    } else Input.Mod{} };
+    } else Input.Mod{};
 }
 
 fn loadPlainStringArrayField(alloc: std.mem.Allocator, parent: Lua.Reader, field: []const u8) ![]const []u8 {
