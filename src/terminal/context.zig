@@ -5,7 +5,9 @@ const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
 const term_texture = @import("../window/term_texture.zig");
 const HostInput = @import("../input/input.zig").Input;
-const terminal_c = @import("c.zig").c;
+const pty_c = @import("howl_pty_c");
+const render_c = @import("howl_render_c");
+const vt_c = @import("howl_vt_c");
 const pty_pump = @import("pty/pump.zig");
 const pty_wait_thread = @import("pty/wait_thread.zig");
 const fonts_linux = @import("render/fonts_linux.zig");
@@ -32,11 +34,11 @@ const terminal_scrollbar = @import("scrollbar.zig");
 const cursor_blink_interval_ms: u64 = 600;
 const cursor_blink_interval_ns: u64 = cursor_blink_interval_ms * std.time.ns_per_ms;
 const default_history_capacity: u16 = 4096;
-const max_fallback_font_paths: u8 = @intCast(terminal_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
+const max_fallback_font_paths: u8 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
 const RenderInit = struct {
-    render_px: terminal_c.HowlRenderPixelSize,
-    grid_px: terminal_c.HowlRenderPixelSize,
+    render_px: render_c.HowlRenderPixelSize,
+    grid_px: render_c.HowlRenderPixelSize,
     font_size_px: u16,
     primary_font_path: ?[:0]const u8 = null,
     fallback_font_paths: []const [:0]const u8 = &.{},
@@ -95,7 +97,7 @@ pub const Context = struct {
     term: HowlTerm,
     progress: pty_wait_thread.State = .{},
     live: bool,
-    term_texture: terminal_c.HowlRenderHostSurface,
+    term_texture: render_c.HowlRenderHostSurface,
     conf: *const TerminalConfig,
     input: *HostInput,
     title_buf: [128]u8,
@@ -589,8 +591,8 @@ pub const Context = struct {
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
 
-        var submit_result = std.mem.zeroes(terminal_c.HowlRenderSubmitResult);
-        const execution = terminal_c.HowlRenderSubmitExecution{
+        var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
+        const execution = render_c.HowlRenderSubmitExecution{
             .host_surface = .{
                 .host_surface_id = self.term_texture.host_surface_id,
                 .width = upload.info.render_px.width,
@@ -611,7 +613,7 @@ pub const Context = struct {
         snapshot_seq: u64,
     };
 
-    fn submit(self: *Context, execution: *const terminal_c.HowlRenderSubmitExecution, result: *terminal_c.HowlRenderSubmitResult) render_retained.SubmitResult {
+    fn submit(self: *Context, execution: *const render_c.HowlRenderSubmitExecution, result: *render_c.HowlRenderSubmitResult) render_retained.SubmitResult {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
         return self.term.render.submit(execution, result);
@@ -932,10 +934,10 @@ pub const Context = struct {
     }
 
     const TermInit = struct {
-        text_session: terminal_c.HowlRenderTextSessionHandle,
+        text_session: render_c.HowlRenderTextSessionHandle,
         surface_layout: render_retained.SurfaceLayout,
-        session: terminal_c.HowlPtySessionHandle,
-        vt: terminal_c.HowlVtHandle,
+        session: pty_c.HowlPtySessionHandle,
+        vt: vt_c.HowlVtHandle,
     };
 
     fn launchConfig(conf: *const TerminalConfig) pty_retained.LaunchConfig {
@@ -958,7 +960,7 @@ pub const Context = struct {
 
     fn initTermState(conf: *const TerminalConfig, launch: pty_retained.LaunchConfig, render_init: RenderInit) !TermInit {
         const text_session = try initTextSession(render_init);
-        errdefer if (text_session) |handle| terminal_c.howl_render_text_session_deinit(handle);
+        errdefer if (text_session) |handle| render_c.howl_render_text_session_deinit(handle);
         const layout = try initSurfaceLayout(text_session, render_init);
         const session_handle = try pty_session.initHandle(launch, layout.cols, layout.rows);
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
@@ -978,22 +980,22 @@ pub const Context = struct {
     }
 };
 
-fn initTextSession(render_init: RenderInit) !terminal_c.HowlRenderTextSessionHandle {
+fn initTextSession(render_init: RenderInit) !render_c.HowlRenderTextSessionHandle {
     assertRenderInit(render_init);
-    const text_session = terminal_c.howl_render_text_session_init(.{
+    const text_session = render_c.howl_render_text_session_init(.{
         .surface_px = render_init.render_px,
         .font_size_px = render_init.font_size_px,
     }) orelse return error.RendererInitFailed;
-    errdefer terminal_c.howl_render_text_session_deinit(text_session);
+    errdefer render_c.howl_render_text_session_deinit(text_session);
     if (!applyPrimaryFontPath(text_session, render_init.primary_font_path)) return error.RenderConfigFailed;
     if (!applyFallbackFontPaths(text_session, render_init.fallback_font_paths)) return error.RenderConfigFailed;
     if (!renderFontValid(text_session)) return error.RenderConfigFailed;
     return text_session;
 }
 
-fn initSurfaceLayout(text_session: terminal_c.HowlRenderTextSessionHandle, render_init: RenderInit) !render_retained.SurfaceLayout {
-    const layout = terminal_c.howl_render_text_session_derive_layout(text_session, render_init.render_px, render_init.grid_px);
-    if (layout.status != terminal_c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
+fn initSurfaceLayout(text_session: render_c.HowlRenderTextSessionHandle, render_init: RenderInit) !render_retained.SurfaceLayout {
+    const layout = render_c.howl_render_text_session_derive_layout(text_session, render_init.render_px, render_init.grid_px);
+    if (layout.status != render_c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     return .{
         .render_px = render_init.render_px,
         .grid_px = render_init.grid_px,
@@ -1003,10 +1005,10 @@ fn initSurfaceLayout(text_session: terminal_c.HowlRenderTextSessionHandle, rende
     };
 }
 
-fn initVt(rows: u16, cols: u16, options: VtInitOptions) !terminal_c.HowlVtHandle {
+fn initVt(rows: u16, cols: u16, options: VtInitOptions) !vt_c.HowlVtHandle {
     std.debug.assert(rows > 0);
     std.debug.assert(cols > 0);
-    const handle = terminal_c.howl_vt_terminal_init_with_options(rows, cols, default_history_capacity, .{
+    const handle = vt_c.howl_vt_terminal_init_with_options(rows, cols, default_history_capacity, .{
         .default_cursor_style = .{
             .shape = switch (options.default_cursor_style.shape) {
                 .block => 0,
@@ -1020,15 +1022,15 @@ fn initVt(rows: u16, cols: u16, options: VtInitOptions) !terminal_c.HowlVtHandle
     return handle;
 }
 
-fn deinitVt(handle: terminal_c.HowlVtHandle) void {
+fn deinitVt(handle: vt_c.HowlVtHandle) void {
     std.debug.assert(handle != null);
-    terminal_c.howl_vt_terminal_deinit(handle);
+    vt_c.howl_vt_terminal_deinit(handle);
 }
 
 fn setRenderCursorBlinkVisible(term: *HowlTerm, visible: bool) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    return renderCallOk(terminal_c.howl_render_text_session_set_cursor_blink_visible(term.render.text_session, @intFromBool(visible)));
+    return renderCallOk(render_c.howl_render_text_session_set_cursor_blink_visible(term.render.text_session, @intFromBool(visible)));
 }
 
 fn pixelToCol(term: *const HowlTerm, pixel_x: i32) u16 {
@@ -1058,28 +1060,28 @@ fn assertRenderInit(render_init: RenderInit) void {
     std.debug.assert(render_init.fallback_font_paths.len <= max_fallback_font_paths);
 }
 
-fn applyPrimaryFontPath(text_session: terminal_c.HowlRenderTextSessionHandle, font_path: ?[:0]const u8) bool {
-    const path = font_path orelse return renderCallOk(terminal_c.howl_render_text_session_set_font_path(text_session, null, 0));
-    if (path.len == 0) return renderCallOk(terminal_c.howl_render_text_session_set_font_path(text_session, null, 0));
-    return renderCallOk(terminal_c.howl_render_text_session_set_font_path(text_session, path.ptr, path.len));
+fn applyPrimaryFontPath(text_session: render_c.HowlRenderTextSessionHandle, font_path: ?[:0]const u8) bool {
+    const path = font_path orelse return renderCallOk(render_c.howl_render_text_session_set_font_path(text_session, null, 0));
+    if (path.len == 0) return renderCallOk(render_c.howl_render_text_session_set_font_path(text_session, null, 0));
+    return renderCallOk(render_c.howl_render_text_session_set_font_path(text_session, path.ptr, path.len));
 }
 
-fn applyFallbackFontPaths(text_session: terminal_c.HowlRenderTextSessionHandle, paths: []const [:0]const u8) bool {
+fn applyFallbackFontPaths(text_session: render_c.HowlRenderTextSessionHandle, paths: []const [:0]const u8) bool {
     std.debug.assert(paths.len <= max_fallback_font_paths);
-    if (paths.len == 0) return renderCallOk(terminal_c.howl_render_text_session_set_fallback_font_paths(text_session, null, 0));
+    if (paths.len == 0) return renderCallOk(render_c.howl_render_text_session_set_fallback_font_paths(text_session, null, 0));
     const path_count: u8 = @intCast(paths.len);
     var raw: [max_fallback_font_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_fallback_font_paths;
     var index: u8 = 0;
     while (index < path_count) : (index += 1) raw[index] = paths[index].ptr;
-    return renderCallOk(terminal_c.howl_render_text_session_set_fallback_font_paths(text_session, &raw, path_count));
+    return renderCallOk(render_c.howl_render_text_session_set_fallback_font_paths(text_session, &raw, path_count));
 }
 
-fn renderFontValid(text_session: terminal_c.HowlRenderTextSessionHandle) bool {
-    return renderCallOk(terminal_c.howl_render_text_session_is_valid_font(text_session));
+fn renderFontValid(text_session: render_c.HowlRenderTextSessionHandle) bool {
+    return renderCallOk(render_c.howl_render_text_session_is_valid_font(text_session));
 }
 
 fn renderCallOk(status: i32) bool {
-    return status == terminal_c.HOWL_RENDER_CALL_OK;
+    return status == render_c.HOWL_RENDER_CALL_OK;
 }
 
 const VtPresentAckOps = struct {

@@ -1,9 +1,10 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const render_c = @import("howl_render_c");
+const vt_c = @import("howl_vt_c");
 const terminal_term = @import("../term.zig");
 
-const damage_none: u8 = @intCast(c.HOWL_RENDER_DAMAGE_NONE);
-const damage_partial: u8 = @intCast(c.HOWL_RENDER_DAMAGE_PARTIAL);
+const damage_none: u8 = @intCast(render_c.HOWL_RENDER_DAMAGE_NONE);
+const damage_partial: u8 = @intCast(render_c.HOWL_RENDER_DAMAGE_PARTIAL);
 
 pub const HyperlinkHover = struct {
     row: u16,
@@ -31,9 +32,9 @@ pub const VisibleCopy = struct {
     history_count: u32,
     scroll_row: u64,
     snapshot_seq: u64,
-    cursor: c.HowlVtCursor,
-    colors: c.HowlVtRenderColorState,
-    selection: c.HowlVtSelection,
+    cursor: vt_c.HowlVtCursor,
+    colors: vt_c.HowlVtRenderColorState,
+    selection: vt_c.HowlVtSelection,
 
     fn deinit(self: *VisibleCopy, allocator: std.mem.Allocator) void {
         _ = allocator;
@@ -42,23 +43,23 @@ pub const VisibleCopy = struct {
 };
 
 const ReservedVtSurfaceSlot = struct {
-    cells: []c.HowlRenderSourceCell,
+    cells: []render_c.HowlRenderSourceCell,
     dirty_rows: []u8,
     dirty_cols_start: []u16,
     dirty_cols_end: []u16,
 };
 
 const PublishAckOps = struct {
-    fn ack(handle: c.HowlVtHandle, snapshot_seq: u64) i32 {
-        return c.howl_vt_terminal_ack_surface(handle, snapshot_seq);
+    fn ack(handle: vt_c.HowlVtHandle, snapshot_seq: u64) i32 {
+        return vt_c.howl_vt_terminal_ack_surface(handle, snapshot_seq);
     }
 };
 
-pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) c.HowlRenderVtSurfacePublishResult {
+pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) render_c.HowlRenderVtSurfacePublishResult {
     return publishSourceWith(term, hover, RealOps);
 }
 
-fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) c.HowlRenderVtSurfacePublishResult {
+fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) render_c.HowlRenderVtSurfacePublishResult {
     term.mutex.lock();
     defer term.mutex.unlock();
 
@@ -74,7 +75,7 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     term.vt_state.cursor_blink = visible.cursor.blink != 0;
 
     const typed_response = Ops.commitVtSurface(term.render.text_session, visible);
-    if (typed_response.status != c.HOWL_RENDER_CALL_OK) {
+    if (typed_response.status != render_c.HOWL_RENDER_CALL_OK) {
         std.debug.panic(
             "render publish rejected: status={d} published={d} queued={d} damage={d} snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} rows={d} cols={d} history={d} scroll_row={d}",
             .{
@@ -98,29 +99,29 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
 }
 
 const RealOps = struct {
-    fn visibleMeta(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
+    fn visibleMeta(handle: vt_c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
         return vtVisibleMeta(handle, scrollback_offset);
     }
 
-    fn reserveSlot(handle: c.HowlRenderTextSessionHandle, cols: u16, rows: u16) !ReservedVtSurfaceSlot {
+    fn reserveSlot(handle: render_c.HowlRenderTextSessionHandle, cols: u16, rows: u16) !ReservedVtSurfaceSlot {
         return reserveVtSurfaceSlot(handle, cols, rows);
     }
 
-    fn acquireVisible(allocator: std.mem.Allocator, vt_state: anytype, handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedVtSurfaceSlot) !VisibleCopy {
+    fn acquireVisible(allocator: std.mem.Allocator, vt_state: anytype, handle: vt_c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, slot: ReservedVtSurfaceSlot) !VisibleCopy {
         const vt_cells = try vt_state.ensureSurfaceCellScratch(allocator, meta.cols, meta.rows);
         return vtAcquireVisibleIntoSlot(handle, scrollback_offset, meta, vt_cells, slot);
     }
 
-    fn commitVtSurface(handle: c.HowlRenderTextSessionHandle, visible: VisibleCopy) c.HowlRenderVtSurfacePublishResult {
-        return c.howl_render_text_session_commit_vt_surface(handle, vtSurfaceCommit(visible));
+    fn commitVtSurface(handle: render_c.HowlRenderTextSessionHandle, visible: VisibleCopy) render_c.HowlRenderVtSurfacePublishResult {
+        return render_c.howl_render_text_session_commit_vt_surface(handle, vtSurfaceCommit(visible));
     }
 
-    fn rejectPublish(handle: c.HowlRenderTextSessionHandle, snapshot_seq: u64) c.HowlRenderVtSurfacePublishResult {
+    fn rejectPublish(handle: render_c.HowlRenderTextSessionHandle, snapshot_seq: u64) render_c.HowlRenderVtSurfacePublishResult {
         return rejectPublishSource(handle, snapshot_seq);
     }
 };
 
-fn vtSurfaceCommit(visible: VisibleCopy) c.HowlRenderVtSurfaceCommit {
+fn vtSurfaceCommit(visible: VisibleCopy) render_c.HowlRenderVtSurfaceCommit {
     return .{
         .history_count = visible.history_count,
         .scroll_row = visible.scroll_row,
@@ -143,16 +144,16 @@ fn ackPublishedSourceLockedWith(term: anytype, snapshot_seq: u64, comptime Ops: 
     requireVtStructOk(Ops.ack(term.vt, snapshot_seq));
 }
 
-fn rejectPublishSource(handle: c.HowlRenderTextSessionHandle, snapshot_seq: u64) c.HowlRenderVtSurfacePublishResult {
-    const result = c.howl_render_text_session_reject_vt_surface(handle, snapshot_seq);
-    std.debug.assert(result.status == c.HOWL_RENDER_CALL_FAILED);
+fn rejectPublishSource(handle: render_c.HowlRenderTextSessionHandle, snapshot_seq: u64) render_c.HowlRenderVtSurfacePublishResult {
+    const result = render_c.howl_render_text_session_reject_vt_surface(handle, snapshot_seq);
+    std.debug.assert(result.status == render_c.HOWL_RENDER_CALL_FAILED);
     std.debug.assert(result.published == 0);
     std.debug.assert(result.queued == 0);
     std.debug.assert(result.damage_kind == damage_none);
     return result;
 }
 
-pub fn vtVisibleInfo(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
+pub fn vtVisibleInfo(handle: vt_c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
     const meta = vtVisibleMeta(handle, scrollback_offset);
     return .{
         .rows = meta.rows,
@@ -173,9 +174,9 @@ const VisibleMeta = struct {
     dirty_generation: u64,
 };
 
-fn vtVisibleMeta(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
+fn vtVisibleMeta(handle: vt_c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
     std.debug.assert(handle != null);
-    const view = c.howl_vt_terminal_query_visible_meta(handle, scrollback_offset);
+    const view = vt_c.howl_vt_terminal_query_visible_meta(handle, scrollback_offset);
     requireVtStructOk(view.status);
     std.debug.assert(scrollback_offset <= view.meta.history_count);
     return .{
@@ -188,9 +189,9 @@ fn vtVisibleMeta(handle: c.HowlVtHandle, scrollback_offset: u32) VisibleMeta {
     };
 }
 
-fn reserveVtSurfaceSlot(handle: c.HowlRenderTextSessionHandle, cols: u16, rows: u16) !ReservedVtSurfaceSlot {
-    var slot = std.mem.zeroes(c.HowlRenderVtSurfaceSlot);
-    try renderCallOk(c.howl_render_text_session_reserve_vt_surface_slot(handle, cols, rows, &slot));
+fn reserveVtSurfaceSlot(handle: render_c.HowlRenderTextSessionHandle, cols: u16, rows: u16) !ReservedVtSurfaceSlot {
+    var slot = std.mem.zeroes(render_c.HowlRenderVtSurfaceSlot);
+    try renderCallOk(render_c.howl_render_text_session_reserve_vt_surface_slot(handle, cols, rows, &slot));
     const cell_count = cellCount(rows, cols);
     if (slot.cells.ptr == null or slot.cells.len != cell_count) return error.InvalidVtSurfaceSlot;
     if (slot.dirty_rows.ptr == null or slot.dirty_rows.len != rows) return error.InvalidVtSurfaceSlot;
@@ -204,13 +205,13 @@ fn reserveVtSurfaceSlot(handle: c.HowlRenderTextSessionHandle, cols: u16, rows: 
     };
 }
 
-fn vtAcquireVisibleIntoSlot(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, vt_cells: []c.HowlVtSurfaceCell, slot: ReservedVtSurfaceSlot) !VisibleCopy {
+fn vtAcquireVisibleIntoSlot(handle: vt_c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, vt_cells: []vt_c.HowlVtSurfaceCell, slot: ReservedVtSurfaceSlot) !VisibleCopy {
     return vtAcquireVisibleIntoSlotWith(handle, scrollback_offset, meta, vt_cells, slot, RealAcquireOps);
 }
 
 const RealAcquireOps = struct {
-    fn copySurface(handle: c.HowlVtHandle, scrollback_offset: u32, vt_cells: []c.HowlVtSurfaceCell, slot: ReservedVtSurfaceSlot) c.HowlVtSurfaceResult {
-        return c.howl_vt_terminal_copy_surface(
+    fn copySurface(handle: vt_c.HowlVtHandle, scrollback_offset: u32, vt_cells: []vt_c.HowlVtSurfaceCell, slot: ReservedVtSurfaceSlot) vt_c.HowlVtSurfaceResult {
+        return vt_c.howl_vt_terminal_copy_surface(
             handle,
             scrollback_offset,
             vt_cells.ptr,
@@ -225,7 +226,7 @@ const RealAcquireOps = struct {
     }
 };
 
-fn vtAcquireVisibleIntoSlotWith(handle: c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, vt_cells: []c.HowlVtSurfaceCell, slot: ReservedVtSurfaceSlot, comptime Ops: type) !VisibleCopy {
+fn vtAcquireVisibleIntoSlotWith(handle: vt_c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, vt_cells: []vt_c.HowlVtSurfaceCell, slot: ReservedVtSurfaceSlot, comptime Ops: type) !VisibleCopy {
     std.debug.assert(vt_cells.len == slot.cells.len);
     const source = Ops.copySurface(handle, scrollback_offset, vt_cells, slot);
     try requireVtOk(source.status);
@@ -249,14 +250,14 @@ fn vtAcquireVisibleIntoSlotWith(handle: c.HowlVtHandle, scrollback_offset: u32, 
     };
 }
 
-fn renderCellsFromVt(vt_cells: []const c.HowlVtSurfaceCell, render_cells: []c.HowlRenderSourceCell) void {
+fn renderCellsFromVt(vt_cells: []const vt_c.HowlVtSurfaceCell, render_cells: []render_c.HowlRenderSourceCell) void {
     std.debug.assert(vt_cells.len == render_cells.len);
     for (vt_cells, render_cells) |vt_cell, *render_cell| {
         render_cell.* = renderCellFromVt(vt_cell);
     }
 }
 
-fn renderCellFromVt(value: c.HowlVtSurfaceCell) c.HowlRenderSourceCell {
+fn renderCellFromVt(value: vt_c.HowlVtSurfaceCell) render_c.HowlRenderSourceCell {
     return .{
         .codepoint = value.codepoint,
         .combining_len = value.combining_len,
@@ -282,7 +283,7 @@ fn renderCellFromVt(value: c.HowlVtSurfaceCell) c.HowlRenderSourceCell {
     };
 }
 
-fn renderCellAttrsFromVt(value: c.HowlVtSurfaceCellAttrs) c.HowlRenderSourceCellAttrs {
+fn renderCellAttrsFromVt(value: vt_c.HowlVtSurfaceCellAttrs) render_c.HowlRenderSourceCellAttrs {
     return .{
         .bold = value.bold,
         .dim = value.dim,
@@ -297,11 +298,11 @@ fn renderCellAttrsFromVt(value: c.HowlVtSurfaceCellAttrs) c.HowlRenderSourceCell
     };
 }
 
-fn renderColorFromVt(value: c.HowlVtColor) c.HowlRenderSourceColor {
+fn renderColorFromVt(value: vt_c.HowlVtColor) render_c.HowlRenderSourceColor {
     return .{ .kind = value.kind, .reserved0 = 0, .reserved1 = 0, .reserved2 = 0, .value = value.value };
 }
 
-fn renderCursorFromVt(value: c.HowlVtCursor) c.HowlRenderSourceCursor {
+fn renderCursorFromVt(value: vt_c.HowlVtCursor) render_c.HowlRenderSourceCursor {
     return .{
         .row = value.row,
         .col = value.col,
@@ -312,8 +313,8 @@ fn renderCursorFromVt(value: c.HowlVtCursor) c.HowlRenderSourceCursor {
     };
 }
 
-fn renderColorsFromVt(value: c.HowlVtRenderColorState) c.HowlRenderSourceColors {
-    var palette: [256]c.HowlRenderSourceRgb = undefined;
+fn renderColorsFromVt(value: vt_c.HowlVtRenderColorState) render_c.HowlRenderSourceColors {
+    var palette: [256]render_c.HowlRenderSourceRgb = undefined;
     for (value.palette, 0..) |color, index| {
         palette[index] = renderRgbFromVt(color);
     }
@@ -325,11 +326,11 @@ fn renderColorsFromVt(value: c.HowlVtRenderColorState) c.HowlRenderSourceColors 
     };
 }
 
-fn renderRgbFromVt(value: c.HowlVtRgb8) c.HowlRenderSourceRgb {
+fn renderRgbFromVt(value: vt_c.HowlVtRgb8) render_c.HowlRenderSourceRgb {
     return .{ .r = value.r, .g = value.g, .b = value.b };
 }
 
-fn renderSelectionFromVt(value: c.HowlVtSelection) c.HowlRenderSourceSelection {
+fn renderSelectionFromVt(value: vt_c.HowlVtSelection) render_c.HowlRenderSourceSelection {
     return .{
         .active = value.active,
         .selecting = value.selecting,
@@ -339,21 +340,21 @@ fn renderSelectionFromVt(value: c.HowlVtSelection) c.HowlRenderSourceSelection {
     };
 }
 
-fn renderSelectionPosFromVt(value: c.HowlVtSelectionPos) c.HowlRenderSourceSelectionPos {
+fn renderSelectionPosFromVt(value: vt_c.HowlVtSelectionPos) render_c.HowlRenderSourceSelectionPos {
     return .{ .row = value.row, .col = value.col, .reserved0 = 0 };
 }
 
 fn renderCallOk(status: i32) !void {
-    if (status != c.HOWL_RENDER_CALL_OK) return error.RenderCallFailed;
+    if (status != render_c.HOWL_RENDER_CALL_OK) return error.RenderCallFailed;
 }
 
 fn requireVtOk(status: i32) !void {
-    if (status == c.HOWL_VT_CALL_OK) return;
+    if (status == vt_c.HOWL_VT_CALL_OK) return;
     return error.VtCallFailed;
 }
 
 fn requireVtStructOk(status: i32) void {
-    std.debug.assert(status == c.HOWL_VT_CALL_OK);
+    std.debug.assert(status == vt_c.HOWL_VT_CALL_OK);
 }
 
 fn applyHyperlinkHover(slot: ReservedVtSurfaceSlot, rows: u16, cols: u16, hover: HyperlinkHover) void {
@@ -393,7 +394,7 @@ fn markDirtyRange(slot: ReservedVtSurfaceSlot, cols: u16, first: usize, last: us
     }
 }
 
-fn recordPublishedSnapshot(visible: VisibleCopy, typed_response: c.HowlRenderVtSurfacePublishResult) void {
+fn recordPublishedSnapshot(visible: VisibleCopy, typed_response: render_c.HowlRenderVtSurfacePublishResult) void {
     if (typed_response.published != 0) {
         std.debug.assert(typed_response.queued != 0);
         std.debug.assert(typed_response.damage_kind != damage_none);
@@ -411,15 +412,15 @@ fn zeroVisibleCopy(snapshot_seq: u64) VisibleCopy {
         .history_count = 0,
         .scroll_row = 0,
         .snapshot_seq = snapshot_seq,
-        .cursor = std.mem.zeroes(c.HowlVtCursor),
-        .colors = std.mem.zeroes(c.HowlVtRenderColorState),
-        .selection = std.mem.zeroes(c.HowlVtSelection),
+        .cursor = std.mem.zeroes(vt_c.HowlVtCursor),
+        .colors = std.mem.zeroes(vt_c.HowlVtRenderColorState),
+        .selection = std.mem.zeroes(vt_c.HowlVtSelection),
     };
 }
 
 test "publish forwards vt snapshot sequence" {
     recordPublishedSnapshot(zeroVisibleCopy(9), .{
-        .status = c.HOWL_RENDER_CALL_OK,
+        .status = render_c.HOWL_RENDER_CALL_OK,
         .published = 1,
         .queued = 1,
         .damage_kind = damage_partial,
@@ -429,7 +430,7 @@ test "publish forwards vt snapshot sequence" {
     });
 
     recordPublishedSnapshot(zeroVisibleCopy(11), .{
-        .status = c.HOWL_RENDER_CALL_FAILED,
+        .status = render_c.HOWL_RENDER_CALL_FAILED,
         .published = 0,
         .queued = 0,
         .damage_kind = damage_none,
@@ -440,11 +441,11 @@ test "publish forwards vt snapshot sequence" {
 }
 
 test "hover decoration underlines the hovered hyperlink span" {
-    var cells = [_]c.HowlRenderSourceCell{
-        std.mem.zeroes(c.HowlRenderSourceCell),
-        std.mem.zeroes(c.HowlRenderSourceCell),
-        std.mem.zeroes(c.HowlRenderSourceCell),
-        std.mem.zeroes(c.HowlRenderSourceCell),
+    var cells = [_]render_c.HowlRenderSourceCell{
+        std.mem.zeroes(render_c.HowlRenderSourceCell),
+        std.mem.zeroes(render_c.HowlRenderSourceCell),
+        std.mem.zeroes(render_c.HowlRenderSourceCell),
+        std.mem.zeroes(render_c.HowlRenderSourceCell),
     };
     cells[1].link_id = 7;
     cells[2].link_id = 7;
@@ -470,7 +471,7 @@ test "hover decoration underlines the hovered hyperlink span" {
 
 test "ack forwards render-owned snapshot sequence" {
     const FakeTerm = struct {
-        vt: c.HowlVtHandle = @ptrFromInt(1),
+        vt: vt_c.HowlVtHandle = @ptrFromInt(1),
         mutex: struct {
             fn lock(_: *@This()) void {}
             fn unlock(_: *@This()) void {}
@@ -480,10 +481,10 @@ test "ack forwards render-owned snapshot sequence" {
         var ack_calls: u8 = 0;
         var last_snapshot_seq: u64 = 0;
 
-        fn ack(_: c.HowlVtHandle, snapshot_seq: u64) i32 {
+        fn ack(_: vt_c.HowlVtHandle, snapshot_seq: u64) i32 {
             ack_calls += 1;
             last_snapshot_seq = snapshot_seq;
-            return c.HOWL_VT_CALL_OK;
+            return vt_c.HOWL_VT_CALL_OK;
         }
     };
 
@@ -495,7 +496,7 @@ test "ack forwards render-owned snapshot sequence" {
 
 test "zero snapshot sequence means no ack call" {
     const FakeTerm = struct {
-        vt: c.HowlVtHandle = @ptrFromInt(1),
+        vt: vt_c.HowlVtHandle = @ptrFromInt(1),
         mutex: struct {
             fn lock(_: *@This()) void {}
             fn unlock(_: *@This()) void {}
@@ -504,9 +505,9 @@ test "zero snapshot sequence means no ack call" {
     const FakeOps = struct {
         var ack_calls: u8 = 0;
 
-        fn ack(_: c.HowlVtHandle, _: u64) i32 {
+        fn ack(_: vt_c.HowlVtHandle, _: u64) i32 {
             ack_calls += 1;
-            return c.HOWL_VT_CALL_OK;
+            return vt_c.HOWL_VT_CALL_OK;
         }
     };
 
@@ -518,14 +519,14 @@ test "zero snapshot sequence means no ack call" {
 test "publish rejects reserved slot when paired acquisition fails" {
     const FakeTerm = struct {
         allocator: std.mem.Allocator = std.testing.allocator,
-        vt: c.HowlVtHandle = @ptrFromInt(1),
+        vt: vt_c.HowlVtHandle = @ptrFromInt(1),
         vt_state: struct {
             scrollback_offset: u32 = 0,
             cursor_visible: bool = false,
             cursor_blink: bool = false,
         } = .{},
         render: struct {
-            text_session: c.HowlRenderTextSessionHandle = @ptrFromInt(2),
+            text_session: render_c.HowlRenderTextSessionHandle = @ptrFromInt(2),
         } = .{},
         mutex: struct {
             fn lock(_: *@This()) void {}
@@ -538,33 +539,33 @@ test "publish rejects reserved slot when paired acquisition fails" {
         var commit_calls: u8 = 0;
         var last_reject_snapshot_seq: u64 = 0;
 
-        fn visibleMeta(_: c.HowlVtHandle, _: u32) VisibleMeta {
+        fn visibleMeta(_: vt_c.HowlVtHandle, _: u32) VisibleMeta {
             return .{ .rows = 2, .cols = 4, .history_count = 0, .is_alternate_screen = false, .snapshot_seq = 12, .dirty_generation = 3 };
         }
 
-        fn reserveSlot(_: c.HowlRenderTextSessionHandle, _: u16, _: u16) !ReservedVtSurfaceSlot {
+        fn reserveSlot(_: render_c.HowlRenderTextSessionHandle, _: u16, _: u16) !ReservedVtSurfaceSlot {
             return .{ .cells = &.{}, .dirty_rows = &.{}, .dirty_cols_start = &.{}, .dirty_cols_end = &.{} };
         }
 
-        fn acquireVisible(_: std.mem.Allocator, _: anytype, _: c.HowlVtHandle, _: u32, _: VisibleMeta, _: ReservedVtSurfaceSlot) error{AcquisitionFailed}!VisibleCopy {
+        fn acquireVisible(_: std.mem.Allocator, _: anytype, _: vt_c.HowlVtHandle, _: u32, _: VisibleMeta, _: ReservedVtSurfaceSlot) error{AcquisitionFailed}!VisibleCopy {
             return error.AcquisitionFailed;
         }
 
-        fn commitVtSurface(_: c.HowlRenderTextSessionHandle, _: VisibleCopy) c.HowlRenderVtSurfacePublishResult {
+        fn commitVtSurface(_: render_c.HowlRenderTextSessionHandle, _: VisibleCopy) render_c.HowlRenderVtSurfacePublishResult {
             commit_calls += 1;
-            return .{ .status = c.HOWL_RENDER_CALL_OK, .published = 1, .queued = 1, .damage_kind = damage_partial, .reserved0 = 0, .snapshot_seq = 12, .geometry_epoch = 1 };
+            return .{ .status = render_c.HOWL_RENDER_CALL_OK, .published = 1, .queued = 1, .damage_kind = damage_partial, .reserved0 = 0, .snapshot_seq = 12, .geometry_epoch = 1 };
         }
 
-        fn rejectPublish(_: c.HowlRenderTextSessionHandle, snapshot_seq: u64) c.HowlRenderVtSurfacePublishResult {
+        fn rejectPublish(_: render_c.HowlRenderTextSessionHandle, snapshot_seq: u64) render_c.HowlRenderVtSurfacePublishResult {
             reject_calls += 1;
             last_reject_snapshot_seq = snapshot_seq;
-            return .{ .status = c.HOWL_RENDER_CALL_FAILED, .published = 0, .queued = 0, .damage_kind = damage_none, .reserved0 = 0, .snapshot_seq = snapshot_seq, .geometry_epoch = 0 };
+            return .{ .status = render_c.HOWL_RENDER_CALL_FAILED, .published = 0, .queued = 0, .damage_kind = damage_none, .reserved0 = 0, .snapshot_seq = snapshot_seq, .geometry_epoch = 0 };
         }
     };
 
     var term = FakeTerm{};
     const result = publishSourceWith(&term, null, FakeOps);
-    try std.testing.expectEqual(c.HOWL_RENDER_CALL_FAILED, result.status);
+    try std.testing.expectEqual(render_c.HOWL_RENDER_CALL_FAILED, result.status);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.reject_calls);
     try std.testing.expectEqual(@as(u8, 0), FakeOps.commit_calls);
     try std.testing.expectEqual(@as(u64, 12), FakeOps.last_reject_snapshot_seq);

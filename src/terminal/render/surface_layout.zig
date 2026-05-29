@@ -1,6 +1,6 @@
 const std = @import("std");
 const window = @import("../../window/window.zig");
-const c = @import("../c.zig").c;
+const c = @import("howl_render_c");
 const pty_session = @import("../pty/session.zig");
 const retained = @import("retained.zig");
 const vt_retained = @import("../vt/retained.zig");

@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("howl_vt_c");
 const surface = @import("surface.zig");
 
 const title_max_bytes = @as(usize, c.HOWL_VT_TITLE_MAX_BYTES);

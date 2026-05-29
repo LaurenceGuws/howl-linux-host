@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("../c.zig").c;
+const c = @import("howl_render_c");
 
 const min_font_px: u16 = 2;
 const max_font_px: u16 = 256;

@@ -22,6 +22,9 @@ const HostDeps = struct {
     howl_render_include: Build.LazyPath,
     howl_pty_include: Build.LazyPath,
     howl_vt_include: Build.LazyPath,
+    howl_pty_c: *Module,
+    howl_vt_c: *Module,
+    howl_render_c: *Module,
     sdl_include: Build.LazyPath,
     vendor_include: Build.LazyPath,
     sdl_lib: *Compile,
@@ -123,6 +126,10 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .optimize = optimize,
         .preferred_linkage = .static,
     });
+    const howl_render_include = howl_render_dep.path("include");
+    const howl_pty_include = howl_pty_dep.path("include");
+    const howl_vt_include = howl_vt_dep.path("include");
+    const sdl_include = sdl_dep.path("include");
     return .{
         .target = target,
         .optimize = optimize,
@@ -130,14 +137,33 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .howl_render_lib = howl_render_dep.artifact("howl_render"),
         .howl_pty_lib = howl_pty_dep.artifact("howl_pty"),
         .howl_vt_lib = howl_vt_dep.artifact("howl_vt"),
-        .howl_render_include = howl_render_dep.path("include"),
-        .howl_pty_include = howl_pty_dep.path("include"),
-        .howl_vt_include = howl_vt_dep.path("include"),
-        .sdl_include = sdl_dep.path("include"),
+        .howl_render_include = howl_render_include,
+        .howl_pty_include = howl_pty_include,
+        .howl_vt_include = howl_vt_include,
+        .howl_pty_c = translateCModule(b, b.path("src/howl_pty_c.h"), target, optimize, &.{howl_pty_include}),
+        .howl_vt_c = translateCModule(b, b.path("src/howl_vt_c.h"), target, optimize, &.{howl_vt_include}),
+        .howl_render_c = translateCModule(b, b.path("src/howl_render_c.h"), target, optimize, &.{howl_render_include}),
+        .sdl_include = sdl_include,
         .sdl_lib = sdl_dep.artifact("SDL3"),
         .stb_image = b.path("src/window/stb_image.c"),
         .vendor_include = b.path("vendor"),
     };
+}
+
+fn translateCModule(
+    b: *Build,
+    root_source_file: Build.LazyPath,
+    target: Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    include_paths: []const Build.LazyPath,
+) *Module {
+    const translated = b.addTranslateC(.{
+        .root_source_file = root_source_file,
+        .target = target,
+        .optimize = optimize,
+    });
+    for (include_paths) |include_path| translated.addIncludePath(include_path);
+    return translated.createModule();
 }
 
 fn buildHostExe(b: *Build, deps: HostDeps) *Compile {
@@ -152,7 +178,7 @@ fn buildHostExe(b: *Build, deps: HostDeps) *Compile {
 }
 
 fn createHostModule(b: *Build, deps: HostDeps, path: []const u8) *Module {
-    return b.createModule(.{
+    const module = b.createModule(.{
         .root_source_file = b.path(path),
         .target = deps.target,
         .optimize = deps.optimize,
@@ -160,6 +186,14 @@ fn createHostModule(b: *Build, deps: HostDeps, path: []const u8) *Module {
             .{ .name = "howl_lua", .module = deps.howl_lua_mod },
         },
     });
+    addHostCImports(module, deps);
+    return module;
+}
+
+fn addHostCImports(module: *Module, deps: HostDeps) void {
+    module.addImport("howl_pty_c", deps.howl_pty_c);
+    module.addImport("howl_vt_c", deps.howl_vt_c);
+    module.addImport("howl_render_c", deps.howl_render_c);
 }
 
 fn linkHostWindow(module: *Module, deps: HostDeps) void {
@@ -309,6 +343,7 @@ fn wireTestSteps(
     steps.test_all.dependOn(steps.test_unit);
 
     const host_test_mod = HostTests.createModule(b, deps.testDeps());
+    addHostCImports(host_test_mod, deps);
     const integration_test_mod = b.createModule(.{
         .root_source_file = b.path("src/test/integration_entry.zig"),
         .target = target,

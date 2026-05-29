@@ -1,6 +1,6 @@
 const std = @import("std");
 const c = @import("window.zig").c_win;
-const render_c = @import("../terminal/c.zig").c;
+const render_c = @import("howl_render_c");
 
 pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) bool {
     std.debug.assert(width > 0);

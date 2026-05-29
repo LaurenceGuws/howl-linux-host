@@ -1,6 +1,6 @@
 const feed_record = @import("feed_record.zig");
 const pty_session = @import("session.zig");
-const c = @import("../c.zig").c;
+const vt_c = @import("howl_vt_c");
 const terminal_term = @import("../term.zig");
 const vt_retained = @import("../vt/retained.zig");
 const vt_surface = @import("../vt/surface.zig");
@@ -116,7 +116,7 @@ fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPump
 fn feedTermLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u32) bool {
     const history_before = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
     const result = vt_retained.feedLocked(term, bytes);
-    if (result.status != c.HOWL_VT_CALL_OK) {
+    if (result.status != vt_c.HOWL_VT_CALL_OK) {
         term.pty.lifecycle = .failed;
         _ = chunk_len;
         return false;

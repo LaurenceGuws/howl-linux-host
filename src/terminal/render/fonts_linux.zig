@@ -1,6 +1,6 @@
 const std = @import("std");
 const terminal_config = @import("../../config/terminal.zig");
-const render_c = @import("../c.zig").c;
+const render_c = @import("howl_render_c");
 
 const Allocator = std.mem.Allocator;
 const max_fallback_font_paths: u16 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
