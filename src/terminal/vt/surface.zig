@@ -83,7 +83,7 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
     const typed_response = Ops.commitDecodedPublishSlot(term.render.surface_text, visible);
     if (typed_response.status != c.HOWL_RENDER_CALL_OK) {
         std.debug.panic(
-            "render publish rejected: status={d} published={d} queued={d} damage={d} snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} rows={d} cols={d} history={d} scroll_row={d} graphics_pub={d} images={d} placements={d} virtuals={d} payload_len={d}",
+            "render publish rejected: status={d} published={d} queued={d} damage={d} snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} rows={d} cols={d} history={d} scroll_row={d} graphics_pub={d} images={d} placements={d} payload_len={d}",
             .{
                 typed_response.status,
                 typed_response.published,
@@ -100,7 +100,6 @@ fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) 
                 visible.graphics.publication_seq,
                 visible.graphics.image_count,
                 visible.graphics.placement_count,
-                renderGraphicsMeta(visible.graphics).virtual_placement_count,
                 visible.graphics_payload_bytes.len,
             },
         );
@@ -146,7 +145,6 @@ fn publishDecodedGraphicsSlotCommit(visible: VisibleCopy) c.HowlRenderPublishDec
         .graphics = graphics,
         .graphics_images = .{ .ptr = if (visible.graphics_images.len == 0) null else visible.graphics_images.ptr, .len = visible.graphics_images.len },
         .graphics_placements = .{ .ptr = if (visible.graphics_placements.len == 0) null else visible.graphics_placements.ptr, .len = visible.graphics_placements.len },
-        .graphics_virtual_placements = .{ .ptr = null, .len = 0 },
         .graphics_payload_bytes = .{ .ptr = if (visible.graphics_payload_bytes.len == 0) null else visible.graphics_payload_bytes.ptr, .len = visible.graphics_payload_bytes.len },
     };
 }
@@ -155,9 +153,10 @@ fn renderGraphicsMeta(graphics: c.HowlVtGraphicsMeta) c.HowlRenderVtGraphicsMeta
     return .{
         .image_count = graphics.image_count,
         .placement_count = graphics.placement_count,
-        .virtual_placement_count = 0,
         .is_alternate_screen = graphics.is_alternate_screen,
         .reserved0 = 0,
+        .reserved1 = 0,
+        .reserved2 = 0,
         .publication_seq = graphics.publication_seq,
         .dirty_generation = graphics.dirty_generation,
     };
@@ -556,7 +555,6 @@ test "publish commit forwards placement metadata" {
             var graphics = std.mem.zeroes(c.HowlVtGraphicsMeta);
             graphics.image_count = 7;
             graphics.placement_count = 5;
-            graphics.virtual_placement_count = 2;
             graphics.is_alternate_screen = 1;
             graphics.publication_seq = 33;
             graphics.dirty_generation = 44;
@@ -574,8 +572,6 @@ test "publish commit forwards placement metadata" {
     try std.testing.expectEqual(@as(u8, 1), commit.is_alternate_screen);
     try std.testing.expectEqual(visible.graphics.image_count, commit.graphics.image_count);
     try std.testing.expectEqual(visible.graphics.placement_count, commit.graphics.placement_count);
-    try std.testing.expectEqual(@as(u32, 0), commit.graphics.virtual_placement_count);
-    try std.testing.expectEqual(@as(usize, 0), commit.graphics_virtual_placements.len);
     try std.testing.expectEqual(visible.graphics.is_alternate_screen, commit.graphics.is_alternate_screen);
     try std.testing.expectEqual(visible.graphics.publication_seq, commit.graphics.publication_seq);
     try std.testing.expectEqual(visible.graphics.dirty_generation, commit.graphics.dirty_generation);
