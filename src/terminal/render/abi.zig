@@ -6,7 +6,7 @@ const terminal_term = @import("../term.zig");
 const max_fallback_font_paths: u8 = @intCast(c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
 pub const Term = terminal_term.Term;
-pub const FrameLayout = retained.FrameLayout;
+pub const SurfaceLayout = retained.SurfaceLayout;
 pub const RenderInit = struct {
     render_px: c.HowlRenderPixelSize,
     grid_px: c.HowlRenderPixelSize,
@@ -14,13 +14,13 @@ pub const RenderInit = struct {
     primary_font_path: ?[:0]const u8 = null,
     fallback_font_paths: []const [:0]const u8 = &.{},
 };
-pub const FrameLayoutRequest = struct {
+pub const SurfaceLayoutRequest = struct {
     render_px: c.HowlRenderPixelSize,
     grid_px: c.HowlRenderPixelSize,
 };
 pub const HostSurface = c.HowlRenderHostSurface;
 pub const RenderCellSize = c.HowlRenderCellSize;
-pub const FrameLayoutSync = retained.FrameLayoutSync;
+pub const SurfaceLayoutSync = retained.SurfaceLayoutSync;
 
 const ExpectedPreparedSurfaceBuffer = extern struct {
     status: i32,
@@ -54,7 +54,7 @@ pub fn initTextSession(render_init: RenderInit) !c.HowlRenderTextSessionHandle {
     return text_session;
 }
 
-pub fn initFrameLayout(text_session: c.HowlRenderTextSessionHandle, render_init: RenderInit) !FrameLayout {
+pub fn initSurfaceLayout(text_session: c.HowlRenderTextSessionHandle, render_init: RenderInit) !SurfaceLayout {
     const layout: c.HowlRenderLayoutResult = c.howl_render_text_session_derive_layout(text_session, render_init.render_px, render_init.grid_px);
     if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     return .{
@@ -73,7 +73,7 @@ pub fn setFontSizePx(term: *Term, font_size_px: u16) bool {
     return renderCallOk(c.howl_render_text_session_set_font_size_px(term.render.text_session, font_size_px));
 }
 
-pub fn deriveFrameLayout(term: *Term, request: FrameLayoutRequest) !FrameLayoutSync {
+pub fn deriveSurfaceLayout(term: *Term, request: SurfaceLayoutRequest) !SurfaceLayoutSync {
     std.debug.assert(request.render_px.width > 0);
     std.debug.assert(request.render_px.height > 0);
     std.debug.assert(request.grid_px.width > 0);
@@ -86,20 +86,20 @@ pub fn deriveFrameLayout(term: *Term, request: FrameLayoutRequest) !FrameLayoutS
     if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     const grid = layout.grid;
     const cell_px = layout.cell_px;
-    const next = FrameLayout{
+    const next = SurfaceLayout{
         .render_px = request.render_px,
         .grid_px = request.grid_px,
         .cols = grid.cols,
         .rows = grid.rows,
         .cell_px = .{ .width = cell_px.width, .height = cell_px.height },
     };
-    return term.render.frameLayoutSync(next);
+    return term.render.surfaceLayoutSync(next);
 }
 
-pub fn commitFrameLayout(term: *Term, layout: FrameLayout) void {
+pub fn commitSurfaceLayout(term: *Term, layout: SurfaceLayout) void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    term.render.syncFrameLayout(layout);
+    term.render.syncSurfaceLayout(layout);
 }
 
 pub fn setCursorBlinkVisible(term: *Term, visible: bool) bool {
@@ -109,21 +109,21 @@ pub fn setCursorBlinkVisible(term: *Term, visible: bool) bool {
 }
 
 pub fn pixelToCol(term: *const Term, pixel_x: i32) u16 {
-    const frame_layout = term.render.frame_layout;
-    if (frame_layout.cols == 0 or frame_layout.cell_px.width == 0) return 0;
+    const surface_layout = term.render.surface_layout;
+    if (surface_layout.cols == 0 or surface_layout.cell_px.width == 0) return 0;
     if (pixel_x <= 0) return 0;
     const x: u32 = @intCast(pixel_x);
-    const col = x / @as(u32, frame_layout.cell_px.width);
-    return @min(@as(u16, @intCast(col)), frame_layout.cols -| 1);
+    const col = x / @as(u32, surface_layout.cell_px.width);
+    return @min(@as(u16, @intCast(col)), surface_layout.cols -| 1);
 }
 
 pub fn pixelToRow(term: *const Term, pixel_y: i32) i32 {
-    const frame_layout = term.render.frame_layout;
-    if (frame_layout.rows == 0 or frame_layout.cell_px.height == 0) return 0;
+    const surface_layout = term.render.surface_layout;
+    if (surface_layout.rows == 0 or surface_layout.cell_px.height == 0) return 0;
     if (pixel_y <= 0) return 0;
     const y: u32 = @intCast(pixel_y);
-    const row = y / @as(u32, frame_layout.cell_px.height);
-    return @min(@as(i32, @intCast(row)), @as(i32, frame_layout.rows -| 1));
+    const row = y / @as(u32, surface_layout.cell_px.height);
+    return @min(@as(i32, @intCast(row)), @as(i32, surface_layout.rows -| 1));
 }
 
 fn renderCallOk(status: i32) bool {

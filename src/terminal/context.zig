@@ -19,14 +19,14 @@ const terminal_term = @import("term.zig");
 const vt_retained = @import("vt/retained.zig");
 const HowlTerm = terminal_term.Term;
 const LifecycleState = pty_retained.LifecycleState;
-const FrameLayoutRequest = render_api.FrameLayoutRequest;
+const SurfaceLayoutRequest = render_api.SurfaceLayoutRequest;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const ClipboardOsc52Policy = @import("../config/terminal.zig").ClipboardOsc52Policy;
 const LinkHoverPolicy = @import("../config/terminal.zig").LinkHoverPolicy;
 const LinkUnderlineStyle = @import("../config/terminal.zig").LinkUnderlineStyle;
 const font_size = @import("render/font_size.zig");
-const frame_layout = @import("render/frame_layout.zig");
+const surface_layout = @import("render/surface_layout.zig");
 const term_input = @import("vt/input.zig");
 const viewport = @import("vt/viewport.zig");
 
@@ -59,7 +59,7 @@ pub const Context = struct {
     };
 
     pub const TurnStep = enum {
-        no_frame,
+        surface_idle,
         idle_prepare,
         idle_submit,
         blocked_present,
@@ -83,7 +83,7 @@ pub const Context = struct {
     input: *HostInput,
     title_buf: [128]u8,
     title_len: u8,
-    geometry: frame_layout.State,
+    geometry: surface_layout.State,
     font_size_px: u16,
     default_font_size_px: u16,
     window_focused: bool,
@@ -124,7 +124,7 @@ pub const Context = struct {
         self.input = input;
         self.title_buf = undefined;
         self.title_len = 0;
-        self.geometry = frame_layout.init(render_width, render_height, logical_width, logical_height);
+        self.geometry = surface_layout.init(render_width, render_height, logical_width, logical_height);
         self.font_size_px = start_font_px;
         self.default_font_size_px = start_font_px;
         self.window_focused = true;
@@ -163,19 +163,19 @@ pub const Context = struct {
     }
 
     pub fn resize(self: *Context, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
-        frame_layout.resize(self, render_width, render_height, logical_width, logical_height);
+        surface_layout.resize(self, render_width, render_height, logical_width, logical_height);
     }
 
     pub fn maybeCommitGridResize(self: *Context) void {
-        frame_layout.maybeCommitGridResize(self);
+        surface_layout.maybeCommitGridResize(self);
     }
 
-    pub fn syncFrameLayout(self: *Context, request: FrameLayoutRequest) !void {
-        try frame_layout.syncFrameLayout(self, request);
+    pub fn syncSurfaceLayout(self: *Context, request: SurfaceLayoutRequest) !void {
+        try surface_layout.syncSurfaceLayout(self, request);
     }
 
-    pub fn frameLayoutSnapshot(self: *Context) FrameLayoutRequest {
-        return frame_layout.frameLayoutSnapshot(self);
+    pub fn surfaceLayoutSnapshot(self: *Context) SurfaceLayoutRequest {
+        return surface_layout.surfaceLayoutSnapshot(self);
     }
 
     pub fn paste(self: *Context, payload: []const u8) void {
@@ -296,21 +296,21 @@ pub const Context = struct {
 
     pub fn adjustFontSize(self: *Context, delta: i16) bool {
         if (!font_size.adjust(self, delta)) return false;
-        return frame_layout.syncCurrentFrameLayout(self);
+        return surface_layout.syncCurrentSurfaceLayout(self);
     }
 
     pub fn toggleStressFontSize(self: *Context) bool {
         if (!font_size.toggleStress(self)) return false;
-        return frame_layout.syncCurrentFrameLayout(self);
+        return surface_layout.syncCurrentSurfaceLayout(self);
     }
 
     pub fn resetFontSize(self: *Context) bool {
         if (!font_size.reset(self)) return false;
-        return frame_layout.syncCurrentFrameLayout(self);
+        return surface_layout.syncCurrentSurfaceLayout(self);
     }
 
     pub fn wantsRenderTurn(self: *const Context) bool {
-        return self.workState().wantsFrame();
+        return self.workState().needsRenderSurface();
     }
 
     pub fn syncCursorBlinkCadence(self: *Context, now_ns: u64) bool {
@@ -362,12 +362,12 @@ pub const Context = struct {
         const publish_work = self.workState();
         self.maybePublishSource(bootstrap_surface, publish_work);
         const work_before = self.workState();
-        if (!work_before.wantsFrame()) {
+        if (!work_before.needsRenderSurface()) {
             return .{
                 .work_before = work_before,
                 .work_after = work_before,
                 .prepared = false,
-                .step = .no_frame,
+                .step = .surface_idle,
                 .present_snapshot_seq = 0,
             };
         }
@@ -395,7 +395,7 @@ pub const Context = struct {
     }
 
     pub fn noteRenderTurn(self: *Context, turn: TurnResult) void {
-        if (turn.step == .no_frame) return;
+        if (turn.step == .surface_idle) return;
         if (turn.prepared and turn.step != .rendered) self.notePreparedStep(turn.work_after);
     }
 
@@ -404,18 +404,18 @@ pub const Context = struct {
     }
 
     fn initTerm(self: *Context) !void {
-        const frame_request = self.frameLayoutSnapshot();
+        const surface_request = self.surfaceLayoutSnapshot();
         var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, self.conf.fonts);
         defer resolved_fonts.deinit(std.heap.c_allocator);
 
         const launch = launchConfig(self.conf);
-        const render_init = renderInit(self, frame_request, &resolved_fonts);
+        const render_init = renderInit(self, surface_request, &resolved_fonts);
         const term_init = try initTermState(self.conf, launch, render_init);
         self.term.allocator = std.heap.c_allocator;
         self.term.pty = .{ .launch = launch };
         self.term.session = term_init.session;
         self.term.vt = term_init.vt;
-        self.term.render = .init(term_init.text_session, term_init.frame_layout);
+        self.term.render = .init(term_init.text_session, term_init.surface_layout);
         self.term.vt_state.title_buf = undefined;
         self.term.vt_state.title_len = 0;
         self.term.vt_state.output_scratch = undefined;
@@ -426,8 +426,8 @@ pub const Context = struct {
         self.term.vt_state.cursor_blink = false;
         self.term.mutex = .{};
         self.live = true;
-        try vt_retained.setCellPixelSize(&self.term, term_init.frame_layout.cell_px.width, term_init.frame_layout.cell_px.height);
-        self.term.render.syncFrameLayout(term_init.frame_layout);
+        try vt_retained.setCellPixelSize(&self.term, term_init.surface_layout.cell_px.width, term_init.surface_layout.cell_px.height);
+        self.term.render.syncSurfaceLayout(term_init.surface_layout);
     }
 
     fn startRuntime(self: *Context, io: std.Io, feed_record_path: ?[]const u8) !void {
@@ -535,7 +535,7 @@ pub const Context = struct {
 
     fn maybePublishSource(self: *Context, bootstrap_surface: bool, work: render_retained.WorkState) void {
         self.maybeCommitGridResize();
-        if (bootstrap_surface or !work.wantsFrame() or self.hover_publish_pending) {
+        if (bootstrap_surface or !work.needsRenderSurface() or self.hover_publish_pending) {
             _ = vt_surface.publishSource(&self.term, hoverDecoration(self));
             self.hover_publish_pending = false;
         }
@@ -914,7 +914,7 @@ pub const Context = struct {
 
     const TermInit = struct {
         text_session: terminal_c.HowlRenderTextSessionHandle,
-        frame_layout: render_api.FrameLayout,
+        surface_layout: render_api.SurfaceLayout,
         session: terminal_c.HowlPtySessionHandle,
         vt: terminal_c.HowlVtHandle,
     };
@@ -927,10 +927,10 @@ pub const Context = struct {
         };
     }
 
-    fn renderInit(self: *Context, frame_request: render_api.FrameLayoutRequest, resolved_fonts: *const fonts_linux.ResolvedFonts) render_api.RenderInit {
+    fn renderInit(self: *Context, surface_request: render_api.SurfaceLayoutRequest, resolved_fonts: *const fonts_linux.ResolvedFonts) render_api.RenderInit {
         return .{
-            .render_px = frame_request.render_px,
-            .grid_px = frame_request.grid_px,
+            .render_px = surface_request.render_px,
+            .grid_px = surface_request.grid_px,
             .font_size_px = @max(self.conf.font_size, 1),
             .primary_font_path = resolved_fonts.primary,
             .fallback_font_paths = resolved_fonts.fallbacks,
@@ -940,7 +940,7 @@ pub const Context = struct {
     fn initTermState(conf: *const TerminalConfig, launch: pty_retained.LaunchConfig, render_init: render_api.RenderInit) !TermInit {
         const text_session = try render_api.initTextSession(render_init);
         errdefer if (text_session) |handle| terminal_c.howl_render_text_session_deinit(handle);
-        const layout = try render_api.initFrameLayout(text_session, render_init);
+        const layout = try render_api.initSurfaceLayout(text_session, render_init);
         const session_handle = try pty_session.initHandle(launch, layout.cols, layout.rows);
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
         const vt = try vt_api.initWithOptions(layout.rows, layout.cols, .{
@@ -952,7 +952,7 @@ pub const Context = struct {
         errdefer if (vt) |handle| vt_api.deinit(handle);
         return .{
             .text_session = text_session.?,
-            .frame_layout = layout,
+            .surface_layout = layout,
             .session = session_handle.?,
             .vt = vt.?,
         };
@@ -1063,8 +1063,8 @@ fn applyPendingClipboardWrite(term: anytype, policy: ClipboardOsc52Policy, compt
     _ = Ops.setClipboardText(text);
 }
 
-test "frame layout request ignores logical size" {
-    var state = frame_layout.State{
+test "surface layout request ignores logical size" {
+    var state = surface_layout.State{
         .render_px_w = 640,
         .render_px_h = 480,
         .logical_w = 321,
@@ -1075,7 +1075,7 @@ test "frame layout request ignores logical size" {
         .pending_grid_px_h = 440,
     };
 
-    const request = frame_layout.snapshotFrameLayoutLocked(&state);
+    const request = surface_layout.snapshotSurfaceLayoutLocked(&state);
     try std.testing.expectEqual(@as(u16, 640), request.render_px.width);
     try std.testing.expectEqual(@as(u16, 480), request.render_px.height);
     try std.testing.expectEqual(@as(u16, 600), request.grid_px.width);

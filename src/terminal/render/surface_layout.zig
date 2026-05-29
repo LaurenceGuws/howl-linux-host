@@ -69,42 +69,42 @@ pub fn resize(context: anytype, render_width: c_int, render_height: c_int, logic
 }
 
 pub fn maybeCommitGridResize(context: anytype) void {
-    const frame_layout = blk: {
+    const surface_layout = blk: {
         context.geometry.mutex.lock();
         defer context.geometry.mutex.unlock();
         if (context.geometry.pending_grid_px_w == context.geometry.grid_px_w and context.geometry.pending_grid_px_h == context.geometry.grid_px_h) return;
         context.geometry.grid_px_w = context.geometry.pending_grid_px_w;
         context.geometry.grid_px_h = context.geometry.pending_grid_px_h;
         context.geometry.last_resize_ns = 0;
-        break :blk snapshotFrameLayoutLocked(&context.geometry);
+        break :blk snapshotSurfaceLayoutLocked(&context.geometry);
     };
-    syncFrameLayout(context, frame_layout) catch return;
+    syncSurfaceLayout(context, surface_layout) catch return;
 }
 
-pub fn syncFrameLayout(context: anytype, request: render_api.FrameLayoutRequest) !void {
-    const sync = try render_api.deriveFrameLayout(&context.term, request);
+pub fn syncSurfaceLayout(context: anytype, request: render_api.SurfaceLayoutRequest) !void {
+    const sync = try render_api.deriveSurfaceLayout(&context.term, request);
     if (!sync.changed) return;
     if (sync.grid_changed) {
         try pty_session.resize(&context.term, sync.layout.cols, sync.layout.rows);
         try vt_retained.resize(&context.term, sync.layout.rows, sync.layout.cols);
     }
     try vt_retained.setCellPixelSize(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
-    render_api.commitFrameLayout(&context.term, sync.layout);
+    render_api.commitSurfaceLayout(&context.term, sync.layout);
 }
 
-pub fn frameLayoutSnapshot(context: anytype) render_api.FrameLayoutRequest {
+pub fn surfaceLayoutSnapshot(context: anytype) render_api.SurfaceLayoutRequest {
     context.geometry.mutex.lock();
     defer context.geometry.mutex.unlock();
-    return snapshotFrameLayoutLocked(&context.geometry);
+    return snapshotSurfaceLayoutLocked(&context.geometry);
 }
 
-pub fn syncCurrentFrameLayout(context: anytype) bool {
-    const request = frameLayoutSnapshot(context);
-    syncFrameLayout(context, request) catch return false;
+pub fn syncCurrentSurfaceLayout(context: anytype) bool {
+    const request = surfaceLayoutSnapshot(context);
+    syncSurfaceLayout(context, request) catch return false;
     return true;
 }
 
-pub fn snapshotFrameLayoutLocked(geometry: *const State) render_api.FrameLayoutRequest {
+pub fn snapshotSurfaceLayoutLocked(geometry: *const State) render_api.SurfaceLayoutRequest {
     return .{
         .render_px = .{ .width = @as(u16, @intCast(@max(geometry.render_px_w, 1))), .height = @as(u16, @intCast(@max(geometry.render_px_h, 1))) },
         .grid_px = .{ .width = @as(u16, @intCast(@max(geometry.grid_px_w, 1))), .height = @as(u16, @intCast(@max(geometry.grid_px_h, 1))) },

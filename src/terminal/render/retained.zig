@@ -24,18 +24,18 @@ pub const WorkState = struct {
             self.present_pending;
     }
 
-    pub fn wantsFrame(self: WorkState) bool {
+    pub fn needsRenderSurface(self: WorkState) bool {
         return self.bootstrap_surface or self.inFlight();
     }
 };
 
-pub const FrameLayoutSync = struct {
-    layout: FrameLayout,
+pub const SurfaceLayoutSync = struct {
+    layout: SurfaceLayout,
     changed: bool,
     grid_changed: bool,
 };
 
-pub const FrameLayout = struct {
+pub const SurfaceLayout = struct {
     render_px: c.HowlRenderPixelSize,
     grid_px: c.HowlRenderPixelSize,
     cols: u16,
@@ -53,7 +53,7 @@ pub const PreparedUpload = struct {
 };
 
 pub const State = struct {
-    frame_layout: FrameLayout,
+    surface_layout: SurfaceLayout,
     geometry_epoch: u64 = 0,
     text_session: c.HowlRenderTextSessionHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
@@ -61,10 +61,10 @@ pub const State = struct {
 
     pub fn init(
         text_session: c.HowlRenderTextSessionHandle,
-        frame_layout: FrameLayout,
+        surface_layout: SurfaceLayout,
     ) State {
         return .{
-            .frame_layout = frame_layout,
+            .surface_layout = surface_layout,
             .text_session = text_session,
         };
     }
@@ -75,20 +75,20 @@ pub const State = struct {
         c.howl_render_text_session_deinit(self.text_session);
     }
 
-    pub fn frameLayoutSync(self: *const State, next: FrameLayout) FrameLayoutSync {
+    pub fn surfaceLayoutSync(self: *const State, next: SurfaceLayout) SurfaceLayoutSync {
         return .{
             .layout = next,
-            .changed = frameLayoutChanged(self.frame_layout, next),
-            .grid_changed = self.frame_layout.cols != next.cols or self.frame_layout.rows != next.rows,
+            .changed = surfaceLayoutChanged(self.surface_layout, next),
+            .grid_changed = self.surface_layout.cols != next.cols or self.surface_layout.rows != next.rows,
         };
     }
 
-    pub fn commitFrameLayout(self: *State, layout: FrameLayout) void {
-        self.frame_layout = layout;
+    pub fn commitSurfaceLayout(self: *State, layout: SurfaceLayout) void {
+        self.surface_layout = layout;
     }
 
-    pub fn syncFrameLayout(self: *State, layout: FrameLayout) void {
-        self.commitFrameLayout(layout);
+    pub fn syncSurfaceLayout(self: *State, layout: SurfaceLayout) void {
+        self.commitSurfaceLayout(layout);
         const geometry = c.howl_render_text_session_sync_geometry(self.text_session, .{
             .render_px = layout.render_px,
             .grid_px = layout.grid_px,
@@ -279,7 +279,7 @@ pub const State = struct {
     }
 };
 
-fn frameLayoutChanged(current: FrameLayout, next: FrameLayout) bool {
+fn surfaceLayoutChanged(current: SurfaceLayout, next: SurfaceLayout) bool {
     return current.render_px.width != next.render_px.width or
         current.render_px.height != next.render_px.height or
         current.grid_px.width != next.grid_px.width or
@@ -290,7 +290,7 @@ fn frameLayoutChanged(current: FrameLayout, next: FrameLayout) bool {
         current.cell_px.height != next.cell_px.height;
 }
 
-fn testFrameLayout() FrameLayout {
+fn testSurfaceLayout() SurfaceLayout {
     return .{
         .render_px = .{ .width = 100, .height = 80 },
         .grid_px = .{ .width = 90, .height = 70 },
@@ -319,25 +319,25 @@ fn testState() State {
         .font_size_px = 12,
     });
     std.debug.assert(handle != null);
-    return State.init(handle, testFrameLayout());
+    return State.init(handle, testSurfaceLayout());
 }
 
-test "frame layout sync reports grid and cell changes" {
-    const current = testFrameLayout();
+test "surface layout sync reports grid and cell changes" {
+    const current = testSurfaceLayout();
     var state = State.init(null, current);
 
-    const same = state.frameLayoutSync(current);
+    const same = state.surfaceLayoutSync(current);
     try std.testing.expect(!same.changed);
     try std.testing.expect(!same.grid_changed);
 
-    const next = FrameLayout{
+    const next = SurfaceLayout{
         .render_px = .{ .width = 110, .height = 96 },
         .grid_px = .{ .width = 99, .height = 84 },
         .cols = 11,
         .rows = 6,
         .cell_px = .{ .width = 9, .height = 14 },
     };
-    const changed = state.frameLayoutSync(next);
+    const changed = state.surfaceLayoutSync(next);
     try std.testing.expect(changed.changed);
     try std.testing.expect(changed.grid_changed);
 }
@@ -355,7 +355,7 @@ test "present in flight contributes host-owned pending state" {
 }
 
 test "matching complete present returns snapshot once and clears" {
-    var state = State.init(null, testFrameLayout());
+    var state = State.init(null, testSurfaceLayout());
 
     state.notePresentSubmitted(9, 90);
     try std.testing.expectEqual(@as(?u64, 9), state.completePresent(90));
@@ -364,7 +364,7 @@ test "matching complete present returns snapshot once and clears" {
 }
 
 test "submit is blocked while host present is pending" {
-    var state = State.init(null, testFrameLayout());
+    var state = State.init(null, testSurfaceLayout());
     state.notePresentSubmitted(11, 110);
 
     const execution = c.HowlRenderSubmitExecution{
@@ -379,7 +379,7 @@ test "submit is blocked while host present is pending" {
 }
 
 test "submit is allowed after matching complete present clears pending state" {
-    var state = State.init(null, testFrameLayout());
+    var state = State.init(null, testSurfaceLayout());
     state.notePresentSubmitted(13, 130);
 
     try std.testing.expectEqual(@as(?u64, 13), state.completePresent(130));
@@ -387,7 +387,7 @@ test "submit is allowed after matching complete present clears pending state" {
 }
 
 test "present submit stores snapshot and token" {
-    var state = State.init(null, testFrameLayout());
+    var state = State.init(null, testSurfaceLayout());
     state.notePresentSubmitted(21, 210);
 
     try std.testing.expect(state.present_in_flight != null);
@@ -396,7 +396,7 @@ test "present submit stores snapshot and token" {
 }
 
 test "mismatched complete present keeps pending state" {
-    var state = State.init(null, testFrameLayout());
+    var state = State.init(null, testSurfaceLayout());
     state.notePresentSubmitted(31, 310);
 
     try std.testing.expectEqual(@as(?u64, null), state.completePresent(311));

@@ -623,7 +623,7 @@ fn derivePresentReason(host_redraw: bool, step: TerminalContext.TurnStep) Presen
     return switch (step) {
         .rendered => .terminal_frame,
         .blocked_present => .terminal_retire,
-        .no_frame, .idle_prepare, .idle_submit, .failed => if (host_redraw) .host_damage else .none,
+        .surface_idle, .idle_prepare, .idle_submit, .failed => if (host_redraw) .host_damage else .none,
     };
 }
 
@@ -823,13 +823,13 @@ test "derivePresentReason matrix names host and terminal present cadence" {
         step: TerminalContext.TurnStep,
         reason: PresentReason,
     }{
-        .{ .host_redraw = false, .step = .no_frame, .reason = .none },
+        .{ .host_redraw = false, .step = .surface_idle, .reason = .none },
         .{ .host_redraw = false, .step = .idle_prepare, .reason = .none },
         .{ .host_redraw = false, .step = .idle_submit, .reason = .none },
         .{ .host_redraw = false, .step = .failed, .reason = .none },
         .{ .host_redraw = false, .step = .rendered, .reason = .terminal_frame },
         .{ .host_redraw = false, .step = .blocked_present, .reason = .terminal_retire },
-        .{ .host_redraw = true, .step = .no_frame, .reason = .host_damage },
+        .{ .host_redraw = true, .step = .surface_idle, .reason = .host_damage },
         .{ .host_redraw = true, .step = .idle_prepare, .reason = .host_damage },
         .{ .host_redraw = true, .step = .idle_submit, .reason = .host_damage },
         .{ .host_redraw = true, .step = .failed, .reason = .host_damage },
@@ -1177,7 +1177,7 @@ test "forward terminal input drains text before pointer UI without present inten
     const pacing = FramePacingState.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, takeTerminalInputAdmission(&admitted)));
     try std.testing.expect(!intent.needsRender());
-    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .no_frame));
+    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .surface_idle));
 }
 
 test "host visual change can trigger present without PTY publication" {
@@ -1199,7 +1199,7 @@ test "runtime keepalive wake stays separate from host dirty" {
     };
     const pacing = FramePacingState.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
-    try std.testing.expectEqual(PresentReason.none, derivePresentReason(false, .no_frame));
+    try std.testing.expectEqual(PresentReason.none, derivePresentReason(false, .surface_idle));
 }
 
 test "runtime keep_running does not synthesize redraw" {
@@ -1211,7 +1211,7 @@ test "runtime keep_running does not synthesize redraw" {
     try std.testing.expect(progress.keep_running);
     try std.testing.expect(!intent.terminal_redraw);
     try std.testing.expect(!intent.needsRender());
-    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .no_frame));
+    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .surface_idle));
 }
 
 test "keep_running true should_redraw false keeps host non-blocking without redraw or present" {
@@ -1228,7 +1228,7 @@ test "keep_running true should_redraw false keeps host non-blocking without redr
     const pacing = FramePacingState.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
     try std.testing.expect(!intent.needsRender());
-    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .no_frame));
+    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .surface_idle));
 }
 
 test "host_redraw_requested true can produce host-only present" {
@@ -1242,7 +1242,7 @@ test "host_redraw_requested true can produce host-only present" {
     try std.testing.expect(!intent.terminal_redraw);
     try std.testing.expect(!intent.render_work_pending);
     try std.testing.expect(intent.needsRender());
-    try std.testing.expectEqual(PresentReason.host_damage, derivePresentReason(intent.host_redraw, .no_frame));
+    try std.testing.expectEqual(PresentReason.host_damage, derivePresentReason(intent.host_redraw, .surface_idle));
 }
 
 test "render_work_pending true produces render without host redraw bit" {
@@ -1256,7 +1256,7 @@ test "render_work_pending true produces render without host redraw bit" {
     try std.testing.expect(!intent.terminal_redraw);
     try std.testing.expect(intent.render_work_pending);
     try std.testing.expect(intent.needsRender());
-    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .no_frame));
+    try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .surface_idle));
 }
 
 test "present completion only follows terminal present reasons" {
@@ -1630,6 +1630,6 @@ test "render facts matrix separates host redraw terminal redraw and frame work" 
     for (cases) |case| {
         const needs_render_turn = case.host_redraw or case.terminal_redraw or case.frame_work;
         try std.testing.expectEqual(case.needs_render_turn, needs_render_turn);
-        try std.testing.expectEqual(case.reason, derivePresentReason(case.host_redraw, .no_frame));
+        try std.testing.expectEqual(case.reason, derivePresentReason(case.host_redraw, .surface_idle));
     }
 }

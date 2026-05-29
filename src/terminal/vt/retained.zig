@@ -104,7 +104,7 @@ fn requireResizeOk(status: i32) !void {
 fn scrollStateLocked(term: anytype) ScrollState {
     const info = surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset);
     return .{
-        .visible_rows = term.render.frame_layout.rows,
+        .visible_rows = term.render.surface_layout.rows,
         .scrollback_count = info.history_count,
         .scrollback_offset = term.vt_state.scrollback_offset,
         .alternate_screen = info.is_alternate_screen,
