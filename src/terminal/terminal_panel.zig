@@ -6,9 +6,9 @@ const Layout = @import("../window/layout.zig");
 const term_texture = @import("../window/term_texture.zig");
 const HostInput = @import("../input/input.zig").Input;
 const terminal_c = @import("c.zig").c;
-const runtime_progress = @import("runtime/progress.zig");
-const runtime_thread = @import("runtime/thread.zig");
-const fonts_linux = @import("runtime/fonts_linux.zig");
+const pty_pump = @import("pty/pump.zig");
+const pty_wait_thread = @import("pty/wait_thread.zig");
+const fonts_linux = @import("render/fonts_linux.zig");
 const pty_retained = @import("pty/retained.zig");
 const pty_session = @import("pty/session.zig");
 const render_retained = @import("render/retained.zig");
@@ -76,7 +76,7 @@ pub const TerminalPanel = struct {
     };
 
     term: HowlTerm,
-    progress: runtime_thread.State = .{},
+    progress: pty_wait_thread.State = .{},
     live: bool,
     term_texture: render_api.RenderSurface,
     conf: *const TerminalConfig,
@@ -146,7 +146,7 @@ pub const TerminalPanel = struct {
         self.term_texture.width = 0;
         self.term_texture.height = 0;
         self.progress.stop.store(true, .release);
-        runtime_thread.ackWake(self);
+        pty_wait_thread.ackWake(self);
         if (self.live) pty_session.kickWait(&self.term);
         if (self.progress.thread) |handle| handle.join();
         self.progress.thread = null;
@@ -342,18 +342,18 @@ pub const TerminalPanel = struct {
         return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
     }
 
-    pub fn driveProgress(self: *TerminalPanel, active: bool, now_ns: u64) runtime_progress.Outcome {
-        if (!active and !runtime_thread.wakePending(self) and !self.runtimeObligationDueNow(now_ns)) {
+    pub fn driveProgress(self: *TerminalPanel, active: bool, now_ns: u64) pty_pump.Outcome {
+        if (!active and !pty_wait_thread.wakePending(self) and !self.runtimeObligationDueNow(now_ns)) {
             return .{ .keep = false, .should_redraw = false, .alive = pty_session.isAlive(&self.term) };
         }
-        var outcome = runtime_progress.driveOnce(&self.term, now_ns);
+        var outcome = pty_pump.driveOnce(&self.term, now_ns);
         if (active and outcome.should_redraw) {
             if (clearHoveredLink(self)) outcome.should_redraw = true;
             _ = vt_surface.publishSource(&self.term, hoverDecoration(self));
             outcome.should_redraw = self.resetCursorBlinkActivity(InputWindow.nowNs()) or outcome.should_redraw;
         }
         self.applyPendingClipboardWrites();
-        runtime_thread.ackWake(self);
+        pty_wait_thread.ackWake(self);
         return outcome;
     }
 
@@ -439,7 +439,7 @@ pub const TerminalPanel = struct {
         self.syncInputFocus();
         try self.progress.init(self.input);
         self.progress.stop.store(false, .release);
-        const progress_thread = try std.Thread.spawn(.{}, runtime_thread.progressThreadMain, .{self});
+        const progress_thread = try std.Thread.spawn(.{}, pty_wait_thread.progressThreadMain, .{self});
         if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(progress_thread.getHandle(), "howl-term-host");
         self.progress.thread = progress_thread;
     }

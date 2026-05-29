@@ -5,7 +5,7 @@ const Config = @import("config/config.zig");
 const Input = @import("input/input.zig").Input;
 const InputWindow = @import("input/window.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
-const runtime_thread = @import("terminal/runtime/thread.zig");
+const pty_wait_thread = @import("terminal/pty/wait_thread.zig");
 const TerminalPanel = @import("terminal/terminal_panel.zig").TerminalPanel;
 const Window = @import("window/window.zig");
 
@@ -408,7 +408,7 @@ fn activeTabNeedsRenderTurn(tabs: []*TerminalPanel, active_tab_idx: TabIndex) bo
 
 fn tabsHavePendingWake(tabs: []*TerminalPanel) bool {
     for (tabs) |tab| {
-        if (runtime_thread.wakePending(tab)) return true;
+        if (pty_wait_thread.wakePending(tab)) return true;
     }
     return false;
 }
@@ -561,7 +561,7 @@ fn driveTerminalProgress(tabs: []*TerminalPanel, active_tab_idx: TabIndex, now_n
     return .{ .should_redraw = should_redraw, .keep_running = keep_running };
 }
 
-fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool, now_ns: u64) @import("terminal/runtime/progress.zig").Outcome {
+fn driveTabRuntimeTurn(tab: *TerminalPanel, active: bool, now_ns: u64) @import("terminal/pty/pump.zig").Outcome {
     return tab.driveProgress(active, now_ns);
 }
 

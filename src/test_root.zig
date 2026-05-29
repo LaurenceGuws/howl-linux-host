@@ -5,7 +5,7 @@ pub const Input = Host.Input;
 pub const Main = Host.Main;
 pub const TerminalC = Host.TerminalC;
 pub const TerminalPanel = Host.TerminalPanel;
-pub const Thread = Host.Thread;
+pub const PtyWaitThread = Host.PtyWaitThread;
 pub const Window = Host.Window;
 
 test {

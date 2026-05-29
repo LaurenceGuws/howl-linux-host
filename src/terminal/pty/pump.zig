@@ -1,5 +1,5 @@
-const feed_record = @import("../pty/feed_record.zig");
-const pty_session = @import("../pty/session.zig");
+const feed_record = @import("feed_record.zig");
+const pty_session = @import("session.zig");
 const terminal_term = @import("../term.zig");
 const vt_api = @import("../vt/abi.zig");
 const vt_retained = @import("../vt/retained.zig");

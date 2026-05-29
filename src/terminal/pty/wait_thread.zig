@@ -1,4 +1,4 @@
-const pty_session = @import("../pty/session.zig");
+const pty_session = @import("session.zig");
 const terminal_term = @import("../term.zig");
 const HostInput = @import("../../input/input.zig").Input;
 const window = @import("../../input/window.zig");
