@@ -55,24 +55,24 @@ pub const PreparedUpload = struct {
 pub const State = struct {
     frame_layout: FrameLayout,
     geometry_epoch: u64 = 0,
-    surface_text: c.HowlRenderSurfaceTextHandle,
+    text_session: c.HowlRenderTextSessionHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
     present_in_flight: ?PresentInFlight = null,
 
     pub fn init(
-        surface_text: c.HowlRenderSurfaceTextHandle,
+        text_session: c.HowlRenderTextSessionHandle,
         frame_layout: FrameLayout,
     ) State {
         return .{
             .frame_layout = frame_layout,
-            .surface_text = surface_text,
+            .text_session = text_session,
         };
     }
 
     pub fn deinit(self: *State) void {
         if (self.prepared_surface) |prepared| c.howl_render_prepared_surface_release(prepared);
         self.prepared_surface = null;
-        c.howl_render_surface_text_deinit(self.surface_text);
+        c.howl_render_text_session_deinit(self.text_session);
     }
 
     pub fn frameLayoutSync(self: *const State, next: FrameLayout) FrameLayoutSync {
@@ -89,7 +89,7 @@ pub const State = struct {
 
     pub fn syncFrameLayout(self: *State, layout: FrameLayout) void {
         self.commitFrameLayout(layout);
-        const geometry = c.howl_render_surface_text_sync_geometry(self.surface_text, .{
+        const geometry = c.howl_render_text_session_sync_geometry(self.text_session, .{
             .render_px = layout.render_px,
             .grid_px = layout.grid_px,
         });
@@ -102,7 +102,7 @@ pub const State = struct {
 
     pub fn pending(self: *const State, bootstrap_surface: bool) WorkState {
         var state = std.mem.zeroes(c.HowlRenderPendingState);
-        std.debug.assert(c.howl_render_surface_text_pending_state(self.surface_text, &state) == c.HOWL_RENDER_CALL_OK);
+        std.debug.assert(c.howl_render_text_session_pending_state(self.text_session, &state) == c.HOWL_RENDER_CALL_OK);
         return .{
             .source_pending = state.source_pending != 0,
             .prepare_pending = state.prepare_pending != 0,
@@ -154,7 +154,7 @@ pub const State = struct {
 
     pub fn prepare(self: *State) PrepareResult {
         var request = std.mem.zeroes(c.HowlRenderPrepareRequest);
-        switch (c.howl_render_surface_text_take_prepare_request(self.surface_text, &request)) {
+        switch (c.howl_render_text_session_take_prepare_request(self.text_session, &request)) {
             c.HOWL_RENDER_PREPARE_IDLE => {
                 self.releasePreparedSurface();
                 return .idle;
@@ -172,7 +172,7 @@ pub const State = struct {
     pub fn submit(self: *State, execution: *const c.HowlRenderSubmitExecution, result: *c.HowlRenderSubmitResult) SubmitResult {
         if (self.presentPending()) return .idle;
         var prepared: c.HowlRenderPreparedSurfaceHandle = null;
-        switch (c.howl_render_surface_text_take_submit_handle(self.surface_text, &prepared)) {
+        switch (c.howl_render_text_session_take_submit_handle(self.text_session, &prepared)) {
             c.HOWL_RENDER_SUBMIT_DECISION_IDLE => {
                 return .idle;
             },
@@ -235,7 +235,7 @@ pub const State = struct {
 
     fn prepareReady(self: *State, request: c.HowlRenderPrepareRequest) PrepareResult {
         var prepared: c.HowlRenderPreparedSurfaceHandle = null;
-        return switch (c.howl_render_surface_text_prepare_handle(self.surface_text, request, &prepared)) {
+        return switch (c.howl_render_text_session_prepare_handle(self.text_session, request, &prepared)) {
             c.HOWL_RENDER_PREPARE_IDLE => blk: {
                 self.releasePreparedSurface();
                 break :blk .idle;
@@ -260,7 +260,7 @@ pub const State = struct {
         std.debug.assert(info.snapshot_seq == request.snapshot_seq);
         std.debug.assert(info.dirty_epoch == request.dirty_epoch);
         std.debug.assert(info.geometry_epoch == request.geometry_epoch);
-        const publish_status = c.howl_render_surface_text_publish_prepared_handle(self.surface_text, prepared);
+        const publish_status = c.howl_render_text_session_publish_prepared_handle(self.text_session, prepared);
         std.debug.assert(publish_status == c.HOWL_RENDER_CALL_OK);
         self.releasePreparedSurface();
         assertPreparedSurfaceHandle(prepared);
@@ -271,7 +271,7 @@ pub const State = struct {
     fn submitHandle(self: *State, prepared: c.HowlRenderPreparedSurfaceHandle, execution: *const c.HowlRenderSubmitExecution, result: *c.HowlRenderSubmitResult) c.HowlRenderSubmitStatus {
         const current = self.prepared_surface orelse return c.HOWL_RENDER_SUBMIT_IDLE;
         std.debug.assert(prepared == current);
-        const status = c.howl_render_surface_text_submit_handle(self.surface_text, prepared, execution, result);
+        const status = c.howl_render_text_session_submit_handle(self.text_session, prepared, execution, result);
         if (status == c.HOWL_RENDER_SUBMIT_RENDERED) {
             self.forgetPreparedSurface();
         }
@@ -314,7 +314,7 @@ fn assertPreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) void
 }
 
 fn testState() State {
-    const handle = c.howl_render_surface_text_init(.{
+    const handle = c.howl_render_text_session_init(.{
         .surface_px = .{ .width = 100, .height = 80 },
         .font_size_px = 12,
     });

@@ -41,21 +41,21 @@ comptime {
     std.debug.assert(@offsetOf(c.HowlRenderPreparedSurfaceDiagnostics, "missing_glyphs") == @offsetOf(ExpectedPreparedSurfaceDiagnostics, "missing_glyphs"));
 }
 
-pub fn initSurfaceText(render_init: RenderInit) !c.HowlRenderSurfaceTextHandle {
+pub fn initTextSession(render_init: RenderInit) !c.HowlRenderTextSessionHandle {
     assertRenderInit(render_init);
-    const surface_text = c.howl_render_surface_text_init(.{
+    const text_session = c.howl_render_text_session_init(.{
         .surface_px = render_init.render_px,
         .font_size_px = render_init.font_size_px,
     }) orelse return error.RendererInitFailed;
-    errdefer c.howl_render_surface_text_deinit(surface_text);
-    if (!applyPrimaryFontPath(surface_text, render_init.primary_font_path)) return error.RenderConfigFailed;
-    if (!applyFallbackFontPaths(surface_text, render_init.fallback_font_paths)) return error.RenderConfigFailed;
-    if (!renderFontValid(surface_text)) return error.RenderConfigFailed;
-    return surface_text;
+    errdefer c.howl_render_text_session_deinit(text_session);
+    if (!applyPrimaryFontPath(text_session, render_init.primary_font_path)) return error.RenderConfigFailed;
+    if (!applyFallbackFontPaths(text_session, render_init.fallback_font_paths)) return error.RenderConfigFailed;
+    if (!renderFontValid(text_session)) return error.RenderConfigFailed;
+    return text_session;
 }
 
-pub fn initFrameLayout(surface_text: c.HowlRenderSurfaceTextHandle, render_init: RenderInit) !FrameLayout {
-    const layout: c.HowlRenderLayoutResult = c.howl_render_surface_text_derive_layout(surface_text, render_init.render_px, render_init.grid_px);
+pub fn initFrameLayout(text_session: c.HowlRenderTextSessionHandle, render_init: RenderInit) !FrameLayout {
+    const layout: c.HowlRenderLayoutResult = c.howl_render_text_session_derive_layout(text_session, render_init.render_px, render_init.grid_px);
     if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     return .{
         .render_px = render_init.render_px,
@@ -70,7 +70,7 @@ pub fn setFontSizePx(term: *Term, font_size_px: u16) bool {
     std.debug.assert(font_size_px > 0);
     term.mutex.lock();
     defer term.mutex.unlock();
-    return renderCallOk(c.howl_render_surface_text_set_font_size_px(term.render.surface_text, font_size_px));
+    return renderCallOk(c.howl_render_text_session_set_font_size_px(term.render.text_session, font_size_px));
 }
 
 pub fn deriveFrameLayout(term: *Term, request: FrameLayoutRequest) !FrameLayoutSync {
@@ -82,7 +82,7 @@ pub fn deriveFrameLayout(term: *Term, request: FrameLayoutRequest) !FrameLayoutS
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const layout: c.HowlRenderLayoutResult = c.howl_render_surface_text_derive_layout(term.render.surface_text, request.render_px, request.grid_px);
+    const layout: c.HowlRenderLayoutResult = c.howl_render_text_session_derive_layout(term.render.text_session, request.render_px, request.grid_px);
     if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
     const grid = layout.grid;
     const cell_px = layout.cell_px;
@@ -105,7 +105,7 @@ pub fn commitFrameLayout(term: *Term, layout: FrameLayout) void {
 pub fn setCursorBlinkVisible(term: *Term, visible: bool) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    return renderCallOk(c.howl_render_surface_text_set_cursor_blink_visible(term.render.surface_text, @intFromBool(visible)));
+    return renderCallOk(c.howl_render_text_session_set_cursor_blink_visible(term.render.text_session, @intFromBool(visible)));
 }
 
 pub fn pixelToCol(term: *const Term, pixel_x: i32) u16 {
@@ -139,22 +139,22 @@ fn assertRenderInit(render_init: RenderInit) void {
     std.debug.assert(render_init.fallback_font_paths.len <= max_fallback_font_paths);
 }
 
-fn applyPrimaryFontPath(surface_text: c.HowlRenderSurfaceTextHandle, font_path: ?[:0]const u8) bool {
-    const path = font_path orelse return renderCallOk(c.howl_render_surface_text_set_font_path(surface_text, null, 0));
-    if (path.len == 0) return renderCallOk(c.howl_render_surface_text_set_font_path(surface_text, null, 0));
-    return renderCallOk(c.howl_render_surface_text_set_font_path(surface_text, path.ptr, path.len));
+fn applyPrimaryFontPath(text_session: c.HowlRenderTextSessionHandle, font_path: ?[:0]const u8) bool {
+    const path = font_path orelse return renderCallOk(c.howl_render_text_session_set_font_path(text_session, null, 0));
+    if (path.len == 0) return renderCallOk(c.howl_render_text_session_set_font_path(text_session, null, 0));
+    return renderCallOk(c.howl_render_text_session_set_font_path(text_session, path.ptr, path.len));
 }
 
-fn applyFallbackFontPaths(surface_text: c.HowlRenderSurfaceTextHandle, paths: []const [:0]const u8) bool {
+fn applyFallbackFontPaths(text_session: c.HowlRenderTextSessionHandle, paths: []const [:0]const u8) bool {
     std.debug.assert(paths.len <= max_fallback_font_paths);
-    if (paths.len == 0) return renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(surface_text, null, 0));
+    if (paths.len == 0) return renderCallOk(c.howl_render_text_session_set_fallback_font_paths(text_session, null, 0));
     const path_count: u8 = @intCast(paths.len);
     var raw: [max_fallback_font_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_fallback_font_paths;
     var i: u8 = 0;
     while (i < path_count) : (i += 1) raw[i] = paths[i].ptr;
-    return renderCallOk(c.howl_render_surface_text_set_fallback_font_paths(surface_text, &raw, path_count));
+    return renderCallOk(c.howl_render_text_session_set_fallback_font_paths(text_session, &raw, path_count));
 }
 
-fn renderFontValid(surface_text: c.HowlRenderSurfaceTextHandle) bool {
-    return renderCallOk(c.howl_render_surface_text_is_valid_font(surface_text));
+fn renderFontValid(text_session: c.HowlRenderTextSessionHandle) bool {
+    return renderCallOk(c.howl_render_text_session_is_valid_font(text_session));
 }

@@ -415,7 +415,7 @@ pub const Context = struct {
         self.term.pty = .{ .launch = launch };
         self.term.session = term_init.session;
         self.term.vt = term_init.vt;
-        self.term.render = .init(term_init.surface_text, term_init.frame_layout);
+        self.term.render = .init(term_init.text_session, term_init.frame_layout);
         self.term.vt_state.title_buf = undefined;
         self.term.vt_state.title_len = 0;
         self.term.vt_state.output_scratch = undefined;
@@ -913,7 +913,7 @@ pub const Context = struct {
     }
 
     const TermInit = struct {
-        surface_text: terminal_c.HowlRenderSurfaceTextHandle,
+        text_session: terminal_c.HowlRenderTextSessionHandle,
         frame_layout: render_api.FrameLayout,
         session: terminal_c.HowlPtySessionHandle,
         vt: terminal_c.HowlVtHandle,
@@ -938,9 +938,9 @@ pub const Context = struct {
     }
 
     fn initTermState(conf: *const TerminalConfig, launch: pty_retained.LaunchConfig, render_init: render_api.RenderInit) !TermInit {
-        const surface_text = try render_api.initSurfaceText(render_init);
-        errdefer if (surface_text) |handle| terminal_c.howl_render_surface_text_deinit(handle);
-        const layout = try render_api.initFrameLayout(surface_text, render_init);
+        const text_session = try render_api.initTextSession(render_init);
+        errdefer if (text_session) |handle| terminal_c.howl_render_text_session_deinit(handle);
+        const layout = try render_api.initFrameLayout(text_session, render_init);
         const session_handle = try pty_session.initHandle(launch, layout.cols, layout.rows);
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
         const vt = try vt_api.initWithOptions(layout.rows, layout.cols, .{
@@ -951,7 +951,7 @@ pub const Context = struct {
         });
         errdefer if (vt) |handle| vt_api.deinit(handle);
         return .{
-            .surface_text = surface_text.?,
+            .text_session = text_session.?,
             .frame_layout = layout,
             .session = session_handle.?,
             .vt = vt.?,
