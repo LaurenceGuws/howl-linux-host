@@ -28,11 +28,10 @@ const font_size = @import("render/font_size.zig");
 const surface_layout = @import("render/surface_layout.zig");
 const term_input = @import("vt/input.zig");
 const terminal_links = @import("links.zig");
+const cursor_blink = @import("cursor_blink.zig");
 const terminal_scrollbar = @import("scrollbar.zig");
 const terminal_selection = @import("selection.zig");
 
-const cursor_blink_interval_ms: u64 = 600;
-const cursor_blink_interval_ns: u64 = cursor_blink_interval_ms * std.time.ns_per_ms;
 const default_history_capacity: u16 = 4096;
 const max_fallback_font_paths: u8 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
@@ -49,12 +48,6 @@ const VtInitOptions = struct {
         shape: CursorStyle,
         blink: bool,
     } = .{ .shape = .block, .blink = true },
-};
-
-const CursorBlinkPlan = struct {
-    visible: bool,
-    deadline_ns: u64,
-    changed: bool,
 };
 
 pub const Context = struct {
@@ -105,8 +98,7 @@ pub const Context = struct {
     selection_anchor: ?terminal_selection.SelectionCell,
     selection_drag_active: bool,
     hover_publish_pending: bool,
-    cursor_blink_visible: bool,
-    cursor_blink_deadline_ns: u64,
+    cursor_blink: cursor_blink.State,
 
     pub noinline fn init(
         self: *Context,
@@ -146,8 +138,7 @@ pub const Context = struct {
         self.selection_anchor = null;
         self.selection_drag_active = false;
         self.hover_publish_pending = false;
-        self.cursor_blink_visible = true;
-        self.cursor_blink_deadline_ns = 0;
+        self.cursor_blink = .{};
     }
 
     pub fn deinit(self: *Context) void {
@@ -325,19 +316,20 @@ pub const Context = struct {
     }
 
     pub fn syncCursorBlinkCadence(self: *Context, now_ns: u64) bool {
-        const plan = planCursorBlink(self.cursor_blink_visible, self.cursor_blink_deadline_ns, self.cursorBlinkShouldAnimate(), now_ns);
-        self.cursor_blink_deadline_ns = plan.deadline_ns;
+        const plan = self.cursor_blink.plan(self.cursorBlinkShouldAnimate(), now_ns);
         if (!plan.changed) return false;
-        return self.setCursorBlinkVisible(plan.visible);
+        if (!self.setCursorBlinkVisible(plan.visible)) return false;
+        self.cursor_blink.applyPlan(plan);
+        return true;
     }
 
     pub fn resetCursorBlinkActivity(self: *Context, now_ns: u64) bool {
-        self.cursor_blink_deadline_ns = nextCursorBlinkDeadline(now_ns);
-        return self.setCursorBlinkVisible(true);
+        if (!self.cursor_blink.resetActivity(now_ns)) return false;
+        return self.applyRenderCursorBlinkVisible(true);
     }
 
     pub fn nextCursorBlinkWaitMs(self: *Context, now_ns: u64) ?u32 {
-        return cursorBlinkWaitMs(self.cursor_blink_deadline_ns, self.cursorBlinkShouldAnimate(), now_ns);
+        return self.cursor_blink.waitMs(self.cursorBlinkShouldAnimate(), now_ns);
     }
 
     pub fn runtimeObligationDueNow(self: *Context, now_ns: u64) bool {
@@ -478,37 +470,14 @@ pub const Context = struct {
     }
 
     fn setCursorBlinkVisible(self: *Context, visible: bool) bool {
-        if (self.cursor_blink_visible == visible) return false;
-        if (!setRenderCursorBlinkVisible(&self.term, visible)) return false;
-        self.cursor_blink_visible = visible;
+        if (self.cursor_blink.visible == visible) return false;
+        if (!self.applyRenderCursorBlinkVisible(visible)) return false;
+        self.cursor_blink.visible = visible;
         return true;
     }
 
-    fn nextCursorBlinkDeadline(now_ns: u64) u64 {
-        return now_ns + cursor_blink_interval_ns;
-    }
-
-    fn cursorBlinkWaitMs(deadline_ns: u64, should_animate: bool, now_ns: u64) ?u32 {
-        if (!should_animate) return null;
-        const target_deadline_ns = if (deadline_ns == 0) nextCursorBlinkDeadline(now_ns) else deadline_ns;
-        const remaining_ns = target_deadline_ns -| now_ns;
-        const remaining_ms = @max(@as(u64, 1), remaining_ns / std.time.ns_per_ms);
-        return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
-    }
-
-    fn planCursorBlink(visible: bool, deadline_ns: u64, should_animate: bool, now_ns: u64) CursorBlinkPlan {
-        if (!should_animate) {
-            return .{ .visible = true, .deadline_ns = 0, .changed = !visible };
-        }
-        if (deadline_ns == 0) {
-            return .{ .visible = visible, .deadline_ns = nextCursorBlinkDeadline(now_ns), .changed = false };
-        }
-        if (now_ns < deadline_ns) {
-            return .{ .visible = visible, .deadline_ns = deadline_ns, .changed = false };
-        }
-        var next_deadline_ns = deadline_ns;
-        while (next_deadline_ns <= now_ns) next_deadline_ns +%= cursor_blink_interval_ns;
-        return .{ .visible = !visible, .deadline_ns = next_deadline_ns, .changed = true };
+    fn applyRenderCursorBlinkVisible(self: *Context, visible: bool) bool {
+        return setRenderCursorBlinkVisible(&self.term, visible);
     }
 
     const DriveResult = struct {
@@ -1109,13 +1078,12 @@ test "cursor activity pushes blink deadline while visible" {
         .selection_anchor = null,
         .selection_drag_active = false,
         .hover_publish_pending = false,
-        .cursor_blink_visible = true,
-        .cursor_blink_deadline_ns = 0,
+        .cursor_blink = .{},
     };
 
     try std.testing.expect(!context.resetCursorBlinkActivity(1234));
-    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink_interval_ns, context.cursor_blink_deadline_ns);
-    try std.testing.expect(context.cursor_blink_visible);
+    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.interval_ns, context.cursor_blink.deadline_ns);
+    try std.testing.expect(context.cursor_blink.visible);
 }
 
 test "text input fast path publishes text without pointer or UI operations" {
