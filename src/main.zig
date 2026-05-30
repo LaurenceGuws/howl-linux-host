@@ -75,7 +75,6 @@ const App = struct {
     terminal_input_admitted: bool,
     pending_terminal_present: ?Window.PresentToken,
     frame_pacing: FramePacing.State,
-    debug_turns: u8,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -113,7 +112,6 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
     }
     window.* = try createWindow(conf, options);
     window_created = true;
-    std.log.info("startup: window created", .{});
 
     const tab_bar = try std.heap.c_allocator.create(TabBar);
     tab_bar.* = .{};
@@ -132,14 +130,11 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         std.heap.c_allocator.destroy(active_tab_idx);
     }
     input.* = try initInput();
-    std.log.info("startup: input initialized", .{});
     input.window_state.initEventTypes();
     input.setBindings(Input.Bindings.Configured.init(conf));
 
     applyChildEnvironmentPolicy();
-    std.log.info("startup: opening tab", .{});
     try openTab(io, conf, input, feed_record_path, window, tabs, active_tab_idx);
-    std.log.info("startup: tab opened", .{});
 
     const duration_timer = InputWindow.startQuitTimer(options.duration_ms);
     defer InputWindow.stopQuitTimer(duration_timer);
@@ -156,10 +151,8 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         .terminal_input_admitted = false,
         .pending_terminal_present = null,
         .frame_pacing = FramePacing.State.init(),
-        .debug_turns = 0,
     };
     configureInputPolicies(&app);
-    std.log.info("startup: entering run loop", .{});
     try runLoop(&app);
 }
 
@@ -222,10 +215,7 @@ fn runLoopTurn(app: *App) !LoopAction {
 
     app.frame_pacing.beginTurn();
     const now_ns = InputWindow.nowNs();
-    const trace_turn = app.debug_turns < 12;
-
     const admission = computeLoopAdmission(app, now_ns);
-    if (trace_turn) std.log.info("loop[{d}]: admission wait={} wait_ms={?}", .{ app.debug_turns, admission.wait_for_window, admission.wait_ms });
     const event_action = pumpWindowEvents(app, admission);
     if (event_action == .quit) return .quit;
 
@@ -243,22 +233,14 @@ fn runLoopTurn(app: *App) !LoopAction {
         syncActiveBlinkCadence(app, InputWindow.nowNs()),
         activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
     );
-    if (trace_turn) std.log.info("loop[{d}]: redraw={} host_visual={} term_redraw={} keep={} render_pending={} intent host={} term={} render={}", .{ app.debug_turns, app.input.redraw_requested, host_mutations.input_outcome.host_visual_changed, terminal_progress.should_redraw, terminal_progress.keep_running, activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*), intent.host_redraw, intent.terminal_redraw, intent.render_work_pending });
     app.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
     if (!app.frame_pacing.renderPermission()) {
-        if (trace_turn) {
-            std.log.info("loop[{d}]: no render permission", .{app.debug_turns});
-            app.debug_turns += 1;
-        }
         return .continue_running;
     }
 
-    if (trace_turn) std.log.info("loop[{d}]: render begin", .{app.debug_turns});
     const frame = render(app);
     const present_plan = derivePresentPlan(frame, intent);
-    if (trace_turn) std.log.info("loop[{d}]: render step={s} prepared={} present_seq={d} needs_render_turn={} reason={s}", .{ app.debug_turns, @tagName(frame.turn.step), frame.turn.prepared, frame.turn.present_snapshot_seq, present_plan.needs_render_turn, @tagName(present_plan.reason) });
     _ = submitPresent(app, frame, present_plan);
-    if (trace_turn) app.debug_turns += 1;
     if (quitRequested(app)) |action| return action;
     try ensureActiveTabHealthy(app);
     return .continue_running;

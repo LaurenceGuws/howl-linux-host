@@ -56,12 +56,16 @@ const PublishAckOps = struct {
 };
 
 pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) render_c.HowlRenderVtSurfacePublishResult {
-    return publishSourceWith(term, hover, RealOps);
-}
-
-fn publishSourceWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) render_c.HowlRenderVtSurfacePublishResult {
     term.mutex.lock();
     defer term.mutex.unlock();
+    return publishSourceLockedWith(term, hover, RealOps);
+}
+
+pub fn publishSourceLocked(term: *terminal_term.Term, hover: ?HyperlinkHover) render_c.HowlRenderVtSurfacePublishResult {
+    return publishSourceLockedWith(term, hover, RealOps);
+}
+
+fn publishSourceLockedWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) render_c.HowlRenderVtSurfacePublishResult {
 
     const meta = Ops.visibleMeta(term.vt, term.vt_state.scrollback_offset);
     const slot = Ops.reserveSlot(term.render.text_session, meta.cols, meta.rows) catch return Ops.rejectPublish(term.render.text_session, meta.snapshot_seq);
@@ -564,7 +568,7 @@ test "publish rejects reserved slot when paired acquisition fails" {
     };
 
     var term = FakeTerm{};
-    const result = publishSourceWith(&term, null, FakeOps);
+    const result = publishSourceLockedWith(&term, null, FakeOps);
     try std.testing.expectEqual(render_c.HOWL_RENDER_CALL_FAILED, result.status);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.reject_calls);
     try std.testing.expectEqual(@as(u8, 0), FakeOps.commit_calls);
