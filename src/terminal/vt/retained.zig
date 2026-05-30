@@ -312,6 +312,10 @@ pub fn followLiveBottomLocked(term: anytype) bool {
 pub fn resize(term: anytype, rows: u16, cols: u16) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
+    try resizeLocked(term, rows, cols);
+}
+
+pub fn resizeLocked(term: anytype, rows: u16, cols: u16) !void {
     try requireResizeOk(c.howl_vt_terminal_resize(term.vt, rows, cols));
     clampScrollbackOffset(term, surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count);
 }
@@ -319,6 +323,10 @@ pub fn resize(term: anytype, rows: u16, cols: u16) !void {
 pub fn setCellPixelSize(term: anytype, width: u16, height: u16) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
+    try setCellPixelSizeLocked(term, width, height);
+}
+
+pub fn setCellPixelSizeLocked(term: anytype, width: u16, height: u16) !void {
     try requireOk(c.howl_vt_terminal_set_cell_pixel_size(term.vt, width, height));
 }
 

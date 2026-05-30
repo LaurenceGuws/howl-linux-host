@@ -292,9 +292,7 @@ fn quitRequested(app: *const App) ?LoopAction {
 }
 
 fn pumpWindowEvents(app: *App, admission: LoopAdmission) LoopAction {
-    std.log.info("pumpWindowEvents: begin wait={} wait_ms={?}", .{ admission.wait_for_window, admission.wait_ms });
     const signal = app.input.pumpWindow(admission.wait_for_window, admission.wait_ms);
-    std.log.info("pumpWindowEvents: end signal={s}", .{@tagName(signal)});
     return switch (signal) {
         .none => .continue_running,
         .quit => .quit,
@@ -302,22 +300,15 @@ fn pumpWindowEvents(app: *App, admission: LoopAdmission) LoopAction {
 }
 
 fn applyHostOwnedMutations(app: *App) !?HostMutations {
-    std.log.info("hostMutations: focus begin", .{});
     applyFocusChange(app);
-    std.log.info("hostMutations: bindings begin", .{});
     try drainBindingActions(app);
     if (quitRequested(app) != null) return null;
-    std.log.info("hostMutations: forward input begin", .{});
     const input_outcome = forwardTerminalInput(app);
-    std.log.info("hostMutations: resize begin", .{});
     _ = applyWindowResize(app);
-    std.log.info("hostMutations: end", .{});
     return .{ .input_outcome = input_outcome };
 }
 
 fn driveRuntimeProgress(app: *App) TerminalProgress {
-    std.log.info("runtimeProgress: begin", .{});
-    defer std.log.info("runtimeProgress: end", .{});
     return driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*, InputWindow.nowNs());
 }
 

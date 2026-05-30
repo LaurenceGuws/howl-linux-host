@@ -421,14 +421,7 @@ pub const Context = struct {
         self.term.session = term_init.session;
         self.term.vt = term_init.vt;
         self.term.render = .init(term_init.text_session, term_init.surface_layout);
-        self.term.vt_state.title_buf = undefined;
-        self.term.vt_state.title_len = 0;
-        self.term.vt_state.output_scratch = undefined;
-        self.term.vt_state.input_scratch = undefined;
-        self.term.vt_state.scrollback_offset = 0;
-        self.term.vt_state.focused = true;
-        self.term.vt_state.cursor_visible = true;
-        self.term.vt_state.cursor_blink = false;
+        self.term.vt_state = .{};
         self.term.mutex = .{};
         self.live = true;
         try vt_retained.setCellPixelSize(&self.term, term_init.surface_layout.cell_px.width, term_init.surface_layout.cell_px.height);
@@ -524,11 +517,15 @@ pub const Context = struct {
     }
 
     fn maybePublishSource(self: *Context, bootstrap_surface: bool, work: render_retained.WorkState) void {
-        self.maybeCommitGridResize();
+        self.maybeCommitGridResizeLocked();
         if (bootstrap_surface or !work.needsRenderSurface() or self.hover_publish_pending) {
             _ = vt_surface.publishSourceLocked(&self.term, terminal_links.hoverDecoration(self));
             self.hover_publish_pending = false;
         }
+    }
+
+    fn maybeCommitGridResizeLocked(self: *Context) void {
+        surface_layout.maybeCommitGridResizeLocked(self);
     }
 
     fn prepare(self: *Context) render_retained.PrepareResult {

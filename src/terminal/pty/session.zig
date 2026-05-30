@@ -102,6 +102,10 @@ pub fn stop(term: *terminal_term.Term) void {
 pub fn resize(term: *terminal_term.Term, cols: u16, rows: u16) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
+    try resizeLocked(term, cols, rows);
+}
+
+pub fn resizeLocked(term: *terminal_term.Term, cols: u16, rows: u16) !void {
     try requireResizeOk(c.howl_pty_session_resize(term.session, cols, rows));
 }
 

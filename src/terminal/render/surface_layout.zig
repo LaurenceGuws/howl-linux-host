@@ -87,6 +87,19 @@ pub fn maybeCommitGridResize(context: anytype) void {
     syncSurfaceLayout(context, surface_layout) catch return;
 }
 
+pub fn maybeCommitGridResizeLocked(context: anytype) void {
+    const surface_layout = blk: {
+        context.geometry.mutex.lock();
+        defer context.geometry.mutex.unlock();
+        if (context.geometry.pending_grid_px_w == context.geometry.grid_px_w and context.geometry.pending_grid_px_h == context.geometry.grid_px_h) return;
+        context.geometry.grid_px_w = context.geometry.pending_grid_px_w;
+        context.geometry.grid_px_h = context.geometry.pending_grid_px_h;
+        context.geometry.last_resize_ns = 0;
+        break :blk snapshotSurfaceLayoutLocked(&context.geometry);
+    };
+    syncSurfaceLayoutLocked(context, surface_layout) catch return;
+}
+
 pub fn syncSurfaceLayout(context: anytype, request: SurfaceLayoutRequest) !void {
     const sync = try deriveSurfaceLayout(&context.term, request);
     if (!sync.changed) return;
@@ -96,6 +109,17 @@ pub fn syncSurfaceLayout(context: anytype, request: SurfaceLayoutRequest) !void 
     }
     try vt_retained.setCellPixelSize(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
     commitSurfaceLayout(&context.term, sync.layout);
+}
+
+pub fn syncSurfaceLayoutLocked(context: anytype, request: SurfaceLayoutRequest) !void {
+    const sync = try deriveSurfaceLayoutLocked(&context.term, request);
+    if (!sync.changed) return;
+    if (sync.grid_changed) {
+        try pty_session.resizeLocked(&context.term, sync.layout.cols, sync.layout.rows);
+        try vt_retained.resizeLocked(&context.term, sync.layout.rows, sync.layout.cols);
+    }
+    try vt_retained.setCellPixelSizeLocked(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
+    commitSurfaceLayoutLocked(&context.term, sync.layout);
 }
 
 pub fn surfaceLayoutSnapshot(context: anytype) SurfaceLayoutRequest {
@@ -142,8 +166,34 @@ fn deriveSurfaceLayout(term: anytype, request: SurfaceLayoutRequest) !retained.S
     return term.render.surfaceLayoutSync(next);
 }
 
+fn deriveSurfaceLayoutLocked(term: anytype, request: SurfaceLayoutRequest) !retained.SurfaceLayoutSync {
+    std.debug.assert(request.render_px.width > 0);
+    std.debug.assert(request.render_px.height > 0);
+    std.debug.assert(request.grid_px.width > 0);
+    std.debug.assert(request.grid_px.height > 0);
+
+    const layout = c.howl_render_text_session_derive_layout(
+        term.render.text_session,
+        request.render_px,
+        request.grid_px,
+    );
+    if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
+    const next = retained.SurfaceLayout{
+        .render_px = request.render_px,
+        .grid_px = request.grid_px,
+        .cols = layout.grid.cols,
+        .rows = layout.grid.rows,
+        .cell_px = .{ .width = layout.cell_px.width, .height = layout.cell_px.height },
+    };
+    return term.render.surfaceLayoutSync(next);
+}
+
 fn commitSurfaceLayout(term: anytype, layout: retained.SurfaceLayout) void {
     term.mutex.lock();
     defer term.mutex.unlock();
+    term.render.syncSurfaceLayout(layout);
+}
+
+fn commitSurfaceLayoutLocked(term: anytype, layout: retained.SurfaceLayout) void {
     term.render.syncSurfaceLayout(layout);
 }

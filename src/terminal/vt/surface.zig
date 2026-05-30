@@ -66,7 +66,6 @@ pub fn publishSourceLocked(term: *terminal_term.Term, hover: ?HyperlinkHover) re
 }
 
 fn publishSourceLockedWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) render_c.HowlRenderVtSurfacePublishResult {
-
     const meta = Ops.visibleMeta(term.vt, term.vt_state.scrollback_offset);
     const slot = Ops.reserveSlot(term.render.text_session, meta.cols, meta.rows) catch return Ops.rejectPublish(term.render.text_session, meta.snapshot_seq);
 
