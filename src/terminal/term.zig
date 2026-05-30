@@ -25,6 +25,10 @@ pub const Mutex = struct {
     }
 
     pub fn lock(self: *Mutex) void {
+        self.lockFair();
+    }
+
+    pub fn lockFair(self: *Mutex) void {
         const ticket = self.lease();
         defer ticket.release();
         self.lockUnfair();
@@ -36,6 +40,10 @@ pub const Mutex = struct {
 
     pub fn lockUnfair(self: *Mutex) void {
         std.Io.Threaded.mutexLock(&self.data);
+    }
+
+    pub fn tryLockUnfair(self: *Mutex) bool {
+        return std.Io.Threaded.mutexTryLock(&self.data);
     }
 };
 

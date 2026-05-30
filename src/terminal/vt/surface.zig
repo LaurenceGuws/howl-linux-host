@@ -56,7 +56,7 @@ const PublishAckOps = struct {
 };
 
 pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) render_c.HowlRenderVtSurfacePublishResult {
-    term.mutex.lock();
+    term.mutex.lockFair();
     defer term.mutex.unlock();
     return publishSourceLockedWith(term, hover, RealOps);
 }

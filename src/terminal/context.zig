@@ -361,7 +361,7 @@ pub const Context = struct {
     }
 
     pub fn renderTurn(self: *Context) TurnResult {
-        self.term.mutex.lock();
+        self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         const publish_work = self.term.render.workState(bootstrap_surface);
@@ -388,13 +388,13 @@ pub const Context = struct {
     }
 
     pub fn notePresentSubmitted(self: *Context, snapshot_seq: u64, token: u64) void {
-        self.term.mutex.lock();
+        self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         self.term.render.notePresentSubmitted(snapshot_seq, token);
     }
 
     pub fn completePresent(self: *Context, token: u64) void {
-        self.term.mutex.lock();
+        self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         completePresentLockedWith(&self.term, token, VtPresentAckOps);
     }
@@ -457,13 +457,13 @@ pub const Context = struct {
 
     fn workState(self: *const Context) render_retained.WorkState {
         const mut: *Context = @constCast(self);
-        mut.term.mutex.lock();
+        mut.term.mutex.lockFair();
         defer mut.term.mutex.unlock();
         return self.term.render.workState(self.term_texture.host_surface_id == 0);
     }
 
     fn cursorBlinkShouldAnimate(self: *Context) bool {
-        self.term.mutex.lock();
+        self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         return self.window_focused and
             self.widget_focused and
@@ -496,7 +496,7 @@ pub const Context = struct {
     };
 
     fn driveRender(self: *Context, work: render_retained.WorkState) DriveResult {
-        self.term.mutex.lock();
+        self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         return self.driveRenderLocked(work);
     }
@@ -532,19 +532,19 @@ pub const Context = struct {
     }
 
     fn prepare(self: *Context) render_retained.PrepareResult {
-        self.term.mutex.lock();
+        self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         return self.term.render.prepare();
     }
 
     fn takePreparedUpload(self: *Context, upload_out: *render_retained.PreparedUpload) bool {
-        self.term.mutex.lock();
+        self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         return self.term.render.preparedUpload(upload_out);
     }
 
     fn submitPrepared(self: *Context) SubmitPreparedResult {
-        self.term.mutex.lock();
+        self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         return self.submitPreparedLocked();
     }
@@ -589,7 +589,7 @@ pub const Context = struct {
     };
 
     fn submit(self: *Context, execution: *const render_c.HowlRenderSubmitExecution, result: *render_c.HowlRenderSubmitResult) render_retained.SubmitResult {
-        self.term.mutex.lock();
+        self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         return self.term.render.submit(execution, result);
     }
@@ -843,7 +843,7 @@ fn deinitVt(handle: vt_c.HowlVtHandle) void {
 }
 
 fn setRenderCursorBlinkVisible(term: *HowlTerm, visible: bool) bool {
-    term.mutex.lock();
+    term.mutex.lockFair();
     defer term.mutex.unlock();
     return renderCallOk(render_c.howl_render_text_session_set_cursor_blink_visible(term.render.text_session, @intFromBool(visible)));
 }
@@ -994,7 +994,7 @@ const WindowClipboardOps = struct {
 
 fn applyPendingClipboardWrite(term: anytype, policy: ClipboardOsc52Policy, comptime Ops: type) void {
     const mut = @constCast(term);
-    mut.mutex.lock();
+    mut.mutex.lockFair();
     defer mut.mutex.unlock();
 
     const pending = Ops.drainPendingClipboardLocked(mut) catch return;

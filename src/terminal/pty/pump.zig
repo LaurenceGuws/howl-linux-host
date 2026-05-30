@@ -61,7 +61,7 @@ const RealOps = struct {
 };
 
 fn progressRuntimeLocked(term: *terminal_term.Term, now_ns: u64) RuntimeProgress {
-    term.mutex.lock();
+    term.mutex.lockFair();
     defer term.mutex.unlock();
 
     const obligation = vt_retained.queryRuntimeObligationLocked(term, now_ns) catch return .{ .state_changed = false, .pending_now = false, .deadline_ns = 0 };
@@ -80,7 +80,9 @@ fn progressRuntimeLocked(term: *terminal_term.Term, now_ns: u64) RuntimeProgress
 fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPumpMode) TransportProgress {
     const limits = pty_session.transportLimits(mode);
     std.debug.assert(limits.chunk_bytes == pty_session.transport_chunk_bytes);
-    term.mutex.lock();
+    const lease = term.mutex.lease();
+    defer lease.release();
+    term.mutex.lockUnfair();
     defer term.mutex.unlock();
 
     const outbound = pty_session.pumpOutboundLocked(term);
