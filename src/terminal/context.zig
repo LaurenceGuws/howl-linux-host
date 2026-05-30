@@ -24,12 +24,12 @@ const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const CursorStyle = @import("../config/terminal.zig").CursorStyle;
 const ClipboardOsc52Policy = @import("../config/terminal.zig").ClipboardOsc52Policy;
-const LinkHoverPolicy = @import("../config/terminal.zig").LinkHoverPolicy;
-const LinkUnderlineStyle = @import("../config/terminal.zig").LinkUnderlineStyle;
 const font_size = @import("render/font_size.zig");
 const surface_layout = @import("render/surface_layout.zig");
 const term_input = @import("vt/input.zig");
+const terminal_links = @import("links.zig");
 const terminal_scrollbar = @import("scrollbar.zig");
+const terminal_selection = @import("selection.zig");
 
 const cursor_blink_interval_ms: u64 = 600;
 const cursor_blink_interval_ns: u64 = cursor_blink_interval_ms * std.time.ns_per_ms;
@@ -55,16 +55,6 @@ const CursorBlinkPlan = struct {
     visible: bool,
     deadline_ns: u64,
     changed: bool,
-};
-
-const HoveredLinkCell = struct {
-    row: u16,
-    col: u16,
-};
-
-const SelectionCell = struct {
-    row: i32,
-    col: u16,
 };
 
 pub const Context = struct {
@@ -94,6 +84,8 @@ pub const Context = struct {
         present_snapshot_seq: u64,
     };
 
+    pub const MouseHandlingOutcome = terminal_selection.MouseHandlingOutcome;
+
     term: HowlTerm,
     progress: pty_wait_thread.State = .{},
     live: bool,
@@ -109,8 +101,8 @@ pub const Context = struct {
     widget_focused: bool,
     scrollbar: terminal_scrollbar.State,
     link_cursor_active: bool,
-    hovered_link_cell: ?HoveredLinkCell,
-    selection_anchor: ?SelectionCell,
+    hovered_link_cell: ?terminal_links.HoveredLinkCell,
+    selection_anchor: ?terminal_selection.SelectionCell,
     selection_drag_active: bool,
     hover_publish_pending: bool,
     cursor_blink_visible: bool,
@@ -296,7 +288,7 @@ pub const Context = struct {
     pub fn setWindowFocused(self: *Context, focused: bool) void {
         if (self.window_focused == focused) return;
         self.window_focused = focused;
-        if (!focused and clearHoveredLink(self)) self.input.requestRedraw();
+        if (!focused and terminal_links.clearHoveredLink(self)) self.input.requestRedraw();
         terminal_scrollbar.setFocused(self, focused);
         self.syncInputFocus();
     }
@@ -304,7 +296,7 @@ pub const Context = struct {
     pub fn setWidgetFocused(self: *Context, focused: bool) void {
         if (self.widget_focused == focused) return;
         self.widget_focused = focused;
-        if (!focused and clearHoveredLink(self)) self.input.requestRedraw();
+        if (!focused and terminal_links.clearHoveredLink(self)) self.input.requestRedraw();
         terminal_scrollbar.invalidate(self);
         self.syncInputFocus();
     }
@@ -367,8 +359,8 @@ pub const Context = struct {
         }
         var outcome = pty_pump.driveOnce(&self.term, now_ns);
         if (active and outcome.should_redraw) {
-            if (clearHoveredLink(self)) outcome.should_redraw = true;
-            _ = vt_surface.publishSource(&self.term, hoverDecoration(self));
+            if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
+            _ = vt_surface.publishSource(&self.term, terminal_links.hoverDecoration(self));
             outcome.should_redraw = self.resetCursorBlinkActivity(InputWindow.nowNs()) or outcome.should_redraw;
         }
         self.applyPendingClipboardWrites();
@@ -557,7 +549,7 @@ pub const Context = struct {
     fn maybePublishSource(self: *Context, bootstrap_surface: bool, work: render_retained.WorkState) void {
         self.maybeCommitGridResize();
         if (bootstrap_surface or !work.needsRenderSurface() or self.hover_publish_pending) {
-            _ = vt_surface.publishSource(&self.term, hoverDecoration(self));
+            _ = vt_surface.publishSource(&self.term, terminal_links.hoverDecoration(self));
             self.hover_publish_pending = false;
         }
     }
@@ -675,68 +667,7 @@ pub const Context = struct {
         }) catch false;
     }
 
-    const MouseHandlingOutcome = struct {
-        consumed: bool,
-        host_visual_changed: bool,
-    };
-
-    fn handleHostLinkMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
-        switch (mouse_event.kind) {
-            .move => return .{ .consumed = false, .host_visual_changed = updateHoveredLinkCell(self, mouse_event) },
-            .press => {
-                if (mouse_event.button == .left and mouse_event.mods.ctrl and self.conf.link_open == .system) {
-                    if (openLinkAtCell(self, mouseEventCell(self, mouse_event))) {
-                        return .{ .consumed = true, .host_visual_changed = false };
-                    }
-                }
-            },
-            else => {},
-        }
-        return .{ .consumed = false, .host_visual_changed = false };
-    }
-
-    fn handleHostSelectionMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
-        switch (mouse_event.kind) {
-            .press => {
-                if (mouse_event.button != .left or mouse_event.mods.ctrl) return .{ .consumed = false, .host_visual_changed = false };
-                if (terminalOwnsMouse(self, mouse_event)) return .{ .consumed = false, .host_visual_changed = false };
-                self.selection_anchor = selectionEventCell(self, mouse_event);
-                self.selection_drag_active = false;
-                return .{ .consumed = true, .host_visual_changed = false };
-            },
-            .move => {
-                if (self.selection_anchor == null or !mouse_event.buttons_down.left) return .{ .consumed = false, .host_visual_changed = false };
-                const anchor = self.selection_anchor.?;
-                const cell = selectionEventCell(self, mouse_event);
-                if (!self.selection_drag_active) {
-                    if (anchor.row == cell.row and anchor.col == cell.col) {
-                        return .{ .consumed = true, .host_visual_changed = false };
-                    }
-                    vt_retained.startSelection(&self.term, anchor.row, anchor.col) catch return .{ .consumed = false, .host_visual_changed = false };
-                    self.selection_drag_active = true;
-                }
-                vt_retained.updateSelection(&self.term, cell.row, cell.col) catch return .{ .consumed = false, .host_visual_changed = false };
-                return .{ .consumed = true, .host_visual_changed = true };
-            },
-            .release => {
-                if (mouse_event.button != .left) return .{ .consumed = false, .host_visual_changed = false };
-                if (self.selection_anchor == null) return .{ .consumed = false, .host_visual_changed = false };
-                if (!self.selection_drag_active) {
-                    self.selection_anchor = null;
-                    return .{ .consumed = true, .host_visual_changed = false };
-                }
-                const cell = selectionEventCell(self, mouse_event);
-                vt_retained.updateSelection(&self.term, cell.row, cell.col) catch return .{ .consumed = false, .host_visual_changed = false };
-                vt_retained.finishSelection(&self.term) catch return .{ .consumed = false, .host_visual_changed = false };
-                self.selection_anchor = null;
-                self.selection_drag_active = false;
-                return .{ .consumed = true, .host_visual_changed = true };
-            },
-            else => return .{ .consumed = false, .host_visual_changed = false },
-        }
-    }
-
-    fn terminalOwnsMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
+    pub fn terminalOwnsMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
         return term_input.wouldReportMouse(&self.term, .{
             .kind = term_input.mouseKind(mouse_event.kind),
             .button = term_input.mouseButton(mouse_event.button),
@@ -749,41 +680,12 @@ pub const Context = struct {
         });
     }
 
-    fn updateHoveredLinkCell(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
-        if (self.conf.link_hover == .off or !mouse_event.mods.ctrl) {
-            if (clearHoveredLink(self)) {
-                self.hover_publish_pending = true;
-                return true;
-            }
-            return false;
-        }
+    pub fn pixelToTerminalCol(self: *const Context, pixel_x: i32) u16 {
+        return pixelToCol(&self.term, pixel_x);
+    }
 
-        const cell = mouseEventCell(self, mouse_event);
-        const uri = vt_retained.copyVisibleHyperlinkAt(&self.term, cell.row, cell.col) catch null;
-        if (uri == null or uri.?.len == 0) {
-            if (clearHoveredLink(self)) {
-                self.hover_publish_pending = true;
-                return true;
-            }
-            return false;
-        }
-
-        var changed = false;
-        if (self.hovered_link_cell) |current| {
-            if (current.row != cell.row or current.col != cell.col) {
-                self.hovered_link_cell = cell;
-                changed = true;
-            }
-        } else {
-            self.hovered_link_cell = cell;
-            changed = true;
-        }
-        changed = syncLinkCursor(self, true) or changed;
-        if (changed) {
-            self.hover_publish_pending = true;
-            return true;
-        }
-        return false;
+    pub fn pixelToTerminalRow(self: *const Context, pixel_y: i32) i32 {
+        return pixelToRow(&self.term, pixel_y);
     }
 
     const ScrollMouseOutcome = struct {
@@ -838,7 +740,7 @@ pub const Context = struct {
         }
 
         fn clearHoveredLinkOp(self: *Context) bool {
-            return clearHoveredLink(self);
+            return terminal_links.clearHoveredLink(self);
         }
 
         fn handleWheelFallback(self: *Context, local_mouse: HostInput.Mouse.Event) bool {
@@ -855,83 +757,13 @@ pub const Context = struct {
         }
 
         fn handleHostSelectionMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
-            return self.handleHostSelectionMouse(mouse_event);
+            return terminal_selection.handleMouse(self, mouse_event);
         }
 
         fn handleHostLinkMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
-            return self.handleHostLinkMouse(mouse_event);
+            return terminal_links.handleMouse(self, mouse_event);
         }
     };
-
-    fn clearHoveredLink(self: *Context) bool {
-        const had_hover = self.hovered_link_cell != null;
-        self.hovered_link_cell = null;
-        return syncLinkCursor(self, false) or had_hover;
-    }
-
-    fn syncLinkCursor(self: *Context, active: bool) bool {
-        const wants_cursor = switch (self.conf.link_hover) {
-            .cursor, .underline_and_cursor => active,
-            .off, .underline => false,
-        };
-        if (self.link_cursor_active == wants_cursor) return false;
-        if (wants_cursor) {
-            window.usePointerCursor();
-        } else {
-            window.useDefaultCursor();
-        }
-        self.link_cursor_active = wants_cursor;
-        return true;
-    }
-
-    fn openLinkAtCell(self: *Context, cell: HoveredLinkCell) bool {
-        const uri = vt_retained.copyVisibleHyperlinkAt(&self.term, cell.row, cell.col) catch return false;
-        const target = uri orelse return false;
-        if (target.len == 0) return false;
-        return window.openUrl(target);
-    }
-
-    fn mouseEventCell(self: *Context, mouse_event: HostInput.Mouse.Event) HoveredLinkCell {
-        return .{
-            .row = @intCast(pixelToRow(&self.term, mouse_event.pixel_y)),
-            .col = pixelToCol(&self.term, mouse_event.pixel_x),
-        };
-    }
-
-    fn selectionEventCell(self: *Context, mouse_event: HostInput.Mouse.Event) SelectionCell {
-        const row = pixelToRow(&self.term, mouse_event.pixel_y);
-        const scrollback_offset: i32 = @intCast(self.term.vt_state.scrollback_offset);
-        return .{
-            .row = row - scrollback_offset,
-            .col = pixelToCol(&self.term, mouse_event.pixel_x),
-        };
-    }
-
-    fn hoverDecoration(self: *const Context) ?vt_surface.HyperlinkHover {
-        const cell = self.hovered_link_cell orelse return null;
-        if (!hoverShowsUnderline(self.conf.link_hover)) return null;
-        return .{
-            .row = cell.row,
-            .col = cell.col,
-            .underline_style = underlineStyleValue(self.conf.link_underline),
-        };
-    }
-
-    fn hoverShowsUnderline(policy: LinkHoverPolicy) bool {
-        return switch (policy) {
-            .underline, .underline_and_cursor => true,
-            .off, .cursor => false,
-        };
-    }
-
-    fn underlineStyleValue(style: LinkUnderlineStyle) u8 {
-        return switch (style) {
-            .straight => 0,
-            .curly => 2,
-            .dotted => 3,
-            .dashed => 4,
-        };
-    }
 
     const TermInit = struct {
         text_session: render_c.HowlRenderTextSessionHandle,
