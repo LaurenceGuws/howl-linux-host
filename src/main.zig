@@ -8,6 +8,7 @@ const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("tab_bar/slots.zig").Slots;
 const pty_wait_thread = @import("terminal/pty/wait_thread.zig");
 const TerminalContext = @import("terminal/context.zig").Context;
+const FramePacing = @import("window/pacing.zig");
 const Window = @import("window/window.zig");
 
 pub const Options = cli_args.Options;
@@ -24,10 +25,7 @@ const LoopAction = enum {
     quit,
 };
 
-const LoopPending = struct {
-    owner_work: bool,
-    runtime_wake: bool,
-};
+const LoopPending = FramePacing.Pending;
 
 const TerminalProgress = struct {
     should_redraw: bool,
@@ -59,7 +57,7 @@ const RenderFrame = struct {
     snapshot: RenderSnapshot,
 };
 
-const PresentReason = enum { none, host_damage, terminal_frame, terminal_retire };
+const PresentReason = FramePacing.PresentReason;
 
 const PresentPlan = struct { reason: PresentReason, needs_render_turn: bool };
 
@@ -67,74 +65,6 @@ const PresentSubmission = struct {
     reason: PresentReason,
     submitted: bool,
     token: ?Window.PresentToken,
-};
-
-const FramePacingState = struct {
-    redraw_requested: bool,
-    render_work_pending: bool,
-    frame_permit_ready: bool,
-    present_in_flight: bool,
-    present_complete_pending: bool,
-
-    fn init() FramePacingState {
-        return .{
-            .redraw_requested = false,
-            .render_work_pending = false,
-            .frame_permit_ready = true,
-            .present_in_flight = false,
-            .present_complete_pending = false,
-        };
-    }
-
-    fn beginTurn(self: *FramePacingState) void {
-        if (self.present_complete_pending) assert(self.present_in_flight);
-    }
-
-    fn noteRedrawAndRenderWork(self: *FramePacingState, redraw_requested: bool, render_work_pending: bool) void {
-        self.redraw_requested = self.redraw_requested or redraw_requested;
-        self.render_work_pending = render_work_pending;
-    }
-
-    fn notePresentComplete(self: *FramePacingState) void {
-        self.present_complete_pending = false;
-        self.present_in_flight = false;
-        self.frame_permit_ready = true;
-    }
-
-    fn shouldWaitForWindow(self: FramePacingState, pending: LoopPending, runtime_admission: bool) bool {
-        if (pending.owner_work) return false;
-        if (runtime_admission) return false;
-        if (pending.runtime_wake) return false;
-        if (self.present_complete_pending) return false;
-        if (self.renderPermission()) return false;
-        return true;
-    }
-
-    fn renderPermission(self: FramePacingState) bool {
-        if (!self.frame_permit_ready) return false;
-        if (self.redraw_requested) return true;
-        if (self.render_work_pending) return true;
-        return false;
-    }
-
-    fn presentSubmissionPermission(self: FramePacingState, reason: PresentReason) bool {
-        switch (reason) {
-            .none, .terminal_retire => return false,
-            .host_damage, .terminal_frame => {},
-        }
-        if (!self.frame_permit_ready) return false;
-        if (self.present_in_flight) return false;
-        return true;
-    }
-
-    fn noteRenderSubmitted(self: *FramePacingState, submission: PresentSubmission) void {
-        if (submission.submitted) {
-            self.present_in_flight = true;
-            self.present_complete_pending = true;
-            self.frame_permit_ready = false;
-        }
-        self.redraw_requested = false;
-    }
 };
 
 const App = struct {
@@ -148,7 +78,7 @@ const App = struct {
     input: *Input,
     terminal_input_admitted: bool,
     pending_terminal_present: ?Window.PresentToken,
-    frame_pacing: FramePacingState,
+    frame_pacing: FramePacing.State,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -224,7 +154,7 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         .input = input,
         .terminal_input_admitted = false,
         .pending_terminal_present = null,
-        .frame_pacing = FramePacingState.init(),
+        .frame_pacing = FramePacing.State.init(),
     };
     configureInputPolicies(&app);
     try runLoop(&app);
@@ -569,7 +499,10 @@ fn submitPresent(app: *App, frame: RenderFrame, plan: PresentPlan) PresentSubmis
     else
         PresentSubmission{ .reason = .none, .submitted = false, .token = null };
     recordPresentSubmission(app, frame, submission);
-    app.frame_pacing.noteRenderSubmitted(submission);
+    app.frame_pacing.noteRenderSubmitted(.{
+        .reason = submission.reason,
+        .submitted = submission.submitted,
+    });
     return submission;
 }
 
@@ -636,122 +569,6 @@ fn completeTerminalPresent(tabs: anytype, token: Window.PresentToken) void {
     for (tabs) |tab| tab.completePresent(token);
 }
 
-test "redraw request is not frame permit" {
-    const pending = LoopPending{
-        .owner_work = false,
-        .runtime_wake = false,
-    };
-    var pacing = FramePacingState.init();
-    pacing.frame_permit_ready = false;
-    pacing.noteRedrawAndRenderWork(true, false);
-    try std.testing.expect(pacing.shouldWaitForWindow(pending, false));
-    try std.testing.expect(!pacing.renderPermission());
-}
-
-test "runtime wake is not frame permit" {
-    const pending = LoopPending{
-        .owner_work = false,
-        .runtime_wake = true,
-    };
-    var pacing = FramePacingState.init();
-    pacing.frame_permit_ready = false;
-
-    try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
-    try std.testing.expect(!pacing.renderPermission());
-}
-
-test "runtime wake participates in wait admission" {
-    const pending = LoopPending{
-        .owner_work = false,
-        .runtime_wake = true,
-    };
-    const pacing = FramePacingState.init();
-    try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
-}
-
-test "terminal render work is not frame permit" {
-    const pending = LoopPending{
-        .owner_work = false,
-        .runtime_wake = false,
-    };
-    var pacing = FramePacingState.init();
-    pacing.frame_permit_ready = false;
-    pacing.noteRedrawAndRenderWork(false, true);
-
-    try std.testing.expect(pacing.shouldWaitForWindow(pending, false));
-    try std.testing.expect(!pacing.renderPermission());
-}
-
-test "frame work participates in wait admission through frame pacer" {
-    const pending = LoopPending{
-        .owner_work = false,
-        .runtime_wake = false,
-    };
-    var pacing = FramePacingState.init();
-    pacing.noteRedrawAndRenderWork(false, true);
-    try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
-}
-
-test "render and present submission respect frame permit and in-flight state" {
-    var pacing = FramePacingState.init();
-    pacing.frame_permit_ready = false;
-    pacing.noteRedrawAndRenderWork(true, false);
-    try std.testing.expect(!pacing.renderPermission());
-    try std.testing.expect(!pacing.presentSubmissionPermission(.host_damage));
-
-    pacing.frame_permit_ready = true;
-    try std.testing.expect(pacing.renderPermission());
-    try std.testing.expect(pacing.presentSubmissionPermission(.host_damage));
-    try std.testing.expect(!pacing.presentSubmissionPermission(.none));
-    try std.testing.expect(!pacing.presentSubmissionPermission(.terminal_retire));
-
-    pacing.noteRenderSubmitted(.{ .reason = .host_damage, .submitted = true, .token = 1 });
-    try std.testing.expect(pacing.present_in_flight);
-    try std.testing.expect(!pacing.frame_permit_ready);
-    try std.testing.expect(!pacing.renderPermission());
-    try std.testing.expect(!pacing.presentSubmissionPermission(.host_damage));
-
-    pacing.notePresentComplete();
-    try std.testing.expect(!pacing.present_in_flight);
-    try std.testing.expect(pacing.frame_permit_ready);
-}
-
-test "present completion pending suppresses blocking while present is in flight" {
-    const pending = LoopPending{
-        .owner_work = false,
-        .runtime_wake = false,
-    };
-    var pacing = FramePacingState.init();
-
-    pacing.noteRenderSubmitted(.{ .reason = .terminal_frame, .submitted = true, .token = 9 });
-    try std.testing.expect(pacing.present_in_flight);
-    try std.testing.expect(pacing.present_complete_pending);
-    try std.testing.expect(!pacing.frame_permit_ready);
-    try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
-
-    pacing.notePresentComplete();
-    try std.testing.expect(!pacing.present_complete_pending);
-    try std.testing.expect(!pacing.present_in_flight);
-    try std.testing.expect(pacing.frame_permit_ready);
-}
-
-test "submitted present cannot make next turn block before completion drain" {
-    const pending = LoopPending{
-        .owner_work = false,
-        .runtime_wake = false,
-    };
-    var pacing = FramePacingState.init();
-
-    pacing.noteRedrawAndRenderWork(true, false);
-    try std.testing.expect(pacing.renderPermission());
-    try std.testing.expect(pacing.presentSubmissionPermission(.host_damage));
-    pacing.noteRenderSubmitted(.{ .reason = .host_damage, .submitted = true, .token = 10 });
-
-    pacing.beginTurn();
-    try std.testing.expect(!pacing.renderPermission());
-    try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
-}
-
 test "derivePresentReason matrix names host and terminal present cadence" {
     const cases = [_]struct {
         host_redraw: bool,
@@ -800,7 +617,7 @@ test "runtime obligation due-now is treated as immediate loop work" {
         .owner_work = false,
         .runtime_wake = tabsHavePendingRuntimeObligationWith(tabs[0..], 1234),
     };
-    const pacing = FramePacingState.init();
+    const pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
 }
 
@@ -1024,7 +841,7 @@ test "PTY publication admission keeps next turn non-blocking without present int
         .owner_work = false,
         .runtime_wake = false,
     };
-    const pacing = FramePacingState.init();
+    const pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, takeTerminalInputAdmission(&admitted)));
     try std.testing.expect(!input_outcome.host_visual_changed);
     try std.testing.expect(!takeTerminalInputAdmission(&admitted));
@@ -1071,7 +888,7 @@ test "forward terminal input drains text before pointer UI without present inten
     var admitted = false;
     admitted = admitted or outcome.published_to_pty;
     const pending = LoopPending{ .owner_work = false, .runtime_wake = false };
-    const pacing = FramePacingState.init();
+    const pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, takeTerminalInputAdmission(&admitted)));
     try std.testing.expect(!intent.needsRender());
     try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .surface_idle));
@@ -1094,7 +911,7 @@ test "runtime keepalive wake stays separate from host dirty" {
         .owner_work = false,
         .runtime_wake = true,
     };
-    const pacing = FramePacingState.init();
+    const pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
     try std.testing.expectEqual(PresentReason.none, derivePresentReason(false, .surface_idle));
 }
@@ -1122,7 +939,7 @@ test "keep_running true should_redraw false keeps host non-blocking without redr
     };
     const intent = deriveRedrawRenderIntent(false, false, progress, false, false);
 
-    const pacing = FramePacingState.init();
+    const pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
     try std.testing.expect(!intent.needsRender());
     try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .surface_idle));
