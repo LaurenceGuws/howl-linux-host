@@ -8,14 +8,34 @@ const vt_retained = @import("vt/retained.zig");
 pub const LifecycleState = pty_retained.LifecycleState;
 
 pub const Mutex = struct {
-    state: std.Io.Mutex = .init,
+    data: std.Io.Mutex = .init,
+    next: std.Io.Mutex = .init,
+
+    pub const Lease = struct {
+        mutex: *Mutex,
+
+        pub fn release(self: Lease) void {
+            std.Io.Threaded.mutexUnlock(&self.mutex.next);
+        }
+    };
+
+    pub fn lease(self: *Mutex) Lease {
+        std.Io.Threaded.mutexLock(&self.next);
+        return .{ .mutex = self };
+    }
 
     pub fn lock(self: *Mutex) void {
-        std.Io.Threaded.mutexLock(&self.state);
+        const ticket = self.lease();
+        defer ticket.release();
+        self.lockUnfair();
     }
 
     pub fn unlock(self: *Mutex) void {
-        std.Io.Threaded.mutexUnlock(&self.state);
+        std.Io.Threaded.mutexUnlock(&self.data);
+    }
+
+    pub fn lockUnfair(self: *Mutex) void {
+        std.Io.Threaded.mutexLock(&self.data);
     }
 };
 

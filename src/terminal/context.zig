@@ -113,8 +113,11 @@ pub const Context = struct {
     ) !void {
         initial(self, conf, input, render_width, render_height, logical_width, logical_height);
         errdefer self.deinit();
+        std.log.info("startup: context init term", .{});
         try self.initTerm();
+        std.log.info("startup: context start runtime", .{});
         try self.startRuntime(io, feed_record_path);
+        std.log.info("startup: context initialized", .{});
     }
 
     noinline fn initial(self: *Context, conf: *const TerminalConfig, input: *HostInput, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
@@ -361,10 +364,12 @@ pub const Context = struct {
     }
 
     pub fn renderTurn(self: *Context) TurnResult {
+        self.term.mutex.lock();
+        defer self.term.mutex.unlock();
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
-        const publish_work = self.workState();
+        const publish_work = self.term.render.workState(bootstrap_surface);
         self.maybePublishSource(bootstrap_surface, publish_work);
-        const work_before = self.workState();
+        const work_before = self.term.render.workState(bootstrap_surface);
         if (!work_before.needsRenderSurface()) {
             return .{
                 .work_before = work_before,
@@ -375,10 +380,10 @@ pub const Context = struct {
             };
         }
 
-        const drive_result = self.driveRender(work_before);
+        const drive_result = self.driveRenderLocked(work_before);
         return .{
             .work_before = work_before,
-            .work_after = self.workState(),
+            .work_after = self.term.render.workState(bootstrap_surface),
             .prepared = drive_result.prepared,
             .step = drive_result.step,
             .present_snapshot_seq = drive_result.present_snapshot_seq,
@@ -407,6 +412,7 @@ pub const Context = struct {
     }
 
     fn initTerm(self: *Context) !void {
+        std.log.info("startup: initTerm begin", .{});
         const surface_request = self.surfaceLayoutSnapshot();
         var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, self.conf.fonts);
         defer resolved_fonts.deinit(std.heap.c_allocator);
@@ -414,6 +420,7 @@ pub const Context = struct {
         const launch = launchConfig(self.conf);
         const render_init = renderInit(self, surface_request, &resolved_fonts);
         const term_init = try initTermState(self.conf, launch, render_init);
+        std.log.info("startup: initTerm state ready", .{});
         self.term.allocator = std.heap.c_allocator;
         self.term.pty = .{ .launch = launch };
         self.term.session = term_init.session;
@@ -431,12 +438,16 @@ pub const Context = struct {
         self.live = true;
         try vt_retained.setCellPixelSize(&self.term, term_init.surface_layout.cell_px.width, term_init.surface_layout.cell_px.height);
         self.term.render.syncSurfaceLayout(term_init.surface_layout);
+        std.log.info("startup: initTerm end", .{});
     }
 
     fn startRuntime(self: *Context, io: std.Io, feed_record_path: ?[]const u8) !void {
+        std.log.info("startup: startRuntime begin", .{});
         try vt_retained.resetTitleFromLaunch(&self.term);
         _ = try feed_record.start(&self.term, io, feed_record_path);
+        std.log.info("startup: pty start begin", .{});
         try pty_session.start(&self.term);
+        std.log.info("startup: pty start end alive={}", .{pty_session.isAlive(&self.term)});
         if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
         self.refreshTitle();
         self.syncInputFocus();
@@ -445,6 +456,7 @@ pub const Context = struct {
         const progress_thread = try std.Thread.spawn(.{}, pty_wait_thread.progressThreadMain, .{self});
         if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(progress_thread.getHandle(), "howl-term-host");
         self.progress.thread = progress_thread;
+        std.log.info("startup: startRuntime end", .{});
     }
 
     fn applyPendingClipboardWrites(self: *Context) void {
@@ -494,16 +506,22 @@ pub const Context = struct {
     };
 
     fn driveRender(self: *Context, work: render_retained.WorkState) DriveResult {
+        self.term.mutex.lock();
+        defer self.term.mutex.unlock();
+        return self.driveRenderLocked(work);
+    }
+
+    fn driveRenderLocked(self: *Context, work: render_retained.WorkState) DriveResult {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         std.debug.assert(work.bootstrap_surface == bootstrap_surface);
         return switch (renderAction(work, bootstrap_surface)) {
             .blocked_present => .{ .prepared = false, .step = .blocked_present, .present_snapshot_seq = 0 },
             .submit_pending => submitDriveResult(false, self.submitPrepared()),
             .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0 },
-            .prepare_or_idle => switch (self.prepare()) {
+            .prepare_or_idle => switch (self.term.render.prepare()) {
                 .idle => .{ .prepared = false, .step = .idle_prepare, .present_snapshot_seq = 0 },
                 .failed => .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0 },
-                .prepared => submitDriveResult(true, self.submitPrepared()),
+                .prepared => submitDriveResult(true, self.submitPreparedLocked()),
             },
         };
     }
@@ -536,10 +554,16 @@ pub const Context = struct {
     }
 
     fn submitPrepared(self: *Context) SubmitPreparedResult {
+        self.term.mutex.lock();
+        defer self.term.mutex.unlock();
+        return self.submitPreparedLocked();
+    }
+
+    fn submitPreparedLocked(self: *Context) SubmitPreparedResult {
         const start_ns = InputWindow.nowNs();
 
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
-        if (!self.takePreparedUpload(&upload)) return .{ .result = .failed, .snapshot_seq = 0 };
+        if (!self.term.render.preparedUpload(&upload)) return .{ .result = .failed, .snapshot_seq = 0 };
         defer upload.deinit();
         const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
             &.{}
@@ -562,7 +586,7 @@ pub const Context = struct {
             .uploads_committed = upload.buffer.uploads_committed,
             .render_us = renderUs(start_ns),
         };
-        const result = self.submit(&execution, &submit_result);
+        const result = self.term.render.submit(&execution, &submit_result);
         if (result == .rendered) {
             self.term_texture = submit_result.host_surface;
         }
