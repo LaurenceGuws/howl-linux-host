@@ -43,7 +43,7 @@ pub const Mutex = struct {
     }
 
     pub fn tryLockUnfair(self: *Mutex) bool {
-        return std.Io.Threaded.mutexTryLock(&self.data);
+        return self.data.tryLock();
     }
 };
 

@@ -164,16 +164,16 @@ pub fn kickWait(term: *terminal_term.Term) void {
     c.howl_pty_session_kick_wait(term.session);
 }
 
-pub fn pumpOutboundLocked(term: *terminal_term.Term) OutboundProgress {
+pub fn pumpOutboundLeased(term: *terminal_term.Term) OutboundProgress {
     const outbound = c.howl_pty_session_pump_outbound(term.session, 0);
     ptyRequireStructOk(outbound.status);
     return .{
         .drained_input_bytes = outbound.drained,
-        .pending_input_bytes = ptySessionPendingBytes(term.session),
+        .pending_input_bytes = 0,
     };
 }
 
-pub fn readTransportLocked(term: *terminal_term.Term, out: []u8) u32 {
+pub fn readTransportLeased(term: *terminal_term.Term, out: []u8) u32 {
     if (out.len == 0) return 0;
     const read = c.howl_pty_session_read(term.session, out.ptr, out.len);
     ptyRequireStructOk(read.status);
