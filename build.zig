@@ -25,6 +25,8 @@ const HostDeps = struct {
     howl_pty_c: *Module,
     howl_vt_c: *Module,
     howl_render_c: *Module,
+    sdl_c: *Module,
+    gl_c: *Module,
     sdl_include: Build.LazyPath,
     vendor_include: Build.LazyPath,
     sdl_lib: *Compile,
@@ -143,6 +145,8 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .howl_pty_c = translateCModule(b, b.path("src/howl_pty_c.h"), target, optimize, &.{howl_pty_include}),
         .howl_vt_c = translateCModule(b, b.path("src/howl_vt_c.h"), target, optimize, &.{howl_vt_include}),
         .howl_render_c = translateCModule(b, b.path("src/howl_render_c.h"), target, optimize, &.{howl_render_include}),
+        .sdl_c = translateCModule(b, b.path("src/window/sdl_c.h"), target, optimize, &.{sdl_include}),
+        .gl_c = translateCModule(b, b.path("src/window/gl_c.h"), target, optimize, &.{sdl_include}),
         .sdl_include = sdl_include,
         .sdl_lib = sdl_dep.artifact("SDL3"),
         .stb_image = b.path("src/window/stb_image.c"),
@@ -194,6 +198,8 @@ fn addHostCImports(module: *Module, deps: HostDeps) void {
     module.addImport("howl_pty_c", deps.howl_pty_c);
     module.addImport("howl_vt_c", deps.howl_vt_c);
     module.addImport("howl_render_c", deps.howl_render_c);
+    module.addImport("sdl_c", deps.sdl_c);
+    module.addImport("gl_c", deps.gl_c);
 }
 
 fn linkHostWindow(module: *Module, deps: HostDeps) void {

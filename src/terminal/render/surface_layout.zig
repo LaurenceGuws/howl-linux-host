@@ -1,5 +1,5 @@
 const std = @import("std");
-const window = @import("../../window/window.zig");
+const InputWindow = @import("../../input/window.zig");
 const c = @import("howl_render_c");
 const pty_session = @import("../pty/session.zig");
 const retained = @import("retained.zig");
@@ -70,7 +70,7 @@ pub fn resize(context: anytype, render_width: c_int, render_height: c_int, logic
     // into the PTY grid can falsely halve the visible row count.
     context.geometry.pending_grid_px_w = rw;
     context.geometry.pending_grid_px_h = rh;
-    context.geometry.last_resize_ns = window.c_win.SDL_GetTicksNS();
+    context.geometry.last_resize_ns = InputWindow.nowNs();
     terminal_scrollbar.invalidate(context);
 }
 

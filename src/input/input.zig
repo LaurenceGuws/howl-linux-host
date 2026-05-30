@@ -2,8 +2,9 @@ const std = @import("std");
 const keys = @import("keys.zig");
 const mouse = @import("mouse.zig");
 const window = @import("window.zig");
+const sdl_c = @import("sdl_c");
 
-const c = window.c_win;
+const c = sdl_c;
 const max_input_events = 256;
 const max_sdl_events_per_turn = max_input_events;
 

@@ -575,7 +575,7 @@ pub const Context = struct {
     }
 
     fn submitPrepared(self: *Context) SubmitPreparedResult {
-        const start_ns = window.c_win.SDL_GetTicksNS();
+        const start_ns = InputWindow.nowNs();
 
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.takePreparedUpload(&upload)) return .{ .result = .failed, .snapshot_seq = 0 };
@@ -620,7 +620,7 @@ pub const Context = struct {
     }
 
     fn renderUs(start_ns: u64) u64 {
-        const elapsed_ns = window.c_win.SDL_GetTicksNS() - start_ns;
+        const elapsed_ns = InputWindow.nowNs() - start_ns;
         return elapsed_ns / std.time.ns_per_us;
     }
 

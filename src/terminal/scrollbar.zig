@@ -1,4 +1,5 @@
 const std = @import("std");
+const InputWindow = @import("../input/window.zig");
 const vt_retained = @import("vt/retained.zig");
 const window = @import("../window/window.zig");
 const HostInput = @import("../input/input.zig").Input;
@@ -50,7 +51,7 @@ pub fn wantsPassiveHoverWake(self: anytype, origin_x: i32, origin_y: i32, logica
 }
 
 pub fn layout(self: anytype, texture_rect: window.Rect) window.ScrollbarLayout {
-    return self.scrollbar.layout(texture_rect, scrollbarView(vt_retained.scrollState(&self.term)), self.geometry.logical_w, self.geometry.logical_h, self.window_focused, window.c_win.SDL_GetTicksNS());
+    return self.scrollbar.layout(texture_rect, scrollbarView(vt_retained.scrollState(&self.term)), self.geometry.logical_w, self.geometry.logical_h, self.window_focused, InputWindow.nowNs());
 }
 
 fn setOffset(self: anytype, offset: u32) bool {

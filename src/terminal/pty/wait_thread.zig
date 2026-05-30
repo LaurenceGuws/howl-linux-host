@@ -1,7 +1,7 @@
 const pty_session = @import("session.zig");
 const terminal_term = @import("../term.zig");
 const HostInput = @import("../../input/input.zig").Input;
-const window = @import("../../input/window.zig");
+const InputWindow = @import("../../input/window.zig");
 const std = @import("std");
 
 const wait_slice_timeout_ms: i32 = 50;
@@ -9,19 +9,19 @@ const wait_slice_timeout_ms: i32 = 50;
 pub const State = struct {
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    wake_ack_sem: ?*window.c_win.SDL_Semaphore = null,
+    wake_ack_sem: ?InputWindow.WakeSemaphore = null,
     thread: ?std.Thread = null,
     wake_input: ?*HostInput = null,
 
     pub fn init(self: *State, wake_input: *HostInput) !void {
         self.wake_pending.store(false, .release);
         self.wake_input = wake_input;
-        self.wake_ack_sem = window.c_win.SDL_CreateSemaphore(0) orelse return error.ProgressSemaphoreUnavailable;
+        self.wake_ack_sem = InputWindow.createWakeSemaphore() orelse return error.ProgressSemaphoreUnavailable;
     }
 
     pub fn deinit(self: *State) void {
         const sem = self.wake_ack_sem orelse return;
-        window.c_win.SDL_DestroySemaphore(sem);
+        InputWindow.destroyWakeSemaphore(sem);
         self.wake_ack_sem = null;
         self.wake_input = null;
         self.wake_pending.store(false, .release);
@@ -96,7 +96,7 @@ fn signalWake(self: anytype, comptime Ops: type) void {
 
 fn signalWakeAck(self: anytype) void {
     const sem = self.progress.wake_ack_sem orelse return;
-    window.c_win.SDL_SignalSemaphore(sem);
+    InputWindow.signalWakeSemaphore(sem);
 }
 
 const RealOps = struct {
@@ -106,7 +106,7 @@ const RealOps = struct {
 
     fn waitWakeAck(self: anytype, timeout_ms: i32) void {
         const sem = self.progress.wake_ack_sem orelse return;
-        _ = window.c_win.SDL_WaitSemaphoreTimeout(sem, timeout_ms);
+        InputWindow.waitWakeSemaphore(sem, timeout_ms);
     }
 
     fn isAlive(term: *const terminal_term.Term) bool {
@@ -199,7 +199,7 @@ const FakeCtx = struct {
     progress: struct {
         stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-        wake_ack_sem: ?*window.c_win.SDL_Semaphore = null,
+        wake_ack_sem: ?InputWindow.WakeSemaphore = null,
         wake_input: ?*HostInput = null,
     } = .{},
 };

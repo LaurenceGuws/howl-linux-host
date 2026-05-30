@@ -1,9 +1,10 @@
 const std = @import("std");
-const builtin = @import("builtin");
-const Window = @import("../window/window.zig");
+const sdl_c = @import("sdl_c");
 
-pub const c_win = Window.c_win;
 const assert = std.debug.assert;
+
+pub const QuitTimer = sdl_c.SDL_TimerID;
+pub const WakeSemaphore = *sdl_c.SDL_Semaphore;
 
 pub const EventSignal = enum {
     none,
@@ -20,7 +21,7 @@ pub const State = struct {
 
     pub fn initEventTypes(self: *State) void {
         if (self.wake_event_type != 0) return;
-        const event_base = c_win.SDL_RegisterEvents(1);
+        const event_base = sdl_c.SDL_RegisterEvents(1);
         assert(event_base != std.math.maxInt(@TypeOf(event_base)));
         self.wake_event_type = event_base;
     }
@@ -50,32 +51,48 @@ pub const State = struct {
 
     fn pushEvent(self: *State, event_type: u32) bool {
         _ = self;
-        var event: c_win.SDL_Event = std.mem.zeroes(c_win.SDL_Event);
+        var event: sdl_c.SDL_Event = std.mem.zeroes(sdl_c.SDL_Event);
         event.type = event_type;
-        return c_win.SDL_PushEvent(&event);
+        return sdl_c.SDL_PushEvent(&event);
     }
 };
 
 pub fn nowNs() u64 {
-    return c_win.SDL_GetTicksNS();
+    return sdl_c.SDL_GetTicksNS();
 }
 
-pub fn startQuitTimer(duration_ms: ?u64) c_win.SDL_TimerID {
+pub fn startQuitTimer(duration_ms: ?u64) QuitTimer {
     if (duration_ms) |value| {
         assert(value <= std.math.maxInt(u32));
-        return c_win.SDL_AddTimer(@intCast(@max(value, 1)), quitTimer, null);
+        return sdl_c.SDL_AddTimer(@intCast(@max(value, 1)), quitTimer, null);
     }
     return 0;
 }
 
-pub fn stopQuitTimer(timer: c_win.SDL_TimerID) void {
+pub fn stopQuitTimer(timer: QuitTimer) void {
     if (timer == 0) return;
-    _ = c_win.SDL_RemoveTimer(timer);
+    _ = sdl_c.SDL_RemoveTimer(timer);
 }
 
-fn quitTimer(_: ?*anyopaque, _: c_win.SDL_TimerID, _: u32) callconv(.c) u32 {
-    var event: c_win.SDL_Event = std.mem.zeroes(c_win.SDL_Event);
-    event.type = c_win.SDL_EVENT_QUIT;
-    _ = c_win.SDL_PushEvent(&event);
+pub fn createWakeSemaphore() ?WakeSemaphore {
+    return sdl_c.SDL_CreateSemaphore(0);
+}
+
+pub fn destroyWakeSemaphore(sem: WakeSemaphore) void {
+    sdl_c.SDL_DestroySemaphore(sem);
+}
+
+pub fn signalWakeSemaphore(sem: WakeSemaphore) void {
+    _ = sdl_c.SDL_SignalSemaphore(sem);
+}
+
+pub fn waitWakeSemaphore(sem: WakeSemaphore, timeout_ms: i32) void {
+    _ = sdl_c.SDL_WaitSemaphoreTimeout(sem, timeout_ms);
+}
+
+fn quitTimer(_: ?*anyopaque, _: QuitTimer, _: u32) callconv(.c) u32 {
+    var event: sdl_c.SDL_Event = std.mem.zeroes(sdl_c.SDL_Event);
+    event.type = sdl_c.SDL_EVENT_QUIT;
+    _ = sdl_c.SDL_PushEvent(&event);
     return 0;
 }

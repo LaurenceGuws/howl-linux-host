@@ -2,18 +2,68 @@ const std = @import("std");
 const icon = @import("icon.zig");
 const Layout = @import("layout.zig");
 const Present = @import("present.zig");
+const gl_c = @import("gl_c");
+const sdl_c = @import("sdl_c");
 
-const c = @cImport({
-    @cInclude("SDL3/SDL.h");
-    @cInclude("SDL3/SDL_opengl.h");
-});
+var pointer_cursor: ?*sdl_c.SDL_Cursor = null;
 
-var pointer_cursor: ?*c.SDL_Cursor = null;
+const PresentC = struct {
+    pub const SDL_GL_CONTEXT_MAJOR_VERSION = sdl_c.SDL_GL_CONTEXT_MAJOR_VERSION;
+    pub const SDL_GL_CONTEXT_MINOR_VERSION = sdl_c.SDL_GL_CONTEXT_MINOR_VERSION;
+    pub const SDL_GL_CONTEXT_PROFILE_COMPATIBILITY = sdl_c.SDL_GL_CONTEXT_PROFILE_COMPATIBILITY;
+    pub const SDL_GL_CONTEXT_PROFILE_MASK = sdl_c.SDL_GL_CONTEXT_PROFILE_MASK;
+    pub const SDL_GLContext = sdl_c.SDL_GLContext;
+    pub const SDL_WINDOW_OPENGL = sdl_c.SDL_WINDOW_OPENGL;
+    pub const SDL_WINDOW_RESIZABLE = sdl_c.SDL_WINDOW_RESIZABLE;
+    pub const SDL_Window = sdl_c.SDL_Window;
 
-pub const c_win = c;
-pub const Ptr = *c.SDL_Window;
+    pub const GL_CLAMP_TO_EDGE = gl_c.GL_CLAMP_TO_EDGE;
+    pub const GL_COLOR_BUFFER_BIT = gl_c.GL_COLOR_BUFFER_BIT;
+    pub const GL_NEAREST = gl_c.GL_NEAREST;
+    pub const GL_PACK_ALIGNMENT = gl_c.GL_PACK_ALIGNMENT;
+    pub const GL_QUADS = gl_c.GL_QUADS;
+    pub const GL_RGBA = gl_c.GL_RGBA;
+    pub const GL_TEXTURE_2D = gl_c.GL_TEXTURE_2D;
+    pub const GL_TEXTURE_HEIGHT = gl_c.GL_TEXTURE_HEIGHT;
+    pub const GL_TEXTURE_MAG_FILTER = gl_c.GL_TEXTURE_MAG_FILTER;
+    pub const GL_TEXTURE_MIN_FILTER = gl_c.GL_TEXTURE_MIN_FILTER;
+    pub const GL_TEXTURE_WIDTH = gl_c.GL_TEXTURE_WIDTH;
+    pub const GL_TEXTURE_WRAP_S = gl_c.GL_TEXTURE_WRAP_S;
+    pub const GL_TEXTURE_WRAP_T = gl_c.GL_TEXTURE_WRAP_T;
+    pub const GL_UNSIGNED_BYTE = gl_c.GL_UNSIGNED_BYTE;
+
+    pub const SDL_GL_CreateContext = sdl_c.SDL_GL_CreateContext;
+    pub const SDL_GL_MakeCurrent = sdl_c.SDL_GL_MakeCurrent;
+    pub const SDL_GL_SetAttribute = sdl_c.SDL_GL_SetAttribute;
+    pub const SDL_GL_SetSwapInterval = sdl_c.SDL_GL_SetSwapInterval;
+    pub const SDL_GL_SwapWindow = sdl_c.SDL_GL_SwapWindow;
+    pub const SDL_GetWindowSizeInPixels = sdl_c.SDL_GetWindowSizeInPixels;
+
+    pub const glBegin = gl_c.glBegin;
+    pub const glBindTexture = gl_c.glBindTexture;
+    pub const glClear = gl_c.glClear;
+    pub const glClearColor = gl_c.glClearColor;
+    pub const glColor4f = gl_c.glColor4f;
+    pub const glCopyTexImage2D = gl_c.glCopyTexImage2D;
+    pub const glCopyTexSubImage2D = gl_c.glCopyTexSubImage2D;
+    pub const glDeleteTextures = gl_c.glDeleteTextures;
+    pub const glDisable = gl_c.glDisable;
+    pub const glEnable = gl_c.glEnable;
+    pub const glEnd = gl_c.glEnd;
+    pub const glGenTextures = gl_c.glGenTextures;
+    pub const glGetTexImage = gl_c.glGetTexImage;
+    pub const glGetTexLevelParameteriv = gl_c.glGetTexLevelParameteriv;
+    pub const glPixelStorei = gl_c.glPixelStorei;
+    pub const glReadPixels = gl_c.glReadPixels;
+    pub const glTexCoord2f = gl_c.glTexCoord2f;
+    pub const glTexParameteri = gl_c.glTexParameteri;
+    pub const glVertex2f = gl_c.glVertex2f;
+    pub const glViewport = gl_c.glViewport;
+};
+
+pub const Ptr = *sdl_c.SDL_Window;
 pub const Flags = c_uint;
-pub const RESIZABLE: Flags = @intCast(c.SDL_WINDOW_RESIZABLE);
+pub const RESIZABLE: Flags = @intCast(sdl_c.SDL_WINDOW_RESIZABLE);
 
 pub const Size = struct {
     width: c_int,
@@ -23,7 +73,7 @@ pub const Size = struct {
 pub const Rect = Layout.Rect;
 pub const ScrollbarLayout = Layout.ScrollbarLayout;
 pub const Frame = Layout.Frame;
-pub const PresentState = Present.State(c);
+pub const PresentState = Present.State(PresentC);
 pub const PresentProofSnapshot = Present.PresentProofSnapshot;
 pub const PresentToken = Present.PresentToken;
 
@@ -111,19 +161,19 @@ pub const State = struct {
     }
 
     pub fn submitPresent(self: *State, frame: Frame) PresentToken {
-        return Present.submitPresent(c, &self.present_state, frame);
+        return Present.submitPresent(PresentC, &self.present_state, frame);
     }
 
     pub fn drainPresentComplete(self: *State) ?PresentToken {
-        return Present.drainPresentComplete(c, &self.present_state);
+        return Present.drainPresentComplete(PresentC, &self.present_state);
     }
 
     pub fn requestPresentProof(self: *State) void {
-        Present.requestPresentProof(c, &self.present_state);
+        Present.requestPresentProof(PresentC, &self.present_state);
     }
 
     pub fn presentProofSnapshot(self: *const State) PresentProofSnapshot {
-        return Present.presentProofSnapshot(c, &self.present_state);
+        return Present.presentProofSnapshot(PresentC, &self.present_state);
     }
 
     pub fn setTitle(self: *State, title: []const u8) void {
@@ -153,97 +203,97 @@ pub const State = struct {
 
 const TitleOps = struct {
     fn setWindowTitle(handle: Ptr, title: [*:0]const u8) void {
-        _ = c.SDL_SetWindowTitle(handle, title);
+        _ = sdl_c.SDL_SetWindowTitle(handle, title);
     }
 };
 
 pub fn initVideo() bool {
-    return c.SDL_Init(c.SDL_INIT_VIDEO);
+    return sdl_c.SDL_Init(sdl_c.SDL_INIT_VIDEO);
 }
 
 pub fn quit() void {
     if (pointer_cursor) |cursor| {
-        c.SDL_DestroyCursor(cursor);
+        sdl_c.SDL_DestroyCursor(cursor);
         pointer_cursor = null;
     }
-    c.SDL_Quit();
+    sdl_c.SDL_Quit();
 }
 
 pub fn createWindow(title: [*:0]const u8, width: c_int, height: c_int, flags: Flags) ?Ptr {
-    const handle = c.SDL_CreateWindow(title, width, height, @intCast(flags)) orelse return null;
-    _ = c.SDL_StartTextInput(handle);
+    const handle = sdl_c.SDL_CreateWindow(title, width, height, @intCast(flags)) orelse return null;
+    _ = sdl_c.SDL_StartTextInput(handle);
     icon.apply(handle);
     return handle;
 }
 
 fn destroyWindow(handle: Ptr) void {
-    _ = c.SDL_StopTextInput(handle);
-    c.SDL_DestroyWindow(handle);
+    _ = sdl_c.SDL_StopTextInput(handle);
+    sdl_c.SDL_DestroyWindow(handle);
 }
 
 fn windowFlags() Flags {
-    return Present.flags(c);
+    return Present.flags(PresentC);
 }
 
 fn initPresent(state: *PresentState, handle: Ptr) !void {
-    try Present.init(c, state, handle);
+    try Present.init(PresentC, state, handle);
 }
 
 fn deinitPresent(state: *PresentState) void {
-    Present.deinit(c, state);
+    Present.deinit(PresentC, state);
 }
 
 fn windowSize(handle: Ptr) Size {
     var width: c_int = 0;
     var height: c_int = 0;
-    _ = c.SDL_GetWindowSizeInPixels(handle, &width, &height);
+    _ = sdl_c.SDL_GetWindowSizeInPixels(handle, &width, &height);
     return .{ .width = width, .height = height };
 }
 
 fn windowLogicalSize(handle: Ptr) Size {
     var width: c_int = 0;
     var height: c_int = 0;
-    _ = c.SDL_GetWindowSize(handle, &width, &height);
+    _ = sdl_c.SDL_GetWindowSize(handle, &width, &height);
     return .{ .width = width, .height = height };
 }
 
 fn hasInputFocus(handle: Ptr) bool {
-    return (c.SDL_GetWindowFlags(handle) & c.SDL_WINDOW_INPUT_FOCUS) != 0;
+    return (sdl_c.SDL_GetWindowFlags(handle) & sdl_c.SDL_WINDOW_INPUT_FOCUS) != 0;
 }
 
 pub fn getClipboardText(allocator: std.mem.Allocator) !?[]u8 {
-    const text_z = c.SDL_GetClipboardText() orelse return null;
-    defer c.SDL_free(text_z);
+    const text_z = sdl_c.SDL_GetClipboardText() orelse return null;
+    defer sdl_c.SDL_free(text_z);
     return try allocator.dupe(u8, std.mem.span(text_z));
 }
 
 pub fn setClipboardText(text: []const u8) bool {
     const text_z = std.heap.c_allocator.dupeZ(u8, text) catch return false;
     defer std.heap.c_allocator.free(text_z);
-    return c.SDL_SetClipboardText(text_z.ptr);
+    return sdl_c.SDL_SetClipboardText(text_z.ptr);
 }
 
 pub fn deleteTexture(surface_id: *u64) void {
     if (surface_id.* == 0) return;
     var value: c_uint = @intCast(surface_id.*);
-    c.glDeleteTextures(1, &value);
+    gl_c.glDeleteTextures(1, &value);
     surface_id.* = 0;
 }
 
 pub fn useDefaultCursor() void {
-    _ = c.SDL_SetCursor(c.SDL_GetDefaultCursor());
+    _ = sdl_c.SDL_SetCursor(sdl_c.SDL_GetDefaultCursor());
 }
 
 pub fn usePointerCursor() void {
-    if (pointer_cursor == null) pointer_cursor = c.SDL_CreateSystemCursor(c.SDL_SYSTEM_CURSOR_POINTER);
+    if (pointer_cursor == null) pointer_cursor = sdl_c.SDL_CreateSystemCursor(sdl_c.SDL_SYSTEM_CURSOR_POINTER);
     const cursor = pointer_cursor orelse return;
-    _ = c.SDL_SetCursor(cursor);
+    _ = sdl_c.SDL_SetCursor(cursor);
 }
 
 pub fn openUrl(url: []const u8) bool {
     const url_z = std.heap.c_allocator.dupeZ(u8, url) catch return false;
     defer std.heap.c_allocator.free(url_z);
-    return c.SDL_OpenURL(url_z.ptr);
+    return sdl_c.SDL_OpenURL(url_z.ptr);
 }
 
 test "window title updates only when content changes" {
