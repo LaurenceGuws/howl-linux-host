@@ -7,6 +7,7 @@ const InputWindow = @import("input/window.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("tab_bar/slots.zig").Slots;
 const AppPresent = @import("app/present.zig");
+const ProcessAccounting = @import("app/process_accounting.zig");
 const pty_wait_thread = @import("terminal/pty/wait_thread.zig");
 const TerminalContext = @import("terminal/context.zig").Context;
 const FramePacing = @import("window/pacing.zig");
@@ -28,9 +29,16 @@ const LoopAction = enum {
 
 const LoopPending = FramePacing.Pending;
 
+const LoopDebugFacts = struct {
+    pending_wake_count: u8,
+    pending_runtime_obligation_count: u8,
+    render_work_pending: bool,
+};
+
 const TerminalProgress = struct {
     should_redraw: bool,
     keep_running: bool,
+    drive_performed: bool = false,
 };
 
 const LoopAdmission = struct {
@@ -75,6 +83,8 @@ const App = struct {
     terminal_input_admitted: bool,
     pending_terminal_present: ?Window.PresentToken,
     frame_pacing: FramePacing.State,
+    accounting: ProcessAccounting.State,
+    loop_turn_count: u64,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -151,6 +161,13 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         .terminal_input_admitted = false,
         .pending_terminal_present = null,
         .frame_pacing = FramePacing.State.init(),
+        .accounting = ProcessAccounting.State.init(
+            io,
+            options.debug_process_accounting,
+            options.debug_log_every_ms,
+            InputWindow.nowNs(),
+        ),
+        .loop_turn_count = 0,
     };
     configureInputPolicies(&app);
     try runLoop(&app);
@@ -211,18 +228,28 @@ fn runLoop(app: *App) !void {
 }
 
 fn runLoopTurn(app: *App) !LoopAction {
+    app.loop_turn_count += 1;
+    app.accounting.countLoopTurn();
     if (quitRequested(app)) |action| return action;
 
     app.frame_pacing.beginTurn();
     const now_ns = InputWindow.nowNs();
-    const admission = computeLoopAdmission(app, now_ns);
+    const debug_facts = if (app.accounting.enabled)
+        collectLoopDebugFacts(app, now_ns)
+    else
+        null;
+    const admission = computeLoopAdmission(app, now_ns, debug_facts);
     const event_action = pumpWindowEvents(app, admission);
     if (event_action == .quit) return .quit;
 
     const host_mutations = (try applyHostOwnedMutations(app)) orelse return .quit;
-    drainPresentComplete(app);
-    const terminal_progress = driveRuntimeProgress(app);
-    if (terminal_progress.keep_running) app.input.wakeWindow();
+    const present_completed = drainPresentComplete(app);
+    const terminal_progress = driveRuntimeProgress(app, now_ns);
+    app.accounting.countTerminalProgress(
+        terminal_progress.keep_running,
+        terminal_progress.should_redraw,
+        terminal_progress.drive_performed,
+    );
     configureInputPolicies(app);
     try ensureActiveTabHealthy(app);
 
@@ -234,32 +261,104 @@ fn runLoopTurn(app: *App) !LoopAction {
         activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
     );
     app.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
+    if (terminal_progress.keep_running) {
+        if (app.frame_pacing.terminalKeepWakePermission()) app.input.wakeWindow();
+    }
+    if (present_completed) {
+        maybeLogLoopTurn(app, now_ns, debug_facts, intent);
+        return .continue_running;
+    }
     if (!app.frame_pacing.renderPermission()) {
+        maybeLogLoopTurn(app, now_ns, debug_facts, intent);
         return .continue_running;
     }
 
     const frame = render(app);
+    app.accounting.countRenderStep(accountingRenderStep(frame.turn.step));
     const present_plan = derivePresentPlan(frame, intent);
-    _ = submitPresent(app, frame, present_plan);
+    const submission = submitPresent(app, frame, present_plan);
+    app.accounting.countPresentSubmission(.{
+        .reason = accountingPresentReason(submission.reason),
+        .submitted = submission.submitted,
+    });
+    maybeLogLoopTurn(app, now_ns, debug_facts, intent);
     if (quitRequested(app)) |action| return action;
     try ensureActiveTabHealthy(app);
     return .continue_running;
 }
 
-fn computeLoopAdmission(app: *App, now_ns: u64) LoopAdmission {
-    app.frame_pacing.noteRedrawAndRenderWork(false, activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*));
-    const pending = collectLoopPending(app, now_ns);
+fn computeLoopAdmission(app: *App, now_ns: u64, debug_facts: ?LoopDebugFacts) LoopAdmission {
+    assert(now_ns > 0);
+    const render_work_pending = if (debug_facts) |facts|
+        facts.render_work_pending
+    else
+        activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*);
+    app.frame_pacing.refreshFramePermit(now_ns);
+    app.frame_pacing.noteRedrawAndRenderWork(false, render_work_pending);
+    const pending = if (debug_facts) |facts|
+        collectLoopPendingFromDebug(app, facts)
+    else
+        collectLoopPending(app, now_ns);
     const runtime_admission = takeTerminalInputAdmission(&app.terminal_input_admitted);
+    const wait_for_window = app.frame_pacing.shouldWaitForWindow(pending, runtime_admission);
+    const render_permission = app.frame_pacing.renderPermission();
+    app.accounting.countWaitAdmission(.{
+        .wait = wait_for_window,
+        .owner_work = pending.owner_work,
+        .runtime_admission = runtime_admission,
+        .runtime_wake = pending.runtime_wake,
+        .present_complete_pending = app.frame_pacing.present_complete_pending,
+        .render_permission = render_permission,
+        .redraw_requested = app.frame_pacing.redraw_requested,
+        .render_work_pending = app.frame_pacing.render_work_pending,
+    });
     return .{
-        .wait_for_window = app.frame_pacing.shouldWaitForWindow(pending, runtime_admission),
-        .wait_ms = loopWaitMs(app, now_ns, null),
+        .wait_for_window = wait_for_window,
+        .wait_ms = loopWaitMs(app, now_ns, app.frame_pacing.framePermitWaitMs(now_ns)),
     };
 }
 
-fn collectLoopPending(app: *App, now_ns: u64) LoopPending {
+fn maybeLogLoopTurn(
+    app: *App,
+    now_ns: u64,
+    debug_facts: ?LoopDebugFacts,
+    intent: RedrawRenderIntent,
+) void {
+    if (!app.accounting.enabled) return;
+    assert(debug_facts != null);
+    const facts = debug_facts.?;
+    app.accounting.maybeLog(now_ns, app.loop_turn_count, .{
+        .pending_wake_count = facts.pending_wake_count,
+        .pending_runtime_obligation_count = facts.pending_runtime_obligation_count,
+        .render_work_pending_count = @intFromBool(intent.render_work_pending),
+        .host_redraw = intent.host_redraw,
+        .terminal_redraw = intent.terminal_redraw,
+    });
+}
+
+fn collectLoopDebugFacts(app: *App, now_ns: u64) LoopDebugFacts {
+    const tabs = app.tabs.items();
+    return .{
+        .pending_wake_count = tabsPendingWakeCount(tabs),
+        .pending_runtime_obligation_count = tabsPendingRuntimeObligationCount(tabs, now_ns),
+        .render_work_pending = activeTabNeedsRenderTurn(tabs, app.active_tab_idx.*),
+    };
+}
+
+fn collectLoopPending(app: *const App, now_ns: u64) LoopPending {
+    const tabs = app.tabs.items();
     return .{
         .owner_work = app.input.hasPendingOwnerWork(),
-        .runtime_wake = tabsHavePendingWake(app.tabs.items()) or tabsHavePendingRuntimeObligation(app.tabs.items(), now_ns),
+        .runtime_wake = tabsHavePendingWake(tabs) or
+            tabsHavePendingRuntimeObligation(tabs, now_ns),
+    };
+}
+
+fn collectLoopPendingFromDebug(app: *const App, debug_facts: LoopDebugFacts) LoopPending {
+    return .{
+        .owner_work = app.input.hasPendingOwnerWork(),
+        .runtime_wake = debug_facts.pending_wake_count > 0 or
+            debug_facts.pending_runtime_obligation_count > 0,
     };
 }
 
@@ -269,10 +368,20 @@ fn activeTabNeedsRenderTurn(tabs: []*TerminalContext, active_tab_idx: TabIndex) 
 }
 
 fn tabsHavePendingWake(tabs: []*TerminalContext) bool {
+    assert(tabs.len <= max_tabs);
     for (tabs) |tab| {
         if (pty_wait_thread.wakePending(tab)) return true;
     }
     return false;
+}
+
+fn tabsPendingWakeCount(tabs: []*TerminalContext) u8 {
+    assert(tabs.len <= max_tabs);
+    var count: u8 = 0;
+    for (tabs) |tab| {
+        if (pty_wait_thread.wakePending(tab)) count += 1;
+    }
+    return count;
 }
 
 fn tabsHavePendingRuntimeObligation(tabs: []*TerminalContext, now_ns: u64) bool {
@@ -280,10 +389,24 @@ fn tabsHavePendingRuntimeObligation(tabs: []*TerminalContext, now_ns: u64) bool 
 }
 
 fn tabsHavePendingRuntimeObligationWith(tabs: anytype, now_ns: u64) bool {
+    assert(tabs.len <= max_tabs);
     for (tabs) |tab| {
         if (tab.runtimeObligationDueNow(now_ns)) return true;
     }
     return false;
+}
+
+fn tabsPendingRuntimeObligationCount(tabs: []*TerminalContext, now_ns: u64) u8 {
+    return tabsPendingRuntimeObligationCountWith(tabs, now_ns);
+}
+
+fn tabsPendingRuntimeObligationCountWith(tabs: anytype, now_ns: u64) u8 {
+    assert(tabs.len <= max_tabs);
+    var count: u8 = 0;
+    for (tabs) |tab| {
+        if (tab.runtimeObligationDueNow(now_ns)) count += 1;
+    }
+    return count;
 }
 
 fn quitRequested(app: *const App) ?LoopAction {
@@ -292,6 +415,7 @@ fn quitRequested(app: *const App) ?LoopAction {
 }
 
 fn pumpWindowEvents(app: *App, admission: LoopAdmission) LoopAction {
+    app.accounting.countSdlPump(admission.wait_for_window);
     const signal = app.input.pumpWindow(admission.wait_for_window, admission.wait_ms);
     return switch (signal) {
         .none => .continue_running,
@@ -308,8 +432,8 @@ fn applyHostOwnedMutations(app: *App) !?HostMutations {
     return .{ .input_outcome = input_outcome };
 }
 
-fn driveRuntimeProgress(app: *App) TerminalProgress {
-    return driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*, InputWindow.nowNs());
+fn driveRuntimeProgress(app: *App, now_ns: u64) TerminalProgress {
+    return driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*, now_ns);
 }
 
 fn deriveRedrawRenderIntent(
@@ -414,13 +538,19 @@ fn applyWindowResize(app: *App) bool {
 fn driveTerminalProgress(tabs: []*TerminalContext, active_tab_idx: TabIndex, now_ns: u64) TerminalProgress {
     var should_redraw = false;
     var keep_running = false;
+    var drive_performed = false;
     for (tabs, 0..) |tab, i| {
         const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
         const outcome = driveTabRuntimeTurn(tab, is_active, now_ns);
+        drive_performed = true;
         should_redraw = should_redraw or outcome.should_redraw;
         keep_running = keep_running or outcome.keep;
     }
-    return .{ .should_redraw = should_redraw, .keep_running = keep_running };
+    return .{
+        .should_redraw = should_redraw,
+        .keep_running = keep_running,
+        .drive_performed = drive_performed,
+    };
 }
 
 fn driveTabRuntimeTurn(tab: *TerminalContext, active: bool, now_ns: u64) @import("terminal/pty/pump.zig").Outcome {
@@ -492,10 +622,10 @@ fn submitPresent(app: *App, frame: RenderFrame, plan: PresentPlan) PresentSubmis
     else
         PresentSubmission{ .reason = .none, .submitted = false, .token = null };
     recordPresentSubmission(app, frame, submission);
-    app.frame_pacing.noteRenderSubmitted(.{
+    app.frame_pacing.noteRenderSubmittedAt(.{
         .reason = submission.reason,
         .submitted = submission.submitted,
-    });
+    }, InputWindow.nowNs());
     return submission;
 }
 
@@ -516,8 +646,34 @@ fn recordPresentSubmissionFor(app: anytype, tab: anytype, step: TerminalContext.
     AppPresent.recordSubmissionFor(app, tab, step, present_snapshot_seq, submission);
 }
 
-fn drainPresentComplete(app: anytype) void {
+fn drainPresentComplete(app: anytype) bool {
+    const completion_pending_before = app.frame_pacing.present_complete_pending;
     AppPresent.drainComplete(app);
+    if (completion_pending_before and !app.frame_pacing.present_complete_pending) {
+        app.accounting.countPresentCompleteDrained();
+        return true;
+    }
+    return false;
+}
+
+fn accountingRenderStep(step: TerminalContext.TurnStep) ProcessAccounting.RenderStep {
+    return switch (step) {
+        .surface_idle => .surface_idle,
+        .idle_prepare => .idle_prepare,
+        .idle_submit => .idle_submit,
+        .blocked_present => .blocked_present,
+        .rendered => .rendered,
+        .failed => .failed,
+    };
+}
+
+fn accountingPresentReason(reason: PresentReason) ProcessAccounting.PresentReason {
+    return switch (reason) {
+        .none => .none,
+        .host_damage => .host_damage,
+        .terminal_frame => .terminal_frame,
+        .terminal_retire => .terminal_retire,
+    };
 }
 
 test "runtime obligation due-now is treated as immediate loop work" {
@@ -543,7 +699,7 @@ test "runtime obligation due-now is treated as immediate loop work" {
         .owner_work = false,
         .runtime_wake = tabsHavePendingRuntimeObligationWith(tabs[0..], 1234),
     };
-    const pacing = FramePacing.State.init();
+    var pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
 }
 
@@ -767,7 +923,7 @@ test "PTY publication admission keeps next turn non-blocking without present int
         .owner_work = false,
         .runtime_wake = false,
     };
-    const pacing = FramePacing.State.init();
+    var pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, takeTerminalInputAdmission(&admitted)));
     try std.testing.expect(!input_outcome.host_visual_changed);
     try std.testing.expect(!takeTerminalInputAdmission(&admitted));
@@ -814,7 +970,7 @@ test "forward terminal input drains text before pointer UI without present inten
     var admitted = false;
     admitted = admitted or outcome.published_to_pty;
     const pending = LoopPending{ .owner_work = false, .runtime_wake = false };
-    const pacing = FramePacing.State.init();
+    var pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, takeTerminalInputAdmission(&admitted)));
     try std.testing.expect(!intent.needsRender());
     try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .surface_idle));
@@ -837,7 +993,7 @@ test "runtime keepalive wake stays separate from host dirty" {
         .owner_work = false,
         .runtime_wake = true,
     };
-    const pacing = FramePacing.State.init();
+    var pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
     try std.testing.expectEqual(PresentReason.none, derivePresentReason(false, .surface_idle));
 }
@@ -865,10 +1021,27 @@ test "keep_running true should_redraw false keeps host non-blocking without redr
     };
     const intent = deriveRedrawRenderIntent(false, false, progress, false, false);
 
-    const pacing = FramePacing.State.init();
+    var pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
     try std.testing.expect(!intent.needsRender());
     try std.testing.expectEqual(PresentReason.none, derivePresentReason(intent.host_redraw, .surface_idle));
+}
+
+test "runtime keep with blocked frame permit does not request terminal self wake" {
+    const progress = TerminalProgress{
+        .should_redraw = true,
+        .keep_running = true,
+    };
+    const intent = deriveRedrawRenderIntent(false, false, progress, false, false);
+    var pacing = FramePacing.State.init();
+    pacing.frame_permit_ready = false;
+
+    pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
+
+    try std.testing.expect(progress.keep_running);
+    try std.testing.expect(intent.terminal_redraw);
+    try std.testing.expect(pacing.redraw_requested);
+    try std.testing.expect(!pacing.terminalKeepWakePermission());
 }
 
 test "host_redraw_requested true can produce host-only present" {

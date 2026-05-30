@@ -76,12 +76,12 @@ pub fn build(b: *Build) void {
     const deps = resolveHostDeps(b, target, optimize);
 
     const exe = buildHostExe(b, deps);
-    steps.check.dependOn(&exe.step);
+    const host_install = installHarnessArtifact(b, exe);
+    steps.check.dependOn(host_install);
     wireRunStep(b, steps.run, exe);
 
     const rain_stress = buildLibcExe(b, "ascii_rain_stress", "src/stress/ascii_rain_stress.zig", target, optimize);
     const visual_rain_stress = buildLibcExe(b, "visual_rain_stress", "src/stress/visual_rain_stress.zig", target, optimize);
-    installHarnessArtifact(b, exe);
     wireStressSteps(b, steps, rain_stress, visual_rain_stress);
     wireTestSteps(b, steps, deps, target, optimize);
 }
@@ -242,12 +242,13 @@ fn buildLibcExe(
     return exe;
 }
 
-fn installHarnessArtifact(b: *Build, exe: *Compile) void {
+fn installHarnessArtifact(b: *Build, exe: *Compile) *Build.Step {
     const install = b.addInstallArtifact(exe, .{
         .dest_dir = .{ .override = harness_install_dir },
         .dest_sub_path = exe.out_filename,
     });
     b.getInstallStep().dependOn(&install.step);
+    return &install.step;
 }
 
 fn artifactName(b: *Build, base: []const u8, optimize: std.builtin.OptimizeMode) []const u8 {
@@ -324,6 +325,11 @@ fn wireTestSteps(
             }) },
             .{ .name = "config_env", .module = b.createModule(.{
                 .root_source_file = b.path("src/config/env.zig"),
+                .target = target,
+                .optimize = optimize,
+            }) },
+            .{ .name = "process_accounting", .module = b.createModule(.{
+                .root_source_file = b.path("src/app/process_accounting.zig"),
                 .target = target,
                 .optimize = optimize,
             }) },
