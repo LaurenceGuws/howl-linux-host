@@ -5,6 +5,7 @@ const Config = @import("config/config.zig");
 const Input = @import("input/input.zig").Input;
 const InputWindow = @import("input/window.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
+const TabSlots = @import("tab_bar/slots.zig").Slots;
 const pty_wait_thread = @import("terminal/pty/wait_thread.zig");
 const TerminalContext = @import("terminal/context.zig").Context;
 const Window = @import("window/window.zig");
@@ -17,69 +18,6 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
-
-const TabSlots = struct {
-    contexts: [max_tabs]TerminalContext = undefined,
-    active_tabs: [max_tabs]*TerminalContext = undefined,
-    active_slots: [max_tabs]TabIndex = undefined,
-    free_slots: [max_tabs]TabIndex = undefined,
-    active_count: TabIndex = 0,
-    free_count: TabIndex = max_tabs,
-
-    fn init() TabSlots {
-        var tabs = TabSlots{
-            .active_count = 0,
-            .free_count = max_tabs,
-        };
-        for (0..max_tabs) |slot| {
-            tabs.free_slots[slot] = @intCast(slot);
-        }
-        return tabs;
-    }
-
-    fn items(self: *TabSlots) []*TerminalContext {
-        return self.active_tabs[0..self.active_count];
-    }
-
-    fn acquireSlot(self: *TabSlots) ?struct { slot_idx: TabIndex, tab: *TerminalContext } {
-        assert(self.active_count <= max_tabs);
-        assert(self.free_count <= max_tabs);
-        if (self.free_count == 0) return null;
-        self.free_count -= 1;
-        const slot_idx = self.free_slots[self.free_count];
-        return .{ .slot_idx = slot_idx, .tab = &self.contexts[slot_idx] };
-    }
-
-    fn appendActive(self: *TabSlots, slot_idx: TabIndex, tab: *TerminalContext) void {
-        assert(self.active_count < max_tabs);
-        assert(slot_idx < max_tabs);
-        self.active_slots[self.active_count] = slot_idx;
-        self.active_tabs[self.active_count] = tab;
-        self.active_count += 1;
-        assert(self.active_count <= max_tabs);
-    }
-
-    fn releaseSlot(self: *TabSlots, slot_idx: TabIndex) void {
-        assert(self.free_count < max_tabs);
-        assert(slot_idx < max_tabs);
-        self.free_slots[self.free_count] = slot_idx;
-        self.free_count += 1;
-        assert(self.free_count <= max_tabs);
-    }
-
-    fn orderedRemoveActive(self: *TabSlots, idx: TabIndex) struct { slot_idx: TabIndex, tab: *TerminalContext } {
-        assert(idx < self.active_count);
-        const slot_idx = self.active_slots[idx];
-        const tab = self.active_tabs[idx];
-        var i: TabIndex = idx;
-        while (i + 1 < self.active_count) : (i += 1) {
-            self.active_slots[i] = self.active_slots[i + 1];
-            self.active_tabs[i] = self.active_tabs[i + 1];
-        }
-        self.active_count -= 1;
-        return .{ .slot_idx = slot_idx, .tab = tab };
-    }
-};
 
 const LoopAction = enum {
     continue_running,
@@ -254,11 +192,7 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
     defer std.heap.c_allocator.destroy(tab_bar);
 
     const tabs = try std.heap.c_allocator.create(TabSlots);
-    tabs.active_count = 0;
-    tabs.free_count = max_tabs;
-    for (0..max_tabs) |slot| {
-        tabs.free_slots[slot] = @intCast(max_tabs - 1 - slot);
-    }
+    tabs.* = TabSlots.initForHostStartup();
     const active_tab_idx = try std.heap.c_allocator.create(TabIndex);
     active_tab_idx.* = 0;
 
@@ -1076,44 +1010,6 @@ test "child environment policy sets TERM in the app owner" {
     applyChildEnvironmentPolicy();
     const value = std.c.getenv("TERM") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("xterm-256color", std.mem.span(value));
-}
-
-test "tab slots bound growth and reuse freed slots" {
-    var tabs = TabSlots.init();
-
-    for (0..max_tabs) |expected_slot| {
-        const slot = tabs.acquireSlot() orelse return error.TestUnexpectedResult;
-        try std.testing.expectEqual(@as(TabIndex, @intCast(expected_slot)), slot.slot_idx);
-        tabs.appendActive(slot.slot_idx, slot.tab);
-    }
-
-    try std.testing.expectEqual(@as(usize, max_tabs), tabs.items().len);
-    try std.testing.expect(tabs.acquireSlot() == null);
-
-    const removed = tabs.orderedRemoveActive(4);
-    try std.testing.expectEqual(@as(TabIndex, 4), removed.slot_idx);
-    tabs.releaseSlot(removed.slot_idx);
-
-    const reused = tabs.acquireSlot() orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(TabIndex, 4), reused.slot_idx);
-    tabs.appendActive(reused.slot_idx, reused.tab);
-    try std.testing.expectEqual(@as(usize, max_tabs), tabs.items().len);
-}
-
-test "tab slots preserve order on close semantics" {
-    var tabs = TabSlots.init();
-
-    for (0..4) |_| {
-        const slot = tabs.acquireSlot() orelse return error.TestUnexpectedResult;
-        tabs.appendActive(slot.slot_idx, slot.tab);
-    }
-
-    const removed = tabs.orderedRemoveActive(1);
-    try std.testing.expectEqual(@as(TabIndex, 1), removed.slot_idx);
-    try std.testing.expectEqual(@as(usize, 3), tabs.items().len);
-    try std.testing.expectEqual(@as(TabIndex, 0), tabs.active_slots[0]);
-    try std.testing.expectEqual(@as(TabIndex, 2), tabs.active_slots[1]);
-    try std.testing.expectEqual(@as(TabIndex, 3), tabs.active_slots[2]);
 }
 
 test "PTY publication admission keeps next turn non-blocking without present intent" {
