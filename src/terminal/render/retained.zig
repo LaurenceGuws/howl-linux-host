@@ -87,12 +87,77 @@ pub const PreparedProtocolV0ResourcePlanStatus = enum(u8) {
 pub const ProtocolV0ResourceStoreStatus = enum(u8) {
     ok,
     capacity_overflow,
+    operation_capacity_overflow,
     duplicate_create,
     missing_resource,
     retired_resource,
     invalid_resource,
     invalid_upload,
     invalid_retire,
+};
+
+pub const ProtocolV0BackendOperationKind = enum(u8) {
+    create_texture,
+    upload_texture_rect,
+    retire_texture,
+};
+
+pub const ProtocolV0BackendOperation = struct {
+    kind: ProtocolV0BackendOperationKind,
+    resource: ResourceId,
+    rect: c.HowlRenderV0Rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+    width_px: u32 = 0,
+    height_px: u32 = 0,
+    format: u32 = 0,
+    bytes_count: u32 = 0,
+};
+
+pub const ProtocolV0BackendOperationRecorder = struct {
+    operations: []ProtocolV0BackendOperation,
+    count: u32 = 0,
+
+    pub fn createTexture(
+        self: *ProtocolV0BackendOperationRecorder,
+        create_item: Create,
+    ) ProtocolV0ResourceStoreStatus {
+        return self.append(.{
+            .kind = .create_texture,
+            .resource = create_item.resource,
+            .width_px = create_item.width_px,
+            .height_px = create_item.height_px,
+            .format = create_item.format,
+        });
+    }
+
+    pub fn uploadTextureRect(
+        self: *ProtocolV0BackendOperationRecorder,
+        upload_item: Upload,
+    ) ProtocolV0ResourceStoreStatus {
+        return self.append(.{
+            .kind = .upload_texture_rect,
+            .resource = upload_item.resource,
+            .rect = upload_item.rect,
+            .format = upload_item.format,
+            .bytes_count = upload_item.bytes_count,
+        });
+    }
+
+    pub fn retireTexture(
+        self: *ProtocolV0BackendOperationRecorder,
+        retire_item: Retire,
+    ) ProtocolV0ResourceStoreStatus {
+        return self.append(.{ .kind = .retire_texture, .resource = retire_item.resource });
+    }
+
+    fn append(
+        self: *ProtocolV0BackendOperationRecorder,
+        operation: ProtocolV0BackendOperation,
+    ) ProtocolV0ResourceStoreStatus {
+        if (self.count >= self.operations.len) return .operation_capacity_overflow;
+        self.operations[self.count] = operation;
+        self.count += 1;
+        return .ok;
+    }
 };
 
 pub const ProtocolV0ResourceState = enum(u8) {
@@ -112,6 +177,9 @@ pub const ProtocolV0StoredResource = struct {
 };
 
 const protocol_v0_resource_store_empty = ProtocolV0StoredResource{};
+const protocol_v0_backend_operations_max = c.HOWL_RENDER_V0_CREATES_MAX +
+    c.HOWL_RENDER_V0_UPLOADS_MAX +
+    c.HOWL_RENDER_V0_RETIRES_MAX;
 
 pub const ProtocolV0ResourceStore = struct {
     slots: [c.HOWL_RENDER_V0_RESOURCES_MAX]ProtocolV0StoredResource =
@@ -124,22 +192,66 @@ pub const ProtocolV0ResourceStore = struct {
         self: *ProtocolV0ResourceStore,
         frame: *const Frame,
     ) ProtocolV0ResourceStoreStatus {
+        return self.applyFrameWithRecorder(frame, null);
+    }
+
+    pub fn applyFrameWithRecorder(
+        self: *ProtocolV0ResourceStore,
+        frame: *const Frame,
+        recorder_optional: ?*ProtocolV0BackendOperationRecorder,
+    ) ProtocolV0ResourceStoreStatus {
         const span_status = validateResourceStoreFrameSpans(frame);
         if (span_status != .ok) return span_status;
+        const order_status = validateResourceStoreFrameOrder(frame);
+        if (order_status != .ok) return order_status;
+        const command_status = self.validateResourceStoreFrameCommands(frame);
+        if (command_status != .ok) return command_status;
         var next = self.*;
+        var staged_operations: [protocol_v0_backend_operations_max]ProtocolV0BackendOperation = undefined;
+        var staged_recorder = ProtocolV0BackendOperationRecorder{
+            .operations = &staged_operations,
+        };
+        const recorder_needed = recorder_optional != null;
         for (spanSlice(Create, frame.creates.ptr, frame.creates.count)) |create_item| {
             const status = next.create(create_item);
             if (status != .ok) return status;
+            if (recorder_needed) {
+                const op_status = staged_recorder.createTexture(create_item);
+                if (op_status != .ok) return op_status;
+            }
         }
         for (spanSlice(Upload, frame.uploads.ptr, frame.uploads.count)) |upload_item| {
             const status = next.upload(upload_item);
             if (status != .ok) return status;
+            if (recorder_needed) {
+                const op_status = staged_recorder.uploadTextureRect(upload_item);
+                if (op_status != .ok) return op_status;
+            }
         }
         for (spanSlice(Retire, frame.retires.ptr, frame.retires.count)) |retire_item| {
             const status = next.retire(retire_item);
             if (status != .ok) return status;
+            if (recorder_needed) {
+                const op_status = staged_recorder.retireTexture(retire_item);
+                if (op_status != .ok) return op_status;
+            }
+        }
+        if (recorder_optional) |recorder| {
+            const available = recorder.operations.len - @as(usize, recorder.count);
+            if (available < staged_recorder.count) {
+                return .operation_capacity_overflow;
+            }
         }
         self.* = next;
+        if (recorder_optional) |recorder| {
+            const start: usize = recorder.count;
+            const end = start + staged_recorder.count;
+            @memcpy(
+                recorder.operations[start..end],
+                staged_operations[0..staged_recorder.count],
+            );
+            recorder.count = @intCast(end);
+        }
         return .ok;
     }
 
@@ -227,7 +339,90 @@ pub const ProtocolV0ResourceStore = struct {
         }
         return null;
     }
+
+    fn validateResourceStoreFrameCommands(
+        self: *ProtocolV0ResourceStore,
+        frame: *const Frame,
+    ) ProtocolV0ResourceStoreStatus {
+        for (spanSlice(Command, frame.commands.ptr, frame.commands.count), 0..) |command, index| {
+            const command_index: u32 = @intCast(index);
+            if (!spanCountValid(
+                command.glyphs.ptr,
+                command.glyphs.count,
+                command.glyphs.count_max,
+                c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+            )) return .invalid_resource;
+            const shape_status = validateResourceStoreCommandShape(command);
+            if (shape_status != .ok) return shape_status;
+            if (!resourceIsZero(command.resource)) {
+                const status = self.validateCommandResource(frame, command.resource, command_index);
+                if (status != .ok) return status;
+            }
+            for (spanSlice(c.HowlRenderV0GlyphRef, command.glyphs.ptr, command.glyphs.count)) |glyph| {
+                const status = self.validateCommandResource(
+                    frame,
+                    glyph.atlas_resource,
+                    command_index,
+                );
+                if (status != .ok) return status;
+            }
+        }
+        return .ok;
+    }
+
+    fn validateCommandResource(
+        self: *ProtocolV0ResourceStore,
+        frame: *const Frame,
+        resource: ResourceId,
+        command_index: u32,
+    ) ProtocolV0ResourceStoreStatus {
+        if (!resourceKindStorable(resource.kind)) return .invalid_resource;
+        if (findCreate(frame, resource)) |create_item| {
+            if (command_index < create_item.create_seq) return .invalid_resource;
+        } else {
+            const slot = self.find(resource) orelse return .missing_resource;
+            if (slot.state != .live) return .retired_resource;
+        }
+        if (findUploadVisible(frame, resource, command_index) == null) {
+            const slot = self.find(resource) orelse return .invalid_upload;
+            if (slot.upload_count == 0) return .invalid_upload;
+        }
+        if (retireForResource(frame, resource)) |retire_item| {
+            if (command_index >= retire_item.retire_seq) return .invalid_retire;
+        }
+        return .ok;
+    }
 };
+
+fn validateResourceStoreCommandShape(command: Command) ProtocolV0ResourceStoreStatus {
+    switch (command.kind) {
+        c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+        c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+        => {
+            if (command.rect.width_px == 0) return .invalid_resource;
+            if (command.rect.height_px == 0) return .invalid_resource;
+            if (!resourceIsZero(command.resource)) return .invalid_resource;
+            if (command.glyphs.count != 0) return .invalid_resource;
+        },
+        c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
+            if (command.rect.width_px == 0) return .invalid_resource;
+            if (command.rect.height_px == 0) return .invalid_resource;
+            if (resourceIsZero(command.resource)) return .invalid_resource;
+            if (command.resource.kind != c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA and
+                command.resource.kind != c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR)
+            {
+                return .invalid_resource;
+            }
+            if (command.glyphs.count != 0) return .invalid_resource;
+            if (command.resource.kind == c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR) {
+                if (command.color_rgba != 0) return .invalid_resource;
+            }
+        },
+        c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => return .invalid_resource,
+        else => return .invalid_resource,
+    }
+    return .ok;
+}
 
 fn validateResourceStoreFrameSpans(frame: *const Frame) ProtocolV0ResourceStoreStatus {
     if (!spanCountValid(
@@ -243,6 +438,12 @@ fn validateResourceStoreFrameSpans(frame: *const Frame) ProtocolV0ResourceStoreS
         c.HOWL_RENDER_V0_UPLOADS_MAX,
     )) return .invalid_upload;
     if (!spanCountValid(
+        frame.commands.ptr,
+        frame.commands.count,
+        frame.commands.count_max,
+        c.HOWL_RENDER_V0_COMMANDS_MAX,
+    )) return .invalid_resource;
+    if (!spanCountValid(
         frame.retires.ptr,
         frame.retires.count,
         frame.retires.count_max,
@@ -253,6 +454,28 @@ fn validateResourceStoreFrameSpans(frame: *const Frame) ProtocolV0ResourceStoreS
     }
     if (frame.uploads.bytes_count_max != c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
         return .invalid_upload;
+    }
+    return .ok;
+}
+
+fn validateResourceStoreFrameOrder(frame: *const Frame) ProtocolV0ResourceStoreStatus {
+    for (spanSlice(Create, frame.creates.ptr, frame.creates.count)) |create_item| {
+        if (create_item.create_seq > frame.commands.count) return .invalid_resource;
+        if (retireForResource(frame, create_item.resource)) |retire_item| {
+            if (create_item.create_seq >= retire_item.retire_seq) return .invalid_retire;
+        }
+    }
+    for (spanSlice(Upload, frame.uploads.ptr, frame.uploads.count)) |upload_item| {
+        if (upload_item.upload_seq > frame.commands.count) return .invalid_upload;
+        if (findCreate(frame, upload_item.resource)) |create_item| {
+            if (upload_item.upload_seq < create_item.create_seq) return .invalid_upload;
+        }
+        if (retireForResource(frame, upload_item.resource)) |retire_item| {
+            if (upload_item.upload_seq >= retire_item.retire_seq) return .invalid_upload;
+        }
+    }
+    for (spanSlice(Retire, frame.retires.ptr, frame.retires.count)) |retire_item| {
+        if (retire_item.retire_seq > frame.commands.count) return .invalid_retire;
     }
     return .ok;
 }
@@ -2181,6 +2404,311 @@ test "host retained render resource store validates spans before mutation" {
     frame.uploads.ptr = null;
 
     try std.testing.expectEqual(ProtocolV0ResourceStoreStatus.invalid_upload, store.applyFrame(&frame));
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+}
+
+test "host retained render resource store records create upload retire ops" {
+    const resource = testSpriteAlphaResource(33, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var commands = [_]Command{
+        spriteCommand(resource, makeRect(0, 0, 1, 1), 0xffffffff),
+    };
+    var retires = [_]Retire{.{ .resource = resource, .retire_seq = 1 }};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+    frame.retires = retireSpan(&retires);
+    var store = ProtocolV0ResourceStore{};
+    var operations: [3]ProtocolV0BackendOperation = undefined;
+    var recorder = ProtocolV0BackendOperationRecorder{ .operations = &operations };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.ok,
+        store.applyFrameWithRecorder(&frame, &recorder),
+    );
+    try std.testing.expectEqual(@as(u32, 3), recorder.count);
+    try std.testing.expectEqual(ProtocolV0BackendOperationKind.create_texture, operations[0].kind);
+    try std.testing.expectEqual(ProtocolV0BackendOperationKind.upload_texture_rect, operations[1].kind);
+    try std.testing.expectEqual(ProtocolV0BackendOperationKind.retire_texture, operations[2].kind);
+    try std.testing.expectEqual(@as(u32, bytes.len), operations[1].bytes_count);
+}
+
+test "host retained render resource store emits no ops on invalid frame" {
+    const resource = testSpriteAlphaResource(34, 1);
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{.{
+        .resource = resource,
+        .rect = makeRect(0, 0, 1, 1),
+        .bytes_ptr = null,
+        .bytes_count = 1,
+        .stride_bytes = 1,
+        .format = c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .upload_seq = 0,
+    }};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, 1);
+    var store = ProtocolV0ResourceStore{};
+    const sentinel = ProtocolV0BackendOperation{
+        .kind = .retire_texture,
+        .resource = testSpriteAlphaResource(999, 1),
+    };
+    var operations = [_]ProtocolV0BackendOperation{sentinel} ** 2;
+    var recorder = ProtocolV0BackendOperationRecorder{ .operations = &operations };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.invalid_upload,
+        store.applyFrameWithRecorder(&frame, &recorder),
+    );
+    try std.testing.expectEqual(@as(u32, 0), recorder.count);
+    try std.testing.expectEqual(sentinel.resource.value, operations[0].resource.value);
+    try std.testing.expectEqual(sentinel.resource.value, operations[1].resource.value);
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+}
+
+test "host retained render resource store rejects order invalid ops" {
+    const resource = testSpriteAlphaResource(36, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var retires = [_]Retire{.{ .resource = resource, .retire_seq = 0 }};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.retires = retireSpan(&retires);
+    var store = ProtocolV0ResourceStore{};
+    const sentinel = ProtocolV0BackendOperation{
+        .kind = .retire_texture,
+        .resource = testSpriteAlphaResource(997, 1),
+    };
+    var operations = [_]ProtocolV0BackendOperation{sentinel} ** 2;
+    var recorder = ProtocolV0BackendOperationRecorder{ .operations = &operations };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.invalid_retire,
+        store.applyFrameWithRecorder(&frame, &recorder),
+    );
+    try std.testing.expectEqual(@as(u32, 0), recorder.count);
+    try std.testing.expectEqual(sentinel.resource.value, operations[0].resource.value);
+    try std.testing.expectEqual(sentinel.resource.value, operations[1].resource.value);
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+}
+
+test "host retained render resource store rejects command use after retire" {
+    const resource = testSpriteAlphaResource(37, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var commands = [_]Command{
+        fillCommand(c.HOWL_RENDER_V0_COMMAND_FILL_RECT, makeRect(0, 0, 1, 1), 0),
+        spriteCommand(resource, makeRect(0, 0, 1, 1), 0xffffffff),
+    };
+    var retires = [_]Retire{.{ .resource = resource, .retire_seq = 1 }};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+    frame.retires = retireSpan(&retires);
+    var store = ProtocolV0ResourceStore{};
+    const sentinel = ProtocolV0BackendOperation{
+        .kind = .retire_texture,
+        .resource = testSpriteAlphaResource(996, 1),
+    };
+    var operations = [_]ProtocolV0BackendOperation{sentinel} ** 3;
+    var recorder = ProtocolV0BackendOperationRecorder{ .operations = &operations };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.invalid_retire,
+        store.applyFrameWithRecorder(&frame, &recorder),
+    );
+    try std.testing.expectEqual(@as(u32, 0), recorder.count);
+    try std.testing.expectEqual(sentinel.resource.value, operations[0].resource.value);
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+}
+
+test "host retained render resource store rejects command use before upload" {
+    const resource = testSpriteAlphaResource(38, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 1)};
+    uploads[0].upload_seq = 1;
+    var commands = [_]Command{spriteCommand(resource, makeRect(0, 0, 1, 1), 0xffffffff)};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+    var store = ProtocolV0ResourceStore{};
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.invalid_upload,
+        store.applyFrameWithRecorder(&frame, null),
+    );
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+}
+
+test "host retained render resource store uses current upload for prior resource" {
+    const resource = testSpriteAlphaResource(39, 1);
+    var create_frame = testProtocolV0Frame(testPreparedInfo());
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    create_frame.creates = createSpan(&creates);
+    var store = ProtocolV0ResourceStore{};
+
+    try std.testing.expectEqual(ProtocolV0ResourceStoreStatus.ok, store.applyFrame(&create_frame));
+
+    var bytes = [_]u8{255};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var commands = [_]Command{spriteCommand(resource, makeRect(0, 0, 1, 1), 0xffffffff)};
+    var use_frame = testProtocolV0Frame(testPreparedInfo());
+    use_frame.uploads = uploadSpan(&uploads, bytes.len);
+    use_frame.commands = commandSpan(&commands);
+    var operations: [1]ProtocolV0BackendOperation = undefined;
+    var recorder = ProtocolV0BackendOperationRecorder{ .operations = &operations };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.ok,
+        store.applyFrameWithRecorder(&use_frame, &recorder),
+    );
+    const slot = store.find(resource) orelse return error.MissingResource;
+    try std.testing.expectEqual(@as(u32, 1), slot.upload_count);
+    try std.testing.expectEqual(@as(u32, 1), recorder.count);
+    try std.testing.expectEqual(ProtocolV0BackendOperationKind.upload_texture_rect, operations[0].kind);
+}
+
+test "host retained render resource store rejects unknown command before ops" {
+    const resource = testSpriteAlphaResource(40, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var commands = [_]Command{fillCommand(255, makeRect(0, 0, 1, 1), 0)};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+    var store = ProtocolV0ResourceStore{};
+    const sentinel = ProtocolV0BackendOperation{
+        .kind = .retire_texture,
+        .resource = testSpriteAlphaResource(995, 1),
+    };
+    var operations = [_]ProtocolV0BackendOperation{sentinel} ** 2;
+    var recorder = ProtocolV0BackendOperationRecorder{ .operations = &operations };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.invalid_resource,
+        store.applyFrameWithRecorder(&frame, &recorder),
+    );
+    try std.testing.expectEqual(@as(u32, 0), recorder.count);
+    try std.testing.expectEqual(sentinel.resource.value, operations[0].resource.value);
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+}
+
+test "host retained render resource store rejects zero fill before ops" {
+    const resource = testSpriteAlphaResource(41, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var commands = [_]Command{
+        fillCommand(c.HOWL_RENDER_V0_COMMAND_FILL_RECT, makeRect(0, 0, 0, 1), 0),
+    };
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+    var store = ProtocolV0ResourceStore{};
+    const sentinel = ProtocolV0BackendOperation{
+        .kind = .retire_texture,
+        .resource = testSpriteAlphaResource(994, 1),
+    };
+    var operations = [_]ProtocolV0BackendOperation{sentinel} ** 2;
+    var recorder = ProtocolV0BackendOperationRecorder{ .operations = &operations };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.invalid_resource,
+        store.applyFrameWithRecorder(&frame, &recorder),
+    );
+    try std.testing.expectEqual(@as(u32, 0), recorder.count);
+    try std.testing.expectEqual(sentinel.resource.value, operations[0].resource.value);
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+}
+
+test "host retained render resource store rejects color sprite color before ops" {
+    const resource = testResource(42, 1, c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR);
+    var bytes = [_]u8{ 1, 2, 3, 4 };
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_RGBA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 4)};
+    var commands = [_]Command{spriteCommand(resource, makeRect(0, 0, 1, 1), 0xffffffff)};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+    var store = ProtocolV0ResourceStore{};
+    const sentinel = ProtocolV0BackendOperation{
+        .kind = .retire_texture,
+        .resource = testSpriteAlphaResource(993, 1),
+    };
+    var operations = [_]ProtocolV0BackendOperation{sentinel} ** 2;
+    var recorder = ProtocolV0BackendOperationRecorder{ .operations = &operations };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.invalid_resource,
+        store.applyFrameWithRecorder(&frame, &recorder),
+    );
+    try std.testing.expectEqual(@as(u32, 0), recorder.count);
+    try std.testing.expectEqual(sentinel.resource.value, operations[0].resource.value);
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+}
+
+test "host retained render resource store rejects nonsprite draw before ops" {
+    const resource = testResource(43, 1, c.HOWL_RENDER_V0_RESOURCE_FALLBACK_RGBA);
+    var bytes = [_]u8{ 1, 2, 3, 4 };
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_RGBA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 4)};
+    var commands = [_]Command{spriteCommand(resource, makeRect(0, 0, 1, 1), 0)};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+    var store = ProtocolV0ResourceStore{};
+    const sentinel = ProtocolV0BackendOperation{
+        .kind = .retire_texture,
+        .resource = testSpriteAlphaResource(992, 1),
+    };
+    var operations = [_]ProtocolV0BackendOperation{sentinel} ** 2;
+    var recorder = ProtocolV0BackendOperationRecorder{ .operations = &operations };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.invalid_resource,
+        store.applyFrameWithRecorder(&frame, &recorder),
+    );
+    try std.testing.expectEqual(@as(u32, 0), recorder.count);
+    try std.testing.expectEqual(sentinel.resource.value, operations[0].resource.value);
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+}
+
+test "host retained render resource store stops when operation sink is full" {
+    const resource = testSpriteAlphaResource(35, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    var store = ProtocolV0ResourceStore{};
+    const sentinel = ProtocolV0BackendOperation{
+        .kind = .retire_texture,
+        .resource = testSpriteAlphaResource(998, 1),
+    };
+    var operations = [_]ProtocolV0BackendOperation{sentinel} ** 1;
+    var recorder = ProtocolV0BackendOperationRecorder{ .operations = &operations };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.operation_capacity_overflow,
+        store.applyFrameWithRecorder(&frame, &recorder),
+    );
+    try std.testing.expectEqual(@as(u32, 0), recorder.count);
+    try std.testing.expectEqual(sentinel.resource.value, operations[0].resource.value);
     try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
 }
 
