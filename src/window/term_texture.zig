@@ -8,6 +8,10 @@ extern fn glDeleteFramebuffers(n: c_int, framebuffers: [*c]const c_uint) void;
 extern fn glFramebufferTexture2D(target: c_uint, attachment: c_uint, textarget: c_uint, texture: c_uint, level: c_int) void;
 extern fn glGenFramebuffers(n: c_int, framebuffers: [*c]c_uint) void;
 
+const gl_alpha = 0x1906;
+const glyph_atlas_width_px = 1024;
+const glyph_atlas_height_px = 1024;
+
 pub const ProtocolV0Textures = struct {
     slots: [render_c.HOWL_RENDER_V0_RESOURCES_MAX]Slot = [_]Slot{.{}} **
         render_c.HOWL_RENDER_V0_RESOURCES_MAX,
@@ -447,6 +451,12 @@ pub const ProtocolV0Textures = struct {
         return slot.texture_id;
     }
 
+    fn textureSlotFor(self: *ProtocolV0Textures, resource: render_c.HowlRenderV0ResourceId) ?Slot {
+        const slot = self.find(resource) orelse return null;
+        if (slot.texture_id == 0) return null;
+        return slot.*;
+    }
+
     fn findEmpty(self: *ProtocolV0Textures) ?*Slot {
         for (&self.slots) |*slot| if (slot.state == .empty) return slot;
         return null;
@@ -611,7 +621,14 @@ fn validateCommandsStatic(frame: *const render_c.HowlRenderV0Frame) bool {
                 if (command.glyphs.count != 0) return false;
             },
             render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => {
-                return false;
+                if (command.rect.x_px != 0) return false;
+                if (command.rect.y_px != 0) return false;
+                if (command.rect.width_px != 0) return false;
+                if (command.rect.height_px != 0) return false;
+                if (command.color_rgba != 0) return false;
+                if (!resourceEmpty(command.resource)) return false;
+                if (command.glyphs.count == 0) return false;
+                if (!glyphCommandValid(frame, command)) return false;
             },
             render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
                 if (!rectHasArea(command.rect)) return false;
@@ -701,6 +718,21 @@ fn rectFitsResource(rect: render_c.HowlRenderV0Rect, width_px: u32, height_px: u
     return right <= width_px and bottom <= height_px;
 }
 
+fn destinationOverlaps(
+    render_px: anytype,
+    x_px: i32,
+    y_px: i32,
+    rect: render_c.HowlRenderV0Rect,
+) bool {
+    const right = std.math.add(i32, x_px, rect.width_px) catch return false;
+    const bottom = std.math.add(i32, y_px, rect.height_px) catch return false;
+    if (right <= 0) return false;
+    if (bottom <= 0) return false;
+    if (x_px >= render_px.width) return false;
+    if (y_px >= render_px.height) return false;
+    return true;
+}
+
 fn sameResource(
     a: render_c.HowlRenderV0ResourceId,
     b: render_c.HowlRenderV0ResourceId,
@@ -710,7 +742,7 @@ fn sameResource(
 
 fn glFormat(format: u32) ?c_uint {
     return switch (format) {
-        render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8 => gl_c.GL_RED,
+        render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8 => gl_alpha,
         render_c.HOWL_RENDER_V0_UPLOAD_RGBA8 => gl_c.GL_RGBA,
         else => null,
     };
@@ -791,6 +823,13 @@ fn commandUsesResource(
     );
     for (commands) |command| {
         if (sameResource(command.resource, resource)) return true;
+        if (!glyphSpanValid(command)) continue;
+        const glyphs = spanSlice(
+            render_c.HowlRenderV0GlyphRef,
+            command.glyphs.ptr,
+            command.glyphs.count,
+        );
+        for (glyphs) |glyph| if (sameResource(glyph.atlas_resource, resource)) return true;
     }
     return false;
 }
@@ -1149,6 +1188,115 @@ test "protocol v0 sprite frame rejects glyph commands" {
     try std.testing.expect(!protocolV0SpriteFrame(&frame));
 }
 
+test "protocol v0 glyph frame accepts clear fill sprite and glyph commands" {
+    var glyph = render_c.HowlRenderV0GlyphRef{
+        .atlas_resource = testResource(12, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA),
+        .atlas_rect = testRect(1, 1),
+        .x_px = 0,
+        .y_px = 0,
+        .glyph_id = 1,
+        .color_rgba = 0xffffffff,
+    };
+    var commands = [_]render_c.HowlRenderV0Command{
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = testRect(1, 1),
+            .color_rgba = 0x000000ff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+            .color_rgba = 0,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{
+                .ptr = &glyph,
+                .count = 1,
+                .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+            },
+        },
+    };
+    var frame = testFrame();
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(protocolV0GlyphFrame(&frame));
+}
+
+test "protocol v0 glyph frame rejects color atlas" {
+    var glyph = render_c.HowlRenderV0GlyphRef{
+        .atlas_resource = testResource(13, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_COLOR),
+        .atlas_rect = testRect(1, 1),
+        .x_px = 0,
+        .y_px = 0,
+        .glyph_id = 1,
+        .color_rgba = 0xffffffff,
+    };
+    var commands = [_]render_c.HowlRenderV0Command{
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = testRect(1, 1),
+            .color_rgba = 0x000000ff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+            .color_rgba = 0,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{
+                .ptr = &glyph,
+                .count = 1,
+                .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+            },
+        },
+    };
+    var frame = testFrame();
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(!protocolV0GlyphFrame(&frame));
+}
+
+test "protocol v0 glyph frame rejects invalid glyph span" {
+    var commands = [_]render_c.HowlRenderV0Command{
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = testRect(1, 1),
+            .color_rgba = 0x000000ff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+            .color_rgba = 0,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{
+                .ptr = null,
+                .count = 1,
+                .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+            },
+        },
+    };
+    var frame = testFrame();
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(!protocolV0GlyphFrame(&frame));
+}
+
 test "protocol v0 diagnostics record token frame shape and churn" {
     const resource = testResource(7, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
     var bytes = [_]u8{255};
@@ -1382,6 +1530,23 @@ pub fn uploadProtocolV0Sprites(
     frame: *const render_c.HowlRenderV0Frame,
 ) bool {
     if (!protocolV0SpriteFrame(frame)) return false;
+    return uploadProtocolV0Commands(textures, surface, frame);
+}
+
+pub fn uploadProtocolV0Glyphs(
+    textures: *ProtocolV0Textures,
+    surface: render_c.HowlRenderHostSurface,
+    frame: *const render_c.HowlRenderV0Frame,
+) bool {
+    if (!protocolV0GlyphFrame(frame)) return false;
+    return uploadProtocolV0Commands(textures, surface, frame);
+}
+
+fn uploadProtocolV0Commands(
+    textures: *ProtocolV0Textures,
+    surface: render_c.HowlRenderHostSurface,
+    frame: *const render_c.HowlRenderV0Frame,
+) bool {
     if (surface.host_surface_id == 0) return false;
     if (surface.width != frame.render_px.width) return false;
     if (surface.height != frame.render_px.height) return false;
@@ -1425,6 +1590,9 @@ pub fn uploadProtocolV0Sprites(
             render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
                 const texture_id = textures.textureIdFor(command.resource) orelse return false;
                 drawSpriteCommand(surface, command, texture_id);
+            },
+            render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => {
+                if (!drawGlyphCommand(textures, surface, command)) return false;
             },
             else => return false,
         }
@@ -1473,6 +1641,31 @@ pub fn protocolV0SpriteFrame(frame: *const render_c.HowlRenderV0Frame) bool {
     return sprite_count > 0;
 }
 
+pub fn protocolV0GlyphFrame(frame: *const render_c.HowlRenderV0Frame) bool {
+    if (frame.commands.count == 0) return false;
+    const commands = spanSlice(
+        render_c.HowlRenderV0Command,
+        frame.commands.ptr,
+        frame.commands.count,
+    );
+    var glyph_count: u32 = 0;
+    for (commands, 0..) |command, index| {
+        if (index == 0 and !protocolV0FullClear(frame, command)) return false;
+        switch (command.kind) {
+            render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            => if (!protocolV0FillCommand(command)) return false,
+            render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => if (!protocolV0SpriteCommand(command)) return false,
+            render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => {
+                if (!protocolV0GlyphCommand(frame, command)) return false;
+                glyph_count += command.glyphs.count;
+            },
+            else => return false,
+        }
+    }
+    return glyph_count > 0;
+}
+
 fn protocolV0FillCommand(command: render_c.HowlRenderV0Command) bool {
     switch (command.kind) {
         render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
@@ -1496,6 +1689,48 @@ fn protocolV0SpriteCommand(command: render_c.HowlRenderV0Command) bool {
     if (command.resource.kind == render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR and
         command.color_rgba != 0) return false;
     return true;
+}
+
+fn protocolV0GlyphCommand(
+    frame: *const render_c.HowlRenderV0Frame,
+    command: render_c.HowlRenderV0Command,
+) bool {
+    return glyphCommandValid(frame, command);
+}
+
+fn glyphCommandValid(
+    frame: *const render_c.HowlRenderV0Frame,
+    command: render_c.HowlRenderV0Command,
+) bool {
+    if (command.kind != render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN) return false;
+    if (command.rect.x_px != 0 or command.rect.y_px != 0) return false;
+    if (command.rect.width_px != 0 or command.rect.height_px != 0) return false;
+    if (command.color_rgba != 0) return false;
+    if (!resourceEmpty(command.resource)) return false;
+    if (command.glyphs.count == 0) return false;
+    if (!glyphSpanValid(command)) return false;
+    const glyphs = spanSlice(
+        render_c.HowlRenderV0GlyphRef,
+        command.glyphs.ptr,
+        command.glyphs.count,
+    );
+    for (glyphs) |glyph| {
+        if (glyph.atlas_resource.kind != render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA) return false;
+        if (glyph.atlas_rect.width_px == 0 or glyph.atlas_rect.height_px == 0) return false;
+        if (!rectFitsResource(glyph.atlas_rect, glyph_atlas_width_px, glyph_atlas_height_px)) return false;
+        if (!destinationOverlaps(frame.render_px, glyph.x_px, glyph.y_px, glyph.atlas_rect)) return false;
+        if (unpackProtocolV0Rgba(glyph.color_rgba)[3] == 0) return false;
+    }
+    return true;
+}
+
+fn glyphSpanValid(command: render_c.HowlRenderV0Command) bool {
+    return spanCountValid(
+        command.glyphs.ptr,
+        command.glyphs.count,
+        command.glyphs.count_max,
+        render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+    );
 }
 
 fn protocolV0FullClear(
@@ -1571,6 +1806,40 @@ fn drawSpriteCommand(
     drawQuad(surface, command.rect, command.rect);
 }
 
+fn drawGlyphCommand(
+    textures: *ProtocolV0Textures,
+    surface: render_c.HowlRenderHostSurface,
+    command: render_c.HowlRenderV0Command,
+) bool {
+    const glyphs = spanSlice(
+        render_c.HowlRenderV0GlyphRef,
+        command.glyphs.ptr,
+        command.glyphs.count,
+    );
+    gl_c.glEnable(gl_c.GL_TEXTURE_2D);
+    defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
+    var bound_texture_id: u64 = 0;
+    for (glyphs) |glyph| {
+        const slot = textures.textureSlotFor(glyph.atlas_resource) orelse return false;
+        if (!rectFitsResource(glyph.atlas_rect, slot.width_px, slot.height_px)) return false;
+        if (bound_texture_id != slot.texture_id) {
+            bound_texture_id = slot.texture_id;
+            gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(bound_texture_id));
+        }
+        const rgba = unpackProtocolV0Rgba(glyph.color_rgba);
+        gl_c.glColor4ub(rgba[0], rgba[1], rgba[2], rgba[3]);
+        const rect = render_c.HowlRenderV0Rect{
+            .x_px = glyph.x_px,
+            .y_px = glyph.y_px,
+            .width_px = glyph.atlas_rect.width_px,
+            .height_px = glyph.atlas_rect.height_px,
+        };
+        drawTexturedQuad(surface, rect, glyph.atlas_rect, slot.width_px, slot.height_px);
+    }
+    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
+    return true;
+}
+
 fn drawQuad(
     surface: render_c.HowlRenderHostSurface,
     rect: render_c.HowlRenderV0Rect,
@@ -1585,6 +1854,38 @@ fn drawQuad(
     const tex_right: f32 = if (textured) 1.0 else 0.0;
     const tex_top: f32 = 0.0;
     const tex_bottom: f32 = if (textured) 1.0 else 0.0;
+
+    gl_c.glBegin(gl_c.GL_QUADS);
+    gl_c.glTexCoord2f(tex_left, tex_top);
+    gl_c.glVertex2f(left, top);
+    gl_c.glTexCoord2f(tex_right, tex_top);
+    gl_c.glVertex2f(right, top);
+    gl_c.glTexCoord2f(tex_right, tex_bottom);
+    gl_c.glVertex2f(right, bottom);
+    gl_c.glTexCoord2f(tex_left, tex_bottom);
+    gl_c.glVertex2f(left, bottom);
+    gl_c.glEnd();
+}
+
+fn drawTexturedQuad(
+    surface: render_c.HowlRenderHostSurface,
+    rect: render_c.HowlRenderV0Rect,
+    texture_rect: render_c.HowlRenderV0Rect,
+    texture_width: u32,
+    texture_height: u32,
+) void {
+    const left = ndcX(rect.x_px, surface.width);
+    const right = ndcX(rect.x_px + rect.width_px, surface.width);
+    const top = ndcY(rect.y_px, surface.height);
+    const bottom = ndcY(rect.y_px + rect.height_px, surface.height);
+    const tex_left = @as(f32, @floatFromInt(texture_rect.x_px)) /
+        @as(f32, @floatFromInt(@max(texture_width, 1)));
+    const tex_right = @as(f32, @floatFromInt(texture_rect.x_px + texture_rect.width_px)) /
+        @as(f32, @floatFromInt(@max(texture_width, 1)));
+    const tex_top = @as(f32, @floatFromInt(texture_rect.y_px)) /
+        @as(f32, @floatFromInt(@max(texture_height, 1)));
+    const tex_bottom = @as(f32, @floatFromInt(texture_rect.y_px + texture_rect.height_px)) /
+        @as(f32, @floatFromInt(@max(texture_height, 1)));
 
     gl_c.glBegin(gl_c.GL_QUADS);
     gl_c.glTexCoord2f(tex_left, tex_top);

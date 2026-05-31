@@ -96,6 +96,8 @@ pub const Context = struct {
         v0_fill_only_fallback_count: u64 = 0,
         v0_sprite_present_count: u64 = 0,
         v0_sprite_fallback_count: u64 = 0,
+        v0_glyph_present_count: u64 = 0,
+        v0_glyph_fallback_count: u64 = 0,
     };
 
     term: HowlTerm,
@@ -646,6 +648,14 @@ pub const Context = struct {
                 self.protocol_v0_submit_diagnostics.v0_sprite_fallback_count +|= 1;
                 return false;
             }
+            if (term_texture.protocolV0GlyphFrame(frame)) {
+                if (term_texture.uploadProtocolV0Glyphs(&self.protocol_v0_textures, self.term_texture, frame)) {
+                    self.protocol_v0_submit_diagnostics.v0_glyph_present_count +|= 1;
+                    return true;
+                }
+                self.protocol_v0_submit_diagnostics.v0_glyph_fallback_count +|= 1;
+                return false;
+            }
             if (!term_texture.protocolV0FillOnly(frame)) return false;
             if (term_texture.uploadProtocolV0FillOnly(self.term_texture, frame)) {
                 self.protocol_v0_submit_diagnostics.v0_fill_only_present_count +|= 1;
@@ -863,7 +873,8 @@ pub const Context = struct {
                 "created_not_surviving={} creates_per_command_x1000={} " ++
                 "slots live={} retired={} empty={} max_live={} max_retired={} " ++
                 "fill_only_present={} fill_only_fallback={} " ++
-                "sprite_present={} sprite_fallback={}\n",
+                "sprite_present={} sprite_fallback={} " ++
+                "glyph_present={} glyph_fallback={}\n",
             .{
                 texture_diag.snapshot_seq,
                 texture_diag.frame_seq,
@@ -888,6 +899,8 @@ pub const Context = struct {
                 submit_diag.v0_fill_only_fallback_count,
                 submit_diag.v0_sprite_present_count,
                 submit_diag.v0_sprite_fallback_count,
+                submit_diag.v0_glyph_present_count,
+                submit_diag.v0_glyph_fallback_count,
             },
         );
     }
