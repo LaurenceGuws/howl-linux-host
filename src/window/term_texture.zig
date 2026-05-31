@@ -1158,6 +1158,11 @@ test "protocol v0 textures reject invalid command before mutation" {
     try std.testing.expect(textures.findValue(resource.value) == null);
 }
 
+test "protocol v0 fbo y coordinates target texture row zero first" {
+    try std.testing.expectEqual(@as(f32, -1.0), ndcY(0, 10));
+    try std.testing.expectEqual(@as(f32, 1.0), ndcY(10, 10));
+}
+
 test "protocol v0 fill only accepts full clear and fill commands" {
     var commands = [_]render_c.HowlRenderV0Command{
         .{
@@ -2529,7 +2534,7 @@ fn ndcX(x: i32, width: u16) f32 {
 }
 
 fn ndcY(y: i32, height: u16) f32 {
-    return 1.0 - (@as(f32, @floatFromInt(y)) / @as(f32, @floatFromInt(@max(height, 1)))) * 2.0;
+    return (@as(f32, @floatFromInt(y)) / @as(f32, @floatFromInt(@max(height, 1)))) * 2.0 - 1.0;
 }
 
 fn unpackProtocolV0Rgba(color_rgba: u32) [4]u8 {
