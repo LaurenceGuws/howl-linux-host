@@ -620,9 +620,7 @@ pub const Context = struct {
     const ContextSubmitBackend = struct {
         fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload) bool {
             var v0_resources_realized = false;
-            if (prepared_upload.protocol_v0_frame != null and
-                prepared_upload.protocol_v0_resource_plan.valid)
-            {
+            if (shouldRealizeProtocolV0(prepared_upload)) {
                 const frame = prepared_upload.protocol_v0_frame.?;
                 const v0_start_ns = InputWindow.nowNs();
                 v0_resources_realized = self.protocol_v0_textures.realizeFrame(frame);
@@ -653,13 +651,6 @@ pub const Context = struct {
                 return false;
             }
             const v0_uploaded = if (prepared_upload.protocol_v0_frame) |frame| blk: {
-                if (!prepared_upload.protocol_v0_resource_plan.valid) {
-                    recordProtocolV0NoSidecar(
-                        self,
-                        prepared_upload.protocol_v0_resource_plan.status,
-                    );
-                    break :blk false;
-                }
                 if (!v0_resources_realized) break :blk false;
                 break :blk uploadProtocolV0Commands(self, frame, had_matching_surface);
             } else blk: {
@@ -798,6 +789,12 @@ pub const Context = struct {
                 .ok,
                 => self.protocol_v0_submit_diagnostics.v0_no_sidecar_other_count +|= 1,
             }
+        }
+
+        fn shouldRealizeProtocolV0(
+            prepared_upload: *const render_retained.PreparedUpload,
+        ) bool {
+            return prepared_upload.protocol_v0_frame != null;
         }
 
         fn execution(
@@ -2367,6 +2364,23 @@ test "prepared handle mutation after upload does not submit" {
     try std.testing.expect(TestMutatingBackend.saw_unlocked);
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
     try std.testing.expectEqual(@as(u8, 0), context.term.render.submit_calls);
+}
+
+test "protocol v0 realization gate ignores frame-only resource plan validity" {
+    var frame = std.mem.zeroes(render_c.HowlRenderV0Frame);
+    var upload = render_retained.PreparedUpload{
+        .info = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceInfo),
+        .buffer = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceBuffer),
+        .diagnostics = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceDiagnostics),
+        .protocol_v0_probe = .{},
+        .protocol_v0_resource_plan = .{ .status = .invalid_resource, .valid = false },
+        .protocol_v0_frame = &frame,
+    };
+
+    try std.testing.expect(Context.ContextSubmitBackend.shouldRealizeProtocolV0(&upload));
+
+    upload.protocol_v0_frame = null;
+    try std.testing.expect(!Context.ContextSubmitBackend.shouldRealizeProtocolV0(&upload));
 }
 
 test "complete present acks matching host-owned token once and clears" {
