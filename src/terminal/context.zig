@@ -609,12 +609,13 @@ pub const Context = struct {
 
     const ContextSubmitBackend = struct {
         fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload) bool {
+            var v0_resources_realized = false;
             if (prepared_upload.protocol_v0_frame != null and
                 prepared_upload.protocol_v0_resource_plan.valid)
             {
                 const frame = prepared_upload.protocol_v0_frame.?;
                 const v0_start_ns = InputWindow.nowNs();
-                _ = self.protocol_v0_textures.realizeFrame(frame);
+                v0_resources_realized = self.protocol_v0_textures.realizeFrame(frame);
                 self.recordProtocolV0Realization(renderUs(v0_start_ns));
             }
             const pixels: []const u8 = if (prepared_upload.buffer.rgba_pixels.len == 0)
@@ -638,6 +639,7 @@ pub const Context = struct {
                 return false;
             }
             const v0_uploaded = if (prepared_upload.protocol_v0_frame) |frame| blk: {
+                if (!v0_resources_realized) break :blk false;
                 break :blk uploadProtocolV0Commands(self, frame, had_matching_surface);
             } else blk: {
                 self.protocol_v0_submit_diagnostics.v0_no_sidecar_count +|= 1;
@@ -649,6 +651,8 @@ pub const Context = struct {
             if (!v0_uploaded and !term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
                 self.protocol_v0_submit_diagnostics.full_rgba_gl_after =
                     term_texture.sampleGlState();
+                self.term_texture.width = 0;
+                self.term_texture.height = 0;
                 self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
                 return false;
             }

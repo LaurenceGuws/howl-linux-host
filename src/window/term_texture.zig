@@ -7,10 +7,19 @@ extern fn glCheckFramebufferStatus(target: c_uint) c_uint;
 extern fn glDeleteFramebuffers(n: c_int, framebuffers: [*c]const c_uint) void;
 extern fn glFramebufferTexture2D(target: c_uint, attachment: c_uint, textarget: c_uint, texture: c_uint, level: c_int) void;
 extern fn glGenFramebuffers(n: c_int, framebuffers: [*c]c_uint) void;
+extern fn glBlendFuncSeparate(srcRGB: c_uint, dstRGB: c_uint, srcAlpha: c_uint, dstAlpha: c_uint) void;
+extern fn glIsEnabled(cap: c_uint) c_uchar_bool;
 
 const gl_alpha = 0x1906;
+const gl_viewport = 0x0ba2;
+const gl_blend_src_rgb = 0x80c9;
+const gl_blend_dst_rgb = 0x80c8;
+const gl_blend_src_alpha = 0x80cb;
+const gl_blend_dst_alpha = 0x80ca;
 const glyph_atlas_width_px = 1024;
 const glyph_atlas_height_px = 1024;
+
+const c_uchar_bool = u8;
 
 pub const ProtocolV0Textures = struct {
     slots: [render_c.HOWL_RENDER_V0_RESOURCES_MAX]Slot = [_]Slot{.{}} **
@@ -26,6 +35,9 @@ pub const ProtocolV0Textures = struct {
         width_px: u32 = 0,
         height_px: u32 = 0,
         format: u32 = 0,
+        upload_rect: render_c.HowlRenderV0Rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+        upload_stride_bytes: u32 = 0,
+        upload_bytes_count: u32 = 0,
 
         const State = enum { empty, live, retired };
     };
@@ -151,15 +163,18 @@ pub const ProtocolV0Textures = struct {
         for (uploads) |upload| {
             if (!self.uploadTexture(upload)) {
                 self.diagnostics.upload_gl_after = sampleGlState();
+                self.invalidateUploads(uploads);
                 self.rollbackCreates(created[0..created_count]);
                 return false;
             }
         }
         self.diagnostics.upload_gl_after = sampleGlState();
         if (!self.glSampleOk(self.diagnostics.upload_gl_after)) {
+            self.invalidateUploads(uploads);
             self.rollbackCreates(created[0..created_count]);
             return false;
         }
+        self.commitUploadMetadata(uploads);
         const retires = spanSlice(
             render_c.HowlRenderV0Retire,
             frame.retires.ptr,
@@ -431,6 +446,22 @@ pub const ProtocolV0Textures = struct {
         return true;
     }
 
+    fn commitUploadMetadata(self: *ProtocolV0Textures, uploads: []const render_c.HowlRenderV0Upload) void {
+        for (uploads) |upload| {
+            const slot = self.find(upload.resource) orelse continue;
+            slot.upload_rect = upload.rect;
+            slot.upload_stride_bytes = upload.stride_bytes;
+            slot.upload_bytes_count = upload.bytes_count;
+        }
+    }
+
+    fn invalidateUploads(self: *ProtocolV0Textures, uploads: []const render_c.HowlRenderV0Upload) void {
+        for (uploads) |upload| {
+            const slot = self.find(upload.resource) orelse continue;
+            self.retireSlot(slot);
+        }
+    }
+
     fn retireTexture(self: *ProtocolV0Textures, resource: render_c.HowlRenderV0ResourceId) bool {
         const slot = self.find(resource) orelse return false;
         self.retireSlot(slot);
@@ -594,7 +625,10 @@ fn validateFrameOrderStatic(frame: *const render_c.HowlRenderV0Frame) bool {
         frame.uploads.count,
     );
     var bytes_sum: u32 = 0;
-    for (uploads) |upload| {
+    var previous_upload_seq: u32 = 0;
+    for (uploads, 0..) |upload, upload_index| {
+        if (upload_index > 0 and upload.upload_seq < previous_upload_seq) return false;
+        previous_upload_seq = upload.upload_seq;
         if (upload.upload_seq > frame.commands.count) return false;
         bytes_sum = std.math.add(u32, bytes_sum, upload.bytes_count) catch return false;
         if (findCreate(frame, upload.resource)) |create| {
@@ -686,6 +720,19 @@ fn retireForResource(
     const retires = spanSlice(render_c.HowlRenderV0Retire, frame.retires.ptr, frame.retires.count);
     for (retires) |retire| if (sameResource(retire.resource, resource)) return retire;
     return null;
+}
+
+fn resourceHasFutureUpload(
+    frame: *const render_c.HowlRenderV0Frame,
+    resource: render_c.HowlRenderV0ResourceId,
+    command_index: u32,
+) bool {
+    const uploads = spanSlice(render_c.HowlRenderV0Upload, frame.uploads.ptr, frame.uploads.count);
+    for (uploads) |upload| {
+        if (!sameResource(upload.resource, resource)) continue;
+        if (upload.upload_seq > command_index) return true;
+    }
+    return false;
 }
 
 fn resourceFormatValid(kind: u32, format: u32) bool {
@@ -1374,6 +1421,168 @@ test "protocol v0 sprite patch rejects glyph commands" {
     try std.testing.expect(!protocolV0SpritePatch(&frame));
 }
 
+test "protocol v0 sprite upload coverage matches command bounds" {
+    const slot = ProtocolV0Textures.Slot{
+        .state = .live,
+        .resource = testResource(17, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+        .texture_id = 1,
+        .width_px = 8,
+        .height_px = 8,
+        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .upload_rect = .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 },
+        .upload_stride_bytes = 2,
+        .upload_bytes_count = 4,
+    };
+    try std.testing.expect(spriteUploadCoversCommand(
+        slot,
+        .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 },
+    ));
+    try std.testing.expect(!spriteUploadCoversCommand(
+        slot,
+        .{ .x_px = 0, .y_px = 0, .width_px = 3, .height_px = 2 },
+    ));
+    try std.testing.expect(!spriteUploadCoversCommand(
+        slot,
+        .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 3 },
+    ));
+}
+
+test "protocol v0 upload metadata commits after upload success" {
+    const resource = testResource(20, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
+    var textures = ProtocolV0Textures{};
+    textures.slots[0] = .{
+        .state = .live,
+        .resource = resource,
+        .texture_id = 1,
+        .width_px = 2,
+        .height_px = 2,
+        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+    };
+    var bytes = [_]u8{ 1, 2, 3, 4 };
+    var uploads = [_]render_c.HowlRenderV0Upload{.{
+        .resource = resource,
+        .rect = .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 },
+        .bytes_ptr = &bytes,
+        .bytes_count = 4,
+        .stride_bytes = 2,
+        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .upload_seq = 0,
+    }};
+
+    textures.commitUploadMetadata(&uploads);
+    try std.testing.expectEqual(@as(u32, 2), textures.slots[0].upload_rect.width_px);
+    try std.testing.expectEqual(@as(u32, 2), textures.slots[0].upload_stride_bytes);
+    try std.testing.expectEqual(@as(u32, 4), textures.slots[0].upload_bytes_count);
+}
+
+test "protocol v0 textures reject out of order upload sequence" {
+    const resource = testResource(21, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
+    var bytes = [_]u8{ 1, 2 };
+    var creates = [_]render_c.HowlRenderV0Create{.{
+        .resource = resource,
+        .width_px = 1,
+        .height_px = 1,
+        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .create_seq = 0,
+    }};
+    var uploads = [_]render_c.HowlRenderV0Upload{
+        .{
+            .resource = resource,
+            .rect = testRect(1, 1),
+            .bytes_ptr = &bytes,
+            .bytes_count = 1,
+            .stride_bytes = 1,
+            .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+            .upload_seq = 1,
+        },
+        .{
+            .resource = resource,
+            .rect = testRect(1, 1),
+            .bytes_ptr = &bytes,
+            .bytes_count = 1,
+            .stride_bytes = 1,
+            .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+            .upload_seq = 0,
+        },
+    };
+    var frame = testFrame();
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, 2);
+    var textures = ProtocolV0Textures{};
+
+    try std.testing.expect(!textures.validateFrame(&frame));
+}
+
+test "protocol v0 future upload detects command visibility mismatch" {
+    const resource = testResource(18, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
+    var bytes = [_]u8{ 0, 1, 2, 3 };
+    var uploads = [_]render_c.HowlRenderV0Upload{
+        .{
+            .resource = resource,
+            .rect = testRect(1, 1),
+            .bytes_ptr = &bytes,
+            .bytes_count = 1,
+            .stride_bytes = 1,
+            .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+            .upload_seq = 0,
+        },
+        .{
+            .resource = resource,
+            .rect = testRect(1, 1),
+            .bytes_ptr = &bytes,
+            .bytes_count = 1,
+            .stride_bytes = 1,
+            .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+            .upload_seq = 1,
+        },
+    };
+    var frame = testFrame();
+    frame.uploads = uploadSpan(&uploads, 2);
+
+    try std.testing.expect(resourceHasFutureUpload(&frame, resource, 0));
+    try std.testing.expect(!resourceHasFutureUpload(&frame, resource, 1));
+}
+
+test "protocol v0 glyph future upload detects command visibility mismatch" {
+    const resource = testResource(19, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA);
+    var glyph = render_c.HowlRenderV0GlyphRef{
+        .atlas_resource = resource,
+        .atlas_rect = testRect(1, 1),
+        .x_px = 0,
+        .y_px = 0,
+        .glyph_id = 1,
+        .color_rgba = 0xffffffff,
+    };
+    const command = render_c.HowlRenderV0Command{
+        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+        .color_rgba = 0,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{
+            .ptr = &glyph,
+            .count = 1,
+            .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+        },
+    };
+    var bytes = [_]u8{255};
+    var uploads = [_]render_c.HowlRenderV0Upload{.{
+        .resource = resource,
+        .rect = testRect(1, 1),
+        .bytes_ptr = &bytes,
+        .bytes_count = 1,
+        .stride_bytes = 1,
+        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .upload_seq = 1,
+    }};
+    var frame = testFrame();
+    frame.uploads = uploadSpan(&uploads, 1);
+
+    try std.testing.expect(glyphCommandHasFutureUpload(&frame, command, 0));
+    try std.testing.expect(!glyphCommandHasFutureUpload(&frame, command, 1));
+}
+
 test "protocol v0 sprite frame rejects glyph commands" {
     var glyph = render_c.HowlRenderV0GlyphRef{
         .atlas_resource = testResource(11, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA),
@@ -1706,7 +1915,7 @@ pub fn uploadPreparedBuffer(surface: render_c.HowlRenderHostSurface, rgba_pixels
         gl_c.GL_UNSIGNED_BYTE,
         rgba_pixels.ptr,
     );
-    return true;
+    return gl_c.glGetError() == 0;
 }
 
 pub fn uploadProtocolV0FillOnly(
@@ -1815,27 +2024,65 @@ fn uploadProtocolV0Commands(
         return false;
     }
 
+    var prior_viewport: [4]c_int = .{ 0, 0, 0, 0 };
+    var prior_blend_src_rgb: c_int = 0;
+    var prior_blend_dst_rgb: c_int = 0;
+    var prior_blend_src_alpha: c_int = 0;
+    var prior_blend_dst_alpha: c_int = 0;
+    gl_c.glGetIntegerv(gl_viewport, &prior_viewport[0]);
+    gl_c.glGetIntegerv(gl_blend_src_rgb, &prior_blend_src_rgb);
+    gl_c.glGetIntegerv(gl_blend_dst_rgb, &prior_blend_dst_rgb);
+    gl_c.glGetIntegerv(gl_blend_src_alpha, &prior_blend_src_alpha);
+    gl_c.glGetIntegerv(gl_blend_dst_alpha, &prior_blend_dst_alpha);
+    const prior_blend_enabled = glIsEnabled(gl_c.GL_BLEND) != 0;
+    defer gl_c.glViewport(
+        prior_viewport[0],
+        prior_viewport[1],
+        prior_viewport[2],
+        prior_viewport[3],
+    );
+    defer glBlendFuncSeparate(
+        @intCast(prior_blend_src_rgb),
+        @intCast(prior_blend_dst_rgb),
+        @intCast(prior_blend_src_alpha),
+        @intCast(prior_blend_dst_alpha),
+    );
+    defer if (prior_blend_enabled) gl_c.glEnable(gl_c.GL_BLEND) else gl_c.glDisable(gl_c.GL_BLEND);
+
     gl_c.glViewport(0, 0, surface.width, surface.height);
     gl_c.glDisable(gl_c.GL_DEPTH_TEST);
     gl_c.glEnable(gl_c.GL_BLEND);
-    gl_c.glBlendFunc(gl_c.GL_SRC_ALPHA, gl_c.GL_ONE_MINUS_SRC_ALPHA);
-    defer gl_c.glDisable(gl_c.GL_BLEND);
+    glBlendFuncSeparate(
+        gl_c.GL_SRC_ALPHA,
+        gl_c.GL_ONE_MINUS_SRC_ALPHA,
+        gl_c.GL_ONE,
+        gl_c.GL_ONE_MINUS_SRC_ALPHA,
+    );
+    defer gl_c.glColor4ub(255, 255, 255, 255);
+    defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
+    defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
 
     const commands = spanSlice(
         render_c.HowlRenderV0Command,
         frame.commands.ptr,
         frame.commands.count,
     );
-    for (commands) |command| {
+    for (commands, 0..) |command, command_index| {
         switch (command.kind) {
             render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
             render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
             => drawFillCommand(surface, command),
             render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
-                const texture_id = textures.textureIdFor(command.resource) orelse return false;
-                drawSpriteCommand(surface, command, texture_id);
+                const slot = textures.textureSlotFor(command.resource) orelse return false;
+                if (resourceHasFutureUpload(frame, command.resource, @intCast(command_index))) {
+                    return false;
+                }
+                if (!drawSpriteCommand(surface, command, slot)) return false;
             },
             render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => {
+                if (glyphCommandHasFutureUpload(frame, command, @intCast(command_index))) {
+                    return false;
+                }
                 if (!drawGlyphCommand(textures, surface, command)) return false;
             },
             else => return false,
@@ -2122,11 +2369,12 @@ fn drawFillCommand(
 fn drawSpriteCommand(
     surface: render_c.HowlRenderHostSurface,
     command: render_c.HowlRenderV0Command,
-    texture_id: u64,
-) void {
+    slot: ProtocolV0Textures.Slot,
+) bool {
+    if (!spriteUploadCoversCommand(slot, command.rect)) return false;
     gl_c.glEnable(gl_c.GL_TEXTURE_2D);
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
-    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(texture_id));
+    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(slot.texture_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
     if (command.resource.kind == render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA) {
         const rgba = unpackProtocolV0Rgba(command.color_rgba);
@@ -2134,7 +2382,53 @@ fn drawSpriteCommand(
     } else {
         gl_c.glColor4ub(255, 255, 255, 255);
     }
-    drawQuad(surface, command.rect, command.rect);
+    const source_rect = render_c.HowlRenderV0Rect{
+        .x_px = 0,
+        .y_px = 0,
+        .width_px = command.rect.width_px,
+        .height_px = command.rect.height_px,
+    };
+    drawTexturedQuad(surface, command.rect, source_rect, slot.width_px, slot.height_px);
+    return true;
+}
+
+fn spriteUploadCoversCommand(
+    slot: ProtocolV0Textures.Slot,
+    command_rect: render_c.HowlRenderV0Rect,
+) bool {
+    if (slot.upload_rect.x_px != 0) return false;
+    if (slot.upload_rect.y_px != 0) return false;
+    if (command_rect.width_px > slot.upload_rect.width_px) return false;
+    if (command_rect.height_px > slot.upload_rect.height_px) return false;
+    const row_bytes = std.math.mul(
+        u32,
+        command_rect.width_px,
+        bytesPerPixel(slot.format),
+    ) catch return false;
+    if (row_bytes > slot.upload_stride_bytes) return false;
+    if (command_rect.height_px == 0) return false;
+    const final_row: u32 = command_rect.height_px - 1;
+    const final_row_offset = std.math.mul(u32, final_row, slot.upload_stride_bytes) catch {
+        return false;
+    };
+    const bytes_required = std.math.add(u32, final_row_offset, row_bytes) catch return false;
+    return bytes_required <= slot.upload_bytes_count;
+}
+
+fn glyphCommandHasFutureUpload(
+    frame: *const render_c.HowlRenderV0Frame,
+    command: render_c.HowlRenderV0Command,
+    command_index: u32,
+) bool {
+    const glyphs = spanSlice(
+        render_c.HowlRenderV0GlyphRef,
+        command.glyphs.ptr,
+        command.glyphs.count,
+    );
+    for (glyphs) |glyph| {
+        if (resourceHasFutureUpload(frame, glyph.atlas_resource, command_index)) return true;
+    }
+    return false;
 }
 
 fn drawGlyphCommand(
