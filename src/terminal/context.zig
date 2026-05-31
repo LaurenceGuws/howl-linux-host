@@ -90,6 +90,8 @@ pub const Context = struct {
         full_rgba_gl_error: u64 = 0,
         logged_v0_failure_count: u64 = 0,
         logged_full_rgba_gl_error: u64 = 0,
+        submit_failure_count: u64 = 0,
+        prepare_failure_count: u64 = 0,
     };
 
     term: HowlTerm,
@@ -521,10 +523,23 @@ pub const Context = struct {
             .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0 },
             .prepare_or_idle => switch (self.term.render.prepare()) {
                 .idle => .{ .prepared = false, .step = .idle_prepare, .present_snapshot_seq = 0 },
-                .failed => .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0 },
+                .failed => blk: {
+                    self.recordPrepareFailure(self.term.render.lastPrepareFailure());
+                    break :blk .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0 };
+                },
                 .prepared => submitDriveResult(true, self.submitPreparedLocked()),
             },
         };
+    }
+
+    fn recordPrepareFailure(self: *Context, reason: render_retained.PrepareFailure) void {
+        self.protocol_v0_submit_diagnostics.prepare_failure_count +|= 1;
+        const count = self.protocol_v0_submit_diagnostics.prepare_failure_count;
+        if (count > 8 and count % 120 != 0) return;
+        std.debug.print(
+            "howl-debug prepare-failed count={} reason={s}\n",
+            .{ count, @tagName(reason) },
+        );
     }
 
     fn renderAction(work: render_retained.WorkState, bootstrap_surface: bool) RenderAction {
@@ -633,7 +648,7 @@ pub const Context = struct {
 
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
-            return .{ .result = .failed, .snapshot_seq = 0 };
+            return .{ .result = .failed, .snapshot_seq = 0, .failure = .missing_prepared_upload };
         }
         defer upload.deinit();
         const prepared_handle = self.term.render.preparedSurfaceHandle();
@@ -649,26 +664,92 @@ pub const Context = struct {
         const prepared_stable = preparedHandleStable(current_handle, prepared_handle);
         std.debug.assert(!self.term.render.presentPending());
         if (!prepared_stable) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .failure = .prepared_handle_changed };
         }
         std.debug.assert(prepared_stable);
         if (!upload_ok) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .failure = .backend_upload_failed };
         }
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
         const execution = Backend.execution(self, &upload, start_ns);
         const result = self.term.render.submit(&execution, &submit_result);
+        const failure = if (result == .rendered)
+            SubmitFailureReason.none
+        else
+            submitFailureReason(self.term.render.lastSubmitFailure());
+        if (failure != .none) {
+            self.recordSubmitFailure(failure, upload.info, upload.buffer, execution);
+        }
         if (result == .rendered) {
             self.term_texture = submit_result.host_surface;
         }
-        return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq };
+        return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq, .failure = failure };
     }
 
     const SubmitPreparedResult = struct {
         result: render_retained.SubmitResult,
         snapshot_seq: u64,
+        failure: SubmitFailureReason = .none,
     };
+
+    const SubmitFailureReason = enum {
+        none,
+        missing_prepared_upload,
+        backend_upload_failed,
+        prepared_handle_changed,
+        retained_present_pending,
+        retained_decision_failed,
+        retained_decision_stale,
+        retained_decision_needs_prepare,
+        retained_submit_idle,
+        retained_submit_stale,
+        retained_submit_needs_prepare,
+        retained_submit_failed,
+    };
+
+    fn submitFailureReason(failure: render_retained.SubmitFailure) SubmitFailureReason {
+        return switch (failure) {
+            .none => .none,
+            .present_pending => .retained_present_pending,
+            .decision_failed => .retained_decision_failed,
+            .decision_stale => .retained_decision_stale,
+            .decision_needs_prepare => .retained_decision_needs_prepare,
+            .submit_idle => .retained_submit_idle,
+            .submit_stale => .retained_submit_stale,
+            .submit_needs_prepare => .retained_submit_needs_prepare,
+            .submit_failed => .retained_submit_failed,
+        };
+    }
+
+    fn recordSubmitFailure(
+        self: *Context,
+        reason: SubmitFailureReason,
+        info: render_c.HowlRenderPreparedSurfaceInfo,
+        buffer: render_c.HowlRenderPreparedSurfaceBuffer,
+        execution: render_c.HowlRenderSubmitExecution,
+    ) void {
+        self.protocol_v0_submit_diagnostics.submit_failure_count +|= 1;
+        const count = self.protocol_v0_submit_diagnostics.submit_failure_count;
+        if (count > 8 and count % 120 != 0) return;
+        std.debug.print(
+            "howl-debug submit-failed count={} reason={s} snapshot={} damage_kind={} " ++
+                "prepared_px={}x{} host_px={}x{} host_id={} uploads_committed={} render_us={}\n",
+            .{
+                count,
+                @tagName(reason),
+                info.snapshot_seq,
+                info.damage_kind,
+                info.render_px.width,
+                info.render_px.height,
+                execution.host_surface.width,
+                execution.host_surface.height,
+                execution.host_surface.host_surface_id,
+                buffer.uploads_committed,
+                execution.render_us,
+            },
+        );
+    }
 
     fn preparedHandleStable(
         current: render_c.HowlRenderPreparedSurfaceHandle,
@@ -1792,6 +1873,10 @@ const TestSubmitRender = struct {
 
     fn presentPending(_: *@This()) bool {
         return false;
+    }
+
+    fn lastSubmitFailure(_: *const @This()) render_retained.SubmitFailure {
+        return .none;
     }
 
     fn submit(

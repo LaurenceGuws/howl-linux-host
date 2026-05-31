@@ -3,7 +3,27 @@ const c = @import("howl_render_c");
 
 pub const PrepareResult = enum { idle, prepared, failed };
 
+pub const PrepareFailure = enum {
+    none,
+    take_request_failed,
+    prepare_handle_idle,
+    prepare_handle_failed,
+    describe_failed,
+};
+
 pub const SubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
+
+pub const SubmitFailure = enum {
+    none,
+    present_pending,
+    decision_failed,
+    decision_stale,
+    decision_needs_prepare,
+    submit_idle,
+    submit_stale,
+    submit_needs_prepare,
+    submit_failed,
+};
 
 pub const PresentInFlight = struct {
     snapshot_seq: u64,
@@ -526,6 +546,8 @@ pub const State = struct {
     geometry_epoch: u64 = 0,
     text_session: c.HowlRenderTextSessionHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
+    last_prepare_failure: PrepareFailure = .none,
+    last_submit_failure: SubmitFailure = .none,
     present_in_flight: ?PresentInFlight = null,
     last_protocol_v0_probe: PreparedProtocolV0Probe = .{},
     protocol_v0_probe_success_count: u64 = 0,
@@ -639,6 +661,7 @@ pub const State = struct {
     }
 
     pub fn prepare(self: *State) PrepareResult {
+        self.last_prepare_failure = .none;
         var request = std.mem.zeroes(c.HowlRenderPrepareRequest);
         switch (c.howl_render_text_session_take_prepare_request(self.text_session, &request)) {
             c.HOWL_RENDER_PREPARE_IDLE => {
@@ -649,14 +672,23 @@ pub const State = struct {
                 return self.prepareReady(request);
             },
             else => {
+                self.last_prepare_failure = .take_request_failed;
                 self.releasePreparedSurface();
                 return .failed;
             },
         }
     }
 
+    pub fn lastPrepareFailure(self: *const State) PrepareFailure {
+        return self.last_prepare_failure;
+    }
+
     pub fn submit(self: *State, execution: *const c.HowlRenderSubmitExecution, result: *c.HowlRenderSubmitResult) SubmitResult {
-        if (self.presentPending()) return .idle;
+        self.last_submit_failure = .none;
+        if (self.presentPending()) {
+            self.last_submit_failure = .present_pending;
+            return .idle;
+        }
         var prepared: c.HowlRenderPreparedSurfaceHandle = null;
         switch (c.howl_render_text_session_take_submit_handle(self.text_session, &prepared)) {
             c.HOWL_RENDER_SUBMIT_DECISION_IDLE => {
@@ -664,25 +696,33 @@ pub const State = struct {
             },
             c.HOWL_RENDER_SUBMIT_DECISION_SUBMIT => {},
             c.HOWL_RENDER_SUBMIT_DECISION_STALE => {
+                self.last_submit_failure = .decision_stale;
                 self.releasePreparedSurface();
                 return .stale;
             },
             c.HOWL_RENDER_SUBMIT_DECISION_NEEDS_PREPARE => {
+                self.last_submit_failure = .decision_needs_prepare;
                 self.releasePreparedSurface();
                 return .needs_prepare;
             },
             else => {
+                self.last_submit_failure = .decision_failed;
                 self.releasePreparedSurface();
                 return .failed;
             },
         }
         return switch (self.submitHandle(prepared, execution, result)) {
-            c.HOWL_RENDER_SUBMIT_IDLE => .idle,
+            c.HOWL_RENDER_SUBMIT_IDLE => blk: {
+                self.last_submit_failure = .submit_idle;
+                break :blk .idle;
+            },
             c.HOWL_RENDER_SUBMIT_STALE => blk: {
+                self.last_submit_failure = .submit_stale;
                 self.releasePreparedSurface();
                 break :blk .stale;
             },
             c.HOWL_RENDER_SUBMIT_NEEDS_PREPARE => blk: {
+                self.last_submit_failure = .submit_needs_prepare;
                 self.releasePreparedSurface();
                 break :blk .needs_prepare;
             },
@@ -693,10 +733,15 @@ pub const State = struct {
                 break :blk .rendered;
             },
             else => blk: {
+                self.last_submit_failure = .submit_failed;
                 self.releasePreparedSurface();
                 break :blk .failed;
             },
         };
+    }
+
+    pub fn lastSubmitFailure(self: *const State) SubmitFailure {
+        return self.last_submit_failure;
     }
 
     pub fn preparedInfo(self: *const State, info_out: *c.HowlRenderPreparedSurfaceInfo) bool {
@@ -804,6 +849,7 @@ pub const State = struct {
         var prepared: c.HowlRenderPreparedSurfaceHandle = null;
         return switch (c.howl_render_text_session_prepare_handle(self.text_session, request, &prepared)) {
             c.HOWL_RENDER_PREPARE_IDLE => blk: {
+                self.last_prepare_failure = .prepare_handle_idle;
                 self.releasePreparedSurface();
                 break :blk .idle;
             },
@@ -811,6 +857,7 @@ pub const State = struct {
                 break :blk self.acceptPrepared(prepared, request);
             },
             else => blk: {
+                self.last_prepare_failure = .prepare_handle_failed;
                 self.releasePreparedSurface();
                 break :blk .failed;
             },
@@ -821,6 +868,7 @@ pub const State = struct {
         var info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo);
         const describe_status = c.howl_render_prepared_surface_describe(prepared, &info);
         if (describe_status != c.HOWL_RENDER_CALL_OK) {
+            self.last_prepare_failure = .describe_failed;
             self.releasePreparedSurface();
             return .failed;
         }
