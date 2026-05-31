@@ -47,10 +47,41 @@ pub const PreparedUpload = struct {
     info: c.HowlRenderPreparedSurfaceInfo,
     buffer: c.HowlRenderPreparedSurfaceBuffer,
     protocol_v0_probe: PreparedProtocolV0Probe,
+    protocol_v0_resource_plan: PreparedProtocolV0ResourcePlan,
 
     pub fn deinit(self: *PreparedUpload) void {
         self.* = undefined;
     }
+};
+
+pub const PreparedProtocolV0ResourcePlan = struct {
+    status: PreparedProtocolV0ResourcePlanStatus = .idle,
+    valid: bool = false,
+    frame_seq: u64 = 0,
+    create_count: u32 = 0,
+    upload_count: u32 = 0,
+    use_count: u32 = 0,
+    retire_count: u32 = 0,
+    upload_bytes_count: u32 = 0,
+};
+
+pub const PreparedProtocolV0ResourcePlanStatus = enum(u8) {
+    idle,
+    ok,
+    call_failed,
+    null_frame,
+    version_mismatch,
+    create_span_invalid,
+    upload_span_invalid,
+    command_span_invalid,
+    retire_span_invalid,
+    upload_bytes_overflow,
+    upload_bytes_max_mismatch,
+    unsupported_command,
+    unsupported_resource,
+    invalid_command,
+    invalid_resource,
+    invalid_upload,
 };
 
 pub const PreparedProtocolV0Probe = struct {
@@ -104,6 +135,10 @@ pub const State = struct {
     protocol_v0_probe_failure_count: u64 = 0,
     protocol_v0_probe_checked_byte_count: u64 = 0,
     protocol_v0_probe_base_pixels: []u8 = &.{},
+    last_protocol_v0_resource_plan: PreparedProtocolV0ResourcePlan = .{},
+    protocol_v0_resource_plan_success_count: u64 = 0,
+    protocol_v0_resource_plan_failure_count: u64 = 0,
+    protocol_v0_resource_plan_upload_bytes_count: u64 = 0,
 
     pub fn init(
         text_session: c.HowlRenderTextSessionHandle,
@@ -278,12 +313,14 @@ pub const State = struct {
             .info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo),
             .buffer = std.mem.zeroes(c.HowlRenderPreparedSurfaceBuffer),
             .protocol_v0_probe = .{},
+            .protocol_v0_resource_plan = .{},
         };
         if (!self.preparedInfo(&upload_out.info)) return false;
         if (!self.preparedBuffer(&upload_out.buffer)) return false;
         upload_out.protocol_v0_probe = self.probePreparedProtocolV0(
             upload_out.info,
             upload_out.buffer,
+            &upload_out.protocol_v0_resource_plan,
         );
         return true;
     }
@@ -292,13 +329,18 @@ pub const State = struct {
         self: *State,
         info: c.HowlRenderPreparedSurfaceInfo,
         buffer: c.HowlRenderPreparedSurfaceBuffer,
+        resource_plan_out: *PreparedProtocolV0ResourcePlan,
     ) PreparedProtocolV0Probe {
         const prepared = self.prepared_surface orelse {
             self.recordPreparedProtocolV0Probe(.{ .status = .call_failed });
+            self.recordPreparedProtocolV0ResourcePlan(.{ .status = .call_failed });
+            resource_plan_out.* = self.last_protocol_v0_resource_plan;
             return self.last_protocol_v0_probe;
         };
         var frame: ?*const c.HowlRenderV0Frame = null;
         const status = c.howl_render_prepared_surface_protocol_v0(prepared, &frame);
+        resource_plan_out.* = validateProtocolV0ResourcePlan(status, frame);
+        self.recordPreparedProtocolV0ResourcePlan(resource_plan_out.*);
         const probe = validatePreparedProtocolV0Probe(
             info,
             buffer,
@@ -318,6 +360,19 @@ pub const State = struct {
             self.protocol_v0_probe_success_count +|= 1;
         } else {
             self.protocol_v0_probe_failure_count +|= 1;
+        }
+    }
+
+    fn recordPreparedProtocolV0ResourcePlan(
+        self: *State,
+        plan: PreparedProtocolV0ResourcePlan,
+    ) void {
+        self.last_protocol_v0_resource_plan = plan;
+        self.protocol_v0_resource_plan_upload_bytes_count +|= plan.upload_bytes_count;
+        if (plan.valid) {
+            self.protocol_v0_resource_plan_success_count +|= 1;
+        } else {
+            self.protocol_v0_resource_plan_failure_count +|= 1;
         }
     }
 
@@ -480,6 +535,199 @@ const Upload = c.HowlRenderV0Upload;
 const Command = c.HowlRenderV0Command;
 const Retire = c.HowlRenderV0Retire;
 const Frame = c.HowlRenderV0Frame;
+
+fn validateProtocolV0ResourcePlan(
+    status: c_int,
+    frame_optional: ?*const c.HowlRenderV0Frame,
+) PreparedProtocolV0ResourcePlan {
+    if (status != c.HOWL_RENDER_CALL_OK) return .{ .status = .call_failed };
+    const frame = frame_optional orelse return .{ .status = .null_frame };
+    const top_status = validateResourcePlanTopLevel(frame);
+    if (top_status != .ok) return .{ .status = top_status };
+    const use_count = countResourceUses(frame) orelse return .{ .status = .command_span_invalid };
+    const lifecycle_status = validateResourcePlanLifecycle(frame);
+    return .{
+        .status = lifecycle_status,
+        .valid = lifecycle_status == .ok,
+        .frame_seq = frame.token.frame_seq,
+        .create_count = frame.creates.count,
+        .upload_count = frame.uploads.count,
+        .use_count = use_count,
+        .retire_count = frame.retires.count,
+        .upload_bytes_count = frame.uploads.bytes_count_total,
+    };
+}
+
+fn validateResourcePlanTopLevel(frame: *const Frame) PreparedProtocolV0ResourcePlanStatus {
+    if (frame.protocol_version != c.HOWL_RENDER_PROTOCOL_V0_VERSION) return .version_mismatch;
+    if (!spanCountValid(
+        frame.creates.ptr,
+        frame.creates.count,
+        frame.creates.count_max,
+        c.HOWL_RENDER_V0_CREATES_MAX,
+    )) return .create_span_invalid;
+    if (!spanCountValid(
+        frame.uploads.ptr,
+        frame.uploads.count,
+        frame.uploads.count_max,
+        c.HOWL_RENDER_V0_UPLOADS_MAX,
+    )) return .upload_span_invalid;
+    if (!spanCountValid(
+        frame.commands.ptr,
+        frame.commands.count,
+        frame.commands.count_max,
+        c.HOWL_RENDER_V0_COMMANDS_MAX,
+    )) return .command_span_invalid;
+    if (!spanCountValid(
+        frame.retires.ptr,
+        frame.retires.count,
+        frame.retires.count_max,
+        c.HOWL_RENDER_V0_RETIRES_MAX,
+    )) return .retire_span_invalid;
+    if (frame.uploads.bytes_count_total > c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
+        return .upload_bytes_overflow;
+    }
+    if (frame.uploads.bytes_count_max != c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
+        return .upload_bytes_max_mismatch;
+    }
+    return .ok;
+}
+
+fn validateResourcePlanLifecycle(frame: *const Frame) PreparedProtocolV0ResourcePlanStatus {
+    for (spanSlice(Create, frame.creates.ptr, frame.creates.count), 0..) |create, index| {
+        const status = validatePlanCreate(frame, create, index);
+        if (status != .ok) return status;
+    }
+    for (spanSlice(Retire, frame.retires.ptr, frame.retires.count), 0..) |retire, index| {
+        const status = validatePlanRetire(frame, retire, index);
+        if (status != .ok) return status;
+    }
+    var bytes_sum: u32 = 0;
+    for (spanSlice(Upload, frame.uploads.ptr, frame.uploads.count)) |upload| {
+        const status = validatePlanUpload(frame, upload, &bytes_sum);
+        if (status != .ok) return status;
+    }
+    if (bytes_sum != frame.uploads.bytes_count_total) return .invalid_upload;
+    for (spanSlice(Command, frame.commands.ptr, frame.commands.count), 0..) |command, index| {
+        const status = validatePlanCommand(frame, command, @intCast(index));
+        if (status != .ok) return status;
+    }
+    return .ok;
+}
+
+fn validatePlanCreate(
+    frame: *const Frame,
+    create: Create,
+    index: usize,
+) PreparedProtocolV0ResourcePlanStatus {
+    if (!resourceKindSupported(create.resource.kind)) return .unsupported_resource;
+    if (create.create_seq > frame.commands.count) return .invalid_resource;
+    if (create.width_px == 0) return .invalid_resource;
+    if (create.height_px == 0) return .invalid_resource;
+    if (create.format != uploadFormatForResource(create.resource.kind)) return .invalid_upload;
+    const creates = spanSlice(Create, frame.creates.ptr, frame.creates.count);
+    for (creates[index + 1 ..]) |next| {
+        if (sameResource(create.resource, next.resource)) return .invalid_resource;
+        if (create.resource.value == next.resource.value) return .invalid_resource;
+    }
+    return .ok;
+}
+
+fn validatePlanRetire(
+    frame: *const Frame,
+    retire: Retire,
+    index: usize,
+) PreparedProtocolV0ResourcePlanStatus {
+    if (!resourceKindSupported(retire.resource.kind)) return .unsupported_resource;
+    if (retire.retire_seq > frame.commands.count) return .invalid_resource;
+    const create = findCreate(frame, retire.resource) orelse return .invalid_resource;
+    if (create.create_seq >= retire.retire_seq) return .invalid_resource;
+    const retires = spanSlice(Retire, frame.retires.ptr, frame.retires.count);
+    for (retires[index + 1 ..]) |next| {
+        if (sameResource(retire.resource, next.resource)) return .invalid_resource;
+    }
+    return .ok;
+}
+
+fn validatePlanUpload(
+    frame: *const Frame,
+    upload: Upload,
+    bytes_sum: *u32,
+) PreparedProtocolV0ResourcePlanStatus {
+    if (!resourceKindSupported(upload.resource.kind)) return .unsupported_resource;
+    if (upload.format != uploadFormatForResource(upload.resource.kind)) return .invalid_upload;
+    if (upload.upload_seq > frame.commands.count) return .invalid_upload;
+    const create = findCreate(frame, upload.resource) orelse return .invalid_resource;
+    if (upload.upload_seq < create.create_seq) return .invalid_upload;
+    if (retireForResource(frame, upload.resource)) |retire| {
+        if (upload.upload_seq >= retire.retire_seq) return .invalid_resource;
+    }
+    if (!rectFitsResource(upload.rect, create.width_px, create.height_px)) return .invalid_upload;
+    if (upload.bytes_ptr == null) return .invalid_upload;
+    const bytes_min = uploadBytesMin(upload.rect, upload.format, upload.stride_bytes) orelse {
+        return .invalid_upload;
+    };
+    if (upload.bytes_count < bytes_min) return .invalid_upload;
+    bytes_sum.* = std.math.add(u32, bytes_sum.*, upload.bytes_count) catch return .invalid_upload;
+    if (bytes_sum.* > c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) return .invalid_upload;
+    return .ok;
+}
+
+fn validatePlanCommand(
+    frame: *const Frame,
+    command: Command,
+    index: u32,
+) PreparedProtocolV0ResourcePlanStatus {
+    if (!spanCountValid(
+        command.glyphs.ptr,
+        command.glyphs.count,
+        command.glyphs.count_max,
+        c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+    )) return .command_span_invalid;
+    switch (command.kind) {
+        c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+        c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+        => return validatePlanFillCommand(command),
+        c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => return validatePlanSpriteCommand(frame, command, index),
+        c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => return .unsupported_command,
+        else => return .unsupported_command,
+    }
+}
+
+fn validatePlanFillCommand(command: Command) PreparedProtocolV0ResourcePlanStatus {
+    if (command.glyphs.count != 0) return .invalid_command;
+    if (!resourceIsZero(command.resource)) return .invalid_resource;
+    return .ok;
+}
+
+fn validatePlanSpriteCommand(
+    frame: *const Frame,
+    command: Command,
+    index: u32,
+) PreparedProtocolV0ResourcePlanStatus {
+    if (command.glyphs.count != 0) return .invalid_command;
+    if (!resourceKindSupported(command.resource.kind)) return .unsupported_resource;
+    if (!resourceVisibleAtCommand(frame, command.resource, index)) return .invalid_resource;
+    _ = findUploadVisible(frame, command.resource, index) orelse return .invalid_upload;
+    return .ok;
+}
+
+fn countResourceUses(frame: *const Frame) ?u32 {
+    var count: u32 = 0;
+    for (spanSlice(Command, frame.commands.ptr, frame.commands.count)) |command| {
+        if (!resourceIsZero(command.resource)) count +|= 1;
+        if (!spanCountValid(
+            command.glyphs.ptr,
+            command.glyphs.count,
+            command.glyphs.count_max,
+            c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+        )) return null;
+        for (spanSlice(c.HowlRenderV0GlyphRef, command.glyphs.ptr, command.glyphs.count)) |glyph| {
+            if (!resourceIsZero(glyph.atlas_resource)) count +|= 1;
+        }
+    }
+    return count;
+}
 
 fn probeSoftwareRealize(
     info: c.HowlRenderPreparedSurfaceInfo,
@@ -1085,6 +1333,14 @@ fn commandSpan(items: []const Command) c.HowlRenderV0CommandSpan {
     };
 }
 
+fn retireSpan(items: []const Retire) c.HowlRenderV0RetireSpan {
+    return .{
+        .ptr = items.ptr,
+        .count = @intCast(items.len),
+        .count_max = c.HOWL_RENDER_V0_RETIRES_MAX,
+    };
+}
+
 fn expectInvalidProtocolV0Probe(
     info: c.HowlRenderPreparedSurfaceInfo,
     buffer: c.HowlRenderPreparedSurfaceBuffer,
@@ -1468,6 +1724,145 @@ test "host retained render records software probe accounting" {
     try std.testing.expectEqual(
         PreparedProtocolV0ProbeStatus.rgba_mismatch,
         state.last_protocol_v0_probe.status,
+    );
+}
+
+test "host retained render plans protocol v0 resource lifecycle" {
+    const info = testPreparedInfo();
+    const resource = testSpriteAlphaResource(9, 1);
+    var bytes = [_]u8{ 255, 128 };
+    var creates = [_]Create{createResource(resource, 2, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 2, 1), &bytes, 2)};
+    var commands = [_]Command{spriteCommand(resource, makeRect(0, 0, 2, 1), 0xff000080)};
+    var retires = [_]Retire{.{ .resource = resource, .retire_seq = 1 }};
+    var frame = testProtocolV0Frame(info);
+    frame.token.frame_seq = 41;
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+    frame.retires = retireSpan(&retires);
+
+    const plan = validateProtocolV0ResourcePlan(c.HOWL_RENDER_CALL_OK, &frame);
+
+    try std.testing.expect(plan.valid);
+    try std.testing.expectEqual(PreparedProtocolV0ResourcePlanStatus.ok, plan.status);
+    try std.testing.expectEqual(@as(u64, 41), plan.frame_seq);
+    try std.testing.expectEqual(@as(u32, 1), plan.create_count);
+    try std.testing.expectEqual(@as(u32, 1), plan.upload_count);
+    try std.testing.expectEqual(@as(u32, 1), plan.use_count);
+    try std.testing.expectEqual(@as(u32, 1), plan.retire_count);
+    try std.testing.expectEqual(@as(u32, bytes.len), plan.upload_bytes_count);
+}
+
+test "host retained render plan accepts nonzero upload rect origin" {
+    const info = testPreparedInfo();
+    const resource = testSpriteAlphaResource(12, 1);
+    var bytes = [_]u8{ 1, 2, 3, 4 };
+    var creates = [_]Create{createResource(resource, 4, 2, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(1, 1, 2, 1), &bytes, 4)};
+    var frame = testProtocolV0Frame(info);
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+
+    const plan = validateProtocolV0ResourcePlan(c.HOWL_RENDER_CALL_OK, &frame);
+
+    try std.testing.expect(plan.valid);
+    try std.testing.expectEqual(PreparedProtocolV0ResourcePlanStatus.ok, plan.status);
+    try std.testing.expectEqual(@as(u32, 1), plan.create_count);
+    try std.testing.expectEqual(@as(u32, 1), plan.upload_count);
+    try std.testing.expectEqual(@as(u32, bytes.len), plan.upload_bytes_count);
+}
+
+test "host retained render plan rejects upload before create" {
+    const info = testPreparedInfo();
+    const resource = testSpriteAlphaResource(10, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    creates[0].create_seq = 1;
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 1)};
+    uploads[0].upload_seq = 0;
+    var commands = [_]Command{
+        fillCommand(c.HOWL_RENDER_V0_COMMAND_FILL_RECT, makeRect(0, 0, 1, 1), 0),
+    };
+    var frame = testProtocolV0Frame(info);
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+
+    const plan = validateProtocolV0ResourcePlan(c.HOWL_RENDER_CALL_OK, &frame);
+
+    try std.testing.expect(!plan.valid);
+    try std.testing.expectEqual(PreparedProtocolV0ResourcePlanStatus.invalid_upload, plan.status);
+    try std.testing.expectEqual(@as(u32, 1), plan.create_count);
+    try std.testing.expectEqual(@as(u32, 1), plan.upload_count);
+    try std.testing.expectEqual(@as(u32, bytes.len), plan.upload_bytes_count);
+}
+
+test "host retained render plan counts glyph resource uses before unsupported" {
+    const info = testPreparedInfo();
+    const resource = testSpriteAlphaResource(13, 1);
+    var glyphs = [_]c.HowlRenderV0GlyphRef{.{
+        .atlas_resource = resource,
+        .atlas_rect = makeRect(0, 0, 1, 1),
+        .x_px = 0,
+        .y_px = 0,
+        .glyph_id = 1,
+        .color_rgba = 0xffffffff,
+    }};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var frame = testProtocolV0Frame(info);
+    frame.commands = commandSpan(&commands);
+
+    const plan = validateProtocolV0ResourcePlan(c.HOWL_RENDER_CALL_OK, &frame);
+
+    try std.testing.expect(!plan.valid);
+    try std.testing.expectEqual(
+        PreparedProtocolV0ResourcePlanStatus.unsupported_command,
+        plan.status,
+    );
+    try std.testing.expectEqual(@as(u32, 1), plan.use_count);
+}
+
+test "host retained render plan rejects use after retire" {
+    const info = testPreparedInfo();
+    const resource = testSpriteAlphaResource(11, 1);
+    var bytes = [_]u8{ 255, 255 };
+    var creates = [_]Create{createResource(resource, 2, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 2, 1), &bytes, 2)};
+    var commands = [_]Command{
+        fillCommand(c.HOWL_RENDER_V0_COMMAND_FILL_RECT, makeRect(0, 0, 1, 1), 0),
+        spriteCommand(resource, makeRect(0, 0, 1, 1), 0xffffffff),
+    };
+    var retires = [_]Retire{.{ .resource = resource, .retire_seq = 1 }};
+    var frame = testProtocolV0Frame(info);
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+    frame.retires = retireSpan(&retires);
+
+    const plan = validateProtocolV0ResourcePlan(c.HOWL_RENDER_CALL_OK, &frame);
+
+    try std.testing.expect(!plan.valid);
+    try std.testing.expectEqual(PreparedProtocolV0ResourcePlanStatus.invalid_resource, plan.status);
+}
+
+test "host retained render records resource plan accounting" {
+    var state = State.init(null, testSurfaceLayout());
+    state.recordPreparedProtocolV0ResourcePlan(.{
+        .status = .ok,
+        .valid = true,
+        .upload_bytes_count = 5,
+    });
+    state.recordPreparedProtocolV0ResourcePlan(.{
+        .status = .invalid_resource,
+        .upload_bytes_count = 7,
+    });
+    try std.testing.expectEqual(@as(u64, 1), state.protocol_v0_resource_plan_success_count);
+    try std.testing.expectEqual(@as(u64, 1), state.protocol_v0_resource_plan_failure_count);
+    try std.testing.expectEqual(@as(u64, 12), state.protocol_v0_resource_plan_upload_bytes_count);
+    try std.testing.expectEqual(
+        PreparedProtocolV0ResourcePlanStatus.invalid_resource,
+        state.last_protocol_v0_resource_plan.status,
     );
 }
 

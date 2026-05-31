@@ -333,6 +333,7 @@ fn wireTestSteps(
                 .target = target,
                 .optimize = optimize,
             }) },
+            .{ .name = "retained_render", .module = retainedRenderTestModule(b, deps) },
             .{ .name = "tab_bar", .module = b.createModule(.{
                 .root_source_file = b.path("src/tab_bar/tab_bar.zig"),
                 .target = target,
@@ -346,6 +347,9 @@ fn wireTestSteps(
         .root_module = unit_test_mod,
         .filters = filters,
     });
+    unit_tests.use_llvm = true;
+    unit_tests.root_module.linkLibrary(deps.howl_render_lib);
+    unit_tests.root_module.link_libc = true;
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     if (b.args != null) run_unit_tests.has_side_effects = true;
@@ -379,6 +383,16 @@ fn wireTestSteps(
     stageTestArtifact(steps.test_integration_build, integration_tests);
     steps.test_integration.dependOn(&run_integration_tests.step);
     steps.test_all.dependOn(steps.test_integration);
+}
+
+fn retainedRenderTestModule(b: *Build, deps: HostDeps) *Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/terminal/render/retained.zig"),
+        .target = deps.target,
+        .optimize = deps.optimize,
+    });
+    module.addImport("howl_render_c", deps.howl_render_c);
+    return module;
 }
 
 fn configureHostTests(mod_tests: *Compile, deps: HostDeps) void {
