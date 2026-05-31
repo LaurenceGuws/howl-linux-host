@@ -79,11 +79,25 @@ pub const Context = struct {
 
     pub const MouseHandlingOutcome = terminal_selection.MouseHandlingOutcome;
 
+    pub const ProtocolV0SubmitDiagnostics = struct {
+        submit_count: u64 = 0,
+        v0_realization_us_last: u64 = 0,
+        v0_realization_us_max: u64 = 0,
+        full_rgba_upload_us_last: u64 = 0,
+        full_rgba_upload_us_max: u64 = 0,
+        full_rgba_gl_before: term_texture.ProtocolV0Textures.GlStateSample = .{},
+        full_rgba_gl_after: term_texture.ProtocolV0Textures.GlStateSample = .{},
+        full_rgba_gl_error: u64 = 0,
+        logged_v0_failure_count: u64 = 0,
+        logged_full_rgba_gl_error: u64 = 0,
+    };
+
     term: HowlTerm,
     progress: pty_wait_thread.State = .{},
     live: bool,
     term_texture: render_c.HowlRenderHostSurface,
     protocol_v0_textures: term_texture.ProtocolV0Textures,
+    protocol_v0_submit_diagnostics: ProtocolV0SubmitDiagnostics,
     conf: *const TerminalConfig,
     input: *HostInput,
     title_buf: [128]u8,
@@ -125,6 +139,7 @@ pub const Context = struct {
         self.live = false;
         self.term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 };
         self.protocol_v0_textures = .{};
+        self.protocol_v0_submit_diagnostics = .{};
         self.conf = conf;
         self.input = input;
         self.title_buf = undefined;
@@ -557,18 +572,32 @@ pub const Context = struct {
         defer upload.deinit();
         if (upload.protocol_v0_frame != null and upload.protocol_v0_resource_plan.valid) {
             const frame = upload.protocol_v0_frame.?;
+            const v0_start_ns = InputWindow.nowNs();
             _ = self.protocol_v0_textures.realizeFrame(frame);
+            self.recordProtocolV0Realization(renderUs(v0_start_ns));
         }
         const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
             &.{}
         else
             upload.buffer.rgba_pixels.ptr[0..upload.buffer.rgba_pixels.len];
+        const full_rgba_start_ns = InputWindow.nowNs();
+        self.protocol_v0_submit_diagnostics.full_rgba_gl_before = term_texture.sampleGlState();
         if (!term_texture.ensureSurface(&self.term_texture, upload.info.render_px.width, upload.info.render_px.height)) {
+            self.protocol_v0_submit_diagnostics.full_rgba_gl_after = term_texture.sampleGlState();
+            self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
         if (!term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
+            self.protocol_v0_submit_diagnostics.full_rgba_gl_after = term_texture.sampleGlState();
+            self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
+        self.protocol_v0_submit_diagnostics.full_rgba_gl_after = term_texture.sampleGlState();
+        if (self.protocol_v0_submit_diagnostics.full_rgba_gl_after.error_code != 0) {
+            self.protocol_v0_submit_diagnostics.full_rgba_gl_error +|= 1;
+        }
+        self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
+        self.logProtocolV0Diagnostics();
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
         const execution = render_c.HowlRenderSubmitExecution{
@@ -601,6 +630,190 @@ pub const Context = struct {
     fn renderUs(start_ns: u64) u64 {
         const elapsed_ns = InputWindow.nowNs() - start_ns;
         return elapsed_ns / std.time.ns_per_us;
+    }
+
+    fn recordProtocolV0Realization(self: *Context, elapsed_us: u64) void {
+        self.protocol_v0_submit_diagnostics.v0_realization_us_last = elapsed_us;
+        self.protocol_v0_submit_diagnostics.v0_realization_us_max =
+            @max(self.protocol_v0_submit_diagnostics.v0_realization_us_max, elapsed_us);
+    }
+
+    fn recordFullRgbaUpload(self: *Context, elapsed_us: u64) void {
+        self.protocol_v0_submit_diagnostics.submit_count +|= 1;
+        self.protocol_v0_submit_diagnostics.full_rgba_upload_us_last = elapsed_us;
+        self.protocol_v0_submit_diagnostics.full_rgba_upload_us_max =
+            @max(self.protocol_v0_submit_diagnostics.full_rgba_upload_us_max, elapsed_us);
+    }
+
+    fn logProtocolV0Diagnostics(self: *Context) void {
+        const submit_diag = self.protocol_v0_submit_diagnostics;
+        const texture_diag = self.protocol_v0_textures.diagnostics;
+        if (submit_diag.submit_count == 0) return;
+        const should_log = submit_diag.submit_count == 1 or submit_diag.submit_count % 120 == 0 or
+            self.shouldLogProtocolV0Failure();
+        if (!should_log) return;
+        self.printProtocolV0FrameDiagnostics(submit_diag, texture_diag);
+        self.printProtocolV0GlDiagnostics(submit_diag, texture_diag);
+        if (protocolV0FailureTotal(texture_diag) != 0) {
+            printProtocolV0FailureDiagnostics(texture_diag);
+        }
+    }
+
+    fn shouldLogProtocolV0Failure(self: *Context) bool {
+        const max_first_failure_logs = 8;
+        var should_log = false;
+        const failure_count = self.protocol_v0_textures.failure_count;
+        if (failure_count > self.protocol_v0_submit_diagnostics.logged_v0_failure_count) {
+            if (self.protocol_v0_submit_diagnostics.logged_v0_failure_count <
+                max_first_failure_logs)
+            {
+                self.protocol_v0_submit_diagnostics.logged_v0_failure_count = failure_count;
+                should_log = true;
+            }
+        }
+        const rgba_error = self.protocol_v0_submit_diagnostics.full_rgba_gl_error;
+        if (rgba_error > self.protocol_v0_submit_diagnostics.logged_full_rgba_gl_error) {
+            if (self.protocol_v0_submit_diagnostics.logged_full_rgba_gl_error <
+                max_first_failure_logs)
+            {
+                self.protocol_v0_submit_diagnostics.logged_full_rgba_gl_error = rgba_error;
+                should_log = true;
+            }
+        }
+        return should_log;
+    }
+
+    fn printProtocolV0FrameDiagnostics(
+        self: *Context,
+        submit_diag: ProtocolV0SubmitDiagnostics,
+        texture_diag: term_texture.ProtocolV0Textures.Diagnostics,
+    ) void {
+        _ = self;
+        std.debug.print(
+            "howl-debug v0 token snapshot={} frame={} geometry={} resource={} submits={} " ++
+                "spans create={} upload={} retire={} " ++
+                "command={} upload_bytes={} churn_same_frame={} reuse_persistent={} " ++
+                "created_not_surviving={} creates_per_command_x1000={} " ++
+                "slots live={} retired={} empty={} max_live={} max_retired={}\n",
+            .{
+                texture_diag.snapshot_seq,
+                texture_diag.frame_seq,
+                texture_diag.geometry_epoch,
+                texture_diag.resource_epoch,
+                submit_diag.submit_count,
+                texture_diag.creates,
+                texture_diag.uploads,
+                texture_diag.retires,
+                texture_diag.commands,
+                texture_diag.upload_bytes,
+                texture_diag.same_frame_create_upload_use_retire,
+                texture_diag.persistent_resource_reuse,
+                texture_diag.created_without_surviving_next_frame,
+                texture_diag.creates_per_visible_command_x1000,
+                texture_diag.slots_live,
+                texture_diag.slots_retired,
+                texture_diag.slots_empty,
+                texture_diag.slots_live_max,
+                texture_diag.slots_retired_max,
+            },
+        );
+    }
+
+    fn printProtocolV0GlDiagnostics(
+        self: *Context,
+        submit_diag: ProtocolV0SubmitDiagnostics,
+        texture_diag: term_texture.ProtocolV0Textures.Diagnostics,
+    ) void {
+        _ = self;
+        std.debug.print(
+            "howl-debug v0 gl gen={} image={} subimage={} delete={} " ++
+                "v0_us={} v0_us_max={} rgba_upload_us={} rgba_upload_us_max={} " ++
+                "glerr_v0={} glerr_rgba={} " ++
+                "create_before binding={} unpack_align={} unpack_row={} err={} " ++
+                "create_after binding={} unpack_align={} unpack_row={} err={} " ++
+                "upload_before binding={} unpack_align={} unpack_row={} err={} " ++
+                "upload_after binding={} unpack_align={} unpack_row={} err={}\n",
+            .{
+                texture_diag.gl_gen_textures,
+                texture_diag.gl_tex_image_2d,
+                texture_diag.gl_tex_sub_image_2d,
+                texture_diag.gl_delete_textures,
+                submit_diag.v0_realization_us_last,
+                submit_diag.v0_realization_us_max,
+                submit_diag.full_rgba_upload_us_last,
+                submit_diag.full_rgba_upload_us_max,
+                texture_diag.gl_error,
+                submit_diag.full_rgba_gl_error,
+                texture_diag.create_gl_before.texture_binding_2d,
+                texture_diag.create_gl_before.unpack_alignment,
+                texture_diag.create_gl_before.unpack_row_length,
+                texture_diag.create_gl_before.error_code,
+                texture_diag.create_gl_after.texture_binding_2d,
+                texture_diag.create_gl_after.unpack_alignment,
+                texture_diag.create_gl_after.unpack_row_length,
+                texture_diag.create_gl_after.error_code,
+                texture_diag.upload_gl_before.texture_binding_2d,
+                texture_diag.upload_gl_before.unpack_alignment,
+                texture_diag.upload_gl_before.unpack_row_length,
+                texture_diag.upload_gl_before.error_code,
+                texture_diag.upload_gl_after.texture_binding_2d,
+                texture_diag.upload_gl_after.unpack_alignment,
+                texture_diag.upload_gl_after.unpack_row_length,
+                texture_diag.upload_gl_after.error_code,
+            },
+        );
+        std.debug.print(
+            "howl-debug v0 gl retire_before binding={} unpack_align={} unpack_row={} err={} " ++
+                "retire_after binding={} unpack_align={} unpack_row={} err={} " ++
+                "rgba_before binding={} unpack_align={} unpack_row={} err={} " ++
+                "rgba_after binding={} unpack_align={} unpack_row={} err={}\n",
+            .{
+                texture_diag.retire_gl_before.texture_binding_2d,
+                texture_diag.retire_gl_before.unpack_alignment,
+                texture_diag.retire_gl_before.unpack_row_length,
+                texture_diag.retire_gl_before.error_code,
+                texture_diag.retire_gl_after.texture_binding_2d,
+                texture_diag.retire_gl_after.unpack_alignment,
+                texture_diag.retire_gl_after.unpack_row_length,
+                texture_diag.retire_gl_after.error_code,
+                submit_diag.full_rgba_gl_before.texture_binding_2d,
+                submit_diag.full_rgba_gl_before.unpack_alignment,
+                submit_diag.full_rgba_gl_before.unpack_row_length,
+                submit_diag.full_rgba_gl_before.error_code,
+                submit_diag.full_rgba_gl_after.texture_binding_2d,
+                submit_diag.full_rgba_gl_after.unpack_alignment,
+                submit_diag.full_rgba_gl_after.unpack_row_length,
+                submit_diag.full_rgba_gl_after.error_code,
+            },
+        );
+    }
+
+    fn printProtocolV0FailureDiagnostics(
+        texture_diag: term_texture.ProtocolV0Textures.Diagnostics,
+    ) void {
+        std.debug.print(
+            "howl-debug v0 failures invalid_spans={} invalid_command_shape={} " ++
+                "invalid_order={} unsupported_resource_format={} upload_bounds={} " ++
+                "tombstone_value_reuse={} capacity={} gl_error={}\n",
+            .{
+                texture_diag.failure_invalid_spans,
+                texture_diag.failure_invalid_command_shape,
+                texture_diag.failure_invalid_order,
+                texture_diag.failure_unsupported_resource_format,
+                texture_diag.failure_upload_bounds,
+                texture_diag.failure_tombstone_value_reuse,
+                texture_diag.failure_capacity,
+                texture_diag.failure_gl_error,
+            },
+        );
+    }
+
+    fn protocolV0FailureTotal(texture_diag: term_texture.ProtocolV0Textures.Diagnostics) u64 {
+        return texture_diag.failure_invalid_spans +| texture_diag.failure_invalid_command_shape +|
+            texture_diag.failure_invalid_order +|
+            texture_diag.failure_unsupported_resource_format +|
+            texture_diag.failure_upload_bounds +| texture_diag.failure_tombstone_value_reuse +|
+            texture_diag.failure_capacity +| texture_diag.failure_gl_error;
     }
 
     fn submitStep(result: render_retained.SubmitResult) TurnStep {
@@ -1082,6 +1295,7 @@ test "cursor activity pushes blink deadline while visible" {
         .live = false,
         .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
         .protocol_v0_textures = .{},
+        .protocol_v0_submit_diagnostics = .{},
         .conf = undefined,
         .input = undefined,
         .title_buf = undefined,
@@ -1103,6 +1317,57 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(!context.resetCursorBlinkActivity(1234));
     try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.interval_ns, context.cursor_blink.deadline_ns);
     try std.testing.expect(context.cursor_blink.visible);
+}
+
+test "protocol v0 diagnostic failure logging is first N bounded" {
+    var context = Context{
+        .term = undefined,
+        .progress = .{},
+        .live = false,
+        .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
+        .protocol_v0_textures = .{},
+        .protocol_v0_submit_diagnostics = .{},
+        .conf = undefined,
+        .input = undefined,
+        .title_buf = undefined,
+        .title_len = 0,
+        .geometry = undefined,
+        .font_size_px = 0,
+        .default_font_size_px = 0,
+        .window_focused = true,
+        .widget_focused = true,
+        .scrollbar = .{},
+        .link_cursor_active = false,
+        .hovered_link_cell = null,
+        .selection_anchor = null,
+        .selection_drag_active = false,
+        .hover_publish_pending = false,
+        .cursor_blink = .{},
+    };
+    var logged: u8 = 0;
+    while (logged < 8) : (logged += 1) {
+        context.protocol_v0_textures.failure_count += 1;
+        try std.testing.expect(context.shouldLogProtocolV0Failure());
+    }
+    context.protocol_v0_textures.failure_count += 1;
+    try std.testing.expect(!context.shouldLogProtocolV0Failure());
+    try std.testing.expectEqual(
+        @as(u64, 8),
+        context.protocol_v0_submit_diagnostics.logged_v0_failure_count,
+    );
+}
+
+test "protocol v0 failure total sums exact buckets" {
+    var diagnostics = term_texture.ProtocolV0Textures.Diagnostics{};
+    diagnostics.failure_invalid_spans = 1;
+    diagnostics.failure_invalid_command_shape = 2;
+    diagnostics.failure_invalid_order = 3;
+    diagnostics.failure_unsupported_resource_format = 4;
+    diagnostics.failure_upload_bounds = 5;
+    diagnostics.failure_tombstone_value_reuse = 6;
+    diagnostics.failure_capacity = 7;
+    diagnostics.failure_gl_error = 8;
+    try std.testing.expectEqual(@as(u64, 36), Context.protocolV0FailureTotal(diagnostics));
 }
 
 test "text input fast path publishes text without pointer or UI operations" {

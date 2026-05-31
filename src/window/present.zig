@@ -36,6 +36,27 @@ pub const PresentProofDelta = struct {
     first_changed_byte: usize,
 };
 
+pub const PresentDiagnostics = struct {
+    present_count: u64 = 0,
+    main_thread_ok_count: u64 = 0,
+    main_thread_bad_count: u64 = 0,
+    current_context_ok_count: u64 = 0,
+    current_context_bad_count: u64 = 0,
+    current_window_ok_count: u64 = 0,
+    current_window_bad_count: u64 = 0,
+    swap_us_last: u64 = 0,
+    swap_us_max: u64 = 0,
+    swap_failure_count: u64 = 0,
+    logged_readiness_failure_count: u64 = 0,
+    logged_swap_failure_count: u64 = 0,
+};
+
+const Readiness = struct {
+    main_thread: bool,
+    current_context: bool,
+    current_window: bool,
+};
+
 const FramebufferObservation = struct {
     stats: PresentProofStats,
     rgba: ?[]u8,
@@ -56,6 +77,7 @@ pub fn State(comptime c: type) type {
         next_present_token: PresentToken,
         submitted_present: ?PresentToken,
         completed_present: ?PresentToken,
+        diagnostics: PresentDiagnostics,
     };
 }
 
@@ -78,6 +100,7 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
         .next_present_token = 1,
         .submitted_present = null,
         .completed_present = null,
+        .diagnostics = .{},
     };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
@@ -110,6 +133,7 @@ pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) Pr
     state.submitted_present = token;
 
     const handle = state.window orelse unreachable;
+    recordReadiness(c, state, handle);
     var fb_w: c_int = 0;
     var fb_h: c_int = 0;
     _ = c.SDL_GetWindowSizeInPixels(handle, &fb_w, &fb_h);
@@ -136,7 +160,10 @@ pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) Pr
     Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.term_texture_id, frame.term_texture_rect.x, frame.term_texture_rect.y, frame.term_texture_rect.width, frame.term_texture_rect.height);
     if (capture_present_proof) capturePresentProof(c, state, frame, probe_rect, framebuffer_before, framebuffer_probe_before);
     Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
+    const swap_start_ns = c.SDL_GetTicksNS();
     Texture.swapWindow(c, handle);
+    recordSwap(state, elapsedUs(c, swap_start_ns));
+    logPresentDiagnostics(state);
     std.debug.assert(state.submitted_present == token);
     state.submitted_present = null;
     state.completed_present = token;
@@ -157,6 +184,91 @@ pub fn requestPresentProof(comptime c: type, state: *State(c)) void {
 
 pub fn presentProofSnapshot(comptime c: type, state: *const State(c)) PresentProofSnapshot {
     return state.last_present_proof;
+}
+
+fn recordReadiness(comptime c: type, state: *State(c), handle: *c.SDL_Window) void {
+    const ready = readiness(c, state, handle);
+    if (ready.main_thread) {
+        state.diagnostics.main_thread_ok_count +|= 1;
+    } else {
+        state.diagnostics.main_thread_bad_count +|= 1;
+    }
+    if (ready.current_context) {
+        state.diagnostics.current_context_ok_count +|= 1;
+    } else {
+        state.diagnostics.current_context_bad_count +|= 1;
+    }
+    if (ready.current_window) {
+        state.diagnostics.current_window_ok_count +|= 1;
+    } else {
+        state.diagnostics.current_window_bad_count +|= 1;
+    }
+}
+
+fn readiness(comptime c: type, state: *State(c), handle: *c.SDL_Window) Readiness {
+    return .{
+        .main_thread = c.SDL_IsMainThread(),
+        .current_context = state.gl_context != null and
+            c.SDL_GL_GetCurrentContext() == state.gl_context.?,
+        .current_window = c.SDL_GL_GetCurrentWindow() == handle,
+    };
+}
+
+fn recordSwap(state: anytype, elapsed_us: u64) void {
+    state.diagnostics.present_count +|= 1;
+    state.diagnostics.swap_us_last = elapsed_us;
+    state.diagnostics.swap_us_max = @max(state.diagnostics.swap_us_max, elapsed_us);
+}
+
+fn elapsedUs(comptime c: type, start_ns: u64) u64 {
+    const now_ns = c.SDL_GetTicksNS();
+    if (now_ns <= start_ns) return 0;
+    return (now_ns - start_ns) / std.time.ns_per_us;
+}
+
+fn logPresentDiagnostics(state: anytype) void {
+    const diagnostics = state.diagnostics;
+    if (diagnostics.present_count == 0) return;
+    const should_log = diagnostics.present_count == 1 or diagnostics.present_count % 120 == 0 or
+        shouldLogPresentFailure(state);
+    if (!should_log) return;
+    std.debug.print(
+        "howl-debug present count={} swap_us={} swap_us_max={} swap_fail={} " ++
+            "main_ok={} main_bad={} context_ok={} context_bad={} " ++
+            "window_ok={} window_bad={}\n",
+        .{
+            diagnostics.present_count,
+            diagnostics.swap_us_last,
+            diagnostics.swap_us_max,
+            diagnostics.swap_failure_count,
+            diagnostics.main_thread_ok_count,
+            diagnostics.main_thread_bad_count,
+            diagnostics.current_context_ok_count,
+            diagnostics.current_context_bad_count,
+            diagnostics.current_window_ok_count,
+            diagnostics.current_window_bad_count,
+        },
+    );
+}
+
+fn shouldLogPresentFailure(state: anytype) bool {
+    const max_first_failure_logs = 8;
+    var should_log = false;
+    const readiness_failure_count = state.diagnostics.main_thread_bad_count +|
+        state.diagnostics.current_context_bad_count +| state.diagnostics.current_window_bad_count;
+    if (readiness_failure_count > state.diagnostics.logged_readiness_failure_count) {
+        if (state.diagnostics.logged_readiness_failure_count < max_first_failure_logs) {
+            state.diagnostics.logged_readiness_failure_count = readiness_failure_count;
+            should_log = true;
+        }
+    }
+    if (state.diagnostics.swap_failure_count > state.diagnostics.logged_swap_failure_count) {
+        if (state.diagnostics.logged_swap_failure_count < max_first_failure_logs) {
+            state.diagnostics.logged_swap_failure_count = state.diagnostics.swap_failure_count;
+            should_log = true;
+        }
+    }
+    return should_log;
 }
 
 fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {
@@ -437,6 +549,22 @@ const FakeC = struct {
     fn SDL_GL_SwapWindow(_: *SDL_Window) bool {
         return true;
     }
+
+    fn SDL_IsMainThread() bool {
+        return true;
+    }
+
+    fn SDL_GL_GetCurrentContext() SDL_GLContext {
+        return null;
+    }
+
+    fn SDL_GL_GetCurrentWindow() *SDL_Window {
+        return @ptrFromInt(1);
+    }
+
+    fn SDL_GetTicksNS() u64 {
+        return 1000;
+    }
 };
 
 fn testState() State(FakeC) {
@@ -454,6 +582,7 @@ fn testState() State(FakeC) {
         .next_present_token = 1,
         .submitted_present = null,
         .completed_present = null,
+        .diagnostics = .{},
     };
 }
 
@@ -495,4 +624,16 @@ test "present completion drains once before overwrite" {
     const next = submitPresent(FakeC, &state, testFrame());
     try std.testing.expect(next > token);
     try std.testing.expectEqual(@as(?PresentToken, next), drainPresentComplete(FakeC, &state));
+}
+
+test "present diagnostic failure logging is first N bounded" {
+    var state = testState();
+    var logged: u8 = 0;
+    while (logged < 8) : (logged += 1) {
+        state.diagnostics.current_context_bad_count += 1;
+        try std.testing.expect(shouldLogPresentFailure(&state));
+    }
+    state.diagnostics.current_context_bad_count += 1;
+    try std.testing.expect(!shouldLogPresentFailure(&state));
+    try std.testing.expectEqual(@as(u64, 8), state.diagnostics.logged_readiness_failure_count);
 }

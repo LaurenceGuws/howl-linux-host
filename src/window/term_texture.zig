@@ -7,6 +7,7 @@ pub const ProtocolV0Textures = struct {
         render_c.HOWL_RENDER_V0_RESOURCES_MAX,
     success_count: u64 = 0,
     failure_count: u64 = 0,
+    diagnostics: Diagnostics = .{},
 
     const Slot = struct {
         state: State = .empty,
@@ -21,19 +22,86 @@ pub const ProtocolV0Textures = struct {
 
     const CreatedResources = [render_c.HOWL_RENDER_V0_CREATES_MAX]render_c.HowlRenderV0ResourceId;
 
+    pub const Diagnostics = struct {
+        frame_count: u64 = 0,
+        snapshot_seq: u64 = 0,
+        frame_seq: u64 = 0,
+        geometry_epoch: u64 = 0,
+        resource_epoch: u64 = 0,
+        creates: u64 = 0,
+        uploads: u64 = 0,
+        retires: u64 = 0,
+        commands: u64 = 0,
+        upload_bytes: u64 = 0,
+        same_frame_create_upload_use_retire: u64 = 0,
+        persistent_resource_reuse: u64 = 0,
+        created_without_surviving_next_frame: u64 = 0,
+        creates_per_visible_command_x1000: u64 = 0,
+        slots_live: u32 = 0,
+        slots_retired: u32 = 0,
+        slots_empty: u32 = render_c.HOWL_RENDER_V0_RESOURCES_MAX,
+        slots_live_max: u32 = 0,
+        slots_retired_max: u32 = 0,
+        gl_gen_textures: u64 = 0,
+        gl_tex_image_2d: u64 = 0,
+        gl_tex_sub_image_2d: u64 = 0,
+        gl_delete_textures: u64 = 0,
+        gl_error: u64 = 0,
+        failure_invalid_spans: u64 = 0,
+        failure_invalid_command_shape: u64 = 0,
+        failure_invalid_order: u64 = 0,
+        failure_unsupported_resource_format: u64 = 0,
+        failure_upload_bounds: u64 = 0,
+        failure_tombstone_value_reuse: u64 = 0,
+        failure_capacity: u64 = 0,
+        failure_gl_error: u64 = 0,
+        create_gl_before: GlStateSample = .{},
+        create_gl_after: GlStateSample = .{},
+        upload_gl_before: GlStateSample = .{},
+        upload_gl_after: GlStateSample = .{},
+        retire_gl_before: GlStateSample = .{},
+        retire_gl_after: GlStateSample = .{},
+    };
+
+    pub const FailureBucket = enum {
+        invalid_spans,
+        invalid_command_shape,
+        invalid_order,
+        unsupported_resource_format,
+        upload_bounds,
+        tombstone_value_reuse,
+        capacity,
+        gl_error,
+    };
+
+    pub const GlStateSample = struct {
+        texture_binding_2d: i32 = 0,
+        unpack_alignment: i32 = 0,
+        unpack_row_length: i32 = 0,
+        error_code: u32 = 0,
+    };
+
     pub fn deinit(self: *ProtocolV0Textures) void {
-        for (&self.slots) |*slot| deleteSlot(slot);
+        for (&self.slots) |*slot| self.deleteSlot(slot);
     }
 
     pub fn realizeFrame(
         self: *ProtocolV0Textures,
         frame: *const render_c.HowlRenderV0Frame,
     ) bool {
+        self.diagnostics.frame_count +|= 1;
+        self.diagnostics.snapshot_seq = frame.token.snapshot_seq;
+        self.diagnostics.frame_seq = frame.token.frame_seq;
+        self.diagnostics.geometry_epoch = frame.token.geometry_epoch;
+        self.diagnostics.resource_epoch = frame.token.resource_epoch;
+        self.recordFrameShape(frame);
         if (!self.realizeFrameLocked(frame)) {
             self.failure_count +|= 1;
+            self.refreshSlotDiagnostics();
             return false;
         }
         self.success_count +|= 1;
+        self.refreshSlotDiagnostics();
         return true;
     }
 
@@ -49,115 +117,207 @@ pub const ProtocolV0Textures = struct {
         );
         var created: CreatedResources = undefined;
         var created_count: u32 = 0;
+        self.diagnostics.create_gl_before = sampleGlState();
         for (creates) |create| {
             if (!self.createTexture(create)) {
+                self.diagnostics.create_gl_after = sampleGlState();
                 self.rollbackCreates(created[0..created_count]);
                 return false;
             }
             created[created_count] = create.resource;
             created_count += 1;
         }
+        self.diagnostics.create_gl_after = sampleGlState();
+        if (!self.glSampleOk(self.diagnostics.create_gl_after)) {
+            self.rollbackCreates(created[0..created_count]);
+            return false;
+        }
         const uploads = spanSlice(
             render_c.HowlRenderV0Upload,
             frame.uploads.ptr,
             frame.uploads.count,
         );
+        self.diagnostics.upload_gl_before = sampleGlState();
         for (uploads) |upload| {
             if (!self.uploadTexture(upload)) {
+                self.diagnostics.upload_gl_after = sampleGlState();
                 self.rollbackCreates(created[0..created_count]);
                 return false;
             }
+        }
+        self.diagnostics.upload_gl_after = sampleGlState();
+        if (!self.glSampleOk(self.diagnostics.upload_gl_after)) {
+            self.rollbackCreates(created[0..created_count]);
+            return false;
         }
         const retires = spanSlice(
             render_c.HowlRenderV0Retire,
             frame.retires.ptr,
             frame.retires.count,
         );
+        self.diagnostics.retire_gl_before = sampleGlState();
         for (retires) |retire| {
             if (!self.retireTexture(retire.resource)) {
+                self.diagnostics.retire_gl_after = sampleGlState();
                 self.rollbackCreates(created[0..created_count]);
                 return false;
             }
         }
+        self.diagnostics.retire_gl_after = sampleGlState();
+        if (!self.glSampleOk(self.diagnostics.retire_gl_after)) {
+            self.rollbackCreates(created[0..created_count]);
+            return false;
+        }
         return true;
     }
 
+    fn glSampleOk(self: *ProtocolV0Textures, sample: GlStateSample) bool {
+        if (sample.error_code == 0) return true;
+        self.recordFailure(.gl_error);
+        return false;
+    }
+
     fn validateFrame(self: *ProtocolV0Textures, frame: *const render_c.HowlRenderV0Frame) bool {
-        return self.validateFrameTransition(frame) != null;
+        if (self.validateFrameTransition(frame)) |_| return true;
+        return false;
     }
 
     fn validateFrameTransition(
         self: *ProtocolV0Textures,
         frame: *const render_c.HowlRenderV0Frame,
     ) ?ProtocolV0Textures {
-        if (frame.protocol_version != render_c.HOWL_RENDER_PROTOCOL_V0_VERSION) return null;
+        if (frame.protocol_version != render_c.HOWL_RENDER_PROTOCOL_V0_VERSION) {
+            self.recordFailure(.invalid_spans);
+            return null;
+        }
         if (!spanCountValid(
             frame.damage.ptr,
             frame.damage.count,
             frame.damage.count_max,
             render_c.HOWL_RENDER_V0_DAMAGE_ITEMS_MAX,
-        )) return null;
+        )) {
+            self.recordFailure(.invalid_spans);
+            return null;
+        }
         if (!spanCountValid(
             frame.creates.ptr,
             frame.creates.count,
             frame.creates.count_max,
             render_c.HOWL_RENDER_V0_CREATES_MAX,
-        )) return null;
+        )) {
+            self.recordFailure(.invalid_spans);
+            return null;
+        }
         if (!spanCountValid(
             frame.uploads.ptr,
             frame.uploads.count,
             frame.uploads.count_max,
             render_c.HOWL_RENDER_V0_UPLOADS_MAX,
-        )) return null;
+        )) {
+            self.recordFailure(.invalid_spans);
+            return null;
+        }
         if (!spanCountValid(
             frame.commands.ptr,
             frame.commands.count,
             frame.commands.count_max,
             render_c.HOWL_RENDER_V0_COMMANDS_MAX,
-        )) return null;
+        )) {
+            self.recordFailure(.invalid_spans);
+            return null;
+        }
         if (!spanCountValid(
             frame.retires.ptr,
             frame.retires.count,
             frame.retires.count_max,
             render_c.HOWL_RENDER_V0_RETIRES_MAX,
-        )) return null;
+        )) {
+            self.recordFailure(.invalid_spans);
+            return null;
+        }
         if (frame.uploads.bytes_count_total > render_c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
+            self.recordFailure(.upload_bounds);
             return null;
         }
         if (frame.uploads.bytes_count_max != render_c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
+            self.recordFailure(.upload_bounds);
             return null;
         }
-        if (!validateCommands(frame)) return null;
-        if (!validateFrameOrder(frame)) return null;
+        if (!self.validateCommands(frame)) return null;
+        if (!self.validateFrameOrder(frame)) return null;
         var next = self.*;
+        if (!self.validateCreates(frame, &next)) return null;
+        if (!self.validateUploads(frame, &next)) return null;
+        if (!self.validateRetires(frame, &next)) return null;
+        return next;
+    }
+
+    fn validateCreates(
+        self: *ProtocolV0Textures,
+        frame: *const render_c.HowlRenderV0Frame,
+        next: *ProtocolV0Textures,
+    ) bool {
         const creates = spanSlice(
             render_c.HowlRenderV0Create,
             frame.creates.ptr,
             frame.creates.count,
         );
-        for (creates) |create| if (!next.noteCreate(create)) return null;
+        for (creates) |create| {
+            if (next.noteCreate(create)) |bucket| {
+                self.recordFailure(bucket);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn validateUploads(
+        self: *ProtocolV0Textures,
+        frame: *const render_c.HowlRenderV0Frame,
+        next: *ProtocolV0Textures,
+    ) bool {
         const uploads = spanSlice(
             render_c.HowlRenderV0Upload,
             frame.uploads.ptr,
             frame.uploads.count,
         );
-        for (uploads) |upload| if (!next.noteUpload(upload)) return null;
+        for (uploads) |upload| {
+            if (!next.noteUpload(upload)) {
+                self.recordFailure(.upload_bounds);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    fn validateRetires(
+        self: *ProtocolV0Textures,
+        frame: *const render_c.HowlRenderV0Frame,
+        next: *ProtocolV0Textures,
+    ) bool {
         const retires = spanSlice(
             render_c.HowlRenderV0Retire,
             frame.retires.ptr,
             frame.retires.count,
         );
-        for (retires) |retire| if (!next.noteRetire(retire.resource)) return null;
-        return next;
+        for (retires) |retire| {
+            if (!next.noteRetire(retire.resource)) {
+                self.recordFailure(.invalid_order);
+                return false;
+            }
+        }
+        return true;
     }
 
-    fn noteCreate(self: *ProtocolV0Textures, create: render_c.HowlRenderV0Create) bool {
-        if (create.width_px == 0) return false;
-        if (create.height_px == 0) return false;
-        if (!resourceFormatValid(create.resource.kind, create.format)) return false;
-        if (self.find(create.resource) != null) return false;
-        if (self.findValue(create.resource.value) != null) return false;
-        const slot = self.findEmpty() orelse return false;
+    fn noteCreate(self: *ProtocolV0Textures, create: render_c.HowlRenderV0Create) ?FailureBucket {
+        if (create.width_px == 0) return .unsupported_resource_format;
+        if (create.height_px == 0) return .unsupported_resource_format;
+        if (!resourceFormatValid(create.resource.kind, create.format)) {
+            return .unsupported_resource_format;
+        }
+        if (self.find(create.resource) != null) return .tombstone_value_reuse;
+        if (self.findValue(create.resource.value) != null) return .tombstone_value_reuse;
+        const slot = self.findEmpty() orelse return .capacity;
         slot.* = .{
             .state = .live,
             .resource = create.resource,
@@ -166,7 +326,7 @@ pub const ProtocolV0Textures = struct {
             .height_px = create.height_px,
             .format = create.format,
         };
-        return true;
+        return null;
     }
 
     fn noteUpload(self: *ProtocolV0Textures, upload: render_c.HowlRenderV0Upload) bool {
@@ -183,12 +343,25 @@ pub const ProtocolV0Textures = struct {
     }
 
     fn createTexture(self: *ProtocolV0Textures, create: render_c.HowlRenderV0Create) bool {
-        if (self.find(create.resource) != null) return false;
-        if (self.findValue(create.resource.value) != null) return false;
-        const slot = self.findEmpty() orelse return false;
+        if (self.find(create.resource) != null) {
+            self.recordFailure(.tombstone_value_reuse);
+            return false;
+        }
+        if (self.findValue(create.resource.value) != null) {
+            self.recordFailure(.tombstone_value_reuse);
+            return false;
+        }
+        const slot = self.findEmpty() orelse {
+            self.recordFailure(.capacity);
+            return false;
+        };
         var texture_id: c_uint = 0;
         gl_c.glGenTextures(1, &texture_id);
-        if (texture_id == 0) return false;
+        self.diagnostics.gl_gen_textures +|= 1;
+        if (texture_id == 0) {
+            self.recordFailure(.gl_error);
+            return false;
+        }
         slot.* = .{
             .state = .live,
             .resource = create.resource,
@@ -215,6 +388,7 @@ pub const ProtocolV0Textures = struct {
             gl_c.GL_UNSIGNED_BYTE,
             null,
         );
+        self.diagnostics.gl_tex_image_2d +|= 1;
         return true;
     }
 
@@ -243,12 +417,13 @@ pub const ProtocolV0Textures = struct {
             gl_c.GL_UNSIGNED_BYTE,
             upload.bytes_ptr,
         );
+        self.diagnostics.gl_tex_sub_image_2d +|= 1;
         return true;
     }
 
     fn retireTexture(self: *ProtocolV0Textures, resource: render_c.HowlRenderV0ResourceId) bool {
         const slot = self.find(resource) orelse return false;
-        retireSlot(slot);
+        self.retireSlot(slot);
         return true;
     }
 
@@ -278,12 +453,99 @@ pub const ProtocolV0Textures = struct {
         created: []const render_c.HowlRenderV0ResourceId,
     ) void {
         for (created) |resource| {
-            if (self.find(resource)) |slot| deleteSlot(slot);
+            if (self.find(resource)) |slot| self.deleteSlot(slot);
         }
+    }
+
+    fn validateFrameOrder(
+        self: *ProtocolV0Textures,
+        frame: *const render_c.HowlRenderV0Frame,
+    ) bool {
+        const ok = validateFrameOrderStatic(frame);
+        if (!ok) self.recordFailure(.invalid_order);
+        return ok;
+    }
+
+    fn validateCommands(self: *ProtocolV0Textures, frame: *const render_c.HowlRenderV0Frame) bool {
+        const ok = validateCommandsStatic(frame);
+        if (!ok) self.recordFailure(.invalid_command_shape);
+        return ok;
+    }
+
+    fn recordFrameShape(self: *ProtocolV0Textures, frame: *const render_c.HowlRenderV0Frame) void {
+        self.diagnostics.creates +|= frame.creates.count;
+        self.diagnostics.uploads +|= frame.uploads.count;
+        self.diagnostics.retires +|= frame.retires.count;
+        self.diagnostics.commands +|= frame.commands.count;
+        self.diagnostics.upload_bytes +|= frame.uploads.bytes_count_total;
+        self.diagnostics.same_frame_create_upload_use_retire +|= sameFrameChurnCount(frame);
+        self.diagnostics.persistent_resource_reuse +|= persistentResourceUseCount(self, frame);
+        self.diagnostics.created_without_surviving_next_frame +|= createdAndRetiredCount(frame);
+        if (frame.commands.count > 0) {
+            self.diagnostics.creates_per_visible_command_x1000 =
+                (@as(u64, frame.creates.count) * 1000) / frame.commands.count;
+        } else {
+            self.diagnostics.creates_per_visible_command_x1000 = 0;
+        }
+    }
+
+    fn recordFailure(self: *ProtocolV0Textures, bucket: FailureBucket) void {
+        switch (bucket) {
+            .invalid_spans => self.diagnostics.failure_invalid_spans +|= 1,
+            .invalid_command_shape => self.diagnostics.failure_invalid_command_shape +|= 1,
+            .invalid_order => self.diagnostics.failure_invalid_order +|= 1,
+            .unsupported_resource_format => {
+                self.diagnostics.failure_unsupported_resource_format +|= 1;
+            },
+            .upload_bounds => self.diagnostics.failure_upload_bounds +|= 1,
+            .tombstone_value_reuse => self.diagnostics.failure_tombstone_value_reuse +|= 1,
+            .capacity => self.diagnostics.failure_capacity +|= 1,
+            .gl_error => {
+                self.diagnostics.failure_gl_error +|= 1;
+                self.diagnostics.gl_error +|= 1;
+            },
+        }
+    }
+
+    fn refreshSlotDiagnostics(self: *ProtocolV0Textures) void {
+        var live: u32 = 0;
+        var retired: u32 = 0;
+        var empty: u32 = 0;
+        for (&self.slots) |*slot| {
+            switch (slot.state) {
+                .empty => empty += 1,
+                .live => live += 1,
+                .retired => retired += 1,
+            }
+        }
+        self.diagnostics.slots_live = live;
+        self.diagnostics.slots_retired = retired;
+        self.diagnostics.slots_empty = empty;
+        self.diagnostics.slots_live_max = @max(self.diagnostics.slots_live_max, live);
+        self.diagnostics.slots_retired_max = @max(self.diagnostics.slots_retired_max, retired);
+    }
+
+    fn deleteSlot(self: *ProtocolV0Textures, slot: *Slot) void {
+        if (slot.texture_id != 0) {
+            var value: c_uint = @intCast(slot.texture_id);
+            gl_c.glDeleteTextures(1, &value);
+            self.diagnostics.gl_delete_textures +|= 1;
+        }
+        slot.* = .{};
+    }
+
+    fn retireSlot(self: *ProtocolV0Textures, slot: *Slot) void {
+        if (slot.texture_id != 0) {
+            var value: c_uint = @intCast(slot.texture_id);
+            gl_c.glDeleteTextures(1, &value);
+            self.diagnostics.gl_delete_textures +|= 1;
+        }
+        slot.texture_id = 0;
+        slot.state = .retired;
     }
 };
 
-fn validateFrameOrder(frame: *const render_c.HowlRenderV0Frame) bool {
+fn validateFrameOrderStatic(frame: *const render_c.HowlRenderV0Frame) bool {
     const creates = spanSlice(
         render_c.HowlRenderV0Create,
         frame.creates.ptr,
@@ -321,7 +583,7 @@ fn validateFrameOrder(frame: *const render_c.HowlRenderV0Frame) bool {
     return true;
 }
 
-fn validateCommands(frame: *const render_c.HowlRenderV0Frame) bool {
+fn validateCommandsStatic(frame: *const render_c.HowlRenderV0Frame) bool {
     const commands = spanSlice(
         render_c.HowlRenderV0Command,
         frame.commands.ptr,
@@ -427,23 +689,6 @@ fn rectFitsResource(rect: render_c.HowlRenderV0Rect, width_px: u32, height_px: u
     return right <= width_px and bottom <= height_px;
 }
 
-fn deleteSlot(slot: *ProtocolV0Textures.Slot) void {
-    if (slot.texture_id != 0) {
-        var value: c_uint = @intCast(slot.texture_id);
-        gl_c.glDeleteTextures(1, &value);
-    }
-    slot.* = .{};
-}
-
-fn retireSlot(slot: *ProtocolV0Textures.Slot) void {
-    if (slot.texture_id != 0) {
-        var value: c_uint = @intCast(slot.texture_id);
-        gl_c.glDeleteTextures(1, &value);
-    }
-    slot.texture_id = 0;
-    slot.state = .retired;
-}
-
 fn sameResource(
     a: render_c.HowlRenderV0ResourceId,
     b: render_c.HowlRenderV0ResourceId,
@@ -473,6 +718,84 @@ fn spanCountValid(ptr: anytype, count: u32, count_max: u32, expected_max: u32) b
     if (count > count_max) return false;
     if (count > 0 and ptr == null) return false;
     return true;
+}
+
+fn sameFrameChurnCount(frame: *const render_c.HowlRenderV0Frame) u32 {
+    var count: u32 = 0;
+    const creates = spanSlice(render_c.HowlRenderV0Create, frame.creates.ptr, frame.creates.count);
+    for (creates) |create| {
+        if (findUploadStatic(frame, create.resource) == null) continue;
+        if (!commandUsesResource(frame, create.resource)) continue;
+        if (retireForResource(frame, create.resource) == null) continue;
+        count += 1;
+    }
+    return count;
+}
+
+fn createdAndRetiredCount(frame: *const render_c.HowlRenderV0Frame) u32 {
+    var count: u32 = 0;
+    const creates = spanSlice(render_c.HowlRenderV0Create, frame.creates.ptr, frame.creates.count);
+    for (creates) |create| {
+        if (retireForResource(frame, create.resource) != null) count += 1;
+    }
+    return count;
+}
+
+fn persistentResourceUseCount(
+    textures: *ProtocolV0Textures,
+    frame: *const render_c.HowlRenderV0Frame,
+) u32 {
+    var count: u32 = 0;
+    const commands = spanSlice(
+        render_c.HowlRenderV0Command,
+        frame.commands.ptr,
+        frame.commands.count,
+    );
+    for (commands) |command| {
+        if (resourceEmpty(command.resource)) continue;
+        if (findCreate(frame, command.resource) != null) continue;
+        if (textures.find(command.resource) != null) count += 1;
+    }
+    return count;
+}
+
+fn findUploadStatic(
+    frame: *const render_c.HowlRenderV0Frame,
+    resource: render_c.HowlRenderV0ResourceId,
+) ?render_c.HowlRenderV0Upload {
+    const uploads = spanSlice(render_c.HowlRenderV0Upload, frame.uploads.ptr, frame.uploads.count);
+    for (uploads) |upload| if (sameResource(upload.resource, resource)) return upload;
+    return null;
+}
+
+fn commandUsesResource(
+    frame: *const render_c.HowlRenderV0Frame,
+    resource: render_c.HowlRenderV0ResourceId,
+) bool {
+    const commands = spanSlice(
+        render_c.HowlRenderV0Command,
+        frame.commands.ptr,
+        frame.commands.count,
+    );
+    for (commands) |command| {
+        if (sameResource(command.resource, resource)) return true;
+    }
+    return false;
+}
+
+pub fn sampleGlState() ProtocolV0Textures.GlStateSample {
+    var texture_binding: c_int = 0;
+    var unpack_alignment: c_int = 0;
+    var unpack_row_length: c_int = 0;
+    gl_c.glGetIntegerv(gl_c.GL_TEXTURE_BINDING_2D, &texture_binding);
+    gl_c.glGetIntegerv(gl_c.GL_UNPACK_ALIGNMENT, &unpack_alignment);
+    gl_c.glGetIntegerv(gl_c.GL_UNPACK_ROW_LENGTH, &unpack_row_length);
+    return .{
+        .texture_binding_2d = texture_binding,
+        .unpack_alignment = unpack_alignment,
+        .unpack_row_length = unpack_row_length,
+        .error_code = gl_c.glGetError(),
+    };
 }
 
 fn testResource(value: u64, kind: u32) render_c.HowlRenderV0ResourceId {
@@ -720,6 +1043,150 @@ test "protocol v0 textures reject invalid command before mutation" {
     try std.testing.expect(textures.findValue(resource.value) == null);
 }
 
+test "protocol v0 diagnostics record token frame shape and churn" {
+    const resource = testResource(7, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
+    var bytes = [_]u8{255};
+    var creates = [_]render_c.HowlRenderV0Create{.{
+        .resource = resource,
+        .width_px = 1,
+        .height_px = 1,
+        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .create_seq = 0,
+    }};
+    var uploads = [_]render_c.HowlRenderV0Upload{.{
+        .resource = resource,
+        .rect = testRect(1, 1),
+        .bytes_ptr = &bytes,
+        .bytes_count = 1,
+        .stride_bytes = 1,
+        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .upload_seq = 0,
+    }};
+    var commands = [_]render_c.HowlRenderV0Command{.{
+        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = testRect(1, 1),
+        .color_rgba = 0,
+        .resource = resource,
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var retires = [_]render_c.HowlRenderV0Retire{.{ .resource = resource, .retire_seq = 1 }};
+    var frame = testFrame();
+    frame.token = .{
+        .snapshot_seq = 11,
+        .frame_seq = 12,
+        .geometry_epoch = 13,
+        .resource_epoch = 14,
+    };
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, 1);
+    frame.commands = commandSpan(&commands);
+    frame.retires = retireSpan(&retires);
+    var textures = ProtocolV0Textures{};
+    textures.diagnostics.frame_count +|= 1;
+    textures.diagnostics.snapshot_seq = frame.token.snapshot_seq;
+    textures.diagnostics.frame_seq = frame.token.frame_seq;
+    textures.diagnostics.geometry_epoch = frame.token.geometry_epoch;
+    textures.diagnostics.resource_epoch = frame.token.resource_epoch;
+    textures.recordFrameShape(&frame);
+    try std.testing.expectEqual(@as(u64, 11), textures.diagnostics.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 12), textures.diagnostics.frame_seq);
+    try std.testing.expectEqual(@as(u64, 13), textures.diagnostics.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 14), textures.diagnostics.resource_epoch);
+    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.creates);
+    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.uploads);
+    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.retires);
+    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.commands);
+    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.upload_bytes);
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        textures.diagnostics.same_frame_create_upload_use_retire,
+    );
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        textures.diagnostics.created_without_surviving_next_frame,
+    );
+    try std.testing.expectEqual(
+        @as(u64, 1000),
+        textures.diagnostics.creates_per_visible_command_x1000,
+    );
+}
+
+test "protocol v0 diagnostics record slot maxima and gl error bucket" {
+    var textures = ProtocolV0Textures{};
+    textures.slots[0].state = .live;
+    textures.slots[1].state = .retired;
+    textures.refreshSlotDiagnostics();
+    try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_live);
+    try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_retired);
+    try std.testing.expectEqual(
+        @as(u32, render_c.HOWL_RENDER_V0_RESOURCES_MAX - 2),
+        textures.diagnostics.slots_empty,
+    );
+    try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_live_max);
+    try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_retired_max);
+    textures.recordFailure(.gl_error);
+    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.failure_gl_error);
+    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.gl_error);
+    try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_gen_textures);
+    try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_tex_image_2d);
+    try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_tex_sub_image_2d);
+    try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_delete_textures);
+}
+
+test "protocol v0 create validation records precise failure buckets" {
+    const resource = testResource(8, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
+    var unsupported = [_]render_c.HowlRenderV0Create{.{
+        .resource = resource,
+        .width_px = 1,
+        .height_px = 1,
+        .format = render_c.HOWL_RENDER_V0_UPLOAD_RGBA8,
+        .create_seq = 0,
+    }};
+    var frame = testFrame();
+    frame.creates = createSpan(&unsupported);
+    var textures = ProtocolV0Textures{};
+    try std.testing.expect(!textures.validateFrame(&frame));
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        textures.diagnostics.failure_unsupported_resource_format,
+    );
+
+    textures = .{};
+    textures.slots[0] = .{ .state = .retired, .resource = resource };
+    var reuse = [_]render_c.HowlRenderV0Create{.{
+        .resource = .{ .value = resource.value, .generation = 2, .kind = resource.kind },
+        .width_px = 1,
+        .height_px = 1,
+        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .create_seq = 0,
+    }};
+    frame = testFrame();
+    frame.creates = createSpan(&reuse);
+    try std.testing.expect(!textures.validateFrame(&frame));
+    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.failure_tombstone_value_reuse);
+
+    textures = .{};
+    for (&textures.slots, 0..) |*slot, index| {
+        slot.* = .{
+            .state = .live,
+            .resource = testResource(@intCast(index + 100), resource.kind),
+        };
+    }
+    var capacity = [_]render_c.HowlRenderV0Create{.{
+        .resource = testResource(9, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+        .width_px = 1,
+        .height_px = 1,
+        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .create_seq = 0,
+    }};
+    frame = testFrame();
+    frame.creates = createSpan(&capacity);
+    try std.testing.expect(!textures.validateFrame(&frame));
+    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.failure_capacity);
+}
+
 pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) bool {
     std.debug.assert(width > 0);
     std.debug.assert(height > 0);
@@ -759,6 +1226,7 @@ pub fn uploadPreparedBuffer(surface: render_c.HowlRenderHostSurface, rgba_pixels
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(surface.host_surface_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
     gl_c.glPixelStorei(gl_c.GL_UNPACK_ALIGNMENT, 1);
+    gl_c.glPixelStorei(gl_c.GL_UNPACK_ROW_LENGTH, 0);
     // The host treats the prepared buffer as the complete realized surface.
     // Render owns freshness and retained reuse; the host does one full upload
     // and never reconstructs content from render-side damage rectangles.

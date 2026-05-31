@@ -33,11 +33,15 @@ const PresentC = struct {
     pub const GL_UNSIGNED_BYTE = gl_c.GL_UNSIGNED_BYTE;
 
     pub const SDL_GL_CreateContext = sdl_c.SDL_GL_CreateContext;
+    pub const SDL_GL_GetCurrentContext = sdl_c.SDL_GL_GetCurrentContext;
+    pub const SDL_GL_GetCurrentWindow = sdl_c.SDL_GL_GetCurrentWindow;
     pub const SDL_GL_MakeCurrent = sdl_c.SDL_GL_MakeCurrent;
     pub const SDL_GL_SetAttribute = sdl_c.SDL_GL_SetAttribute;
     pub const SDL_GL_SetSwapInterval = sdl_c.SDL_GL_SetSwapInterval;
     pub const SDL_GL_SwapWindow = sdl_c.SDL_GL_SwapWindow;
     pub const SDL_GetWindowSizeInPixels = sdl_c.SDL_GetWindowSizeInPixels;
+    pub const SDL_GetTicksNS = sdl_c.SDL_GetTicksNS;
+    pub const SDL_IsMainThread = sdl_c.SDL_IsMainThread;
 
     pub const glBegin = gl_c.glBegin;
     pub const glBindTexture = gl_c.glBindTexture;
