@@ -727,6 +727,14 @@ fn rectFitsResource(rect: render_c.HowlRenderV0Rect, width_px: u32, height_px: u
     return right <= width_px and bottom <= height_px;
 }
 
+fn rectsOverlap(a: render_c.HowlRenderV0Rect, b: render_c.HowlRenderV0Rect) bool {
+    const a_right = std.math.add(i32, a.x_px, a.width_px) catch return true;
+    const a_bottom = std.math.add(i32, a.y_px, a.height_px) catch return true;
+    const b_right = std.math.add(i32, b.x_px, b.width_px) catch return true;
+    const b_bottom = std.math.add(i32, b.y_px, b.height_px) catch return true;
+    return a.x_px < b_right and a_right > b.x_px and a.y_px < b_bottom and a_bottom > b.y_px;
+}
+
 fn destinationOverlaps(
     render_px: anytype,
     x_px: i32,
@@ -1170,6 +1178,79 @@ test "protocol v0 frame summary counts command shape" {
     try std.testing.expectEqual(@as(u32, 1), summary.sprite_count);
     try std.testing.expectEqual(@as(u32, 0), summary.glyph_count);
     try std.testing.expectEqual(@as(u32, 0), summary.other_count);
+}
+
+test "protocol v0 fill only accepts full non-overlapping coverage without clear" {
+    var commands = [_]render_c.HowlRenderV0Command{
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 },
+            .color_rgba = 0x000000ff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 },
+            .color_rgba = 0xffffffff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+    };
+    var frame = testFrame();
+    frame.render_px = .{ .width = 2, .height = 2 };
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(protocolV0FillOnly(&frame));
+}
+
+test "protocol v0 fill only rejects coverage gaps without clear" {
+    var commands = [_]render_c.HowlRenderV0Command{.{
+        .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 },
+        .color_rgba = 0x000000ff,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var frame = testFrame();
+    frame.render_px = .{ .width = 2, .height = 2 };
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(!protocolV0FillOnly(&frame));
+}
+
+test "protocol v0 fill only rejects coverage overlap without clear" {
+    var commands = [_]render_c.HowlRenderV0Command{
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 },
+            .color_rgba = 0x000000ff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 1 },
+            .color_rgba = 0xffffffff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+    };
+    var frame = testFrame();
+    frame.render_px = .{ .width = 2, .height = 2 };
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(!protocolV0FillOnly(&frame));
 }
 
 test "protocol v0 fill only rejects mixed resource commands" {
@@ -1663,9 +1744,34 @@ pub fn protocolV0FillOnly(frame: *const render_c.HowlRenderV0Frame) bool {
     );
     for (commands, 0..) |command, index| {
         if (!protocolV0FillCommand(command)) return false;
-        if (index == 0 and !protocolV0FullClear(frame, command)) return false;
+        if (index == 0 and protocolV0FullClear(frame, command)) return true;
     }
-    return true;
+    return protocolV0FillCoverage(frame, commands);
+}
+
+fn protocolV0FillCoverage(
+    frame: *const render_c.HowlRenderV0Frame,
+    commands: []const render_c.HowlRenderV0Command,
+) bool {
+    var covered_area: u64 = 0;
+    for (commands, 0..) |command, index| {
+        if (command.kind != render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT) return false;
+        if (!rectFitsResource(command.rect, frame.render_px.width, frame.render_px.height)) return false;
+        var prior_index: usize = 0;
+        while (prior_index < index) : (prior_index += 1) {
+            if (rectsOverlap(command.rect, commands[prior_index].rect)) return false;
+        }
+        const rect_area = std.math.mul(u64, command.rect.width_px, command.rect.height_px) catch {
+            return false;
+        };
+        covered_area = std.math.add(u64, covered_area, rect_area) catch return false;
+    }
+    const surface_area = std.math.mul(
+        u64,
+        frame.render_px.width,
+        frame.render_px.height,
+    ) catch return false;
+    return covered_area == surface_area;
 }
 
 pub fn protocolV0FrameSummary(frame: *const render_c.HowlRenderV0Frame) ProtocolV0FrameSummary {
