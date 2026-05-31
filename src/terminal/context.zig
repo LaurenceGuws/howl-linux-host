@@ -92,6 +92,7 @@ pub const Context = struct {
         logged_full_rgba_gl_error: u64 = 0,
         submit_failure_count: u64 = 0,
         prepare_failure_count: u64 = 0,
+        protocol_v0_emit_status: i32 = render_c.HOWL_RENDER_V0_EMIT_OK,
         v0_no_sidecar_count: u64 = 0,
         v0_no_sidecar_null_frame_count: u64 = 0,
         v0_no_sidecar_call_failed_count: u64 = 0,
@@ -631,6 +632,8 @@ pub const Context = struct {
             else
                 prepared_upload.buffer.rgba_pixels.ptr[0..prepared_upload.buffer.rgba_pixels.len];
             const full_rgba_start_ns = InputWindow.nowNs();
+            self.protocol_v0_submit_diagnostics.protocol_v0_emit_status =
+                prepared_upload.diagnostics.protocol_v0_emit_status;
             self.protocol_v0_submit_diagnostics.full_rgba_gl_before =
                 term_texture.sampleGlState();
             const had_matching_surface = self.term_texture.host_surface_id != 0 and
@@ -1004,7 +1007,8 @@ pub const Context = struct {
                 "command={} upload_bytes={} churn_same_frame={} reuse_persistent={} " ++
                 "created_not_surviving={} creates_per_command_x1000={} " ++
                 "slots live={} retired={} empty={} max_live={} max_retired={} " ++
-                "v0_no_sidecar={} v0_unsupported_shape={} rgba_fallback={} " ++
+                "v0_emit_status={} v0_no_sidecar={} v0_unsupported_shape={} " ++
+                "rgba_fallback={} " ++
                 "no_sidecar null={} call_failed={} unsupported={} invalid={} " ++
                 "overflow={} other={}\n",
             .{
@@ -1028,6 +1032,7 @@ pub const Context = struct {
                 texture_diag.slots_empty,
                 texture_diag.slots_live_max,
                 texture_diag.slots_retired_max,
+                submit_diag.protocol_v0_emit_status,
                 submit_diag.v0_no_sidecar_count,
                 submit_diag.v0_unsupported_shape_count,
                 submit_diag.v0_full_rgba_fallback_count,

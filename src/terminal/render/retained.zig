@@ -66,6 +66,7 @@ pub const SurfaceLayout = struct {
 pub const PreparedUpload = struct {
     info: c.HowlRenderPreparedSurfaceInfo,
     buffer: c.HowlRenderPreparedSurfaceBuffer,
+    diagnostics: c.HowlRenderPreparedSurfaceDiagnostics,
     protocol_v0_probe: PreparedProtocolV0Probe,
     protocol_v0_resource_plan: PreparedProtocolV0ResourcePlan,
     protocol_v0_frame: ?*const Frame,
@@ -754,16 +755,27 @@ pub const State = struct {
         return c.howl_render_prepared_surface_buffer(prepared, buffer_out) == c.HOWL_RENDER_CALL_OK;
     }
 
+    pub fn preparedDiagnostics(
+        self: *const State,
+        diagnostics_out: *c.HowlRenderPreparedSurfaceDiagnostics,
+    ) bool {
+        const prepared = self.prepared_surface orelse return false;
+        return c.howl_render_prepared_surface_diagnostics(prepared, diagnostics_out) ==
+            c.HOWL_RENDER_CALL_OK;
+    }
+
     pub fn preparedUpload(self: *State, upload_out: *PreparedUpload) bool {
         upload_out.* = .{
             .info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo),
             .buffer = std.mem.zeroes(c.HowlRenderPreparedSurfaceBuffer),
+            .diagnostics = std.mem.zeroes(c.HowlRenderPreparedSurfaceDiagnostics),
             .protocol_v0_probe = .{},
             .protocol_v0_resource_plan = .{},
             .protocol_v0_frame = null,
         };
         if (!self.preparedInfo(&upload_out.info)) return false;
         if (!self.preparedBuffer(&upload_out.buffer)) return false;
+        _ = self.preparedDiagnostics(&upload_out.diagnostics);
         upload_out.protocol_v0_probe = self.probePreparedProtocolV0(
             upload_out.info,
             upload_out.buffer,
