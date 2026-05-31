@@ -92,6 +92,8 @@ pub const Context = struct {
         logged_full_rgba_gl_error: u64 = 0,
         submit_failure_count: u64 = 0,
         prepare_failure_count: u64 = 0,
+        v0_fill_only_present_count: u64 = 0,
+        v0_fill_only_fallback_count: u64 = 0,
     };
 
     term: HowlTerm,
@@ -610,7 +612,11 @@ pub const Context = struct {
                 self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
                 return false;
             }
-            if (!term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
+            const v0_fill_only_uploaded = if (prepared_upload.protocol_v0_frame) |frame|
+                uploadProtocolV0FillOnly(self, frame)
+            else
+                false;
+            if (!v0_fill_only_uploaded and !term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
                 self.protocol_v0_submit_diagnostics.full_rgba_gl_after =
                     term_texture.sampleGlState();
                 self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
@@ -624,6 +630,19 @@ pub const Context = struct {
             self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
             self.logProtocolV0Diagnostics();
             return true;
+        }
+
+        fn uploadProtocolV0FillOnly(
+            self: *Context,
+            frame: *const render_c.HowlRenderV0Frame,
+        ) bool {
+            if (!term_texture.protocolV0FillOnly(frame)) return false;
+            if (term_texture.uploadProtocolV0FillOnly(self.term_texture, frame)) {
+                self.protocol_v0_submit_diagnostics.v0_fill_only_present_count +|= 1;
+                return true;
+            }
+            self.protocol_v0_submit_diagnostics.v0_fill_only_fallback_count +|= 1;
+            return false;
         }
 
         fn execution(
@@ -832,7 +851,8 @@ pub const Context = struct {
                 "spans create={} upload={} retire={} " ++
                 "command={} upload_bytes={} churn_same_frame={} reuse_persistent={} " ++
                 "created_not_surviving={} creates_per_command_x1000={} " ++
-                "slots live={} retired={} empty={} max_live={} max_retired={}\n",
+                "slots live={} retired={} empty={} max_live={} max_retired={} " ++
+                "fill_only_present={} fill_only_fallback={}\n",
             .{
                 texture_diag.snapshot_seq,
                 texture_diag.frame_seq,
@@ -853,6 +873,8 @@ pub const Context = struct {
                 texture_diag.slots_empty,
                 texture_diag.slots_live_max,
                 texture_diag.slots_retired_max,
+                submit_diag.v0_fill_only_present_count,
+                submit_diag.v0_fill_only_fallback_count,
             },
         );
     }

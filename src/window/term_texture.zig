@@ -1043,6 +1043,49 @@ test "protocol v0 textures reject invalid command before mutation" {
     try std.testing.expect(textures.findValue(resource.value) == null);
 }
 
+test "protocol v0 fill only accepts full clear and fill commands" {
+    var commands = [_]render_c.HowlRenderV0Command{
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = testRect(1, 1),
+            .color_rgba = 0x000000ff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = testRect(1, 1),
+            .color_rgba = 0xffffffff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+    };
+    var frame = testFrame();
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(protocolV0FillOnly(&frame));
+}
+
+test "protocol v0 fill only rejects mixed resource commands" {
+    var commands = [_]render_c.HowlRenderV0Command{.{
+        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = testRect(1, 1),
+        .color_rgba = 0xffffffff,
+        .resource = testResource(9, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var frame = testFrame();
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(!protocolV0FillOnly(&frame));
+}
+
 test "protocol v0 diagnostics record token frame shape and churn" {
     const resource = testResource(7, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
     var bytes = [_]u8{255};
@@ -1243,4 +1286,114 @@ pub fn uploadPreparedBuffer(surface: render_c.HowlRenderHostSurface, rgba_pixels
         rgba_pixels.ptr,
     );
     return true;
+}
+
+pub fn uploadProtocolV0FillOnly(
+    surface: render_c.HowlRenderHostSurface,
+    frame: *const render_c.HowlRenderV0Frame,
+) bool {
+    if (!protocolV0FillOnly(frame)) return false;
+    if (surface.host_surface_id == 0) return false;
+    if (surface.width != frame.render_px.width) return false;
+    if (surface.height != frame.render_px.height) return false;
+
+    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(surface.host_surface_id));
+    defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
+    gl_c.glPixelStorei(gl_c.GL_UNPACK_ALIGNMENT, 1);
+    gl_c.glPixelStorei(gl_c.GL_UNPACK_ROW_LENGTH, 0);
+
+    const commands = spanSlice(
+        render_c.HowlRenderV0Command,
+        frame.commands.ptr,
+        frame.commands.count,
+    );
+    for (commands) |command| {
+        if (!uploadFillCommand(command)) return false;
+    }
+    return true;
+}
+
+pub fn protocolV0FillOnly(frame: *const render_c.HowlRenderV0Frame) bool {
+    if (frame.creates.count != 0) return false;
+    if (frame.uploads.count != 0) return false;
+    if (frame.retires.count != 0) return false;
+    if (frame.commands.count == 0) return false;
+    const commands = spanSlice(
+        render_c.HowlRenderV0Command,
+        frame.commands.ptr,
+        frame.commands.count,
+    );
+    for (commands, 0..) |command, index| {
+        if (!protocolV0FillCommand(command)) return false;
+        if (index == 0 and !protocolV0FullClear(frame, command)) return false;
+    }
+    return true;
+}
+
+fn protocolV0FillCommand(command: render_c.HowlRenderV0Command) bool {
+    switch (command.kind) {
+        render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+        render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+        => {},
+        else => return false,
+    }
+    if (command.resource.value != 0) return false;
+    if (command.resource.generation != 0) return false;
+    if (command.resource.kind != 0) return false;
+    if (command.glyphs.count != 0) return false;
+    return true;
+}
+
+fn protocolV0FullClear(
+    frame: *const render_c.HowlRenderV0Frame,
+    command: render_c.HowlRenderV0Command,
+) bool {
+    if (command.kind != render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT) return false;
+    if (command.rect.x_px != 0) return false;
+    if (command.rect.y_px != 0) return false;
+    if (command.rect.width_px != frame.render_px.width) return false;
+    if (command.rect.height_px != frame.render_px.height) return false;
+    return true;
+}
+
+fn uploadFillCommand(command: render_c.HowlRenderV0Command) bool {
+    const width = command.rect.width_px;
+    const height = command.rect.height_px;
+    if (width == 0 or height == 0) return false;
+    const row_pixels_max = 8192;
+    if (width > row_pixels_max) return false;
+    var row: [row_pixels_max * 4]u8 = undefined;
+    const rgba = unpackProtocolV0Rgba(command.color_rgba);
+    var x: usize = 0;
+    while (x < width) : (x += 1) {
+        const offset = x * 4;
+        row[offset + 0] = rgba[0];
+        row[offset + 1] = rgba[1];
+        row[offset + 2] = rgba[2];
+        row[offset + 3] = rgba[3];
+    }
+    var y: u16 = 0;
+    while (y < height) : (y += 1) {
+        gl_c.glTexSubImage2D(
+            gl_c.GL_TEXTURE_2D,
+            0,
+            command.rect.x_px,
+            command.rect.y_px + y,
+            width,
+            1,
+            gl_c.GL_RGBA,
+            gl_c.GL_UNSIGNED_BYTE,
+            row[0..(@as(usize, width) * 4)].ptr,
+        );
+    }
+    return gl_c.glGetError() == 0;
+}
+
+fn unpackProtocolV0Rgba(color_rgba: u32) [4]u8 {
+    return .{
+        @intCast((color_rgba >> 24) & 0xff),
+        @intCast((color_rgba >> 16) & 0xff),
+        @intCast((color_rgba >> 8) & 0xff),
+        @intCast(color_rgba & 0xff),
+    };
 }
