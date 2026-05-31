@@ -93,6 +93,12 @@ pub const Context = struct {
         submit_failure_count: u64 = 0,
         prepare_failure_count: u64 = 0,
         v0_no_sidecar_count: u64 = 0,
+        v0_no_sidecar_null_frame_count: u64 = 0,
+        v0_no_sidecar_call_failed_count: u64 = 0,
+        v0_no_sidecar_unsupported_count: u64 = 0,
+        v0_no_sidecar_invalid_count: u64 = 0,
+        v0_no_sidecar_overflow_count: u64 = 0,
+        v0_no_sidecar_other_count: u64 = 0,
         v0_unsupported_shape_count: u64 = 0,
         v0_unsupported_no_full_clear_count: u64 = 0,
         v0_unsupported_clear_command_count: u64 = 0,
@@ -124,6 +130,7 @@ pub const Context = struct {
     term_texture: render_c.HowlRenderHostSurface,
     protocol_v0_textures: term_texture.ProtocolV0Textures,
     protocol_v0_submit_diagnostics: ProtocolV0SubmitDiagnostics,
+    protocol_v0_submit_diagnostics_logged: ProtocolV0SubmitDiagnostics,
     conf: *const TerminalConfig,
     input: *HostInput,
     title_buf: [128]u8,
@@ -166,6 +173,7 @@ pub const Context = struct {
         self.term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 };
         self.protocol_v0_textures = .{};
         self.protocol_v0_submit_diagnostics = .{};
+        self.protocol_v0_submit_diagnostics_logged = .{};
         self.conf = conf;
         self.input = input;
         self.title_buf = undefined;
@@ -639,10 +647,17 @@ pub const Context = struct {
                 return false;
             }
             const v0_uploaded = if (prepared_upload.protocol_v0_frame) |frame| blk: {
+                if (!prepared_upload.protocol_v0_resource_plan.valid) {
+                    recordProtocolV0NoSidecar(
+                        self,
+                        prepared_upload.protocol_v0_resource_plan.status,
+                    );
+                    break :blk false;
+                }
                 if (!v0_resources_realized) break :blk false;
                 break :blk uploadProtocolV0Commands(self, frame, had_matching_surface);
             } else blk: {
-                self.protocol_v0_submit_diagnostics.v0_no_sidecar_count +|= 1;
+                recordProtocolV0NoSidecar(self, prepared_upload.protocol_v0_resource_plan.status);
                 break :blk false;
             };
             if (!v0_uploaded) {
@@ -743,6 +758,40 @@ pub const Context = struct {
                 summary.glyph_count;
             self.protocol_v0_submit_diagnostics.v0_unsupported_other_command_count +|=
                 summary.other_count;
+        }
+
+        fn recordProtocolV0NoSidecar(
+            self: *Context,
+            status: render_retained.PreparedProtocolV0ResourcePlanStatus,
+        ) void {
+            self.protocol_v0_submit_diagnostics.v0_no_sidecar_count +|= 1;
+            switch (status) {
+                .null_frame => {
+                    self.protocol_v0_submit_diagnostics.v0_no_sidecar_null_frame_count +|= 1;
+                },
+                .call_failed => {
+                    self.protocol_v0_submit_diagnostics.v0_no_sidecar_call_failed_count +|= 1;
+                },
+                .unsupported_command,
+                .unsupported_resource,
+                => self.protocol_v0_submit_diagnostics.v0_no_sidecar_unsupported_count +|= 1,
+                .invalid_command,
+                .invalid_resource,
+                .invalid_upload,
+                .create_span_invalid,
+                .upload_span_invalid,
+                .command_span_invalid,
+                .retire_span_invalid,
+                .version_mismatch,
+                .upload_bytes_max_mismatch,
+                => self.protocol_v0_submit_diagnostics.v0_no_sidecar_invalid_count +|= 1,
+                .upload_bytes_overflow => {
+                    self.protocol_v0_submit_diagnostics.v0_no_sidecar_overflow_count +|= 1;
+                },
+                .idle,
+                .ok,
+                => self.protocol_v0_submit_diagnostics.v0_no_sidecar_other_count +|= 1,
+            }
         }
 
         fn execution(
@@ -910,10 +959,12 @@ pub const Context = struct {
             self.shouldLogProtocolV0Failure();
         if (!should_log) return;
         self.printProtocolV0FrameDiagnostics(submit_diag, texture_diag);
+        self.printProtocolV0IntervalDiagnostics(submit_diag);
         self.printProtocolV0GlDiagnostics(submit_diag, texture_diag);
         if (protocolV0FailureTotal(texture_diag) != 0) {
             printProtocolV0FailureDiagnostics(texture_diag);
         }
+        self.protocol_v0_submit_diagnostics_logged = submit_diag;
     }
 
     fn shouldLogProtocolV0Failure(self: *Context) bool {
@@ -945,15 +996,19 @@ pub const Context = struct {
         submit_diag: ProtocolV0SubmitDiagnostics,
         texture_diag: term_texture.ProtocolV0Textures.Diagnostics,
     ) void {
-        _ = self;
+        const label = self.protocolV0Label();
         std.debug.print(
-            "howl-debug v0 token snapshot={} frame={} geometry={} resource={} submits={} " ++
+            "howl-debug v0 label='{s}' token snapshot={} frame={} geometry={} " ++
+                "resource={} submits={} " ++
                 "spans create={} upload={} retire={} " ++
                 "command={} upload_bytes={} churn_same_frame={} reuse_persistent={} " ++
                 "created_not_surviving={} creates_per_command_x1000={} " ++
                 "slots live={} retired={} empty={} max_live={} max_retired={} " ++
-                "v0_no_sidecar={} v0_unsupported_shape={} rgba_fallback={}\n",
+                "v0_no_sidecar={} v0_unsupported_shape={} rgba_fallback={} " ++
+                "no_sidecar null={} call_failed={} unsupported={} invalid={} " ++
+                "overflow={} other={}\n",
             .{
+                label,
                 texture_diag.snapshot_seq,
                 texture_diag.frame_seq,
                 texture_diag.geometry_epoch,
@@ -976,6 +1031,12 @@ pub const Context = struct {
                 submit_diag.v0_no_sidecar_count,
                 submit_diag.v0_unsupported_shape_count,
                 submit_diag.v0_full_rgba_fallback_count,
+                submit_diag.v0_no_sidecar_null_frame_count,
+                submit_diag.v0_no_sidecar_call_failed_count,
+                submit_diag.v0_no_sidecar_unsupported_count,
+                submit_diag.v0_no_sidecar_invalid_count,
+                submit_diag.v0_no_sidecar_overflow_count,
+                submit_diag.v0_no_sidecar_other_count,
             },
         );
         std.debug.print(
@@ -1009,6 +1070,103 @@ pub const Context = struct {
                 submit_diag.v0_fill_patch_fallback_count,
             },
         );
+    }
+
+    fn printProtocolV0IntervalDiagnostics(
+        self: *Context,
+        submit_diag: ProtocolV0SubmitDiagnostics,
+    ) void {
+        const previous = self.protocol_v0_submit_diagnostics_logged;
+        std.debug.print(
+            "howl-debug v0 interval submits={} no_sidecar={} no_sidecar_null={} " ++
+                "no_sidecar_call_failed={} no_sidecar_unsupported={} no_sidecar_invalid={} " ++
+                "no_sidecar_overflow={} no_sidecar_other={} rgba_fallback={} " ++
+                "fill_patch_present={} fill_patch_fallback={} sprite_patch_present={} " ++
+                "sprite_patch_fallback={} fill_only_present={} fill_only_fallback={} " ++
+                "sprite_present={} sprite_fallback={} glyph_present={} glyph_fallback={}\n",
+            .{
+                counterDelta(submit_diag.submit_count, previous.submit_count),
+                counterDelta(submit_diag.v0_no_sidecar_count, previous.v0_no_sidecar_count),
+                counterDelta(
+                    submit_diag.v0_no_sidecar_null_frame_count,
+                    previous.v0_no_sidecar_null_frame_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_no_sidecar_call_failed_count,
+                    previous.v0_no_sidecar_call_failed_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_no_sidecar_unsupported_count,
+                    previous.v0_no_sidecar_unsupported_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_no_sidecar_invalid_count,
+                    previous.v0_no_sidecar_invalid_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_no_sidecar_overflow_count,
+                    previous.v0_no_sidecar_overflow_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_no_sidecar_other_count,
+                    previous.v0_no_sidecar_other_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_full_rgba_fallback_count,
+                    previous.v0_full_rgba_fallback_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_fill_patch_present_count,
+                    previous.v0_fill_patch_present_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_fill_patch_fallback_count,
+                    previous.v0_fill_patch_fallback_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_sprite_patch_present_count,
+                    previous.v0_sprite_patch_present_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_sprite_patch_fallback_count,
+                    previous.v0_sprite_patch_fallback_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_fill_only_present_count,
+                    previous.v0_fill_only_present_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_fill_only_fallback_count,
+                    previous.v0_fill_only_fallback_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_sprite_present_count,
+                    previous.v0_sprite_present_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_sprite_fallback_count,
+                    previous.v0_sprite_fallback_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_glyph_present_count,
+                    previous.v0_glyph_present_count,
+                ),
+                counterDelta(
+                    submit_diag.v0_glyph_fallback_count,
+                    previous.v0_glyph_fallback_count,
+                ),
+            },
+        );
+    }
+
+    fn protocolV0Label(self: *Context) []const u8 {
+        self.refreshTitle();
+        if (self.title_len != 0) return self.title_buf[0..self.title_len];
+        return self.conf.command orelse self.conf.shell;
+    }
+
+    fn counterDelta(current: u64, previous: u64) u64 {
+        return if (current >= previous) current - previous else current;
     }
 
     fn printProtocolV0GlDiagnostics(
