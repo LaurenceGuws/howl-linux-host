@@ -48,6 +48,7 @@ pub const PreparedUpload = struct {
     buffer: c.HowlRenderPreparedSurfaceBuffer,
     protocol_v0_probe: PreparedProtocolV0Probe,
     protocol_v0_resource_plan: PreparedProtocolV0ResourcePlan,
+    protocol_v0_frame: ?*const Frame,
 
     pub fn deinit(self: *PreparedUpload) void {
         self.* = undefined;
@@ -710,6 +711,7 @@ pub const State = struct {
             .buffer = std.mem.zeroes(c.HowlRenderPreparedSurfaceBuffer),
             .protocol_v0_probe = .{},
             .protocol_v0_resource_plan = .{},
+            .protocol_v0_frame = null,
         };
         if (!self.preparedInfo(&upload_out.info)) return false;
         if (!self.preparedBuffer(&upload_out.buffer)) return false;
@@ -717,6 +719,7 @@ pub const State = struct {
             upload_out.info,
             upload_out.buffer,
             &upload_out.protocol_v0_resource_plan,
+            &upload_out.protocol_v0_frame,
         );
         return true;
     }
@@ -726,6 +729,7 @@ pub const State = struct {
         info: c.HowlRenderPreparedSurfaceInfo,
         buffer: c.HowlRenderPreparedSurfaceBuffer,
         resource_plan_out: *PreparedProtocolV0ResourcePlan,
+        frame_out: *?*const Frame,
     ) PreparedProtocolV0Probe {
         const prepared = self.prepared_surface orelse {
             self.recordPreparedProtocolV0Probe(.{ .status = .call_failed });
@@ -735,6 +739,7 @@ pub const State = struct {
         };
         var frame: ?*const c.HowlRenderV0Frame = null;
         const status = c.howl_render_prepared_surface_protocol_v0(prepared, &frame);
+        frame_out.* = frame;
         resource_plan_out.* = validateProtocolV0ResourcePlan(status, frame);
         self.recordPreparedProtocolV0ResourcePlan(resource_plan_out.*);
         const probe = validatePreparedProtocolV0Probe(

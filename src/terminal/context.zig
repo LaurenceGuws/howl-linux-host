@@ -83,6 +83,7 @@ pub const Context = struct {
     progress: pty_wait_thread.State = .{},
     live: bool,
     term_texture: render_c.HowlRenderHostSurface,
+    protocol_v0_textures: term_texture.ProtocolV0Textures,
     conf: *const TerminalConfig,
     input: *HostInput,
     title_buf: [128]u8,
@@ -123,6 +124,7 @@ pub const Context = struct {
         self.progress = .{};
         self.live = false;
         self.term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 };
+        self.protocol_v0_textures = .{};
         self.conf = conf;
         self.input = input;
         self.title_buf = undefined;
@@ -145,6 +147,7 @@ pub const Context = struct {
         if (self.link_cursor_active) window.useDefaultCursor();
         self.link_cursor_active = false;
         window.deleteTexture(&self.term_texture.host_surface_id);
+        self.protocol_v0_textures.deinit();
         self.term_texture.width = 0;
         self.term_texture.height = 0;
         self.progress.stop.store(true, .release);
@@ -552,6 +555,10 @@ pub const Context = struct {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) return .{ .result = .failed, .snapshot_seq = 0 };
         defer upload.deinit();
+        if (upload.protocol_v0_frame != null and upload.protocol_v0_resource_plan.valid) {
+            const frame = upload.protocol_v0_frame.?;
+            _ = self.protocol_v0_textures.realizeFrame(frame);
+        }
         const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
             &.{}
         else
@@ -1074,6 +1081,7 @@ test "cursor activity pushes blink deadline while visible" {
         .progress = .{},
         .live = false,
         .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
+        .protocol_v0_textures = .{},
         .conf = undefined,
         .input = undefined,
         .title_buf = undefined,

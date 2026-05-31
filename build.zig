@@ -339,6 +339,7 @@ fn wireTestSteps(
                 .target = target,
                 .optimize = optimize,
             }) },
+            .{ .name = "term_texture", .module = termTextureTestModule(b, deps) },
         },
     });
 
@@ -365,10 +366,22 @@ fn wireTestSteps(
     const run_retained_tests = b.addRunArtifact(retained_tests);
     if (b.args != null) run_retained_tests.has_side_effects = true;
 
+    const term_texture_tests = b.addTest(.{
+        .name = "test-term-texture",
+        .root_module = termTextureTestModule(b, deps),
+        .filters = filters,
+    });
+    term_texture_tests.use_llvm = true;
+    term_texture_tests.root_module.link_libc = true;
+    const run_term_texture_tests = b.addRunArtifact(term_texture_tests);
+    if (b.args != null) run_term_texture_tests.has_side_effects = true;
+
     stageTestArtifact(steps.test_unit_build, unit_tests);
     stageTestArtifact(steps.test_unit_build, retained_tests);
+    stageTestArtifact(steps.test_unit_build, term_texture_tests);
     steps.test_unit.dependOn(&run_unit_tests.step);
     steps.test_unit.dependOn(&run_retained_tests.step);
+    steps.test_unit.dependOn(&run_term_texture_tests.step);
     steps.test_all.dependOn(steps.test_unit);
 
     const host_test_mod = HostTests.createModule(b, deps.testDeps());
@@ -404,6 +417,17 @@ fn retainedRenderTestModule(b: *Build, deps: HostDeps) *Module {
         .target = deps.target,
         .optimize = deps.optimize,
     });
+    module.addImport("howl_render_c", deps.howl_render_c);
+    return module;
+}
+
+fn termTextureTestModule(b: *Build, deps: HostDeps) *Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/window/term_texture.zig"),
+        .target = deps.target,
+        .optimize = deps.optimize,
+    });
+    module.addImport("gl_c", deps.gl_c);
     module.addImport("howl_render_c", deps.howl_render_c);
     return module;
 }
