@@ -92,10 +92,22 @@ pub const Context = struct {
         logged_full_rgba_gl_error: u64 = 0,
         submit_failure_count: u64 = 0,
         prepare_failure_count: u64 = 0,
+        v0_no_sidecar_count: u64 = 0,
+        v0_unsupported_shape_count: u64 = 0,
+        v0_unsupported_no_full_clear_count: u64 = 0,
+        v0_unsupported_clear_command_count: u64 = 0,
+        v0_unsupported_fill_command_count: u64 = 0,
+        v0_unsupported_sprite_command_count: u64 = 0,
+        v0_unsupported_glyph_command_count: u64 = 0,
+        v0_unsupported_other_command_count: u64 = 0,
+        v0_full_rgba_fallback_count: u64 = 0,
+        v0_fill_only_frame_count: u64 = 0,
         v0_fill_only_present_count: u64 = 0,
         v0_fill_only_fallback_count: u64 = 0,
+        v0_sprite_frame_count: u64 = 0,
         v0_sprite_present_count: u64 = 0,
         v0_sprite_fallback_count: u64 = 0,
+        v0_glyph_frame_count: u64 = 0,
         v0_glyph_present_count: u64 = 0,
         v0_glyph_fallback_count: u64 = 0,
     };
@@ -616,10 +628,15 @@ pub const Context = struct {
                 self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
                 return false;
             }
-            const v0_uploaded = if (prepared_upload.protocol_v0_frame) |frame|
-                uploadProtocolV0Commands(self, frame)
-            else
-                false;
+            const v0_uploaded = if (prepared_upload.protocol_v0_frame) |frame| blk: {
+                break :blk uploadProtocolV0Commands(self, frame);
+            } else blk: {
+                self.protocol_v0_submit_diagnostics.v0_no_sidecar_count +|= 1;
+                break :blk false;
+            };
+            if (!v0_uploaded) {
+                self.protocol_v0_submit_diagnostics.v0_full_rgba_fallback_count +|= 1;
+            }
             if (!v0_uploaded and !term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
                 self.protocol_v0_submit_diagnostics.full_rgba_gl_after =
                     term_texture.sampleGlState();
@@ -641,6 +658,7 @@ pub const Context = struct {
             frame: *const render_c.HowlRenderV0Frame,
         ) bool {
             if (term_texture.protocolV0SpriteFrame(frame)) {
+                self.protocol_v0_submit_diagnostics.v0_sprite_frame_count +|= 1;
                 if (term_texture.uploadProtocolV0Sprites(&self.protocol_v0_textures, self.term_texture, frame)) {
                     self.protocol_v0_submit_diagnostics.v0_sprite_present_count +|= 1;
                     return true;
@@ -649,6 +667,7 @@ pub const Context = struct {
                 return false;
             }
             if (term_texture.protocolV0GlyphFrame(frame)) {
+                self.protocol_v0_submit_diagnostics.v0_glyph_frame_count +|= 1;
                 if (term_texture.uploadProtocolV0Glyphs(&self.protocol_v0_textures, self.term_texture, frame)) {
                     self.protocol_v0_submit_diagnostics.v0_glyph_present_count +|= 1;
                     return true;
@@ -656,13 +675,38 @@ pub const Context = struct {
                 self.protocol_v0_submit_diagnostics.v0_glyph_fallback_count +|= 1;
                 return false;
             }
-            if (!term_texture.protocolV0FillOnly(frame)) return false;
+            if (!term_texture.protocolV0FillOnly(frame)) {
+                recordUnsupportedProtocolV0Shape(self, frame);
+                return false;
+            }
+            self.protocol_v0_submit_diagnostics.v0_fill_only_frame_count +|= 1;
             if (term_texture.uploadProtocolV0FillOnly(self.term_texture, frame)) {
                 self.protocol_v0_submit_diagnostics.v0_fill_only_present_count +|= 1;
                 return true;
             }
             self.protocol_v0_submit_diagnostics.v0_fill_only_fallback_count +|= 1;
             return false;
+        }
+
+        fn recordUnsupportedProtocolV0Shape(
+            self: *Context,
+            frame: *const render_c.HowlRenderV0Frame,
+        ) void {
+            const summary = term_texture.protocolV0FrameSummary(frame);
+            self.protocol_v0_submit_diagnostics.v0_unsupported_shape_count +|= 1;
+            if (!summary.first_full_clear) {
+                self.protocol_v0_submit_diagnostics.v0_unsupported_no_full_clear_count +|= 1;
+            }
+            self.protocol_v0_submit_diagnostics.v0_unsupported_clear_command_count +|=
+                summary.clear_count;
+            self.protocol_v0_submit_diagnostics.v0_unsupported_fill_command_count +|=
+                summary.fill_count;
+            self.protocol_v0_submit_diagnostics.v0_unsupported_sprite_command_count +|=
+                summary.sprite_count;
+            self.protocol_v0_submit_diagnostics.v0_unsupported_glyph_command_count +|=
+                summary.glyph_count;
+            self.protocol_v0_submit_diagnostics.v0_unsupported_other_command_count +|=
+                summary.other_count;
         }
 
         fn execution(
@@ -872,9 +916,7 @@ pub const Context = struct {
                 "command={} upload_bytes={} churn_same_frame={} reuse_persistent={} " ++
                 "created_not_surviving={} creates_per_command_x1000={} " ++
                 "slots live={} retired={} empty={} max_live={} max_retired={} " ++
-                "fill_only_present={} fill_only_fallback={} " ++
-                "sprite_present={} sprite_fallback={} " ++
-                "glyph_present={} glyph_fallback={}\n",
+                "v0_no_sidecar={} v0_unsupported_shape={} rgba_fallback={}\n",
             .{
                 texture_diag.snapshot_seq,
                 texture_diag.frame_seq,
@@ -895,10 +937,30 @@ pub const Context = struct {
                 texture_diag.slots_empty,
                 texture_diag.slots_live_max,
                 texture_diag.slots_retired_max,
+                submit_diag.v0_no_sidecar_count,
+                submit_diag.v0_unsupported_shape_count,
+                submit_diag.v0_full_rgba_fallback_count,
+            },
+        );
+        std.debug.print(
+            "howl-debug v0 shape unsupported no_full_clear={} clear={} fill={} " ++
+                "sprite={} glyph={} other={} fill_only_frame={} fill_only_present={} " ++
+                "fill_only_fallback={} sprite_frame={} sprite_present={} sprite_fallback={} " ++
+                "glyph_frame={} glyph_present={} glyph_fallback={}\n",
+            .{
+                submit_diag.v0_unsupported_no_full_clear_count,
+                submit_diag.v0_unsupported_clear_command_count,
+                submit_diag.v0_unsupported_fill_command_count,
+                submit_diag.v0_unsupported_sprite_command_count,
+                submit_diag.v0_unsupported_glyph_command_count,
+                submit_diag.v0_unsupported_other_command_count,
+                submit_diag.v0_fill_only_frame_count,
                 submit_diag.v0_fill_only_present_count,
                 submit_diag.v0_fill_only_fallback_count,
+                submit_diag.v0_sprite_frame_count,
                 submit_diag.v0_sprite_present_count,
                 submit_diag.v0_sprite_fallback_count,
+                submit_diag.v0_glyph_frame_count,
                 submit_diag.v0_glyph_present_count,
                 submit_diag.v0_glyph_fallback_count,
             },

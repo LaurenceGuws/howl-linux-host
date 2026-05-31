@@ -567,6 +567,15 @@ pub const ProtocolV0Textures = struct {
     }
 };
 
+pub const ProtocolV0FrameSummary = struct {
+    first_full_clear: bool = false,
+    clear_count: u32 = 0,
+    fill_count: u32 = 0,
+    sprite_count: u32 = 0,
+    glyph_count: u32 = 0,
+    other_count: u32 = 0,
+};
+
 fn validateFrameOrderStatic(frame: *const render_c.HowlRenderV0Frame) bool {
     const creates = spanSlice(
         render_c.HowlRenderV0Create,
@@ -1121,6 +1130,48 @@ test "protocol v0 fill only accepts full clear and fill commands" {
     try std.testing.expect(protocolV0FillOnly(&frame));
 }
 
+test "protocol v0 frame summary counts command shape" {
+    var commands = [_]render_c.HowlRenderV0Command{
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = testRect(1, 1),
+            .color_rgba = 0x000000ff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = testRect(1, 1),
+            .color_rgba = 0xffffffff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+        .{
+            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = testRect(1, 1),
+            .color_rgba = 0xffffffff,
+            .resource = testResource(14, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+    };
+    var frame = testFrame();
+    frame.commands = commandSpan(&commands);
+
+    const summary = protocolV0FrameSummary(&frame);
+    try std.testing.expect(summary.first_full_clear);
+    try std.testing.expectEqual(@as(u32, 1), summary.clear_count);
+    try std.testing.expectEqual(@as(u32, 1), summary.fill_count);
+    try std.testing.expectEqual(@as(u32, 1), summary.sprite_count);
+    try std.testing.expectEqual(@as(u32, 0), summary.glyph_count);
+    try std.testing.expectEqual(@as(u32, 0), summary.other_count);
+}
+
 test "protocol v0 fill only rejects mixed resource commands" {
     var commands = [_]render_c.HowlRenderV0Command{.{
         .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
@@ -1615,6 +1666,26 @@ pub fn protocolV0FillOnly(frame: *const render_c.HowlRenderV0Frame) bool {
         if (index == 0 and !protocolV0FullClear(frame, command)) return false;
     }
     return true;
+}
+
+pub fn protocolV0FrameSummary(frame: *const render_c.HowlRenderV0Frame) ProtocolV0FrameSummary {
+    var summary = ProtocolV0FrameSummary{};
+    const commands = spanSlice(
+        render_c.HowlRenderV0Command,
+        frame.commands.ptr,
+        frame.commands.count,
+    );
+    for (commands, 0..) |command, index| {
+        if (index == 0) summary.first_full_clear = protocolV0FullClear(frame, command);
+        switch (command.kind) {
+            render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT => summary.clear_count += 1,
+            render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT => summary.fill_count += 1,
+            render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => summary.sprite_count += 1,
+            render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => summary.glyph_count += 1,
+            else => summary.other_count += 1,
+        }
+    }
+    return summary;
 }
 
 pub fn protocolV0SpriteFrame(frame: *const render_c.HowlRenderV0Frame) bool {
