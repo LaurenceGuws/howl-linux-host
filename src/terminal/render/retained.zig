@@ -63,6 +63,7 @@ pub const PreparedProtocolV0Probe = struct {
     command_count: u32 = 0,
     retire_count: u32 = 0,
     upload_bytes_count: u32 = 0,
+    checked_byte_count: u64 = 0,
 };
 
 pub const PreparedProtocolV0ProbeStatus = enum(u8) {
@@ -81,6 +82,15 @@ pub const PreparedProtocolV0ProbeStatus = enum(u8) {
     retire_span_invalid,
     upload_bytes_overflow,
     upload_bytes_max_mismatch,
+    rgba_pixels_invalid,
+    retained_base_missing,
+    allocation_failed,
+    unsupported_command,
+    unsupported_resource,
+    invalid_command,
+    invalid_resource,
+    invalid_upload,
+    rgba_mismatch,
 };
 
 pub const State = struct {
@@ -90,7 +100,10 @@ pub const State = struct {
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
     present_in_flight: ?PresentInFlight = null,
     last_protocol_v0_probe: PreparedProtocolV0Probe = .{},
+    protocol_v0_probe_success_count: u64 = 0,
     protocol_v0_probe_failure_count: u64 = 0,
+    protocol_v0_probe_checked_byte_count: u64 = 0,
+    protocol_v0_probe_base_pixels: []u8 = &.{},
 
     pub fn init(
         text_session: c.HowlRenderTextSessionHandle,
@@ -105,6 +118,10 @@ pub const State = struct {
     pub fn deinit(self: *State) void {
         if (self.prepared_surface) |prepared| c.howl_render_prepared_surface_release(prepared);
         self.prepared_surface = null;
+        if (self.protocol_v0_probe_base_pixels.len > 0) {
+            std.heap.c_allocator.free(self.protocol_v0_probe_base_pixels);
+            self.protocol_v0_probe_base_pixels = &.{};
+        }
         c.howl_render_text_session_deinit(self.text_session);
     }
 
@@ -264,13 +281,17 @@ pub const State = struct {
         };
         if (!self.preparedInfo(&upload_out.info)) return false;
         if (!self.preparedBuffer(&upload_out.buffer)) return false;
-        upload_out.protocol_v0_probe = self.probePreparedProtocolV0(upload_out.info);
+        upload_out.protocol_v0_probe = self.probePreparedProtocolV0(
+            upload_out.info,
+            upload_out.buffer,
+        );
         return true;
     }
 
     fn probePreparedProtocolV0(
         self: *State,
         info: c.HowlRenderPreparedSurfaceInfo,
+        buffer: c.HowlRenderPreparedSurfaceBuffer,
     ) PreparedProtocolV0Probe {
         const prepared = self.prepared_surface orelse {
             self.recordPreparedProtocolV0Probe(.{ .status = .call_failed });
@@ -278,14 +299,45 @@ pub const State = struct {
         };
         var frame: ?*const c.HowlRenderV0Frame = null;
         const status = c.howl_render_prepared_surface_protocol_v0(prepared, &frame);
-        const probe = validatePreparedProtocolV0Probe(info, status, frame);
+        const probe = validatePreparedProtocolV0Probe(
+            info,
+            buffer,
+            status,
+            frame,
+            self.protocol_v0_probe_base_pixels,
+        );
         self.recordPreparedProtocolV0Probe(probe);
+        self.storePreparedProtocolV0ProbeBase(buffer);
         return probe;
     }
 
     fn recordPreparedProtocolV0Probe(self: *State, probe: PreparedProtocolV0Probe) void {
         self.last_protocol_v0_probe = probe;
-        if (!probe.valid) self.protocol_v0_probe_failure_count +|= 1;
+        self.protocol_v0_probe_checked_byte_count +|= probe.checked_byte_count;
+        if (probe.valid) {
+            self.protocol_v0_probe_success_count +|= 1;
+        } else {
+            self.protocol_v0_probe_failure_count +|= 1;
+        }
+    }
+
+    fn storePreparedProtocolV0ProbeBase(
+        self: *State,
+        buffer: c.HowlRenderPreparedSurfaceBuffer,
+    ) void {
+        const rgba_pixels = spanBytes(buffer.rgba_pixels) orelse return;
+        if (rgba_pixels.len == 0) return;
+        if (self.protocol_v0_probe_base_pixels.len != rgba_pixels.len) {
+            if (self.protocol_v0_probe_base_pixels.len > 0) {
+                std.heap.c_allocator.free(self.protocol_v0_probe_base_pixels);
+                self.protocol_v0_probe_base_pixels = &.{};
+            }
+            self.protocol_v0_probe_base_pixels = std.heap.c_allocator.alloc(
+                u8,
+                rgba_pixels.len,
+            ) catch return;
+        }
+        @memcpy(self.protocol_v0_probe_base_pixels, rgba_pixels);
     }
 
     fn prepareReady(self: *State, request: c.HowlRenderPrepareRequest) PrepareResult {
@@ -347,8 +399,10 @@ fn surfaceLayoutChanged(current: SurfaceLayout, next: SurfaceLayout) bool {
 
 fn validatePreparedProtocolV0Probe(
     info: c.HowlRenderPreparedSurfaceInfo,
+    buffer: c.HowlRenderPreparedSurfaceBuffer,
     status: c_int,
     frame_optional: ?*const c.HowlRenderV0Frame,
+    retained_base_pixels: []const u8,
 ) PreparedProtocolV0Probe {
     if (status != c.HOWL_RENDER_CALL_OK) return .{ .status = .call_failed };
     const frame = frame_optional orelse return .{ .status = .null_frame };
@@ -359,26 +413,31 @@ fn validatePreparedProtocolV0Probe(
     if (!cellSizeEqual(frame.cell_px, info.cell_px)) return .{ .status = .cell_mismatch };
     if (!gridSizeEqual(frame.grid, info.grid)) return .{ .status = .grid_mismatch };
     if (!spanCountValid(
+        frame.damage.ptr,
         frame.damage.count,
         frame.damage.count_max,
         c.HOWL_RENDER_V0_DAMAGE_ITEMS_MAX,
     )) return .{ .status = .damage_span_invalid };
     if (!spanCountValid(
+        frame.creates.ptr,
         frame.creates.count,
         frame.creates.count_max,
         c.HOWL_RENDER_V0_CREATES_MAX,
     )) return .{ .status = .create_span_invalid };
     if (!spanCountValid(
+        frame.uploads.ptr,
         frame.uploads.count,
         frame.uploads.count_max,
         c.HOWL_RENDER_V0_UPLOADS_MAX,
     )) return .{ .status = .upload_span_invalid };
     if (!spanCountValid(
+        frame.commands.ptr,
         frame.commands.count,
         frame.commands.count_max,
         c.HOWL_RENDER_V0_COMMANDS_MAX,
     )) return .{ .status = .command_span_invalid };
     if (!spanCountValid(
+        frame.retires.ptr,
         frame.retires.count,
         frame.retires.count_max,
         c.HOWL_RENDER_V0_RETIRES_MAX,
@@ -388,6 +447,13 @@ fn validatePreparedProtocolV0Probe(
     }
     if (frame.uploads.bytes_count_max != c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
         return .{ .status = .upload_bytes_max_mismatch };
+    }
+    const rgba_pixels = spanBytes(buffer.rgba_pixels) orelse {
+        return .{ .status = .rgba_pixels_invalid };
+    };
+    const realize = probeSoftwareRealize(info, frame, rgba_pixels, retained_base_pixels);
+    if (realize.status != .ok) {
+        return .{ .status = realize.status, .checked_byte_count = realize.checked_byte_count };
     }
     return .{
         .status = .ok,
@@ -399,7 +465,434 @@ fn validatePreparedProtocolV0Probe(
         .command_count = frame.commands.count,
         .retire_count = frame.retires.count,
         .upload_bytes_count = frame.uploads.bytes_count_total,
+        .checked_byte_count = rgba_pixels.len,
     };
+}
+
+const SoftwareProbeResult = struct {
+    status: PreparedProtocolV0ProbeStatus,
+    checked_byte_count: u64 = 0,
+};
+
+const ResourceId = c.HowlRenderV0ResourceId;
+const Create = c.HowlRenderV0Create;
+const Upload = c.HowlRenderV0Upload;
+const Command = c.HowlRenderV0Command;
+const Retire = c.HowlRenderV0Retire;
+const Frame = c.HowlRenderV0Frame;
+
+fn probeSoftwareRealize(
+    info: c.HowlRenderPreparedSurfaceInfo,
+    frame: *const Frame,
+    rgba_pixels: []const u8,
+    retained_base_pixels: []const u8,
+) SoftwareProbeResult {
+    const expected_len = pixelsLen(frame.render_px) orelse {
+        return .{ .status = .rgba_pixels_invalid };
+    };
+    if (rgba_pixels.len != expected_len) return .{ .status = .rgba_pixels_invalid };
+    if (info.damage_kind != c.HOWL_RENDER_DAMAGE_FULL and
+        retained_base_pixels.len != rgba_pixels.len)
+    {
+        return .{ .status = .retained_base_missing };
+    }
+    const validation_status = validateSoftwareFrame(frame);
+    if (validation_status != .ok) return .{ .status = validation_status };
+
+    const realized = std.heap.c_allocator.alloc(u8, rgba_pixels.len) catch {
+        return .{ .status = .allocation_failed };
+    };
+    defer std.heap.c_allocator.free(realized);
+    seedSoftwarePixels(info, realized, retained_base_pixels);
+    const realize_status = realizeSoftwareFrame(frame, realized);
+    if (realize_status != .ok) return .{ .status = realize_status };
+    if (!std.mem.eql(u8, realized, rgba_pixels)) {
+        return .{ .status = .rgba_mismatch, .checked_byte_count = rgba_pixels.len };
+    }
+    return .{ .status = .ok, .checked_byte_count = rgba_pixels.len };
+}
+
+fn seedSoftwarePixels(
+    info: c.HowlRenderPreparedSurfaceInfo,
+    pixels: []u8,
+    retained_base_pixels: []const u8,
+) void {
+    if (info.damage_kind == c.HOWL_RENDER_DAMAGE_FULL) {
+        clearSurfacePixels(pixels);
+        return;
+    }
+    std.debug.assert(retained_base_pixels.len == pixels.len);
+    @memcpy(pixels, retained_base_pixels);
+}
+
+fn validateSoftwareFrame(frame: *const Frame) PreparedProtocolV0ProbeStatus {
+    for (spanSlice(Create, frame.creates.ptr, frame.creates.count), 0..) |create, index| {
+        const status = validateCreate(frame, create, index);
+        if (status != .ok) return status;
+    }
+    for (spanSlice(Retire, frame.retires.ptr, frame.retires.count), 0..) |retire, index| {
+        const status = validateRetire(frame, retire, index);
+        if (status != .ok) return status;
+    }
+    var bytes_sum: u32 = 0;
+    for (spanSlice(Upload, frame.uploads.ptr, frame.uploads.count)) |upload| {
+        const status = validateUpload(frame, upload, &bytes_sum);
+        if (status != .ok) return status;
+    }
+    if (bytes_sum != frame.uploads.bytes_count_total) return .invalid_upload;
+    for (spanSlice(Command, frame.commands.ptr, frame.commands.count), 0..) |command, index| {
+        const status = validateCommand(frame, command, @intCast(index));
+        if (status != .ok) return status;
+    }
+    return .ok;
+}
+
+fn validateCreate(frame: *const Frame, create: Create, index: usize) PreparedProtocolV0ProbeStatus {
+    if (!resourceKindSupported(create.resource.kind)) return .unsupported_resource;
+    if (create.create_seq > frame.commands.count) return .invalid_resource;
+    if (create.width_px == 0) return .invalid_resource;
+    if (create.height_px == 0) return .invalid_resource;
+    if (create.format != uploadFormatForResource(create.resource.kind)) return .invalid_upload;
+    const creates = spanSlice(Create, frame.creates.ptr, frame.creates.count);
+    for (creates[index + 1 ..]) |next| {
+        if (sameResource(create.resource, next.resource)) return .invalid_resource;
+        if (create.resource.value == next.resource.value) return .invalid_resource;
+    }
+    return .ok;
+}
+
+fn validateRetire(frame: *const Frame, retire: Retire, index: usize) PreparedProtocolV0ProbeStatus {
+    if (!resourceKindSupported(retire.resource.kind)) return .unsupported_resource;
+    if (retire.retire_seq > frame.commands.count) return .invalid_resource;
+    const create = findCreate(frame, retire.resource) orelse return .invalid_resource;
+    if (create.create_seq >= retire.retire_seq) return .invalid_resource;
+    const retires = spanSlice(Retire, frame.retires.ptr, frame.retires.count);
+    for (retires[index + 1 ..]) |next| {
+        if (sameResource(retire.resource, next.resource)) return .invalid_resource;
+    }
+    return .ok;
+}
+
+fn validateUpload(
+    frame: *const Frame,
+    upload: Upload,
+    bytes_sum: *u32,
+) PreparedProtocolV0ProbeStatus {
+    if (!resourceKindSupported(upload.resource.kind)) return .unsupported_resource;
+    if (upload.format != uploadFormatForResource(upload.resource.kind)) return .invalid_upload;
+    if (upload.upload_seq > frame.commands.count) return .invalid_upload;
+    if (upload.rect.x_px != 0) return .invalid_upload;
+    if (upload.rect.y_px != 0) return .invalid_upload;
+    const create = findCreate(frame, upload.resource) orelse return .invalid_resource;
+    if (upload.upload_seq < create.create_seq) return .invalid_upload;
+    if (retireForResource(frame, upload.resource)) |retire| {
+        if (upload.upload_seq >= retire.retire_seq) return .invalid_resource;
+    }
+    if (!rectFitsResource(upload.rect, create.width_px, create.height_px)) return .invalid_upload;
+    if (upload.bytes_ptr == null) return .invalid_upload;
+    const bytes_min = uploadBytesMin(upload.rect, upload.format, upload.stride_bytes) orelse {
+        return .invalid_upload;
+    };
+    if (upload.bytes_count < bytes_min) return .invalid_upload;
+    bytes_sum.* = std.math.add(u32, bytes_sum.*, upload.bytes_count) catch return .invalid_upload;
+    if (bytes_sum.* > c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) return .invalid_upload;
+    return .ok;
+}
+
+fn validateCommand(
+    frame: *const Frame,
+    command: Command,
+    index: u32,
+) PreparedProtocolV0ProbeStatus {
+    if (!spanCountValid(
+        command.glyphs.ptr,
+        command.glyphs.count,
+        command.glyphs.count_max,
+        c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+    )) return .command_span_invalid;
+    switch (command.kind) {
+        c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+        c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+        => return validateFillCommand(command),
+        c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
+            return validateSpriteCommand(frame, command, index);
+        },
+        else => return .unsupported_command,
+    }
+}
+
+fn validateFillCommand(command: Command) PreparedProtocolV0ProbeStatus {
+    if (command.rect.width_px == 0) return .invalid_command;
+    if (command.rect.height_px == 0) return .invalid_command;
+    if (command.glyphs.count != 0) return .invalid_command;
+    if (!resourceIsZero(command.resource)) return .invalid_resource;
+    return .ok;
+}
+
+fn validateSpriteCommand(
+    frame: *const Frame,
+    command: Command,
+    index: u32,
+) PreparedProtocolV0ProbeStatus {
+    if (command.rect.width_px == 0) return .invalid_command;
+    if (command.rect.height_px == 0) return .invalid_command;
+    if (command.glyphs.count != 0) return .invalid_command;
+    if (command.resource.kind == c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA) {
+        // Alpha sprites use command color and uploaded alpha coverage bytes.
+    } else if (command.resource.kind == c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR) {
+        if (command.color_rgba != 0) return .invalid_resource;
+    } else {
+        return .unsupported_resource;
+    }
+    if (!resourceVisibleAtCommand(frame, command.resource, index)) return .invalid_resource;
+    const upload = findUploadVisible(frame, command.resource, index) orelse return .invalid_upload;
+    return validateSpriteUploadCoverage(upload, command.rect);
+}
+
+fn realizeSoftwareFrame(frame: *const Frame, pixels: []u8) PreparedProtocolV0ProbeStatus {
+    for (spanSlice(Command, frame.commands.ptr, frame.commands.count), 0..) |command, index| {
+        switch (command.kind) {
+            c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            => drawSolidRect(pixels, frame.render_px, command.rect, command.color_rgba),
+            c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
+                const upload = findUploadVisible(frame, command.resource, @intCast(index)) orelse {
+                    return .invalid_upload;
+                };
+                drawSprite(pixels, frame, command, upload);
+            },
+            else => return .unsupported_command,
+        }
+    }
+    return .ok;
+}
+
+fn drawSolidRect(
+    pixels: []u8,
+    render_px: c.HowlRenderPixelSize,
+    rect: c.HowlRenderV0Rect,
+    color_rgba: u32,
+) void {
+    const color = unpackRgba(color_rgba);
+    var yy: u16 = 0;
+    while (yy < rect.height_px) : (yy += 1) {
+        const y = destinationCoordinate(rect.y_px, yy) orelse continue;
+        if (y < 0) continue;
+        if (y >= render_px.height) continue;
+        var xx: u16 = 0;
+        while (xx < rect.width_px) : (xx += 1) {
+            const x = destinationCoordinate(rect.x_px, xx) orelse continue;
+            if (x < 0) continue;
+            if (x >= render_px.width) continue;
+            const index = pixelIndex(render_px.width, @intCast(x), @intCast(y)) orelse continue;
+            blendPixel(pixels, index, color.r, color.g, color.b, color.a);
+        }
+    }
+}
+
+fn drawSprite(pixels: []u8, frame: *const Frame, command: Command, upload: Upload) void {
+    const bytes = upload.bytes_ptr orelse return;
+    var yy: u16 = 0;
+    while (yy < command.rect.height_px) : (yy += 1) {
+        const y = destinationCoordinate(command.rect.y_px, yy) orelse continue;
+        if (y < 0) continue;
+        if (y >= frame.render_px.height) continue;
+        var xx: u16 = 0;
+        while (xx < command.rect.width_px) : (xx += 1) {
+            const x = destinationCoordinate(command.rect.x_px, xx) orelse continue;
+            if (x < 0) continue;
+            if (x >= frame.render_px.width) continue;
+            const source_index = spriteIndex(upload, xx, yy) orelse continue;
+            const dst_index = pixelIndex(
+                frame.render_px.width,
+                @intCast(x),
+                @intCast(y),
+            ) orelse continue;
+            if (command.resource.kind == c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA) {
+                const color = unpackRgba(command.color_rgba);
+                const coverage = @as(u16, bytes[source_index]);
+                const alpha: u8 = @intCast((@as(u16, color.a) * coverage) / 255);
+                blendPixel(pixels, dst_index, color.r, color.g, color.b, alpha);
+            } else {
+                blendPixel(
+                    pixels,
+                    dst_index,
+                    bytes[source_index],
+                    bytes[source_index + 1],
+                    bytes[source_index + 2],
+                    bytes[source_index + 3],
+                );
+            }
+        }
+    }
+}
+
+fn validateSpriteUploadCoverage(
+    upload: Upload,
+    rect: c.HowlRenderV0Rect,
+) PreparedProtocolV0ProbeStatus {
+    if (rect.width_px > upload.rect.width_px) return .invalid_upload;
+    if (rect.height_px > upload.rect.height_px) return .invalid_upload;
+    const row_bytes = std.math.mul(u32, rect.width_px, bytesPerPixel(upload.format)) catch {
+        return .invalid_upload;
+    };
+    if (upload.stride_bytes < row_bytes) return .invalid_upload;
+    const final_row: u32 = rect.height_px - 1;
+    const row_offset = std.math.mul(u32, final_row, upload.stride_bytes) catch {
+        return .invalid_upload;
+    };
+    const bytes_required = std.math.add(u32, row_offset, row_bytes) catch {
+        return .invalid_upload;
+    };
+    if (bytes_required > upload.bytes_count) return .invalid_upload;
+    return .ok;
+}
+
+fn spanBytes(span: c.HowlRenderByteSpan) ?[]const u8 {
+    if (span.len == 0) return &.{};
+    const ptr = span.ptr orelse return null;
+    return ptr[0..span.len];
+}
+
+fn spanSlice(comptime T: type, ptr: anytype, count: u32) []const T {
+    if (count == 0) return &.{};
+    return ptr[0..count];
+}
+
+fn clearSurfacePixels(pixels: []u8) void {
+    var index: usize = 0;
+    while (index + 3 < pixels.len) : (index += 4) {
+        pixels[index] = 0;
+        pixels[index + 1] = 0;
+        pixels[index + 2] = 0;
+        pixels[index + 3] = 255;
+    }
+}
+
+fn blendPixel(pixels: []u8, index: u32, r: u8, g: u8, b: u8, a: u8) void {
+    std.debug.assert(index + 3 < pixels.len);
+    const source_alpha: u32 = a;
+    const inverse_alpha: u32 = 255 - source_alpha;
+    pixels[index] = blendChannel(r, pixels[index], source_alpha, inverse_alpha);
+    pixels[index + 1] = blendChannel(g, pixels[index + 1], source_alpha, inverse_alpha);
+    pixels[index + 2] = blendChannel(b, pixels[index + 2], source_alpha, inverse_alpha);
+    pixels[index + 3] = @intCast(@min(
+        255,
+        source_alpha + (@as(u32, pixels[index + 3]) * inverse_alpha) / 255,
+    ));
+}
+
+fn blendChannel(source: u8, destination: u8, source_alpha: u32, inverse_alpha: u32) u8 {
+    return @intCast(
+        (@as(u32, source) * source_alpha + @as(u32, destination) * inverse_alpha) / 255,
+    );
+}
+
+const Rgba = struct { r: u8, g: u8, b: u8, a: u8 };
+
+fn unpackRgba(color_rgba: u32) Rgba {
+    return .{
+        .r = @intCast((color_rgba >> 24) & 0xff),
+        .g = @intCast((color_rgba >> 16) & 0xff),
+        .b = @intCast((color_rgba >> 8) & 0xff),
+        .a = @intCast(color_rgba & 0xff),
+    };
+}
+
+fn resourceKindSupported(kind: u32) bool {
+    return kind == c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA or
+        kind == c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR;
+}
+
+fn uploadFormatForResource(kind: u32) u32 {
+    return switch (kind) {
+        c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA => c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR => c.HOWL_RENDER_V0_UPLOAD_RGBA8,
+        else => 0,
+    };
+}
+
+fn findCreate(frame: *const Frame, resource: ResourceId) ?Create {
+    for (spanSlice(Create, frame.creates.ptr, frame.creates.count)) |create| {
+        if (sameResource(create.resource, resource)) return create;
+    }
+    return null;
+}
+
+fn findUploadVisible(frame: *const Frame, resource: ResourceId, index: u32) ?Upload {
+    for (spanSlice(Upload, frame.uploads.ptr, frame.uploads.count)) |upload| {
+        if (!sameResource(upload.resource, resource)) continue;
+        if (upload.upload_seq > index) continue;
+        return upload;
+    }
+    return null;
+}
+
+fn retireForResource(frame: *const Frame, resource: ResourceId) ?Retire {
+    for (spanSlice(Retire, frame.retires.ptr, frame.retires.count)) |retire| {
+        if (sameResource(retire.resource, resource)) return retire;
+    }
+    return null;
+}
+
+fn resourceVisibleAtCommand(frame: *const Frame, resource: ResourceId, index: u32) bool {
+    const create = findCreate(frame, resource) orelse return false;
+    if (index < create.create_seq) return false;
+    if (retireForResource(frame, resource)) |retire| {
+        if (index >= retire.retire_seq) return false;
+    }
+    return true;
+}
+
+fn sameResource(a: ResourceId, b: ResourceId) bool {
+    return a.value == b.value and a.generation == b.generation and a.kind == b.kind;
+}
+
+fn resourceIsZero(resource: ResourceId) bool {
+    return resource.value == 0 and resource.generation == 0 and resource.kind == 0;
+}
+
+fn rectFitsResource(rect: c.HowlRenderV0Rect, width_px: u32, height_px: u32) bool {
+    if (rect.x_px < 0) return false;
+    if (rect.y_px < 0) return false;
+    const right = std.math.add(u32, @intCast(rect.x_px), rect.width_px) catch return false;
+    const bottom = std.math.add(u32, @intCast(rect.y_px), rect.height_px) catch return false;
+    return right <= width_px and bottom <= height_px;
+}
+
+fn uploadBytesMin(rect: c.HowlRenderV0Rect, format: u32, stride_bytes: u32) ?u32 {
+    if (rect.width_px == 0) return null;
+    if (rect.height_px == 0) return null;
+    const row_bytes = std.math.mul(u32, rect.width_px, bytesPerPixel(format)) catch return null;
+    if (stride_bytes < row_bytes) return null;
+    return std.math.mul(u32, stride_bytes, rect.height_px) catch null;
+}
+
+fn spriteIndex(upload: Upload, x: u16, y: u16) ?u32 {
+    const row_offset = std.math.mul(u32, y, upload.stride_bytes) catch return null;
+    const column_offset = std.math.mul(u32, x, bytesPerPixel(upload.format)) catch return null;
+    return std.math.add(u32, row_offset, column_offset) catch null;
+}
+
+fn destinationCoordinate(origin: i32, offset: u16) ?i32 {
+    return std.math.add(i32, origin, offset) catch null;
+}
+
+fn bytesPerPixel(format: u32) u32 {
+    return if (format == c.HOWL_RENDER_V0_UPLOAD_ALPHA8) 1 else 4;
+}
+
+fn pixelsLen(render_px: c.HowlRenderPixelSize) ?usize {
+    if (render_px.width == 0) return null;
+    if (render_px.height == 0) return null;
+    const pixels = std.math.mul(usize, render_px.width, render_px.height) catch return null;
+    return std.math.mul(usize, pixels, 4) catch null;
+}
+
+fn pixelIndex(width: u16, x: u16, y: u16) ?u32 {
+    const row = std.math.mul(u32, y, width) catch return null;
+    const pixel = std.math.add(u32, row, x) catch return null;
+    return std.math.mul(u32, pixel, 4) catch null;
 }
 
 fn pixelSizeEqual(a: c.HowlRenderPixelSize, b: c.HowlRenderPixelSize) bool {
@@ -414,9 +907,11 @@ fn gridSizeEqual(a: c.HowlRenderGridSize, b: c.HowlRenderGridSize) bool {
     return a.cols == b.cols and a.rows == b.rows;
 }
 
-fn spanCountValid(count: u32, count_max: u32, expected_max: u32) bool {
+fn spanCountValid(ptr: anytype, count: u32, count_max: u32, expected_max: u32) bool {
     if (count_max != expected_max) return false;
-    return count <= count_max;
+    if (count > count_max) return false;
+    if (count > 0 and ptr == null) return false;
+    return true;
 }
 
 fn testSurfaceLayout() SurfaceLayout {
@@ -436,13 +931,21 @@ fn testPreparedInfo() c.HowlRenderPreparedSurfaceInfo {
         .dirty_epoch = 2,
         .geometry_epoch = 3,
         .required_base_seq = 4,
-        .render_px = .{ .width = 100, .height = 80 },
-        .cell_px = .{ .width = 10, .height = 16 },
-        .grid = .{ .cols = 10, .rows = 5 },
+        .render_px = .{ .width = 2, .height = 1 },
+        .cell_px = .{ .width = 1, .height = 1 },
+        .grid = .{ .cols = 2, .rows = 1 },
         .prepare_metrics = std.mem.zeroes(c.HowlRenderMetrics),
         .damage_kind = c.HOWL_RENDER_DAMAGE_FULL,
         .reserved0 = 0,
         .reserved1 = 0,
+    };
+}
+
+fn testPreparedBuffer(pixels: []const u8) c.HowlRenderPreparedSurfaceBuffer {
+    return .{
+        .status = c.HOWL_RENDER_CALL_OK,
+        .rgba_pixels = .{ .ptr = pixels.ptr, .len = pixels.len },
+        .uploads_committed = 0,
     };
 }
 
@@ -489,23 +992,137 @@ fn testProtocolV0Frame(info: c.HowlRenderPreparedSurfaceInfo) c.HowlRenderV0Fram
     };
 }
 
+fn makeRect(x_px: i32, y_px: i32, width_px: u16, height_px: u16) c.HowlRenderV0Rect {
+    return .{ .x_px = x_px, .y_px = y_px, .width_px = width_px, .height_px = height_px };
+}
+
+fn testSpriteAlphaResource(value: u64, generation: u32) ResourceId {
+    return .{
+        .value = value,
+        .generation = generation,
+        .kind = c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA,
+    };
+}
+
+fn createResource(resource: ResourceId, width_px: u32, height_px: u32, format: u32) Create {
+    return .{
+        .resource = resource,
+        .width_px = width_px,
+        .height_px = height_px,
+        .format = format,
+        .create_seq = 0,
+    };
+}
+
+fn uploadResource(
+    resource: ResourceId,
+    rect: c.HowlRenderV0Rect,
+    bytes: []const u8,
+    stride_bytes: u32,
+) Upload {
+    return .{
+        .resource = resource,
+        .rect = rect,
+        .bytes_ptr = bytes.ptr,
+        .bytes_count = @intCast(bytes.len),
+        .stride_bytes = stride_bytes,
+        .format = uploadFormatForResource(resource.kind),
+        .upload_seq = 0,
+    };
+}
+
+fn fillCommand(kind: u8, rect: c.HowlRenderV0Rect, color_rgba: u32) Command {
+    return .{
+        .kind = kind,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = rect,
+        .color_rgba = color_rgba,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX },
+    };
+}
+
+fn spriteCommand(resource: ResourceId, rect: c.HowlRenderV0Rect, color_rgba: u32) Command {
+    var command = fillCommand(c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE, rect, color_rgba);
+    command.resource = resource;
+    return command;
+}
+
+fn glyphCommand(glyphs: []const c.HowlRenderV0GlyphRef) Command {
+    var command = fillCommand(c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN, makeRect(0, 0, 0, 0), 0);
+    command.glyphs = .{
+        .ptr = glyphs.ptr,
+        .count = @intCast(glyphs.len),
+        .count_max = c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+    };
+    return command;
+}
+
+fn createSpan(items: []const Create) c.HowlRenderV0CreateSpan {
+    return .{
+        .ptr = items.ptr,
+        .count = @intCast(items.len),
+        .count_max = c.HOWL_RENDER_V0_CREATES_MAX,
+    };
+}
+
+fn uploadSpan(items: []const Upload, bytes_count_total: usize) c.HowlRenderV0UploadSpan {
+    return .{
+        .ptr = items.ptr,
+        .count = @intCast(items.len),
+        .count_max = c.HOWL_RENDER_V0_UPLOADS_MAX,
+        .bytes_count_total = @intCast(bytes_count_total),
+        .bytes_count_max = c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX,
+    };
+}
+
+fn commandSpan(items: []const Command) c.HowlRenderV0CommandSpan {
+    return .{
+        .ptr = items.ptr,
+        .count = @intCast(items.len),
+        .count_max = c.HOWL_RENDER_V0_COMMANDS_MAX,
+    };
+}
+
 fn expectInvalidProtocolV0Probe(
     info: c.HowlRenderPreparedSurfaceInfo,
+    buffer: c.HowlRenderPreparedSurfaceBuffer,
     status: c_int,
     frame: ?*const c.HowlRenderV0Frame,
     expected: PreparedProtocolV0ProbeStatus,
 ) !void {
-    const probe = validatePreparedProtocolV0Probe(info, status, frame);
+    const probe = validatePreparedProtocolV0Probe(info, buffer, status, frame, &.{});
     try std.testing.expect(!probe.valid);
     try std.testing.expectEqual(expected, probe.status);
 }
 
 fn expectInvalidProtocolV0Frame(
     info: c.HowlRenderPreparedSurfaceInfo,
+    buffer: c.HowlRenderPreparedSurfaceBuffer,
     frame: *const c.HowlRenderV0Frame,
     expected: PreparedProtocolV0ProbeStatus,
 ) !void {
-    try expectInvalidProtocolV0Probe(info, c.HOWL_RENDER_CALL_OK, frame, expected);
+    try expectInvalidProtocolV0Probe(info, buffer, c.HOWL_RENDER_CALL_OK, frame, expected);
+}
+
+fn expectInvalidProtocolV0FrameWithBase(
+    info: c.HowlRenderPreparedSurfaceInfo,
+    buffer: c.HowlRenderPreparedSurfaceBuffer,
+    frame: *const c.HowlRenderV0Frame,
+    retained_base_pixels: []const u8,
+    expected: PreparedProtocolV0ProbeStatus,
+) !PreparedProtocolV0Probe {
+    const probe = validatePreparedProtocolV0Probe(
+        info,
+        buffer,
+        c.HOWL_RENDER_CALL_OK,
+        frame,
+        retained_base_pixels,
+    );
+    try std.testing.expect(!probe.valid);
+    try std.testing.expectEqual(expected, probe.status);
+    return probe;
 }
 
 fn assertPreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) void {
@@ -596,33 +1213,33 @@ test "submit is allowed after matching complete present clears pending state" {
 
 test "host retained render probes prepared protocol v0 frame" {
     const info = testPreparedInfo();
+    const pixels = [_]u8{ 0, 0, 0, 255, 0, 0, 0, 255 };
+    const buffer = testPreparedBuffer(&pixels);
     var frame = testProtocolV0Frame(info);
     frame.token.frame_seq = 37;
-    frame.damage.count = 1;
-    frame.creates.count = 2;
-    frame.uploads.count = 3;
-    frame.uploads.bytes_count_total = 144;
-    frame.commands.count = 4;
-    frame.retires.count = 5;
 
-    const probe = validatePreparedProtocolV0Probe(info, c.HOWL_RENDER_CALL_OK, &frame);
+    const probe = validatePreparedProtocolV0Probe(
+        info,
+        buffer,
+        c.HOWL_RENDER_CALL_OK,
+        &frame,
+        &.{},
+    );
 
     try std.testing.expect(probe.valid);
     try std.testing.expectEqual(PreparedProtocolV0ProbeStatus.ok, probe.status);
     try std.testing.expectEqual(@as(u64, 37), probe.frame_seq);
-    try std.testing.expectEqual(@as(u32, 1), probe.damage_count);
-    try std.testing.expectEqual(@as(u32, 2), probe.create_count);
-    try std.testing.expectEqual(@as(u32, 3), probe.upload_count);
-    try std.testing.expectEqual(@as(u32, 4), probe.command_count);
-    try std.testing.expectEqual(@as(u32, 5), probe.retire_count);
-    try std.testing.expectEqual(@as(u32, 144), probe.upload_bytes_count);
+    try std.testing.expectEqual(@as(u64, 8), probe.checked_byte_count);
 }
 
 test "host retained render rejects protocol v0 call and dimension invariants" {
     const info = testPreparedInfo();
+    const pixels = [_]u8{ 0, 0, 0, 255, 0, 0, 0, 255 };
+    const buffer = testPreparedBuffer(&pixels);
 
     try expectInvalidProtocolV0Probe(
         info,
+        buffer,
         c.HOWL_RENDER_CALL_FAILED,
         null,
         .call_failed,
@@ -630,6 +1247,7 @@ test "host retained render rejects protocol v0 call and dimension invariants" {
 
     try expectInvalidProtocolV0Probe(
         info,
+        buffer,
         c.HOWL_RENDER_CALL_OK,
         null,
         .null_frame,
@@ -637,76 +1255,81 @@ test "host retained render rejects protocol v0 call and dimension invariants" {
 
     var bad_version = testProtocolV0Frame(info);
     bad_version.protocol_version = c.HOWL_RENDER_PROTOCOL_V0_VERSION + 1;
-    try expectInvalidProtocolV0Frame(info, &bad_version, .version_mismatch);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_version, .version_mismatch);
 
     var bad_render_size = testProtocolV0Frame(info);
     bad_render_size.render_px.width += 1;
-    try expectInvalidProtocolV0Frame(info, &bad_render_size, .render_mismatch);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_render_size, .render_mismatch);
 
     var bad_cell_size = testProtocolV0Frame(info);
     bad_cell_size.cell_px.width += 1;
-    try expectInvalidProtocolV0Frame(info, &bad_cell_size, .cell_mismatch);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_cell_size, .cell_mismatch);
 
     var bad_grid_size = testProtocolV0Frame(info);
     bad_grid_size.grid.cols += 1;
-    try expectInvalidProtocolV0Frame(info, &bad_grid_size, .grid_mismatch);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_grid_size, .grid_mismatch);
 }
 
 test "host retained render rejects protocol v0 span count and max invariants" {
     const info = testPreparedInfo();
+    const pixels = [_]u8{ 0, 0, 0, 255, 0, 0, 0, 255 };
+    const buffer = testPreparedBuffer(&pixels);
 
     var bad_damage_count = testProtocolV0Frame(info);
     bad_damage_count.damage.count = c.HOWL_RENDER_V0_DAMAGE_ITEMS_MAX + 1;
-    try expectInvalidProtocolV0Frame(info, &bad_damage_count, .damage_span_invalid);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_damage_count, .damage_span_invalid);
 
     var bad_damage_max = testProtocolV0Frame(info);
     bad_damage_max.damage.count_max -= 1;
-    try expectInvalidProtocolV0Frame(info, &bad_damage_max, .damage_span_invalid);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_damage_max, .damage_span_invalid);
 
     var bad_create_count = testProtocolV0Frame(info);
     bad_create_count.creates.count = c.HOWL_RENDER_V0_CREATES_MAX + 1;
-    try expectInvalidProtocolV0Frame(info, &bad_create_count, .create_span_invalid);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_create_count, .create_span_invalid);
 
     var bad_create_max = testProtocolV0Frame(info);
     bad_create_max.creates.count_max -= 1;
-    try expectInvalidProtocolV0Frame(info, &bad_create_max, .create_span_invalid);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_create_max, .create_span_invalid);
 
     var bad_upload_count = testProtocolV0Frame(info);
     bad_upload_count.uploads.count = c.HOWL_RENDER_V0_UPLOADS_MAX + 1;
-    try expectInvalidProtocolV0Frame(info, &bad_upload_count, .upload_span_invalid);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_upload_count, .upload_span_invalid);
 
     var bad_upload_max = testProtocolV0Frame(info);
     bad_upload_max.uploads.count_max -= 1;
-    try expectInvalidProtocolV0Frame(info, &bad_upload_max, .upload_span_invalid);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_upload_max, .upload_span_invalid);
 
     var bad_command_count = testProtocolV0Frame(info);
     bad_command_count.commands.count = c.HOWL_RENDER_V0_COMMANDS_MAX + 1;
-    try expectInvalidProtocolV0Frame(info, &bad_command_count, .command_span_invalid);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_command_count, .command_span_invalid);
 
     var bad_command_max = testProtocolV0Frame(info);
     bad_command_max.commands.count_max -= 1;
-    try expectInvalidProtocolV0Frame(info, &bad_command_max, .command_span_invalid);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_command_max, .command_span_invalid);
 
     var bad_retire_count = testProtocolV0Frame(info);
     bad_retire_count.retires.count = c.HOWL_RENDER_V0_RETIRES_MAX + 1;
-    try expectInvalidProtocolV0Frame(info, &bad_retire_count, .retire_span_invalid);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_retire_count, .retire_span_invalid);
 
     var bad_retire_max = testProtocolV0Frame(info);
     bad_retire_max.retires.count_max -= 1;
-    try expectInvalidProtocolV0Frame(info, &bad_retire_max, .retire_span_invalid);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_retire_max, .retire_span_invalid);
 }
 
 test "host retained render rejects protocol v0 upload byte invariants" {
     const info = testPreparedInfo();
+    const pixels = [_]u8{ 0, 0, 0, 255, 0, 0, 0, 255 };
+    const buffer = testPreparedBuffer(&pixels);
 
     var bad_upload_bytes = testProtocolV0Frame(info);
     bad_upload_bytes.uploads.bytes_count_total = c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX + 1;
-    try expectInvalidProtocolV0Frame(info, &bad_upload_bytes, .upload_bytes_overflow);
+    try expectInvalidProtocolV0Frame(info, buffer, &bad_upload_bytes, .upload_bytes_overflow);
 
     var bad_upload_bytes_max = testProtocolV0Frame(info);
     bad_upload_bytes_max.uploads.bytes_count_max -= 1;
     try expectInvalidProtocolV0Frame(
         info,
+        buffer,
         &bad_upload_bytes_max,
         .upload_bytes_max_mismatch,
     );
@@ -714,18 +1337,138 @@ test "host retained render rejects protocol v0 upload byte invariants" {
 
 test "host retained render records protocol v0 probe failures on owner" {
     var state = State.init(null, testSurfaceLayout());
+    try std.testing.expectEqual(@as(u64, 0), state.protocol_v0_probe_success_count);
     try std.testing.expectEqual(@as(u64, 0), state.protocol_v0_probe_failure_count);
+    try std.testing.expectEqual(@as(u64, 0), state.protocol_v0_probe_checked_byte_count);
 
-    state.recordPreparedProtocolV0Probe(.{ .status = .null_frame });
+    state.recordPreparedProtocolV0Probe(.{ .status = .null_frame, .checked_byte_count = 3 });
+    try std.testing.expectEqual(@as(u64, 0), state.protocol_v0_probe_success_count);
     try std.testing.expectEqual(@as(u64, 1), state.protocol_v0_probe_failure_count);
+    try std.testing.expectEqual(@as(u64, 3), state.protocol_v0_probe_checked_byte_count);
     try std.testing.expectEqual(
         PreparedProtocolV0ProbeStatus.null_frame,
         state.last_protocol_v0_probe.status,
     );
 
-    state.recordPreparedProtocolV0Probe(.{ .status = .ok, .valid = true });
+    state.recordPreparedProtocolV0Probe(.{ .status = .ok, .valid = true, .checked_byte_count = 5 });
+    try std.testing.expectEqual(@as(u64, 1), state.protocol_v0_probe_success_count);
     try std.testing.expectEqual(@as(u64, 1), state.protocol_v0_probe_failure_count);
+    try std.testing.expectEqual(@as(u64, 8), state.protocol_v0_probe_checked_byte_count);
     try std.testing.expect(state.last_protocol_v0_probe.valid);
+}
+
+test "host retained render software realizes protocol v0 fill frame" {
+    const info = testPreparedInfo();
+    var commands = [_]Command{
+        fillCommand(c.HOWL_RENDER_V0_COMMAND_FILL_RECT, makeRect(0, 0, 2, 1), 0xff0000ff),
+    };
+    var frame = testProtocolV0Frame(info);
+    frame.commands = commandSpan(&commands);
+    const pixels = [_]u8{ 255, 0, 0, 255, 255, 0, 0, 255 };
+    const probe = validatePreparedProtocolV0Probe(
+        info,
+        testPreparedBuffer(&pixels),
+        c.HOWL_RENDER_CALL_OK,
+        &frame,
+        &.{},
+    );
+    try std.testing.expect(probe.valid);
+    try std.testing.expectEqual(@as(u64, pixels.len), probe.checked_byte_count);
+}
+
+test "host retained render software realizes protocol v0 sprite frame" {
+    const info = testPreparedInfo();
+    const resource = testSpriteAlphaResource(1, 1);
+    var bytes = [_]u8{ 255, 128 };
+    var creates = [_]Create{createResource(resource, 2, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(resource, makeRect(0, 0, 2, 1), &bytes, 2)};
+    var commands = [_]Command{spriteCommand(resource, makeRect(0, 0, 2, 1), 0xff000080)};
+    var frame = testProtocolV0Frame(info);
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, bytes.len);
+    frame.commands = commandSpan(&commands);
+    const pixels = [_]u8{ 128, 0, 0, 255, 64, 0, 0, 255 };
+    const probe = validatePreparedProtocolV0Probe(
+        info,
+        testPreparedBuffer(&pixels),
+        c.HOWL_RENDER_CALL_OK,
+        &frame,
+        &.{},
+    );
+    try std.testing.expect(probe.valid);
+}
+
+test "host retained render software realizes protocol v0 partial frame" {
+    var info = testPreparedInfo();
+    info.damage_kind = c.HOWL_RENDER_DAMAGE_PARTIAL;
+    var commands = [_]Command{
+        fillCommand(c.HOWL_RENDER_V0_COMMAND_FILL_RECT, makeRect(1, 0, 1, 1), 0x0000ffff),
+    };
+    var frame = testProtocolV0Frame(info);
+    frame.commands = commandSpan(&commands);
+    const base = [_]u8{ 255, 0, 0, 255, 0, 255, 0, 255 };
+    const pixels = [_]u8{ 255, 0, 0, 255, 0, 0, 255, 255 };
+    const probe = validatePreparedProtocolV0Probe(
+        info,
+        testPreparedBuffer(&pixels),
+        c.HOWL_RENDER_CALL_OK,
+        &frame,
+        &base,
+    );
+    try std.testing.expect(probe.valid);
+    try std.testing.expectEqual(@as(u64, pixels.len), probe.checked_byte_count);
+}
+
+test "host retained render software probe detects rgba mismatch" {
+    const info = testPreparedInfo();
+    var commands = [_]Command{
+        fillCommand(c.HOWL_RENDER_V0_COMMAND_FILL_RECT, makeRect(0, 0, 1, 1), 0xff0000ff),
+    };
+    var frame = testProtocolV0Frame(info);
+    frame.commands = commandSpan(&commands);
+    const pixels = [_]u8{ 0, 0, 0, 255, 0, 0, 0, 255 };
+    const probe = try expectInvalidProtocolV0FrameWithBase(
+        info,
+        testPreparedBuffer(&pixels),
+        &frame,
+        &.{},
+        .rgba_mismatch,
+    );
+    try std.testing.expectEqual(@as(u64, pixels.len), probe.checked_byte_count);
+}
+
+test "host retained render software probe rejects unsupported command" {
+    const info = testPreparedInfo();
+    var commands = [_]Command{glyphCommand(&.{})};
+    var frame = testProtocolV0Frame(info);
+    frame.commands = commandSpan(&commands);
+    const pixels = [_]u8{ 0, 0, 0, 255, 0, 0, 0, 255 };
+    try expectInvalidProtocolV0Frame(
+        info,
+        testPreparedBuffer(&pixels),
+        &frame,
+        .unsupported_command,
+    );
+}
+
+test "host retained render records software probe accounting" {
+    var state = State.init(null, testSurfaceLayout());
+    state.recordPreparedProtocolV0Probe(.{
+        .status = .ok,
+        .valid = true,
+        .checked_byte_count = 8,
+    });
+    state.recordPreparedProtocolV0Probe(.{
+        .status = .rgba_mismatch,
+        .checked_byte_count = 8,
+    });
+    try std.testing.expectEqual(@as(u64, 1), state.protocol_v0_probe_success_count);
+    try std.testing.expectEqual(@as(u64, 1), state.protocol_v0_probe_failure_count);
+    try std.testing.expectEqual(@as(u64, 16), state.protocol_v0_probe_checked_byte_count);
+    try std.testing.expectEqual(
+        PreparedProtocolV0ProbeStatus.rgba_mismatch,
+        state.last_protocol_v0_probe.status,
+    );
 }
 
 test "present submit stores snapshot and token" {
