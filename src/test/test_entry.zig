@@ -1,7 +1,7 @@
 test {
-    _ = @import("cli_args");
-    _ = @import("config_env");
-    _ = @import("process_accounting");
-    _ = @import("retained_render");
-    _ = @import("tab_bar");
+    @import("std").testing.refAllDecls(@import("cli_args"));
+    @import("std").testing.refAllDecls(@import("config_env"));
+    @import("std").testing.refAllDecls(@import("process_accounting"));
+    @import("std").testing.refAllDecls(@import("retained_render"));
+    @import("std").testing.refAllDecls(@import("tab_bar"));
 }

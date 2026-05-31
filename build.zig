@@ -354,8 +354,21 @@ fn wireTestSteps(
     const run_unit_tests = b.addRunArtifact(unit_tests);
     if (b.args != null) run_unit_tests.has_side_effects = true;
 
+    const retained_tests = b.addTest(.{
+        .name = "test-retained-render",
+        .root_module = retainedRenderTestModule(b, deps),
+        .filters = filters,
+    });
+    retained_tests.use_llvm = true;
+    retained_tests.root_module.linkLibrary(deps.howl_render_lib);
+    retained_tests.root_module.link_libc = true;
+    const run_retained_tests = b.addRunArtifact(retained_tests);
+    if (b.args != null) run_retained_tests.has_side_effects = true;
+
     stageTestArtifact(steps.test_unit_build, unit_tests);
+    stageTestArtifact(steps.test_unit_build, retained_tests);
     steps.test_unit.dependOn(&run_unit_tests.step);
+    steps.test_unit.dependOn(&run_retained_tests.step);
     steps.test_all.dependOn(steps.test_unit);
 
     const host_test_mod = HostTests.createModule(b, deps.testDeps());

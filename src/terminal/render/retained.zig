@@ -84,6 +84,179 @@ pub const PreparedProtocolV0ResourcePlanStatus = enum(u8) {
     invalid_upload,
 };
 
+pub const ProtocolV0ResourceStoreStatus = enum(u8) {
+    ok,
+    capacity_overflow,
+    duplicate_create,
+    missing_resource,
+    retired_resource,
+    invalid_resource,
+    invalid_upload,
+    invalid_retire,
+};
+
+pub const ProtocolV0ResourceState = enum(u8) {
+    empty,
+    live,
+    retired,
+};
+
+pub const ProtocolV0StoredResource = struct {
+    state: ProtocolV0ResourceState = .empty,
+    resource: ResourceId = .{ .value = 0, .generation = 0, .kind = 0 },
+    width_px: u32 = 0,
+    height_px: u32 = 0,
+    format: u32 = 0,
+    upload_count: u32 = 0,
+    upload_bytes_count: u64 = 0,
+};
+
+const protocol_v0_resource_store_empty = ProtocolV0StoredResource{};
+
+pub const ProtocolV0ResourceStore = struct {
+    slots: [c.HOWL_RENDER_V0_RESOURCES_MAX]ProtocolV0StoredResource =
+        [_]ProtocolV0StoredResource{protocol_v0_resource_store_empty} **
+        c.HOWL_RENDER_V0_RESOURCES_MAX,
+    live_count: u32 = 0,
+    retired_count: u32 = 0,
+
+    pub fn applyFrame(
+        self: *ProtocolV0ResourceStore,
+        frame: *const Frame,
+    ) ProtocolV0ResourceStoreStatus {
+        const span_status = validateResourceStoreFrameSpans(frame);
+        if (span_status != .ok) return span_status;
+        var next = self.*;
+        for (spanSlice(Create, frame.creates.ptr, frame.creates.count)) |create_item| {
+            const status = next.create(create_item);
+            if (status != .ok) return status;
+        }
+        for (spanSlice(Upload, frame.uploads.ptr, frame.uploads.count)) |upload_item| {
+            const status = next.upload(upload_item);
+            if (status != .ok) return status;
+        }
+        for (spanSlice(Retire, frame.retires.ptr, frame.retires.count)) |retire_item| {
+            const status = next.retire(retire_item);
+            if (status != .ok) return status;
+        }
+        self.* = next;
+        return .ok;
+    }
+
+    pub fn create(
+        self: *ProtocolV0ResourceStore,
+        create_item: Create,
+    ) ProtocolV0ResourceStoreStatus {
+        if (!resourceKindStorable(create_item.resource.kind)) return .invalid_resource;
+        if (create_item.width_px == 0) return .invalid_resource;
+        if (create_item.height_px == 0) return .invalid_resource;
+        if (create_item.format != storeUploadFormatForResource(create_item.resource.kind)) {
+            return .invalid_upload;
+        }
+        if (self.find(create_item.resource)) |_| return .duplicate_create;
+        if (self.findValue(create_item.resource.value)) |_| return .duplicate_create;
+        const slot = self.findEmpty() orelse return .capacity_overflow;
+        slot.* = .{
+            .state = .live,
+            .resource = create_item.resource,
+            .width_px = create_item.width_px,
+            .height_px = create_item.height_px,
+            .format = create_item.format,
+        };
+        self.live_count +|= 1;
+        return .ok;
+    }
+
+    pub fn upload(
+        self: *ProtocolV0ResourceStore,
+        upload_item: Upload,
+    ) ProtocolV0ResourceStoreStatus {
+        const slot = self.find(upload_item.resource) orelse return .missing_resource;
+        if (slot.state == .retired) return .retired_resource;
+        if (slot.state != .live) return .missing_resource;
+        if (!sameResource(slot.resource, upload_item.resource)) return .invalid_resource;
+        if (upload_item.format != slot.format) return .invalid_upload;
+        if (!rectFitsResource(upload_item.rect, slot.width_px, slot.height_px)) {
+            return .invalid_upload;
+        }
+        if (upload_item.bytes_ptr == null) return .invalid_upload;
+        const bytes_min = uploadBytesMin(
+            upload_item.rect,
+            upload_item.format,
+            upload_item.stride_bytes,
+        ) orelse return .invalid_upload;
+        if (upload_item.bytes_count < bytes_min) return .invalid_upload;
+        if (upload_item.bytes_count > c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) return .invalid_upload;
+        slot.upload_count +|= 1;
+        slot.upload_bytes_count +|= upload_item.bytes_count;
+        return .ok;
+    }
+
+    pub fn retire(
+        self: *ProtocolV0ResourceStore,
+        retire_item: Retire,
+    ) ProtocolV0ResourceStoreStatus {
+        const slot = self.find(retire_item.resource) orelse return .missing_resource;
+        if (slot.state == .retired) return .retired_resource;
+        if (slot.state != .live) return .missing_resource;
+        if (!sameResource(slot.resource, retire_item.resource)) return .invalid_resource;
+        slot.state = .retired;
+        self.retired_count +|= 1;
+        return .ok;
+    }
+
+    pub fn find(self: *ProtocolV0ResourceStore, resource: ResourceId) ?*ProtocolV0StoredResource {
+        for (&self.slots) |*slot| {
+            if (slot.state == .empty) continue;
+            if (sameResource(slot.resource, resource)) return slot;
+        }
+        return null;
+    }
+
+    pub fn findValue(self: *ProtocolV0ResourceStore, value: u64) ?*ProtocolV0StoredResource {
+        for (&self.slots) |*slot| {
+            if (slot.state == .empty) continue;
+            if (slot.resource.value == value) return slot;
+        }
+        return null;
+    }
+
+    fn findEmpty(self: *ProtocolV0ResourceStore) ?*ProtocolV0StoredResource {
+        for (&self.slots) |*slot| {
+            if (slot.state == .empty) return slot;
+        }
+        return null;
+    }
+};
+
+fn validateResourceStoreFrameSpans(frame: *const Frame) ProtocolV0ResourceStoreStatus {
+    if (!spanCountValid(
+        frame.creates.ptr,
+        frame.creates.count,
+        frame.creates.count_max,
+        c.HOWL_RENDER_V0_CREATES_MAX,
+    )) return .invalid_resource;
+    if (!spanCountValid(
+        frame.uploads.ptr,
+        frame.uploads.count,
+        frame.uploads.count_max,
+        c.HOWL_RENDER_V0_UPLOADS_MAX,
+    )) return .invalid_upload;
+    if (!spanCountValid(
+        frame.retires.ptr,
+        frame.retires.count,
+        frame.retires.count_max,
+        c.HOWL_RENDER_V0_RETIRES_MAX,
+    )) return .invalid_retire;
+    if (frame.uploads.bytes_count_total > c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
+        return .invalid_upload;
+    }
+    if (frame.uploads.bytes_count_max != c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
+        return .invalid_upload;
+    }
+    return .ok;
+}
+
 pub const PreparedProtocolV0Probe = struct {
     status: PreparedProtocolV0ProbeStatus = .idle,
     valid: bool = false,
@@ -1052,10 +1225,29 @@ fn resourceKindSupported(kind: u32) bool {
         kind == c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR;
 }
 
+fn resourceKindStorable(kind: u32) bool {
+    return kind == c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA or
+        kind == c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA or
+        kind == c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR or
+        kind == c.HOWL_RENDER_V0_RESOURCE_FALLBACK_RGBA;
+}
+
 fn uploadFormatForResource(kind: u32) u32 {
     return switch (kind) {
         c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA => c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
         c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR => c.HOWL_RENDER_V0_UPLOAD_RGBA8,
+        else => 0,
+    };
+}
+
+fn storeUploadFormatForResource(kind: u32) u32 {
+    return switch (kind) {
+        c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA,
+        c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA,
+        => c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR,
+        c.HOWL_RENDER_V0_RESOURCE_FALLBACK_RGBA,
+        => c.HOWL_RENDER_V0_UPLOAD_RGBA8,
         else => 0,
     };
 }
@@ -1252,6 +1444,10 @@ fn testSpriteAlphaResource(value: u64, generation: u32) ResourceId {
     };
 }
 
+fn testResource(value: u64, generation: u32, kind: u32) ResourceId {
+    return .{ .value = value, .generation = generation, .kind = kind };
+}
+
 fn createResource(resource: ResourceId, width_px: u32, height_px: u32, format: u32) Create {
     return .{
         .resource = resource,
@@ -1274,7 +1470,7 @@ fn uploadResource(
         .bytes_ptr = bytes.ptr,
         .bytes_count = @intCast(bytes.len),
         .stride_bytes = stride_bytes,
-        .format = uploadFormatForResource(resource.kind),
+        .format = storeUploadFormatForResource(resource.kind),
         .upload_seq = 0,
     };
 }
@@ -1863,6 +2059,190 @@ test "host retained render records resource plan accounting" {
     try std.testing.expectEqual(
         PreparedProtocolV0ResourcePlanStatus.invalid_resource,
         state.last_protocol_v0_resource_plan.status,
+    );
+}
+
+test "host retained render resource store creates uploads retires resource" {
+    const resource = testSpriteAlphaResource(21, 1);
+    var store = ProtocolV0ResourceStore{};
+    var bytes = [_]u8{ 1, 2, 3, 4 };
+    const create_item = createResource(resource, 2, 2, c.HOWL_RENDER_V0_UPLOAD_ALPHA8);
+    const upload_item = uploadResource(resource, makeRect(0, 0, 2, 2), &bytes, 2);
+    const retire_item = Retire{ .resource = resource, .retire_seq = 1 };
+
+    try std.testing.expectEqual(ProtocolV0ResourceStoreStatus.ok, store.create(create_item));
+    try std.testing.expectEqual(ProtocolV0ResourceStoreStatus.ok, store.upload(upload_item));
+    try std.testing.expectEqual(ProtocolV0ResourceStoreStatus.ok, store.retire(retire_item));
+
+    const slot = store.find(resource) orelse return error.MissingResource;
+    try std.testing.expectEqual(ProtocolV0ResourceState.retired, slot.state);
+    try std.testing.expectEqual(@as(u32, 1), slot.upload_count);
+    try std.testing.expectEqual(@as(u64, bytes.len), slot.upload_bytes_count);
+    try std.testing.expectEqual(@as(u32, 1), store.live_count);
+    try std.testing.expectEqual(@as(u32, 1), store.retired_count);
+}
+
+test "host retained render resource store apply frame is fail closed" {
+    const resource = testSpriteAlphaResource(26, 1);
+    var store = ProtocolV0ResourceStore{};
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{.{
+        .resource = resource,
+        .rect = makeRect(0, 0, 1, 1),
+        .bytes_ptr = null,
+        .bytes_count = 1,
+        .stride_bytes = 1,
+        .format = c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .upload_seq = 0,
+    }};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    frame.creates = createSpan(&creates);
+    frame.uploads = uploadSpan(&uploads, 1);
+
+    try std.testing.expectEqual(ProtocolV0ResourceStoreStatus.invalid_upload, store.applyFrame(&frame));
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+    try std.testing.expectEqual(@as(u32, 0), store.live_count);
+}
+
+test "host retained render resource store accepts atlas alpha and fallback rgba" {
+    const atlas = testResource(27, 1, c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA);
+    const fallback = testResource(28, 1, c.HOWL_RENDER_V0_RESOURCE_FALLBACK_RGBA);
+    var store = ProtocolV0ResourceStore{};
+    var alpha_bytes = [_]u8{ 1, 2, 3, 4 };
+    var rgba_bytes = [_]u8{ 1, 2, 3, 4 };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.ok,
+        store.create(createResource(atlas, 2, 2, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)),
+    );
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.ok,
+        store.upload(uploadResource(atlas, makeRect(0, 0, 2, 2), &alpha_bytes, 2)),
+    );
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.ok,
+        store.create(createResource(fallback, 1, 1, c.HOWL_RENDER_V0_UPLOAD_RGBA8)),
+    );
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.ok,
+        store.upload(uploadResource(fallback, makeRect(0, 0, 1, 1), &rgba_bytes, 4)),
+    );
+}
+
+test "host retained render resource store rejects color atlas" {
+    const resource = testResource(29, 1, c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_COLOR);
+    var store = ProtocolV0ResourceStore{};
+    const create_item = createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_RGBA8);
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.invalid_resource,
+        store.create(create_item),
+    );
+}
+
+test "host retained render resource store rejects generation mismatch" {
+    const resource = testSpriteAlphaResource(30, 1);
+    const next_generation = testSpriteAlphaResource(30, 2);
+    var store = ProtocolV0ResourceStore{};
+    var bytes = [_]u8{255};
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.ok,
+        store.create(createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)),
+    );
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.missing_resource,
+        store.upload(uploadResource(next_generation, makeRect(0, 0, 1, 1), &bytes, 1)),
+    );
+}
+
+test "host retained render resource store rejects value reuse before ack" {
+    const resource = testSpriteAlphaResource(31, 1);
+    const same_value_next_kind = testResource(31, 1, c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR);
+    var store = ProtocolV0ResourceStore{};
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.ok,
+        store.create(createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)),
+    );
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.duplicate_create,
+        store.create(createResource(same_value_next_kind, 1, 1, c.HOWL_RENDER_V0_UPLOAD_RGBA8)),
+    );
+}
+
+test "host retained render resource store validates spans before mutation" {
+    const resource = testSpriteAlphaResource(32, 1);
+    var store = ProtocolV0ResourceStore{};
+    var frame = testProtocolV0Frame(testPreparedInfo());
+    var creates = [_]Create{createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8)};
+    frame.creates = createSpan(&creates);
+    frame.uploads.count = 1;
+    frame.uploads.ptr = null;
+
+    try std.testing.expectEqual(ProtocolV0ResourceStoreStatus.invalid_upload, store.applyFrame(&frame));
+    try std.testing.expectEqual(@as(?*ProtocolV0StoredResource, null), store.find(resource));
+}
+
+test "host retained render resource store rejects duplicate create" {
+    const resource = testSpriteAlphaResource(22, 1);
+    var store = ProtocolV0ResourceStore{};
+    const create_item = createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8);
+
+    try std.testing.expectEqual(ProtocolV0ResourceStoreStatus.ok, store.create(create_item));
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.duplicate_create,
+        store.create(create_item),
+    );
+}
+
+test "host retained render resource store rejects upload after retire" {
+    const resource = testSpriteAlphaResource(23, 1);
+    var store = ProtocolV0ResourceStore{};
+    var bytes = [_]u8{255};
+    const create_item = createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8);
+    const upload_item = uploadResource(resource, makeRect(0, 0, 1, 1), &bytes, 1);
+    const retire_item = Retire{ .resource = resource, .retire_seq = 1 };
+
+    try std.testing.expectEqual(ProtocolV0ResourceStoreStatus.ok, store.create(create_item));
+    try std.testing.expectEqual(ProtocolV0ResourceStoreStatus.ok, store.retire(retire_item));
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.retired_resource,
+        store.upload(upload_item),
+    );
+}
+
+test "host retained render resource store rejects missing retire" {
+    const resource = testSpriteAlphaResource(24, 1);
+    var store = ProtocolV0ResourceStore{};
+    const retire_item = Retire{ .resource = resource, .retire_seq = 1 };
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.missing_resource,
+        store.retire(retire_item),
+    );
+}
+
+test "host retained render resource store reports capacity overflow" {
+    const resource = testSpriteAlphaResource(25, 1);
+    var store = ProtocolV0ResourceStore{};
+    store.slots = [_]ProtocolV0StoredResource{.{
+        .state = .live,
+        .resource = .{
+            .value = 1,
+            .generation = 1,
+            .kind = c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA,
+        },
+        .width_px = 1,
+        .height_px = 1,
+        .format = c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+    }} ** c.HOWL_RENDER_V0_RESOURCES_MAX;
+    store.live_count = c.HOWL_RENDER_V0_RESOURCES_MAX;
+    const create_item = createResource(resource, 1, 1, c.HOWL_RENDER_V0_UPLOAD_ALPHA8);
+
+    try std.testing.expectEqual(
+        ProtocolV0ResourceStoreStatus.capacity_overflow,
+        store.create(create_item),
     );
 }
 
