@@ -613,6 +613,10 @@ pub const State = struct {
         return self.present_in_flight != null;
     }
 
+    pub fn preparedSurfaceHandle(self: *const State) c.HowlRenderPreparedSurfaceHandle {
+        return self.prepared_surface;
+    }
+
     pub fn setGeometryEpoch(self: *State, geometry_epoch: u64) void {
         self.geometry_epoch = geometry_epoch;
     }

@@ -565,50 +565,99 @@ pub const Context = struct {
     }
 
     fn submitPreparedLocked(self: *Context) SubmitPreparedResult {
+        return submitPreparedLockedWith(self, ContextSubmitBackend);
+    }
+
+    const ContextSubmitBackend = struct {
+        fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload) bool {
+            if (prepared_upload.protocol_v0_frame != null and
+                prepared_upload.protocol_v0_resource_plan.valid)
+            {
+                const frame = prepared_upload.protocol_v0_frame.?;
+                const v0_start_ns = InputWindow.nowNs();
+                _ = self.protocol_v0_textures.realizeFrame(frame);
+                self.recordProtocolV0Realization(renderUs(v0_start_ns));
+            }
+            const pixels: []const u8 = if (prepared_upload.buffer.rgba_pixels.len == 0)
+                &.{}
+            else
+                prepared_upload.buffer.rgba_pixels.ptr[0..prepared_upload.buffer.rgba_pixels.len];
+            const full_rgba_start_ns = InputWindow.nowNs();
+            self.protocol_v0_submit_diagnostics.full_rgba_gl_before =
+                term_texture.sampleGlState();
+            if (!term_texture.ensureSurface(
+                &self.term_texture,
+                prepared_upload.info.render_px.width,
+                prepared_upload.info.render_px.height,
+            )) {
+                self.protocol_v0_submit_diagnostics.full_rgba_gl_after =
+                    term_texture.sampleGlState();
+                self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
+                return false;
+            }
+            if (!term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
+                self.protocol_v0_submit_diagnostics.full_rgba_gl_after =
+                    term_texture.sampleGlState();
+                self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
+                return false;
+            }
+            self.protocol_v0_submit_diagnostics.full_rgba_gl_after =
+                term_texture.sampleGlState();
+            if (self.protocol_v0_submit_diagnostics.full_rgba_gl_after.error_code != 0) {
+                self.protocol_v0_submit_diagnostics.full_rgba_gl_error +|= 1;
+            }
+            self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
+            self.logProtocolV0Diagnostics();
+            return true;
+        }
+
+        fn execution(
+            self: *Context,
+            prepared_upload: *const render_retained.PreparedUpload,
+            start_ns: u64,
+        ) render_c.HowlRenderSubmitExecution {
+            return .{
+                .host_surface = .{
+                    .host_surface_id = self.term_texture.host_surface_id,
+                    .width = prepared_upload.info.render_px.width,
+                    .height = prepared_upload.info.render_px.height,
+                },
+                .uploads_committed = prepared_upload.buffer.uploads_committed,
+                .render_us = renderUs(start_ns),
+            };
+        }
+    };
+
+    fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
         const start_ns = InputWindow.nowNs();
 
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
-        if (!self.term.render.preparedUpload(&upload)) return .{ .result = .failed, .snapshot_seq = 0 };
+        if (!self.term.render.preparedUpload(&upload)) {
+            return .{ .result = .failed, .snapshot_seq = 0 };
+        }
         defer upload.deinit();
-        if (upload.protocol_v0_frame != null and upload.protocol_v0_resource_plan.valid) {
-            const frame = upload.protocol_v0_frame.?;
-            const v0_start_ns = InputWindow.nowNs();
-            _ = self.protocol_v0_textures.realizeFrame(frame);
-            self.recordProtocolV0Realization(renderUs(v0_start_ns));
-        }
-        const pixels: []const u8 = if (upload.buffer.rgba_pixels.len == 0)
-            &.{}
-        else
-            upload.buffer.rgba_pixels.ptr[0..upload.buffer.rgba_pixels.len];
-        const full_rgba_start_ns = InputWindow.nowNs();
-        self.protocol_v0_submit_diagnostics.full_rgba_gl_before = term_texture.sampleGlState();
-        if (!term_texture.ensureSurface(&self.term_texture, upload.info.render_px.width, upload.info.render_px.height)) {
-            self.protocol_v0_submit_diagnostics.full_rgba_gl_after = term_texture.sampleGlState();
-            self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
+        const prepared_handle = self.term.render.preparedSurfaceHandle();
+        std.debug.assert(prepared_handle != null);
+        std.debug.assert(upload.info.snapshot_seq != 0);
+        std.debug.assert(!self.term.render.presentPending());
+
+        self.term.mutex.unlock();
+        const upload_ok = Backend.upload(self, &upload);
+        self.term.mutex.lockFair();
+
+        const current_handle = self.term.render.preparedSurfaceHandle();
+        const prepared_stable = preparedHandleStable(current_handle, prepared_handle);
+        std.debug.assert(!self.term.render.presentPending());
+        if (!prepared_stable) {
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
-        if (!term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
-            self.protocol_v0_submit_diagnostics.full_rgba_gl_after = term_texture.sampleGlState();
-            self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
+        std.debug.assert(prepared_stable);
+        if (!upload_ok) {
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
-        self.protocol_v0_submit_diagnostics.full_rgba_gl_after = term_texture.sampleGlState();
-        if (self.protocol_v0_submit_diagnostics.full_rgba_gl_after.error_code != 0) {
-            self.protocol_v0_submit_diagnostics.full_rgba_gl_error +|= 1;
-        }
-        self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
-        self.logProtocolV0Diagnostics();
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
-        const execution = render_c.HowlRenderSubmitExecution{
-            .host_surface = .{
-                .host_surface_id = self.term_texture.host_surface_id,
-                .width = upload.info.render_px.width,
-                .height = upload.info.render_px.height,
-            },
-            .uploads_committed = upload.buffer.uploads_committed,
-            .render_us = renderUs(start_ns),
-        };
+        const execution = Backend.execution(self, &upload, start_ns);
         const result = self.term.render.submit(&execution, &submit_result);
         if (result == .rendered) {
             self.term_texture = submit_result.host_surface;
@@ -620,6 +669,14 @@ pub const Context = struct {
         result: render_retained.SubmitResult,
         snapshot_seq: u64,
     };
+
+    fn preparedHandleStable(
+        current: render_c.HowlRenderPreparedSurfaceHandle,
+        prepared: render_c.HowlRenderPreparedSurfaceHandle,
+    ) bool {
+        std.debug.assert(prepared != null);
+        return current == prepared;
+    }
 
     fn submit(self: *Context, execution: *const render_c.HowlRenderSubmitExecution, result: *render_c.HowlRenderSubmitResult) render_retained.SubmitResult {
         self.term.mutex.lockFair();
@@ -1676,6 +1733,233 @@ test "submit path runs once no host present is in flight" {
     };
 
     try std.testing.expectEqual(Context.RenderAction.submit_pending, Context.renderAction(work, false));
+}
+
+fn testPreparedHandle() render_c.HowlRenderPreparedSurfaceHandle {
+    return @ptrFromInt(0x10);
+}
+
+fn testPreparedUploadInfo() render_c.HowlRenderPreparedSurfaceInfo {
+    return .{
+        .status = render_c.HOWL_RENDER_CALL_OK,
+        .snapshot_seq = 51,
+        .dirty_epoch = 1,
+        .geometry_epoch = 1,
+        .required_base_seq = 0,
+        .render_px = .{ .width = 2, .height = 1 },
+        .cell_px = .{ .width = 1, .height = 1 },
+        .grid = .{ .cols = 2, .rows = 1 },
+        .prepare_metrics = std.mem.zeroes(render_c.HowlRenderMetrics),
+        .damage_kind = render_c.HOWL_RENDER_DAMAGE_FULL,
+        .reserved0 = 0,
+        .reserved1 = 0,
+    };
+}
+
+const test_submit_pixels = [_]u8{ 0, 0, 0, 255, 0, 0, 0, 255 };
+
+fn fillTestPreparedUpload(upload: *render_retained.PreparedUpload) void {
+    upload.* = .{
+        .info = testPreparedUploadInfo(),
+        .buffer = .{
+            .status = render_c.HOWL_RENDER_CALL_OK,
+            .rgba_pixels = .{
+                .ptr = &test_submit_pixels,
+                .len = test_submit_pixels.len,
+            },
+            .uploads_committed = 0,
+        },
+        .protocol_v0_probe = .{},
+        .protocol_v0_resource_plan = .{},
+        .protocol_v0_frame = null,
+    };
+}
+
+const TestSubmitRender = struct {
+    submit_calls: u8 = 0,
+    submit_observed_locked: bool = false,
+    mutex: ?*terminal_term.Mutex = null,
+    handle: render_c.HowlRenderPreparedSurfaceHandle = testPreparedHandle(),
+
+    fn preparedUpload(_: *@This(), upload: *render_retained.PreparedUpload) bool {
+        fillTestPreparedUpload(upload);
+        return true;
+    }
+
+    fn preparedSurfaceHandle(self: *@This()) render_c.HowlRenderPreparedSurfaceHandle {
+        return self.handle;
+    }
+
+    fn presentPending(_: *@This()) bool {
+        return false;
+    }
+
+    fn submit(
+        self: *@This(),
+        execution: *const render_c.HowlRenderSubmitExecution,
+        result: *render_c.HowlRenderSubmitResult,
+    ) render_retained.SubmitResult {
+        self.submit_calls += 1;
+        if (self.mutex) |mutex| {
+            const relock_probe = mutex.tryLockUnfair();
+            if (relock_probe) mutex.unlock();
+            self.submit_observed_locked = !relock_probe;
+        }
+        result.* = .{ .host_surface = execution.host_surface };
+        return .rendered;
+    }
+};
+
+const TestSubmitTerm = struct {
+    mutex: terminal_term.Mutex = .{},
+    render: TestSubmitRender = .{},
+};
+
+const TestSubmitContext = struct {
+    term: TestSubmitTerm = .{},
+    term_texture: render_c.HowlRenderHostSurface = .{
+        .host_surface_id = 1,
+        .width = 2,
+        .height = 1,
+    },
+};
+
+fn testSubmitExecution(
+    self: *TestSubmitContext,
+    prepared_upload: *const render_retained.PreparedUpload,
+) render_c.HowlRenderSubmitExecution {
+    return .{
+        .host_surface = self.term_texture,
+        .uploads_committed = prepared_upload.buffer.uploads_committed,
+        .render_us = 0,
+    };
+}
+
+const TestUnlockedBackend = struct {
+    var saw_unlocked = false;
+
+    fn upload(
+        self: *TestSubmitContext,
+        prepared_upload: *const render_retained.PreparedUpload,
+    ) bool {
+        std.debug.assert(
+            prepared_upload.buffer.rgba_pixels.len == test_submit_pixels.len,
+        );
+        saw_unlocked = self.term.mutex.tryLockUnfair();
+        if (saw_unlocked) self.term.mutex.unlock();
+        return true;
+    }
+
+    fn execution(
+        self: *TestSubmitContext,
+        prepared_upload: *const render_retained.PreparedUpload,
+        _: u64,
+    ) render_c.HowlRenderSubmitExecution {
+        return testSubmitExecution(self, prepared_upload);
+    }
+};
+
+const TestLockedBackend = struct {
+    fn upload(_: *TestSubmitContext, _: *const render_retained.PreparedUpload) bool {
+        return true;
+    }
+
+    fn execution(
+        self: *TestSubmitContext,
+        prepared_upload: *const render_retained.PreparedUpload,
+        _: u64,
+    ) render_c.HowlRenderSubmitExecution {
+        return testSubmitExecution(self, prepared_upload);
+    }
+};
+
+const TestFailBackend = struct {
+    var saw_unlocked = false;
+
+    fn upload(self: *TestSubmitContext, _: *const render_retained.PreparedUpload) bool {
+        saw_unlocked = self.term.mutex.tryLockUnfair();
+        if (saw_unlocked) self.term.mutex.unlock();
+        return false;
+    }
+
+    fn execution(
+        _: *TestSubmitContext,
+        _: *const render_retained.PreparedUpload,
+        _: u64,
+    ) render_c.HowlRenderSubmitExecution {
+        unreachable;
+    }
+};
+
+const TestMutatingBackend = struct {
+    var saw_unlocked = false;
+
+    fn upload(self: *TestSubmitContext, _: *const render_retained.PreparedUpload) bool {
+        saw_unlocked = self.term.mutex.tryLockUnfair();
+        if (saw_unlocked) self.term.mutex.unlock();
+        self.term.render.handle = @ptrFromInt(0x20);
+        return true;
+    }
+
+    fn execution(
+        self: *TestSubmitContext,
+        prepared_upload: *const render_retained.PreparedUpload,
+        _: u64,
+    ) render_c.HowlRenderSubmitExecution {
+        return testSubmitExecution(self, prepared_upload);
+    }
+};
+
+test "submit backend upload observes terminal mutex unlocked" {
+    TestUnlockedBackend.saw_unlocked = false;
+    var context = TestSubmitContext{};
+    context.term.mutex.lockFair();
+    defer context.term.mutex.unlock();
+
+    const result = Context.submitPreparedLockedWith(&context, TestUnlockedBackend);
+
+    try std.testing.expect(TestUnlockedBackend.saw_unlocked);
+    try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
+    try std.testing.expectEqual(@as(u8, 1), context.term.render.submit_calls);
+}
+
+test "render submit runs under terminal mutex after backend upload" {
+    var context = TestSubmitContext{};
+    context.term.render.mutex = &context.term.mutex;
+    context.term.mutex.lockFair();
+    defer context.term.mutex.unlock();
+
+    const result = Context.submitPreparedLockedWith(&context, TestLockedBackend);
+
+    try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
+    try std.testing.expect(context.term.render.submit_observed_locked);
+}
+
+test "host upload failure returns failed submit without render submit" {
+    TestFailBackend.saw_unlocked = false;
+    var context = TestSubmitContext{};
+    context.term.mutex.lockFair();
+    defer context.term.mutex.unlock();
+
+    const result = Context.submitPreparedLockedWith(&context, TestFailBackend);
+
+    try std.testing.expect(TestFailBackend.saw_unlocked);
+    try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
+    try std.testing.expectEqual(@as(u64, 51), result.snapshot_seq);
+    try std.testing.expectEqual(@as(u8, 0), context.term.render.submit_calls);
+}
+
+test "prepared handle mutation after upload does not submit" {
+    TestMutatingBackend.saw_unlocked = false;
+    var context = TestSubmitContext{};
+    context.term.mutex.lockFair();
+    defer context.term.mutex.unlock();
+
+    const result = Context.submitPreparedLockedWith(&context, TestMutatingBackend);
+
+    try std.testing.expect(TestMutatingBackend.saw_unlocked);
+    try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
+    try std.testing.expectEqual(@as(u8, 0), context.term.render.submit_calls);
 }
 
 test "complete present acks matching host-owned token once and clears" {
