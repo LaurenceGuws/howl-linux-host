@@ -1253,6 +1253,40 @@ test "protocol v0 fill only rejects coverage overlap without clear" {
     try std.testing.expect(!protocolV0FillOnly(&frame));
 }
 
+test "protocol v0 fill patch accepts partial bounded fills" {
+    var commands = [_]render_c.HowlRenderV0Command{.{
+        .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 },
+        .color_rgba = 0x000000ff,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var frame = testFrame();
+    frame.render_px = .{ .width = 2, .height = 2 };
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(protocolV0FillPatch(&frame));
+}
+
+test "protocol v0 fill patch rejects out of bounds fill" {
+    var commands = [_]render_c.HowlRenderV0Command{.{
+        .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 2 },
+        .color_rgba = 0x000000ff,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var frame = testFrame();
+    frame.render_px = .{ .width = 2, .height = 2 };
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(!protocolV0FillPatch(&frame));
+}
+
 test "protocol v0 fill only rejects mixed resource commands" {
     var commands = [_]render_c.HowlRenderV0Command{.{
         .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
@@ -1656,6 +1690,31 @@ pub fn uploadProtocolV0FillOnly(
     return true;
 }
 
+pub fn uploadProtocolV0FillPatch(
+    surface: render_c.HowlRenderHostSurface,
+    frame: *const render_c.HowlRenderV0Frame,
+) bool {
+    if (!protocolV0FillPatch(frame)) return false;
+    if (surface.host_surface_id == 0) return false;
+    if (surface.width != frame.render_px.width) return false;
+    if (surface.height != frame.render_px.height) return false;
+
+    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(surface.host_surface_id));
+    defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
+    gl_c.glPixelStorei(gl_c.GL_UNPACK_ALIGNMENT, 1);
+    gl_c.glPixelStorei(gl_c.GL_UNPACK_ROW_LENGTH, 0);
+
+    const commands = spanSlice(
+        render_c.HowlRenderV0Command,
+        frame.commands.ptr,
+        frame.commands.count,
+    );
+    for (commands) |command| {
+        if (!uploadFillCommand(command)) return false;
+    }
+    return true;
+}
+
 pub fn uploadProtocolV0Sprites(
     textures: *ProtocolV0Textures,
     surface: render_c.HowlRenderHostSurface,
@@ -1747,6 +1806,24 @@ pub fn protocolV0FillOnly(frame: *const render_c.HowlRenderV0Frame) bool {
         if (index == 0 and protocolV0FullClear(frame, command)) return true;
     }
     return protocolV0FillCoverage(frame, commands);
+}
+
+pub fn protocolV0FillPatch(frame: *const render_c.HowlRenderV0Frame) bool {
+    if (frame.creates.count != 0) return false;
+    if (frame.uploads.count != 0) return false;
+    if (frame.retires.count != 0) return false;
+    if (frame.commands.count == 0) return false;
+    const commands = spanSlice(
+        render_c.HowlRenderV0Command,
+        frame.commands.ptr,
+        frame.commands.count,
+    );
+    for (commands) |command| {
+        if (command.kind != render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT) return false;
+        if (!protocolV0FillCommand(command)) return false;
+        if (!rectFitsResource(command.rect, frame.render_px.width, frame.render_px.height)) return false;
+    }
+    return true;
 }
 
 fn protocolV0FillCoverage(

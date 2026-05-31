@@ -101,6 +101,9 @@ pub const Context = struct {
         v0_unsupported_glyph_command_count: u64 = 0,
         v0_unsupported_other_command_count: u64 = 0,
         v0_full_rgba_fallback_count: u64 = 0,
+        v0_fill_patch_frame_count: u64 = 0,
+        v0_fill_patch_present_count: u64 = 0,
+        v0_fill_patch_fallback_count: u64 = 0,
         v0_fill_only_frame_count: u64 = 0,
         v0_fill_only_present_count: u64 = 0,
         v0_fill_only_fallback_count: u64 = 0,
@@ -618,6 +621,9 @@ pub const Context = struct {
             const full_rgba_start_ns = InputWindow.nowNs();
             self.protocol_v0_submit_diagnostics.full_rgba_gl_before =
                 term_texture.sampleGlState();
+            const had_matching_surface = self.term_texture.host_surface_id != 0 and
+                self.term_texture.width == prepared_upload.info.render_px.width and
+                self.term_texture.height == prepared_upload.info.render_px.height;
             if (!term_texture.ensureSurface(
                 &self.term_texture,
                 prepared_upload.info.render_px.width,
@@ -629,7 +635,7 @@ pub const Context = struct {
                 return false;
             }
             const v0_uploaded = if (prepared_upload.protocol_v0_frame) |frame| blk: {
-                break :blk uploadProtocolV0Commands(self, frame);
+                break :blk uploadProtocolV0Commands(self, frame, had_matching_surface);
             } else blk: {
                 self.protocol_v0_submit_diagnostics.v0_no_sidecar_count +|= 1;
                 break :blk false;
@@ -656,6 +662,7 @@ pub const Context = struct {
         fn uploadProtocolV0Commands(
             self: *Context,
             frame: *const render_c.HowlRenderV0Frame,
+            had_matching_surface: bool,
         ) bool {
             if (term_texture.protocolV0SpriteFrame(frame)) {
                 self.protocol_v0_submit_diagnostics.v0_sprite_frame_count +|= 1;
@@ -676,6 +683,17 @@ pub const Context = struct {
                 return false;
             }
             if (!term_texture.protocolV0FillOnly(frame)) {
+                if (term_texture.protocolV0FillPatch(frame)) {
+                    self.protocol_v0_submit_diagnostics.v0_fill_patch_frame_count +|= 1;
+                    if (had_matching_surface and
+                        term_texture.uploadProtocolV0FillPatch(self.term_texture, frame))
+                    {
+                        self.protocol_v0_submit_diagnostics.v0_fill_patch_present_count +|= 1;
+                        return true;
+                    }
+                    self.protocol_v0_submit_diagnostics.v0_fill_patch_fallback_count +|= 1;
+                    return false;
+                }
                 recordUnsupportedProtocolV0Shape(self, frame);
                 return false;
             }
@@ -870,7 +888,7 @@ pub const Context = struct {
         const submit_diag = self.protocol_v0_submit_diagnostics;
         const texture_diag = self.protocol_v0_textures.diagnostics;
         if (submit_diag.submit_count == 0) return;
-        const should_log = submit_diag.submit_count == 1 or submit_diag.submit_count % 120 == 0 or
+        const should_log = submit_diag.submit_count == 1 or submit_diag.submit_count % 10 == 0 or
             self.shouldLogProtocolV0Failure();
         if (!should_log) return;
         self.printProtocolV0FrameDiagnostics(submit_diag, texture_diag);
@@ -946,7 +964,8 @@ pub const Context = struct {
             "howl-debug v0 shape unsupported no_full_clear={} clear={} fill={} " ++
                 "sprite={} glyph={} other={} fill_only_frame={} fill_only_present={} " ++
                 "fill_only_fallback={} sprite_frame={} sprite_present={} sprite_fallback={} " ++
-                "glyph_frame={} glyph_present={} glyph_fallback={}\n",
+                "glyph_frame={} glyph_present={} glyph_fallback={} " ++
+                "fill_patch_frame={} fill_patch_present={} fill_patch_fallback={}\n",
             .{
                 submit_diag.v0_unsupported_no_full_clear_count,
                 submit_diag.v0_unsupported_clear_command_count,
@@ -963,6 +982,9 @@ pub const Context = struct {
                 submit_diag.v0_glyph_frame_count,
                 submit_diag.v0_glyph_present_count,
                 submit_diag.v0_glyph_fallback_count,
+                submit_diag.v0_fill_patch_frame_count,
+                submit_diag.v0_fill_patch_present_count,
+                submit_diag.v0_fill_patch_fallback_count,
             },
         );
     }
