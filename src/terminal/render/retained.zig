@@ -46,10 +46,41 @@ pub const SurfaceLayout = struct {
 pub const PreparedUpload = struct {
     info: c.HowlRenderPreparedSurfaceInfo,
     buffer: c.HowlRenderPreparedSurfaceBuffer,
+    protocol_v0_probe: PreparedProtocolV0Probe,
 
     pub fn deinit(self: *PreparedUpload) void {
         self.* = undefined;
     }
+};
+
+pub const PreparedProtocolV0Probe = struct {
+    status: PreparedProtocolV0ProbeStatus = .idle,
+    valid: bool = false,
+    frame_seq: u64 = 0,
+    damage_count: u32 = 0,
+    create_count: u32 = 0,
+    upload_count: u32 = 0,
+    command_count: u32 = 0,
+    retire_count: u32 = 0,
+    upload_bytes_count: u32 = 0,
+};
+
+pub const PreparedProtocolV0ProbeStatus = enum(u8) {
+    idle,
+    ok,
+    call_failed,
+    null_frame,
+    version_mismatch,
+    render_mismatch,
+    cell_mismatch,
+    grid_mismatch,
+    damage_span_invalid,
+    create_span_invalid,
+    upload_span_invalid,
+    command_span_invalid,
+    retire_span_invalid,
+    upload_bytes_overflow,
+    upload_bytes_max_mismatch,
 };
 
 pub const State = struct {
@@ -58,6 +89,8 @@ pub const State = struct {
     text_session: c.HowlRenderTextSessionHandle,
     prepared_surface: c.HowlRenderPreparedSurfaceHandle = null,
     present_in_flight: ?PresentInFlight = null,
+    last_protocol_v0_probe: PreparedProtocolV0Probe = .{},
+    protocol_v0_probe_failure_count: u64 = 0,
 
     pub fn init(
         text_session: c.HowlRenderTextSessionHandle,
@@ -223,14 +256,36 @@ pub const State = struct {
         return c.howl_render_prepared_surface_buffer(prepared, buffer_out) == c.HOWL_RENDER_CALL_OK;
     }
 
-    pub fn preparedUpload(self: *const State, upload_out: *PreparedUpload) bool {
+    pub fn preparedUpload(self: *State, upload_out: *PreparedUpload) bool {
         upload_out.* = .{
             .info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo),
             .buffer = std.mem.zeroes(c.HowlRenderPreparedSurfaceBuffer),
+            .protocol_v0_probe = .{},
         };
         if (!self.preparedInfo(&upload_out.info)) return false;
         if (!self.preparedBuffer(&upload_out.buffer)) return false;
+        upload_out.protocol_v0_probe = self.probePreparedProtocolV0(upload_out.info);
         return true;
+    }
+
+    fn probePreparedProtocolV0(
+        self: *State,
+        info: c.HowlRenderPreparedSurfaceInfo,
+    ) PreparedProtocolV0Probe {
+        const prepared = self.prepared_surface orelse {
+            self.recordPreparedProtocolV0Probe(.{ .status = .call_failed });
+            return self.last_protocol_v0_probe;
+        };
+        var frame: ?*const c.HowlRenderV0Frame = null;
+        const status = c.howl_render_prepared_surface_protocol_v0(prepared, &frame);
+        const probe = validatePreparedProtocolV0Probe(info, status, frame);
+        self.recordPreparedProtocolV0Probe(probe);
+        return probe;
+    }
+
+    fn recordPreparedProtocolV0Probe(self: *State, probe: PreparedProtocolV0Probe) void {
+        self.last_protocol_v0_probe = probe;
+        if (!probe.valid) self.protocol_v0_probe_failure_count +|= 1;
     }
 
     fn prepareReady(self: *State, request: c.HowlRenderPrepareRequest) PrepareResult {
@@ -290,6 +345,80 @@ fn surfaceLayoutChanged(current: SurfaceLayout, next: SurfaceLayout) bool {
         current.cell_px.height != next.cell_px.height;
 }
 
+fn validatePreparedProtocolV0Probe(
+    info: c.HowlRenderPreparedSurfaceInfo,
+    status: c_int,
+    frame_optional: ?*const c.HowlRenderV0Frame,
+) PreparedProtocolV0Probe {
+    if (status != c.HOWL_RENDER_CALL_OK) return .{ .status = .call_failed };
+    const frame = frame_optional orelse return .{ .status = .null_frame };
+    if (frame.protocol_version != c.HOWL_RENDER_PROTOCOL_V0_VERSION) {
+        return .{ .status = .version_mismatch };
+    }
+    if (!pixelSizeEqual(frame.render_px, info.render_px)) return .{ .status = .render_mismatch };
+    if (!cellSizeEqual(frame.cell_px, info.cell_px)) return .{ .status = .cell_mismatch };
+    if (!gridSizeEqual(frame.grid, info.grid)) return .{ .status = .grid_mismatch };
+    if (!spanCountValid(
+        frame.damage.count,
+        frame.damage.count_max,
+        c.HOWL_RENDER_V0_DAMAGE_ITEMS_MAX,
+    )) return .{ .status = .damage_span_invalid };
+    if (!spanCountValid(
+        frame.creates.count,
+        frame.creates.count_max,
+        c.HOWL_RENDER_V0_CREATES_MAX,
+    )) return .{ .status = .create_span_invalid };
+    if (!spanCountValid(
+        frame.uploads.count,
+        frame.uploads.count_max,
+        c.HOWL_RENDER_V0_UPLOADS_MAX,
+    )) return .{ .status = .upload_span_invalid };
+    if (!spanCountValid(
+        frame.commands.count,
+        frame.commands.count_max,
+        c.HOWL_RENDER_V0_COMMANDS_MAX,
+    )) return .{ .status = .command_span_invalid };
+    if (!spanCountValid(
+        frame.retires.count,
+        frame.retires.count_max,
+        c.HOWL_RENDER_V0_RETIRES_MAX,
+    )) return .{ .status = .retire_span_invalid };
+    if (frame.uploads.bytes_count_total > c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
+        return .{ .status = .upload_bytes_overflow };
+    }
+    if (frame.uploads.bytes_count_max != c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
+        return .{ .status = .upload_bytes_max_mismatch };
+    }
+    return .{
+        .status = .ok,
+        .valid = true,
+        .frame_seq = frame.token.frame_seq,
+        .damage_count = frame.damage.count,
+        .create_count = frame.creates.count,
+        .upload_count = frame.uploads.count,
+        .command_count = frame.commands.count,
+        .retire_count = frame.retires.count,
+        .upload_bytes_count = frame.uploads.bytes_count_total,
+    };
+}
+
+fn pixelSizeEqual(a: c.HowlRenderPixelSize, b: c.HowlRenderPixelSize) bool {
+    return a.width == b.width and a.height == b.height;
+}
+
+fn cellSizeEqual(a: c.HowlRenderCellSize, b: c.HowlRenderCellSize) bool {
+    return a.width == b.width and a.height == b.height;
+}
+
+fn gridSizeEqual(a: c.HowlRenderGridSize, b: c.HowlRenderGridSize) bool {
+    return a.cols == b.cols and a.rows == b.rows;
+}
+
+fn spanCountValid(count: u32, count_max: u32, expected_max: u32) bool {
+    if (count_max != expected_max) return false;
+    return count <= count_max;
+}
+
 fn testSurfaceLayout() SurfaceLayout {
     return .{
         .render_px = .{ .width = 100, .height = 80 },
@@ -298,6 +427,85 @@ fn testSurfaceLayout() SurfaceLayout {
         .rows = 5,
         .cell_px = .{ .width = 9, .height = 14 },
     };
+}
+
+fn testPreparedInfo() c.HowlRenderPreparedSurfaceInfo {
+    return .{
+        .status = c.HOWL_RENDER_CALL_OK,
+        .snapshot_seq = 1,
+        .dirty_epoch = 2,
+        .geometry_epoch = 3,
+        .required_base_seq = 4,
+        .render_px = .{ .width = 100, .height = 80 },
+        .cell_px = .{ .width = 10, .height = 16 },
+        .grid = .{ .cols = 10, .rows = 5 },
+        .prepare_metrics = std.mem.zeroes(c.HowlRenderMetrics),
+        .damage_kind = c.HOWL_RENDER_DAMAGE_FULL,
+        .reserved0 = 0,
+        .reserved1 = 0,
+    };
+}
+
+fn testProtocolV0Frame(info: c.HowlRenderPreparedSurfaceInfo) c.HowlRenderV0Frame {
+    return .{
+        .protocol_version = c.HOWL_RENDER_PROTOCOL_V0_VERSION,
+        .reserved0 = 0,
+        .token = .{
+            .snapshot_seq = info.snapshot_seq,
+            .frame_seq = 1,
+            .geometry_epoch = info.geometry_epoch,
+            .resource_epoch = 1,
+        },
+        .render_px = info.render_px,
+        .cell_px = info.cell_px,
+        .grid = info.grid,
+        .damage = .{
+            .ptr = null,
+            .count = 0,
+            .count_max = c.HOWL_RENDER_V0_DAMAGE_ITEMS_MAX,
+        },
+        .creates = .{
+            .ptr = null,
+            .count = 0,
+            .count_max = c.HOWL_RENDER_V0_CREATES_MAX,
+        },
+        .uploads = .{
+            .ptr = null,
+            .count = 0,
+            .count_max = c.HOWL_RENDER_V0_UPLOADS_MAX,
+            .bytes_count_total = 0,
+            .bytes_count_max = c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX,
+        },
+        .commands = .{
+            .ptr = null,
+            .count = 0,
+            .count_max = c.HOWL_RENDER_V0_COMMANDS_MAX,
+        },
+        .retires = .{
+            .ptr = null,
+            .count = 0,
+            .count_max = c.HOWL_RENDER_V0_RETIRES_MAX,
+        },
+    };
+}
+
+fn expectInvalidProtocolV0Probe(
+    info: c.HowlRenderPreparedSurfaceInfo,
+    status: c_int,
+    frame: ?*const c.HowlRenderV0Frame,
+    expected: PreparedProtocolV0ProbeStatus,
+) !void {
+    const probe = validatePreparedProtocolV0Probe(info, status, frame);
+    try std.testing.expect(!probe.valid);
+    try std.testing.expectEqual(expected, probe.status);
+}
+
+fn expectInvalidProtocolV0Frame(
+    info: c.HowlRenderPreparedSurfaceInfo,
+    frame: *const c.HowlRenderV0Frame,
+    expected: PreparedProtocolV0ProbeStatus,
+) !void {
+    try expectInvalidProtocolV0Probe(info, c.HOWL_RENDER_CALL_OK, frame, expected);
 }
 
 fn assertPreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) void {
@@ -384,6 +592,140 @@ test "submit is allowed after matching complete present clears pending state" {
 
     try std.testing.expectEqual(@as(?u64, 13), state.completePresent(130));
     try std.testing.expect(!state.presentPending());
+}
+
+test "host retained render probes prepared protocol v0 frame" {
+    const info = testPreparedInfo();
+    var frame = testProtocolV0Frame(info);
+    frame.token.frame_seq = 37;
+    frame.damage.count = 1;
+    frame.creates.count = 2;
+    frame.uploads.count = 3;
+    frame.uploads.bytes_count_total = 144;
+    frame.commands.count = 4;
+    frame.retires.count = 5;
+
+    const probe = validatePreparedProtocolV0Probe(info, c.HOWL_RENDER_CALL_OK, &frame);
+
+    try std.testing.expect(probe.valid);
+    try std.testing.expectEqual(PreparedProtocolV0ProbeStatus.ok, probe.status);
+    try std.testing.expectEqual(@as(u64, 37), probe.frame_seq);
+    try std.testing.expectEqual(@as(u32, 1), probe.damage_count);
+    try std.testing.expectEqual(@as(u32, 2), probe.create_count);
+    try std.testing.expectEqual(@as(u32, 3), probe.upload_count);
+    try std.testing.expectEqual(@as(u32, 4), probe.command_count);
+    try std.testing.expectEqual(@as(u32, 5), probe.retire_count);
+    try std.testing.expectEqual(@as(u32, 144), probe.upload_bytes_count);
+}
+
+test "host retained render rejects protocol v0 call and dimension invariants" {
+    const info = testPreparedInfo();
+
+    try expectInvalidProtocolV0Probe(
+        info,
+        c.HOWL_RENDER_CALL_FAILED,
+        null,
+        .call_failed,
+    );
+
+    try expectInvalidProtocolV0Probe(
+        info,
+        c.HOWL_RENDER_CALL_OK,
+        null,
+        .null_frame,
+    );
+
+    var bad_version = testProtocolV0Frame(info);
+    bad_version.protocol_version = c.HOWL_RENDER_PROTOCOL_V0_VERSION + 1;
+    try expectInvalidProtocolV0Frame(info, &bad_version, .version_mismatch);
+
+    var bad_render_size = testProtocolV0Frame(info);
+    bad_render_size.render_px.width += 1;
+    try expectInvalidProtocolV0Frame(info, &bad_render_size, .render_mismatch);
+
+    var bad_cell_size = testProtocolV0Frame(info);
+    bad_cell_size.cell_px.width += 1;
+    try expectInvalidProtocolV0Frame(info, &bad_cell_size, .cell_mismatch);
+
+    var bad_grid_size = testProtocolV0Frame(info);
+    bad_grid_size.grid.cols += 1;
+    try expectInvalidProtocolV0Frame(info, &bad_grid_size, .grid_mismatch);
+}
+
+test "host retained render rejects protocol v0 span count and max invariants" {
+    const info = testPreparedInfo();
+
+    var bad_damage_count = testProtocolV0Frame(info);
+    bad_damage_count.damage.count = c.HOWL_RENDER_V0_DAMAGE_ITEMS_MAX + 1;
+    try expectInvalidProtocolV0Frame(info, &bad_damage_count, .damage_span_invalid);
+
+    var bad_damage_max = testProtocolV0Frame(info);
+    bad_damage_max.damage.count_max -= 1;
+    try expectInvalidProtocolV0Frame(info, &bad_damage_max, .damage_span_invalid);
+
+    var bad_create_count = testProtocolV0Frame(info);
+    bad_create_count.creates.count = c.HOWL_RENDER_V0_CREATES_MAX + 1;
+    try expectInvalidProtocolV0Frame(info, &bad_create_count, .create_span_invalid);
+
+    var bad_create_max = testProtocolV0Frame(info);
+    bad_create_max.creates.count_max -= 1;
+    try expectInvalidProtocolV0Frame(info, &bad_create_max, .create_span_invalid);
+
+    var bad_upload_count = testProtocolV0Frame(info);
+    bad_upload_count.uploads.count = c.HOWL_RENDER_V0_UPLOADS_MAX + 1;
+    try expectInvalidProtocolV0Frame(info, &bad_upload_count, .upload_span_invalid);
+
+    var bad_upload_max = testProtocolV0Frame(info);
+    bad_upload_max.uploads.count_max -= 1;
+    try expectInvalidProtocolV0Frame(info, &bad_upload_max, .upload_span_invalid);
+
+    var bad_command_count = testProtocolV0Frame(info);
+    bad_command_count.commands.count = c.HOWL_RENDER_V0_COMMANDS_MAX + 1;
+    try expectInvalidProtocolV0Frame(info, &bad_command_count, .command_span_invalid);
+
+    var bad_command_max = testProtocolV0Frame(info);
+    bad_command_max.commands.count_max -= 1;
+    try expectInvalidProtocolV0Frame(info, &bad_command_max, .command_span_invalid);
+
+    var bad_retire_count = testProtocolV0Frame(info);
+    bad_retire_count.retires.count = c.HOWL_RENDER_V0_RETIRES_MAX + 1;
+    try expectInvalidProtocolV0Frame(info, &bad_retire_count, .retire_span_invalid);
+
+    var bad_retire_max = testProtocolV0Frame(info);
+    bad_retire_max.retires.count_max -= 1;
+    try expectInvalidProtocolV0Frame(info, &bad_retire_max, .retire_span_invalid);
+}
+
+test "host retained render rejects protocol v0 upload byte invariants" {
+    const info = testPreparedInfo();
+
+    var bad_upload_bytes = testProtocolV0Frame(info);
+    bad_upload_bytes.uploads.bytes_count_total = c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX + 1;
+    try expectInvalidProtocolV0Frame(info, &bad_upload_bytes, .upload_bytes_overflow);
+
+    var bad_upload_bytes_max = testProtocolV0Frame(info);
+    bad_upload_bytes_max.uploads.bytes_count_max -= 1;
+    try expectInvalidProtocolV0Frame(
+        info,
+        &bad_upload_bytes_max,
+        .upload_bytes_max_mismatch,
+    );
+}
+
+test "host retained render records protocol v0 probe failures on owner" {
+    var state = State.init(null, testSurfaceLayout());
+    try std.testing.expectEqual(@as(u64, 0), state.protocol_v0_probe_failure_count);
+
+    state.recordPreparedProtocolV0Probe(.{ .status = .null_frame });
+    try std.testing.expectEqual(@as(u64, 1), state.protocol_v0_probe_failure_count);
+    try std.testing.expectEqual(
+        PreparedProtocolV0ProbeStatus.null_frame,
+        state.last_protocol_v0_probe.status,
+    );
+
+    state.recordPreparedProtocolV0Probe(.{ .status = .ok, .valid = true });
+    try std.testing.expectEqual(@as(u64, 1), state.protocol_v0_probe_failure_count);
+    try std.testing.expect(state.last_protocol_v0_probe.valid);
 }
 
 test "present submit stores snapshot and token" {
