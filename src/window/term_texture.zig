@@ -1330,6 +1330,50 @@ test "protocol v0 sprite frame accepts clear fill and sprite commands" {
     try std.testing.expect(protocolV0SpriteFrame(&frame));
 }
 
+test "protocol v0 sprite patch accepts bounded sprite commands without clear" {
+    var commands = [_]render_c.HowlRenderV0Command{.{
+        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = testRect(1, 1),
+        .color_rgba = 0xffffffff,
+        .resource = testResource(15, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var frame = testFrame();
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(protocolV0SpritePatch(&frame));
+}
+
+test "protocol v0 sprite patch rejects glyph commands" {
+    var glyph = render_c.HowlRenderV0GlyphRef{
+        .atlas_resource = testResource(16, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA),
+        .atlas_rect = testRect(1, 1),
+        .x_px = 0,
+        .y_px = 0,
+        .glyph_id = 1,
+        .color_rgba = 0xffffffff,
+    };
+    var commands = [_]render_c.HowlRenderV0Command{.{
+        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+        .color_rgba = 0,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{
+            .ptr = &glyph,
+            .count = 1,
+            .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+        },
+    }};
+    var frame = testFrame();
+    frame.commands = commandSpan(&commands);
+
+    try std.testing.expect(!protocolV0SpritePatch(&frame));
+}
+
 test "protocol v0 sprite frame rejects glyph commands" {
     var glyph = render_c.HowlRenderV0GlyphRef{
         .atlas_resource = testResource(11, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA),
@@ -1724,6 +1768,15 @@ pub fn uploadProtocolV0Sprites(
     return uploadProtocolV0Commands(textures, surface, frame);
 }
 
+pub fn uploadProtocolV0SpritePatch(
+    textures: *ProtocolV0Textures,
+    surface: render_c.HowlRenderHostSurface,
+    frame: *const render_c.HowlRenderV0Frame,
+) bool {
+    if (!protocolV0SpritePatch(frame)) return false;
+    return uploadProtocolV0Commands(textures, surface, frame);
+}
+
 pub fn uploadProtocolV0Glyphs(
     textures: *ProtocolV0Textures,
     surface: render_c.HowlRenderHostSurface,
@@ -1887,6 +1940,30 @@ pub fn protocolV0SpriteFrame(frame: *const render_c.HowlRenderV0Frame) bool {
             => if (!protocolV0FillCommand(command)) return false,
             render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
                 if (!protocolV0SpriteCommand(command)) return false;
+                sprite_count += 1;
+            },
+            else => return false,
+        }
+    }
+    return sprite_count > 0;
+}
+
+pub fn protocolV0SpritePatch(frame: *const render_c.HowlRenderV0Frame) bool {
+    if (frame.commands.count == 0) return false;
+    const commands = spanSlice(
+        render_c.HowlRenderV0Command,
+        frame.commands.ptr,
+        frame.commands.count,
+    );
+    var sprite_count: u32 = 0;
+    for (commands) |command| {
+        switch (command.kind) {
+            render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            => if (!protocolV0FillCommand(command)) return false,
+            render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
+                if (!protocolV0SpriteCommand(command)) return false;
+                if (!rectFitsResource(command.rect, frame.render_px.width, frame.render_px.height)) return false;
                 sprite_count += 1;
             },
             else => return false,

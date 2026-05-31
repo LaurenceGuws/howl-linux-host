@@ -110,6 +110,9 @@ pub const Context = struct {
         v0_sprite_frame_count: u64 = 0,
         v0_sprite_present_count: u64 = 0,
         v0_sprite_fallback_count: u64 = 0,
+        v0_sprite_patch_frame_count: u64 = 0,
+        v0_sprite_patch_present_count: u64 = 0,
+        v0_sprite_patch_fallback_count: u64 = 0,
         v0_glyph_frame_count: u64 = 0,
         v0_glyph_present_count: u64 = 0,
         v0_glyph_fallback_count: u64 = 0,
@@ -673,6 +676,17 @@ pub const Context = struct {
                 self.protocol_v0_submit_diagnostics.v0_sprite_fallback_count +|= 1;
                 return false;
             }
+            if (term_texture.protocolV0SpritePatch(frame)) {
+                self.protocol_v0_submit_diagnostics.v0_sprite_patch_frame_count +|= 1;
+                if (had_matching_surface and
+                    term_texture.uploadProtocolV0SpritePatch(&self.protocol_v0_textures, self.term_texture, frame))
+                {
+                    self.protocol_v0_submit_diagnostics.v0_sprite_patch_present_count +|= 1;
+                    return true;
+                }
+                self.protocol_v0_submit_diagnostics.v0_sprite_patch_fallback_count +|= 1;
+                return false;
+            }
             if (term_texture.protocolV0GlyphFrame(frame)) {
                 self.protocol_v0_submit_diagnostics.v0_glyph_frame_count +|= 1;
                 if (term_texture.uploadProtocolV0Glyphs(&self.protocol_v0_textures, self.term_texture, frame)) {
@@ -964,6 +978,7 @@ pub const Context = struct {
             "howl-debug v0 shape unsupported no_full_clear={} clear={} fill={} " ++
                 "sprite={} glyph={} other={} fill_only_frame={} fill_only_present={} " ++
                 "fill_only_fallback={} sprite_frame={} sprite_present={} sprite_fallback={} " ++
+                "sprite_patch_frame={} sprite_patch_present={} sprite_patch_fallback={} " ++
                 "glyph_frame={} glyph_present={} glyph_fallback={} " ++
                 "fill_patch_frame={} fill_patch_present={} fill_patch_fallback={}\n",
             .{
@@ -979,6 +994,9 @@ pub const Context = struct {
                 submit_diag.v0_sprite_frame_count,
                 submit_diag.v0_sprite_present_count,
                 submit_diag.v0_sprite_fallback_count,
+                submit_diag.v0_sprite_patch_frame_count,
+                submit_diag.v0_sprite_patch_present_count,
+                submit_diag.v0_sprite_patch_fallback_count,
                 submit_diag.v0_glyph_frame_count,
                 submit_diag.v0_glyph_present_count,
                 submit_diag.v0_glyph_fallback_count,
