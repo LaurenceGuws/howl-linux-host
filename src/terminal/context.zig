@@ -613,7 +613,7 @@ pub const Context = struct {
             }
             if (term_texture.renderSurfaceSpritePatch(render_surface)) {
                 temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .sprite_patch, .surface);
-                if (had_matching_surface and
+                if (renderSurfaceUploadAllowed(render_surface, had_matching_surface) and
                     term_texture.uploadRenderSurfaceSpritePatch(&self.render_surface_textures, self.term_texture, render_surface))
                 {
                     temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .sprite_patch, .present);
@@ -633,7 +633,7 @@ pub const Context = struct {
             }
             if (term_texture.renderSurfaceGlyphPatch(render_surface)) {
                 temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .glyph_patch, .surface);
-                if (had_matching_surface and
+                if (renderSurfaceUploadAllowed(render_surface, had_matching_surface) and
                     term_texture.uploadRenderSurfaceGlyphPatch(&self.render_surface_textures, self.term_texture, render_surface))
                 {
                     temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .glyph_patch, .present);
@@ -645,7 +645,9 @@ pub const Context = struct {
             if (!term_texture.renderSurfaceFillOnly(render_surface)) {
                 if (term_texture.renderSurfaceFillPatch(render_surface)) {
                     temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .fill_patch, .surface);
-                    if (term_texture.uploadRenderSurfaceFillPatch(self.term_texture, render_surface)) {
+                    if (renderSurfaceUploadAllowed(render_surface, had_matching_surface) and
+                        term_texture.uploadRenderSurfaceFillPatch(self.term_texture, render_surface))
+                    {
                         temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .fill_patch, .present);
                         return true;
                     }
@@ -660,6 +662,16 @@ pub const Context = struct {
                 return true;
             }
             temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .fill_only, .failure);
+            return false;
+        }
+
+        fn renderSurfaceUploadAllowed(render_surface: *const render_c.HowlRenderSurface, had_matching_surface: bool) bool {
+            if (term_texture.renderSurfaceSprite(render_surface)) return true;
+            if (term_texture.renderSurfaceGlyphs(render_surface)) return true;
+            if (term_texture.renderSurfaceFillOnly(render_surface)) return true;
+            if (term_texture.renderSurfaceSpritePatch(render_surface)) return had_matching_surface;
+            if (term_texture.renderSurfaceGlyphPatch(render_surface)) return had_matching_surface;
+            if (term_texture.renderSurfaceFillPatch(render_surface)) return had_matching_surface;
             return false;
         }
 
@@ -1762,6 +1774,97 @@ fn testRenderSurface(info: render_c.HowlRenderPreparedSurfaceInfo) render_c.Howl
     surface.cell_px = info.cell_px;
     surface.grid = info.grid;
     return surface;
+}
+
+fn testCommandSpan(commands: []const render_c.HowlRenderSurfaceCommand) render_c.HowlRenderSurfaceCommandSpan {
+    return .{
+        .ptr = commands.ptr,
+        .count = @intCast(commands.len),
+        .count_max = render_c.HOWL_RENDER_SURFACE_COMMANDS_MAX,
+    };
+}
+
+fn testRect(width_px: u16, height_px: u16) render_c.HowlRenderSurfaceRect {
+    return .{ .x_px = 0, .y_px = 0, .width_px = width_px, .height_px = height_px };
+}
+
+fn testRenderResource(value: u32, kind: u32) render_c.HowlRenderResourceId {
+    return .{ .value = value, .generation = 1, .kind = kind };
+}
+
+test "render surface upload policy rejects patches without matching host surface" {
+    var info = testPreparedUploadInfo();
+    info.render_px = .{ .width = 4, .height = 2 };
+    info.cell_px = .{ .width = 1, .height = 1 };
+    info.grid = .{ .cols = 4, .rows = 2 };
+
+    var full_commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = testRect(info.render_px.width, info.render_px.height),
+        .color_rgba = 0x000000ff,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var full_surface = testRenderSurface(info);
+    full_surface.commands = testCommandSpan(&full_commands);
+
+    var fill_commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = testRect(1, 1),
+        .color_rgba = 0xffffffff,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var fill_patch_surface = testRenderSurface(info);
+    fill_patch_surface.commands = testCommandSpan(&fill_commands);
+
+    var sprite_commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = testRect(1, 1),
+        .color_rgba = 0xffffffff,
+        .resource = testRenderResource(1, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var sprite_patch_surface = testRenderSurface(info);
+    sprite_patch_surface.commands = testCommandSpan(&sprite_commands);
+
+    var glyph = render_c.HowlRenderGlyphRef{
+        .atlas_resource = testRenderResource(2, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA),
+        .atlas_rect = testRect(1, 1),
+        .x_px = 0,
+        .y_px = 0,
+        .glyph_id = 1,
+        .color_rgba = 0xffffffff,
+    };
+    var glyph_commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+        .color_rgba = 0,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{
+            .ptr = &glyph,
+            .count = 1,
+            .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
+        },
+    }};
+    var glyph_patch_surface = testRenderSurface(info);
+    glyph_patch_surface.commands = testCommandSpan(&glyph_commands);
+
+    try std.testing.expect(Context.ContextSubmitBackend.renderSurfaceUploadAllowed(&full_surface, false));
+    try std.testing.expect(!Context.ContextSubmitBackend.renderSurfaceUploadAllowed(&fill_patch_surface, false));
+    try std.testing.expect(!Context.ContextSubmitBackend.renderSurfaceUploadAllowed(&sprite_patch_surface, false));
+    try std.testing.expect(!Context.ContextSubmitBackend.renderSurfaceUploadAllowed(&glyph_patch_surface, false));
+    try std.testing.expect(Context.ContextSubmitBackend.renderSurfaceUploadAllowed(&fill_patch_surface, true));
+    try std.testing.expect(Context.ContextSubmitBackend.renderSurfaceUploadAllowed(&sprite_patch_surface, true));
+    try std.testing.expect(Context.ContextSubmitBackend.renderSurfaceUploadAllowed(&glyph_patch_surface, true));
 }
 
 const TestSubmitTerm = struct {
