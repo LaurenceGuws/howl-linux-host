@@ -1,5 +1,5 @@
 const std = @import("std");
-const InputWindow = @import("../input/window.zig");
+const InputWake = @import("../input/wake.zig");
 const vt_retained = @import("vt/retained.zig");
 const window = @import("../window/window.zig");
 const HostInput = @import("../input/input.zig").Input;
@@ -57,7 +57,7 @@ pub fn layout(self: anytype, texture_rect: window.Rect) window.ScrollbarLayout {
         self.geometry.logical_w,
         self.geometry.logical_h,
         self.window_focused,
-        InputWindow.nowNs(),
+        InputWake.nowNs(),
     );
 }
 

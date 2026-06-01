@@ -1,7 +1,7 @@
 const std = @import("std");
 const keys = @import("keys.zig");
 const mouse = @import("mouse.zig");
-const window = @import("window.zig");
+const wake = @import("wake.zig");
 const sdl_c = @import("sdl_c");
 
 const c = sdl_c;
@@ -61,7 +61,7 @@ fn FixedRing(comptime T: type, comptime capacity: comptime_int) type {
 }
 
 pub const Input = struct {
-    pub const Signal = window.EventSignal;
+    pub const Signal = wake.EventSignal;
     pub const Keys = keys;
     pub const Mouse = mouse;
     pub const Bindings = keys.Bindings;
@@ -102,7 +102,7 @@ pub const Input = struct {
     current_mods: Mod,
     mouse_motion_enabled: bool,
     mouse_button_down: bool,
-    window_state: window.State,
+    window_state: wake.State,
 
     pub fn init(self: *Input) void {
         self.* = .{

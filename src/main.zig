@@ -3,7 +3,7 @@ const assert = std.debug.assert;
 const cli_args = @import("cli/args.zig");
 const Config = @import("config/config.zig");
 const Input = @import("input/input.zig").Input;
-const InputWindow = @import("input/window.zig");
+const InputWake = @import("input/wake.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("tab_bar/slots.zig").Slots;
 const AppPresent = @import("app/present.zig");
@@ -146,8 +146,8 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
     applyChildEnvironmentPolicy();
     try openTab(io, conf, input, feed_record_path, window, tabs, active_tab_idx);
 
-    const duration_timer = InputWindow.startQuitTimer(options.duration_ms);
-    defer InputWindow.stopQuitTimer(duration_timer);
+    const duration_timer = InputWake.startQuitTimer(options.duration_ms);
+    defer InputWake.stopQuitTimer(duration_timer);
 
     var app = App{
         .conf = conf,
@@ -165,7 +165,7 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
             io,
             options.debug_process_accounting,
             options.debug_log_every_ms,
-            InputWindow.nowNs(),
+            InputWake.nowNs(),
         ),
         .loop_turn_count = 0,
     };
@@ -233,7 +233,7 @@ fn runLoopTurn(app: *App) !LoopAction {
     if (quitRequested(app)) |action| return action;
 
     app.frame_pacing.beginTurn();
-    const now_ns = InputWindow.nowNs();
+    const now_ns = InputWake.nowNs();
     const debug_facts = if (app.accounting.enabled)
         collectLoopDebugFacts(app, now_ns)
     else
@@ -257,7 +257,7 @@ fn runLoopTurn(app: *App) !LoopAction {
         app.input.drainRedrawRequested(),
         host_mutations.input_outcome.host_visual_changed,
         terminal_progress,
-        syncActiveBlinkCadence(app, InputWindow.nowNs()),
+        syncActiveBlinkCadence(app, InputWake.nowNs()),
         activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
     );
     app.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
@@ -614,7 +614,7 @@ fn submitPresent(app: *App, frame: RenderFrame, plan: PresentPlan) PresentSubmis
     app.frame_pacing.noteRenderSubmittedAt(.{
         .reason = submission.reason,
         .submitted = submission.submitted,
-    }, InputWindow.nowNs());
+    }, InputWake.nowNs());
     return submission;
 }
 

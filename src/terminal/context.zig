@@ -1,6 +1,6 @@
 const std = @import("std");
 const feed_record = @import("pty/feed_record.zig");
-const InputWindow = @import("../input/window.zig");
+const InputWake = @import("../input/wake.zig");
 const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
 const term_texture = @import("../window/term_texture.zig");
@@ -231,7 +231,7 @@ pub const Context = struct {
 
     pub fn paste(self: *Context, payload: []const u8) void {
         term_input.publishPaste(&self.term, payload) catch return;
-        _ = self.resetCursorBlinkActivity(InputWindow.nowNs());
+        _ = self.resetCursorBlinkActivity(InputWake.nowNs());
     }
 
     pub fn drainTextInputFastPath(self: *Context, input_events: *HostInput) DrainInputOutcome {
@@ -402,7 +402,7 @@ pub const Context = struct {
         if (active and outcome.should_redraw) {
             if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
             _ = vt_surface.publishSource(&self.term, terminal_links.hoverDecoration(self));
-            outcome.should_redraw = self.resetCursorBlinkActivity(InputWindow.nowNs()) or outcome.should_redraw;
+            outcome.should_redraw = self.resetCursorBlinkActivity(InputWake.nowNs()) or outcome.should_redraw;
         }
         self.applyPendingClipboardWrites();
         pty_wait_thread.ackWake(self);
@@ -617,11 +617,11 @@ pub const Context = struct {
             var render_surface_resources_realized = false;
             if (shouldRealizeRenderSurface(prepared_upload)) {
                 const render_surface = prepared_upload.render_surface.?;
-                const render_surface_start_ns = InputWindow.nowNs();
+                const render_surface_start_ns = InputWake.nowNs();
                 render_surface_resources_realized = self.render_surface_textures.realizeSurface(render_surface);
                 self.recordRenderSurfaceRealization(renderUs(render_surface_start_ns));
             }
-            const upload_start_ns = InputWindow.nowNs();
+            const upload_start_ns = InputWake.nowNs();
             self.render_surface_submit_diagnostics.render_surface_emit_status =
                 prepared_upload.diagnostics.render_surface_emit_status;
             self.render_surface_submit_diagnostics.render_surface_resource_plan_status =
@@ -820,7 +820,7 @@ pub const Context = struct {
     };
 
     fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
-        const start_ns = InputWindow.nowNs();
+        const start_ns = InputWake.nowNs();
 
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
@@ -933,7 +933,7 @@ pub const Context = struct {
     }
 
     fn renderUs(start_ns: u64) u64 {
-        const elapsed_ns = InputWindow.nowNs() - start_ns;
+        const elapsed_ns = InputWake.nowNs() - start_ns;
         return elapsed_ns / std.time.ns_per_us;
     }
 
@@ -1556,13 +1556,13 @@ fn handleTextInputFastPathEvent(self: anytype, event: HostInput.Event, comptime 
         .bytes => |bytes| {
             if (Ops.publishTerminalBytes(self, bytes.slice())) {
                 outcome.published_to_pty = true;
-                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWindow.nowNs());
+                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWake.nowNs());
             }
         },
         .key => |key| {
             if (Ops.publishTerminalKey(self, key)) {
                 outcome.published_to_pty = true;
-                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWindow.nowNs());
+                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWake.nowNs());
             }
         },
         .mouse => {},
@@ -1595,7 +1595,7 @@ fn handlePointerAndUiInputEvent(
             if (local_mouse.kind == .wheel) {
                 if (Ops.publishTerminalMouse(self, local_mouse)) {
                     outcome.published_to_pty = true;
-                    outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWindow.nowNs()) or outcome.host_visual_changed;
+                    outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWake.nowNs()) or outcome.host_visual_changed;
                 } else {
                     outcome.host_visual_changed = Ops.handleWheelFallback(self, local_mouse) or outcome.host_visual_changed;
                 }
@@ -1617,7 +1617,7 @@ fn handlePointerAndUiInputEvent(
 
             if (Ops.publishTerminalMouse(self, local_mouse)) {
                 outcome.published_to_pty = true;
-                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWindow.nowNs()) or outcome.host_visual_changed;
+                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWake.nowNs()) or outcome.host_visual_changed;
             }
         },
     }
