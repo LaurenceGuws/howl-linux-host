@@ -181,6 +181,10 @@ pub const RenderResourceStored = struct {
     width_px: u32 = 0,
     height_px: u32 = 0,
     format: u32 = 0,
+    upload_rect: c.HowlRenderSurfaceRect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+    upload_stride_bytes: u32 = 0,
+    upload_last_bytes_count: u32 = 0,
+    uploaded: bool = false,
     upload_count: u32 = 0,
     upload_bytes_count: u64 = 0,
 };
@@ -295,6 +299,10 @@ pub const RenderResourceStore = struct {
         ) orelse return .invalid_upload;
         if (upload_item.bytes_count < bytes_min) return .invalid_upload;
         if (upload_item.bytes_count > c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX) return .invalid_upload;
+        slot.upload_rect = upload_item.rect;
+        slot.upload_stride_bytes = upload_item.stride_bytes;
+        slot.upload_last_bytes_count = upload_item.bytes_count;
+        slot.uploaded = true;
         slot.upload_count +|= 1;
         slot.upload_bytes_count +|= upload_item.bytes_count;
         return .ok;
@@ -345,14 +353,23 @@ pub const RenderResourceStore = struct {
             const shape_status = validateResourceStoreCommandShape(command);
             if (shape_status != .ok) return shape_status;
             if (!resourceIsZero(command.resource)) {
-                const status = self.validateCommandResource(surface, command.resource, command_index);
+                const status = self.validateCommandResource(surface, .{
+                    .resource = command.resource,
+                    .command_index = command_index,
+                    .glyph_rect = null,
+                });
                 if (status != .ok) return status;
             }
             for (spanSlice(c.HowlRenderGlyphRef, command.glyphs.ptr, command.glyphs.count)) |glyph| {
+                const glyph_status = validateResourceStoreGlyph(surface, glyph);
+                if (glyph_status != .ok) return glyph_status;
                 const status = self.validateCommandResource(
                     surface,
-                    glyph.atlas_resource,
-                    command_index,
+                    .{
+                        .resource = glyph.atlas_resource,
+                        .command_index = command_index,
+                        .glyph_rect = glyph.atlas_rect,
+                    },
                 );
                 if (status != .ok) return status;
             }
@@ -360,7 +377,9 @@ pub const RenderResourceStore = struct {
         return .ok;
     }
 
-    fn validateCommandResource(self: *RenderResourceStore, surface: *const Surface, resource: ResourceId, command_index: u32) RenderResourceStoreStatus {
+    fn validateCommandResource(self: *RenderResourceStore, surface: *const Surface, resource_use: CommandResourceUse) RenderResourceStoreStatus {
+        const resource = resource_use.resource;
+        const command_index = resource_use.command_index;
         if (!resourceKindStorable(resource.kind)) return .invalid_resource;
         if (findCreate(surface, resource)) |create_item| {
             if (command_index < create_item.create_seq) return .invalid_resource;
@@ -368,7 +387,14 @@ pub const RenderResourceStore = struct {
             const slot = self.find(resource) orelse return .missing_resource;
             if (slot.state != .live) return .retired_resource;
         }
-        if (findUploadVisible(surface, resource, command_index) == null) {
+        const visible_upload = findUploadVisible(surface, resource, command_index);
+        if (resource_use.glyph_rect) |rect| {
+            if (findGlyphResourceUploadVisible(surface, resource, rect, command_index) == null) {
+                const slot = self.find(resource) orelse return .invalid_upload;
+                if (!slot.uploaded) return .invalid_upload;
+                if (!rectContains(slot.upload_rect, rect)) return .invalid_upload;
+            }
+        } else if (visible_upload == null) {
             const slot = self.find(resource) orelse return .invalid_upload;
             if (slot.upload_count == 0) return .invalid_upload;
         }
@@ -403,9 +429,27 @@ fn validateResourceStoreCommandShape(command: Command) RenderResourceStoreStatus
                 if (command.color_rgba != 0) return .invalid_resource;
             }
         },
-        c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => return .invalid_resource,
+        c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
+            if (command.rect.x_px != 0) return .invalid_resource;
+            if (command.rect.y_px != 0) return .invalid_resource;
+            if (command.rect.width_px != 0) return .invalid_resource;
+            if (command.rect.height_px != 0) return .invalid_resource;
+            if (command.color_rgba != 0) return .invalid_resource;
+            if (!resourceIsZero(command.resource)) return .invalid_resource;
+            if (command.glyphs.count == 0) return .invalid_resource;
+        },
         else => return .invalid_resource,
     }
+    return .ok;
+}
+
+fn validateResourceStoreGlyph(surface: *const Surface, glyph: c.HowlRenderGlyphRef) RenderResourceStoreStatus {
+    if (glyph.atlas_resource.kind != c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA) return .invalid_resource;
+    if (glyph.atlas_rect.width_px == 0) return .invalid_resource;
+    if (glyph.atlas_rect.height_px == 0) return .invalid_resource;
+    if (!rectFitsResource(glyph.atlas_rect, glyph_atlas_width_px, glyph_atlas_height_px)) return .invalid_resource;
+    if (!destinationOverlaps(surface.render_px, glyph.x_px, glyph.y_px, glyph.atlas_rect)) return .invalid_resource;
+    if (rgbaAlpha(glyph.color_rgba) == 0) return .invalid_resource;
     return .ok;
 }
 
@@ -906,6 +950,14 @@ const Upload = c.HowlRenderResourceUpload;
 const Command = c.HowlRenderSurfaceCommand;
 const Retire = c.HowlRenderResourceRetire;
 const Surface = c.HowlRenderSurface;
+const glyph_atlas_width_px = 1024;
+const glyph_atlas_height_px = 1024;
+
+const CommandResourceUse = struct {
+    resource: ResourceId,
+    command_index: u32,
+    glyph_rect: ?c.HowlRenderSurfaceRect,
+};
 
 fn validateRenderSurfaceResourcePlan(status: c_int, surface_optional: ?*const c.HowlRenderSurface) PreparedRenderResourcePlan {
     if (status != c.HOWL_RENDER_CALL_OK) return .{ .status = .call_failed };
@@ -986,8 +1038,13 @@ fn validateResourcePlanLifecycle(surface: *const Surface) PreparedRenderResource
 fn validatePlanCreate(surface: *const Surface, create: Create, index: usize) PreparedRenderResourcePlanStatus {
     if (!resourceKindSupported(create.resource.kind)) return .unsupported_resource;
     if (create.create_seq > surface.commands.count) return .invalid_resource;
-    if (create.width_px == 0) return .invalid_resource;
-    if (create.height_px == 0) return .invalid_resource;
+    if (create.resource.kind == c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA) {
+        if (create.width_px != glyph_atlas_width_px) return .invalid_resource;
+        if (create.height_px != glyph_atlas_height_px) return .invalid_resource;
+    } else {
+        if (create.width_px == 0) return .invalid_resource;
+        if (create.height_px == 0) return .invalid_resource;
+    }
     if (create.format != uploadFormatForResource(create.resource.kind)) return .invalid_upload;
     const creates = spanSlice(Create, surface.creates.ptr, surface.creates.count);
     for (creates[index + 1 ..]) |next| {
@@ -1013,12 +1070,17 @@ fn validatePlanUpload(surface: *const Surface, upload: Upload, bytes_sum: *u32) 
     if (!resourceKindSupported(upload.resource.kind)) return .unsupported_resource;
     if (upload.format != uploadFormatForResource(upload.resource.kind)) return .invalid_upload;
     if (upload.upload_seq > surface.commands.count) return .invalid_upload;
-    const create = findCreate(surface, upload.resource) orelse return .invalid_resource;
-    if (upload.upload_seq < create.create_seq) return .invalid_upload;
+    const create = findCreate(surface, upload.resource);
+    if (create) |create_item| {
+        if (upload.upload_seq < create_item.create_seq) return .invalid_upload;
+        if (!rectFitsResource(upload.rect, create_item.width_px, create_item.height_px)) return .invalid_upload;
+    } else {
+        if (upload.resource.kind != c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA) return .invalid_resource;
+        if (!rectFitsResource(upload.rect, glyph_atlas_width_px, glyph_atlas_height_px)) return .invalid_upload;
+    }
     if (retireForResource(surface, upload.resource)) |retire| {
         if (upload.upload_seq >= retire.retire_seq) return .invalid_resource;
     }
-    if (!rectFitsResource(upload.rect, create.width_px, create.height_px)) return .invalid_upload;
     if (upload.bytes_ptr == null) return .invalid_upload;
     const bytes_min = uploadBytesMin(upload.rect, upload.format, upload.stride_bytes) orelse {
         return .invalid_upload;
@@ -1041,7 +1103,7 @@ fn validatePlanCommand(surface: *const Surface, command: Command, index: u32) Pr
         c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
         => return validatePlanFillCommand(command),
         c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => return validatePlanSpriteCommand(surface, command, index),
-        c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => return .unsupported_command,
+        c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => return validatePlanGlyphCommand(surface, command, index),
         else => return .unsupported_command,
     }
 }
@@ -1057,6 +1119,35 @@ fn validatePlanSpriteCommand(surface: *const Surface, command: Command, index: u
     if (!resourceKindSupported(command.resource.kind)) return .unsupported_resource;
     if (!resourceVisibleAtCommand(surface, command.resource, index)) return .invalid_resource;
     _ = findUploadVisible(surface, command.resource, index) orelse return .invalid_upload;
+    return .ok;
+}
+
+fn validatePlanGlyphCommand(surface: *const Surface, command: Command, index: u32) PreparedRenderResourcePlanStatus {
+    if (command.rect.x_px != 0) return .invalid_command;
+    if (command.rect.y_px != 0) return .invalid_command;
+    if (command.rect.width_px != 0) return .invalid_command;
+    if (command.rect.height_px != 0) return .invalid_command;
+    if (command.color_rgba != 0) return .invalid_command;
+    if (!resourceIsZero(command.resource)) return .invalid_resource;
+    if (command.glyphs.count == 0) return .invalid_command;
+    for (spanSlice(c.HowlRenderGlyphRef, command.glyphs.ptr, command.glyphs.count)) |glyph| {
+        const status = validatePlanGlyphRef(surface, glyph, index);
+        if (status != .ok) return status;
+    }
+    return .ok;
+}
+
+fn validatePlanGlyphRef(surface: *const Surface, glyph: c.HowlRenderGlyphRef, index: u32) PreparedRenderResourcePlanStatus {
+    if (glyph.atlas_resource.kind != c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA) return .unsupported_resource;
+    if (glyph.atlas_rect.width_px == 0) return .invalid_command;
+    if (glyph.atlas_rect.height_px == 0) return .invalid_command;
+    if (!rectFitsResource(glyph.atlas_rect, glyph_atlas_width_px, glyph_atlas_height_px)) return .invalid_command;
+    if (!destinationOverlaps(surface.render_px, glyph.x_px, glyph.y_px, glyph.atlas_rect)) return .invalid_command;
+    if (rgbaAlpha(glyph.color_rgba) == 0) return .invalid_command;
+    if (findCreate(surface, glyph.atlas_resource)) |_| {
+        if (!resourceVisibleAtCommand(surface, glyph.atlas_resource, index)) return .invalid_resource;
+        _ = findGlyphUploadVisible(surface, glyph, index) orelse return .invalid_upload;
+    }
     return .ok;
 }
 
@@ -1129,14 +1220,19 @@ fn validateUpload(surface: *const Surface, upload: Upload, bytes_sum: *u32) Prep
     if (!resourceKindSupported(upload.resource.kind)) return .unsupported_resource;
     if (upload.format != uploadFormatForResource(upload.resource.kind)) return .invalid_upload;
     if (upload.upload_seq > surface.commands.count) return .invalid_upload;
-    if (upload.rect.x_px != 0) return .invalid_upload;
-    if (upload.rect.y_px != 0) return .invalid_upload;
-    const create = findCreate(surface, upload.resource) orelse return .invalid_resource;
-    if (upload.upload_seq < create.create_seq) return .invalid_upload;
+    const create = findCreate(surface, upload.resource);
+    if (create) |create_item| {
+        if (upload.upload_seq < create_item.create_seq) return .invalid_upload;
+        if (upload.resource.kind != c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA and upload.rect.x_px != 0) return .invalid_upload;
+        if (upload.resource.kind != c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA and upload.rect.y_px != 0) return .invalid_upload;
+        if (!rectFitsResource(upload.rect, create_item.width_px, create_item.height_px)) return .invalid_upload;
+    } else {
+        if (upload.resource.kind != c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA) return .invalid_resource;
+        if (!rectFitsResource(upload.rect, glyph_atlas_width_px, glyph_atlas_height_px)) return .invalid_upload;
+    }
     if (retireForResource(surface, upload.resource)) |retire| {
         if (upload.upload_seq >= retire.retire_seq) return .invalid_resource;
     }
-    if (!rectFitsResource(upload.rect, create.width_px, create.height_px)) return .invalid_upload;
     if (upload.bytes_ptr == null) return .invalid_upload;
     const bytes_min = uploadBytesMin(upload.rect, upload.format, upload.stride_bytes) orelse {
         return .invalid_upload;
@@ -1160,6 +1256,9 @@ fn validateCommand(surface: *const Surface, command: Command, index: u32) Prepar
         => return validateFillCommand(command),
         c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
             return validateSpriteCommand(surface, command, index);
+        },
+        c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
+            return validateGlyphCommand(surface, command, index);
         },
         else => return .unsupported_command,
     }
@@ -1207,13 +1306,43 @@ fn validateSpriteUploadCoverage(upload: Upload, rect: c.HowlRenderSurfaceRect) P
     return .ok;
 }
 
+fn validateGlyphCommand(surface: *const Surface, command: Command, index: u32) PreparedRenderSurfaceProbeStatus {
+    if (command.rect.x_px != 0) return .invalid_command;
+    if (command.rect.y_px != 0) return .invalid_command;
+    if (command.rect.width_px != 0) return .invalid_command;
+    if (command.rect.height_px != 0) return .invalid_command;
+    if (command.color_rgba != 0) return .invalid_command;
+    if (!resourceIsZero(command.resource)) return .invalid_resource;
+    if (command.glyphs.count == 0) return .invalid_command;
+    for (spanSlice(c.HowlRenderGlyphRef, command.glyphs.ptr, command.glyphs.count)) |glyph| {
+        const status = validateGlyphRef(surface, glyph, index);
+        if (status != .ok) return status;
+    }
+    return .ok;
+}
+
+fn validateGlyphRef(surface: *const Surface, glyph: c.HowlRenderGlyphRef, index: u32) PreparedRenderSurfaceProbeStatus {
+    if (glyph.atlas_resource.kind != c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA) return .unsupported_resource;
+    if (glyph.atlas_rect.width_px == 0) return .invalid_command;
+    if (glyph.atlas_rect.height_px == 0) return .invalid_command;
+    if (!rectFitsResource(glyph.atlas_rect, glyph_atlas_width_px, glyph_atlas_height_px)) return .invalid_command;
+    if (!destinationOverlaps(surface.render_px, glyph.x_px, glyph.y_px, glyph.atlas_rect)) return .invalid_command;
+    if (rgbaAlpha(glyph.color_rgba) == 0) return .invalid_command;
+    if (findCreate(surface, glyph.atlas_resource)) |_| {
+        if (!resourceVisibleAtCommand(surface, glyph.atlas_resource, index)) return .invalid_resource;
+        _ = findGlyphUploadVisible(surface, glyph, index) orelse return .invalid_upload;
+    }
+    return .ok;
+}
+
 fn spanSlice(comptime T: type, ptr: anytype, count: u32) []const T {
     if (count == 0) return &.{};
     return ptr[0..count];
 }
 
 fn resourceKindSupported(kind: u32) bool {
-    return kind == c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA or
+    return kind == c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA or
+        kind == c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA or
         kind == c.HOWL_RENDER_RESOURCE_SPRITE_COLOR;
 }
 
@@ -1225,7 +1354,7 @@ fn resourceKindStorable(kind: u32) bool {
 
 fn uploadFormatForResource(kind: u32) u32 {
     return switch (kind) {
-        c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA => c.HOWL_RENDER_UPLOAD_ALPHA8,
+        c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA, c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA => c.HOWL_RENDER_UPLOAD_ALPHA8,
         c.HOWL_RENDER_RESOURCE_SPRITE_COLOR => c.HOWL_RENDER_UPLOAD_RGBA8,
         else => 0,
     };
@@ -1249,12 +1378,35 @@ fn findCreate(surface: *const Surface, resource: ResourceId) ?Create {
 }
 
 fn findUploadVisible(surface: *const Surface, resource: ResourceId, index: u32) ?Upload {
+    var selected: ?Upload = null;
     for (spanSlice(Upload, surface.uploads.ptr, surface.uploads.count)) |upload| {
         if (!sameResource(upload.resource, resource)) continue;
         if (upload.upload_seq > index) continue;
-        return upload;
+        if (selected) |current| {
+            if (upload.upload_seq < current.upload_seq) continue;
+        }
+        selected = upload;
     }
-    return null;
+    return selected;
+}
+
+fn findGlyphUploadVisible(surface: *const Surface, glyph: c.HowlRenderGlyphRef, index: u32) ?Upload {
+    return findGlyphResourceUploadVisible(surface, glyph.atlas_resource, glyph.atlas_rect, index);
+}
+
+fn findGlyphResourceUploadVisible(surface: *const Surface, resource: ResourceId, rect: c.HowlRenderSurfaceRect, index: u32) ?Upload {
+    var selected: ?Upload = null;
+    for (spanSlice(Upload, surface.uploads.ptr, surface.uploads.count)) |upload| {
+        if (!sameResource(upload.resource, resource)) continue;
+        if (upload.upload_seq > index) continue;
+        if (upload.format != c.HOWL_RENDER_UPLOAD_ALPHA8) continue;
+        if (!rectContains(upload.rect, rect)) continue;
+        if (selected) |current| {
+            if (upload.upload_seq < current.upload_seq) continue;
+        }
+        selected = upload;
+    }
+    return selected;
 }
 
 fn retireForResource(surface: *const Surface, resource: ResourceId) ?Retire {
@@ -1287,6 +1439,40 @@ fn rectFitsResource(rect: c.HowlRenderSurfaceRect, width_px: u32, height_px: u32
     const right = std.math.add(u32, @intCast(rect.x_px), rect.width_px) catch return false;
     const bottom = std.math.add(u32, @intCast(rect.y_px), rect.height_px) catch return false;
     return right <= width_px and bottom <= height_px;
+}
+
+fn rectContains(container: c.HowlRenderSurfaceRect, child: c.HowlRenderSurfaceRect) bool {
+    if (!rectFitsResource(child, glyph_atlas_width_px, glyph_atlas_height_px)) return false;
+    if (container.x_px < 0) return false;
+    if (container.y_px < 0) return false;
+    if (child.x_px < container.x_px) return false;
+    if (child.y_px < container.y_px) return false;
+    const container_right = std.math.add(u32, @intCast(container.x_px), container.width_px) catch return false;
+    const container_bottom = std.math.add(u32, @intCast(container.y_px), container.height_px) catch return false;
+    const child_right = std.math.add(u32, @intCast(child.x_px), child.width_px) catch return false;
+    const child_bottom = std.math.add(u32, @intCast(child.y_px), child.height_px) catch return false;
+    return child_right <= container_right and child_bottom <= container_bottom;
+}
+
+fn destinationOverlaps(render_px: c.HowlRenderPixelSize, x_px: i32, y_px: i32, rect: c.HowlRenderSurfaceRect) bool {
+    var yy: u16 = 0;
+    while (yy < rect.height_px) : (yy += 1) {
+        const dst_y = std.math.add(i32, y_px, yy) catch continue;
+        if (dst_y < 0) continue;
+        if (dst_y >= render_px.height) continue;
+        var xx: u16 = 0;
+        while (xx < rect.width_px) : (xx += 1) {
+            const dst_x = std.math.add(i32, x_px, xx) catch continue;
+            if (dst_x < 0) continue;
+            if (dst_x >= render_px.width) continue;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn rgbaAlpha(color_rgba: u32) u8 {
+    return @intCast(color_rgba & 0xff);
 }
 
 fn uploadBytesMin(rect: c.HowlRenderSurfaceRect, format: u32, stride_bytes: u32) ?u32 {
@@ -1402,6 +1588,14 @@ fn testSpriteAlphaResource(value: u64, generation: u32) ResourceId {
     };
 }
 
+fn testGlyphAlphaResource(value: u64, generation: u32) ResourceId {
+    return .{
+        .value = value,
+        .generation = generation,
+        .kind = c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA,
+    };
+}
+
 fn testResource(value: u64, generation: u32, kind: u32) ResourceId {
     return .{ .value = value, .generation = generation, .kind = kind };
 }
@@ -1456,6 +1650,17 @@ fn glyphCommand(glyphs: []const c.HowlRenderGlyphRef) Command {
     return command;
 }
 
+fn glyphRef(resource: ResourceId, atlas_rect: c.HowlRenderSurfaceRect, x_px: i32, y_px: i32, color_rgba: u32) c.HowlRenderGlyphRef {
+    return .{
+        .atlas_resource = resource,
+        .atlas_rect = atlas_rect,
+        .x_px = x_px,
+        .y_px = y_px,
+        .glyph_id = 1,
+        .color_rgba = color_rgba,
+    };
+}
+
 fn createSpan(items: []const Create) c.HowlRenderResourceCreateSpan {
     return .{
         .ptr = items.ptr,
@@ -1498,6 +1703,12 @@ fn expectInvalidRenderSurfaceProbe(info: c.HowlRenderPreparedSurfaceInfo, status
 
 fn expectInvalidRenderSurfaceSurface(info: c.HowlRenderPreparedSurfaceInfo, surface: *const c.HowlRenderSurface, expected: PreparedRenderSurfaceProbeStatus) !void {
     try expectInvalidRenderSurfaceProbe(info, c.HOWL_RENDER_CALL_OK, surface, expected);
+}
+
+fn expectInvalidRenderSurfaceResourcePlan(surface: *const c.HowlRenderSurface, expected: PreparedRenderResourcePlanStatus) !void {
+    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_CALL_OK, surface);
+    try std.testing.expect(!plan.valid);
+    try std.testing.expectEqual(expected, plan.status);
 }
 
 fn expectInvalidRenderSurfaceSurfaceWithBase(
@@ -1789,16 +2000,125 @@ test "host retained render validates render surface partial surface without rgba
     try std.testing.expectEqual(@as(u64, 0), probe.checked_byte_count);
 }
 
-test "host retained render software probe rejects unsupported command" {
+test "host retained render software probe accepts same-surface glyph run" {
     const info = testPreparedInfo();
-    var commands = [_]Command{glyphCommand(&.{})};
+    const atlas = testGlyphAlphaResource(13, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(info);
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    surface.commands = commandSpan(&commands);
+
+    const probe = validatePreparedRenderSurfaceProbe(
+        info,
+        c.HOWL_RENDER_CALL_OK,
+        &surface,
+        &.{},
+    );
+
+    try std.testing.expect(probe.valid);
+    try std.testing.expectEqual(PreparedRenderSurfaceProbeStatus.ok, probe.status);
+}
+
+test "host retained render software probe accepts non-origin glyph atlas upload" {
+    const info = testPreparedInfo();
+    const atlas = testGlyphAlphaResource(17, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(atlas, makeRect(1, 1, 1, 1), &bytes, 1)};
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(1, 1, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(info);
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    surface.commands = commandSpan(&commands);
+
+    const probe = validatePreparedRenderSurfaceProbe(info, c.HOWL_RENDER_CALL_OK, &surface, &.{});
+
+    try std.testing.expect(probe.valid);
+    try std.testing.expectEqual(PreparedRenderSurfaceProbeStatus.ok, probe.status);
+}
+
+test "host retained render software probe accepts glyph rect covered before later atlas upload" {
+    const info = testPreparedInfo();
+    const atlas = testGlyphAlphaResource(18, 1);
+    var bytes = [_]u8{ 255, 255 };
+    var creates = [_]Create{createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{
+        uploadResource(atlas, makeRect(0, 0, 1, 1), bytes[0..1], 1),
+        uploadResource(atlas, makeRect(1, 0, 1, 1), bytes[1..2], 1),
+    };
+    uploads[1].upload_seq = 1;
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{ fillCommand(c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, makeRect(0, 0, 1, 1), 0), glyphCommand(&glyphs) };
+    var surface = testRenderSurfaceSurface(info);
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    surface.commands = commandSpan(&commands);
+
+    const probe = validatePreparedRenderSurfaceProbe(info, c.HOWL_RENDER_CALL_OK, &surface, &.{});
+
+    try std.testing.expect(probe.valid);
+    try std.testing.expectEqual(PreparedRenderSurfaceProbeStatus.ok, probe.status);
+}
+
+test "host retained render software probe accepts persistent glyph ref as deferred proof" {
+    const info = testPreparedInfo();
+    const atlas = testGlyphAlphaResource(14, 1);
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
     var surface = testRenderSurfaceSurface(info);
     surface.commands = commandSpan(&commands);
-    try expectInvalidRenderSurfaceSurface(
-        info,
-        &surface,
-        .unsupported_command,
-    );
+
+    const probe = validatePreparedRenderSurfaceProbe(info, c.HOWL_RENDER_CALL_OK, &surface, &.{});
+
+    try std.testing.expect(probe.valid);
+    try std.testing.expectEqual(PreparedRenderSurfaceProbeStatus.ok, probe.status);
+}
+
+test "host retained render software probe rejects glyph run exact statuses" {
+    const info = testPreparedInfo();
+    const atlas = testGlyphAlphaResource(50, 1);
+    const unsupported = testResource(51, 1, c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(info);
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    surface.commands = commandSpan(&commands);
+
+    commands[0].rect.width_px = 1;
+    try expectInvalidRenderSurfaceSurface(info, &surface, .invalid_command);
+    commands[0] = glyphCommand(&glyphs);
+    commands[0].color_rgba = 1;
+    try expectInvalidRenderSurfaceSurface(info, &surface, .invalid_command);
+    commands[0] = glyphCommand(&glyphs);
+    commands[0].resource = atlas;
+    try expectInvalidRenderSurfaceSurface(info, &surface, .invalid_resource);
+    commands[0] = glyphCommand(&glyphs);
+    commands[0].glyphs.count = 0;
+    try expectInvalidRenderSurfaceSurface(info, &surface, .invalid_command);
+    commands[0] = glyphCommand(&glyphs);
+    commands[0].glyphs.count = c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX + 1;
+    try expectInvalidRenderSurfaceSurface(info, &surface, .command_span_invalid);
+    commands[0] = glyphCommand(&glyphs);
+    glyphs[0].atlas_resource = unsupported;
+    try expectInvalidRenderSurfaceSurface(info, &surface, .unsupported_resource);
+    glyphs[0] = glyphRef(atlas, makeRect(0, 0, 0, 1), 0, 0, 0xffffffff);
+    try expectInvalidRenderSurfaceSurface(info, &surface, .invalid_command);
+    glyphs[0] = glyphRef(atlas, makeRect(1, 0, 1, 1), 0, 0, 0xffffffff);
+    try expectInvalidRenderSurfaceSurface(info, &surface, .invalid_upload);
+    glyphs[0] = glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffff00);
+    try expectInvalidRenderSurfaceSurface(info, &surface, .invalid_command);
+    glyphs[0] = glyphRef(atlas, makeRect(0, 0, 1, 1), 200, 200, 0xffffffff);
+    try expectInvalidRenderSurfaceSurface(info, &surface, .invalid_command);
 }
 
 test "host retained render records software probe accounting" {
@@ -1891,29 +2211,105 @@ test "host retained render plan rejects upload before create" {
     try std.testing.expectEqual(@as(u32, bytes.len), plan.upload_bytes_count);
 }
 
-test "host retained render plan counts glyph resource uses before unsupported" {
+test "host retained render plan accepts same-surface glyph atlas create upload use" {
     const info = testPreparedInfo();
-    const resource = testSpriteAlphaResource(13, 1);
-    var glyphs = [_]c.HowlRenderGlyphRef{.{
-        .atlas_resource = resource,
-        .atlas_rect = makeRect(0, 0, 1, 1),
-        .x_px = 0,
-        .y_px = 0,
-        .glyph_id = 1,
-        .color_rgba = 0xffffffff,
-    }};
+    const atlas = testGlyphAlphaResource(15, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(info);
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    surface.commands = commandSpan(&commands);
+
+    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_CALL_OK, &surface);
+
+    try std.testing.expect(plan.valid);
+    try std.testing.expectEqual(PreparedRenderResourcePlanStatus.ok, plan.status);
+    try std.testing.expectEqual(@as(u32, 1), plan.create_count);
+    try std.testing.expectEqual(@as(u32, 1), plan.upload_count);
+    try std.testing.expectEqual(@as(u32, 1), plan.use_count);
+}
+
+test "host retained render plan accepts persistent glyph ref as deferred store proof" {
+    const info = testPreparedInfo();
+    const atlas = testGlyphAlphaResource(16, 1);
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
     var commands = [_]Command{glyphCommand(&glyphs)};
     var surface = testRenderSurfaceSurface(info);
     surface.commands = commandSpan(&commands);
 
     const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_CALL_OK, &surface);
 
-    try std.testing.expect(!plan.valid);
-    try std.testing.expectEqual(
-        PreparedRenderResourcePlanStatus.unsupported_command,
-        plan.status,
-    );
+    try std.testing.expect(plan.valid);
+    try std.testing.expectEqual(PreparedRenderResourcePlanStatus.ok, plan.status);
     try std.testing.expectEqual(@as(u32, 1), plan.use_count);
+}
+
+test "host retained render plan rejects glyph lifecycle exact statuses" {
+    const info = testPreparedInfo();
+    const atlas = testGlyphAlphaResource(52, 1);
+    const unsupported = testResource(53, 1, c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(info);
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    surface.commands = commandSpan(&commands);
+
+    uploads[0].format = c.HOWL_RENDER_UPLOAD_RGBA8;
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .invalid_upload);
+    uploads[0] = uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1);
+    creates[0] = createResource(unsupported, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_RGBA8);
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .unsupported_resource);
+    creates[0] = createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8);
+    creates[0].create_seq = 1;
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .invalid_upload);
+    creates[0].create_seq = 0;
+    var retires = [_]Retire{.{ .resource = atlas, .retire_seq = 0 }};
+    surface.retires = retireSpan(&retires);
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .invalid_resource);
+    surface.retires = retireSpan(&.{});
+}
+
+test "host retained render plan rejects glyph command exact statuses" {
+    const info = testPreparedInfo();
+    const atlas = testGlyphAlphaResource(54, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(info);
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    surface.commands = commandSpan(&commands);
+
+    commands[0].glyphs.count = c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX + 1;
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .command_span_invalid);
+    commands[0] = glyphCommand(&glyphs);
+    commands[0].resource = atlas;
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .invalid_resource);
+    commands[0] = glyphCommand(&glyphs);
+    commands[0].rect.width_px = 1;
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .invalid_command);
+    commands[0] = glyphCommand(&glyphs);
+    commands[0].glyphs.count = 0;
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .invalid_command);
+    commands[0] = glyphCommand(&glyphs);
+    glyphs[0] = glyphRef(atlas, makeRect(0, 0, 0, 1), 0, 0, 0xffffffff);
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .invalid_command);
+    glyphs[0] = glyphRef(atlas, makeRect(1, 0, 1, 1), 0, 0, 0xffffffff);
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .invalid_upload);
+    glyphs[0] = glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffff00);
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .invalid_command);
+    glyphs[0] = glyphRef(atlas, makeRect(0, 0, 1, 1), 200, 200, 0xffffffff);
+    try expectInvalidRenderSurfaceResourcePlan(&surface, .invalid_command);
 }
 
 test "host retained render plan rejects use after retire" {
@@ -2014,6 +2410,154 @@ test "host retained render resource store accepts atlas alpha" {
         RenderResourceStoreStatus.ok,
         store.upload(uploadResource(atlas, makeRect(0, 0, 2, 2), &alpha_bytes, 2)),
     );
+    const slot = store.find(atlas) orelse return error.MissingResource;
+    try std.testing.expect(slot.uploaded);
+    try std.testing.expectEqual(makeRect(0, 0, 2, 2), slot.upload_rect);
+    try std.testing.expectEqual(@as(u32, 2), slot.upload_stride_bytes);
+    try std.testing.expectEqual(@as(u32, alpha_bytes.len), slot.upload_last_bytes_count);
+}
+
+test "host retained render resource store accepts same-surface glyph atlas create upload use" {
+    const atlas = testGlyphAlphaResource(44, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(testPreparedInfo());
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    surface.commands = commandSpan(&commands);
+    var store = RenderResourceStore{};
+
+    try std.testing.expectEqual(RenderResourceStoreStatus.ok, store.applySurface(&surface));
+    const slot = store.find(atlas) orelse return error.MissingResource;
+    try std.testing.expect(slot.uploaded);
+}
+
+test "host retained render resource store accepts glyph rect covered before later atlas upload" {
+    const atlas = testGlyphAlphaResource(48, 1);
+    var bytes = [_]u8{ 255, 255 };
+    var creates = [_]Create{createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{
+        uploadResource(atlas, makeRect(0, 0, 1, 1), bytes[0..1], 1),
+        uploadResource(atlas, makeRect(1, 0, 1, 1), bytes[1..2], 1),
+    };
+    uploads[1].upload_seq = 1;
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{ fillCommand(c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, makeRect(0, 0, 1, 1), 0), glyphCommand(&glyphs) };
+    var surface = testRenderSurfaceSurface(testPreparedInfo());
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    surface.commands = commandSpan(&commands);
+    var store = RenderResourceStore{};
+
+    try std.testing.expectEqual(RenderResourceStoreStatus.ok, store.applySurface(&surface));
+}
+
+test "host retained render resource store accepts persistent glyph atlas reuse" {
+    const atlas = testGlyphAlphaResource(45, 1);
+    var bytes = [_]u8{255};
+    var store = RenderResourceStore{};
+    try std.testing.expectEqual(
+        RenderResourceStoreStatus.ok,
+        store.create(createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)),
+    );
+    try std.testing.expectEqual(RenderResourceStoreStatus.ok, store.upload(uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)));
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(testPreparedInfo());
+    surface.commands = commandSpan(&commands);
+
+    try std.testing.expectEqual(RenderResourceStoreStatus.ok, store.applySurface(&surface));
+}
+
+test "host retained render resource store accepts persistent glyph atlas upload into live atlas" {
+    const atlas = testGlyphAlphaResource(46, 1);
+    var store = RenderResourceStore{};
+    try std.testing.expectEqual(
+        RenderResourceStoreStatus.ok,
+        store.create(createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)),
+    );
+    var bytes = [_]u8{255};
+    var uploads = [_]Upload{uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var surface = testRenderSurfaceSurface(testPreparedInfo());
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+
+    try std.testing.expectEqual(RenderResourceStoreStatus.ok, store.applySurface(&surface));
+    const slot = store.find(atlas) orelse return error.MissingResource;
+    try std.testing.expectEqual(@as(u32, 1), slot.upload_count);
+}
+
+test "host retained render resource store rejects persistent glyph atlas rect outside latest upload" {
+    const atlas = testGlyphAlphaResource(47, 1);
+    var bytes = [_]u8{255};
+    var store = RenderResourceStore{};
+    try std.testing.expectEqual(
+        RenderResourceStoreStatus.ok,
+        store.create(createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)),
+    );
+    try std.testing.expectEqual(RenderResourceStoreStatus.ok, store.upload(uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)));
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(1, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(testPreparedInfo());
+    surface.commands = commandSpan(&commands);
+
+    try std.testing.expectEqual(RenderResourceStoreStatus.invalid_upload, store.applySurface(&surface));
+}
+
+test "host retained render resource store rejects glyph liveness exact statuses" {
+    const atlas = testGlyphAlphaResource(55, 1);
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(testPreparedInfo());
+    surface.commands = commandSpan(&commands);
+    var store = RenderResourceStore{};
+
+    try std.testing.expectEqual(RenderResourceStoreStatus.missing_resource, store.applySurface(&surface));
+    try std.testing.expectEqual(RenderResourceStoreStatus.ok, store.create(createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)));
+    try std.testing.expectEqual(RenderResourceStoreStatus.invalid_upload, store.applySurface(&surface));
+    try std.testing.expectEqual(RenderResourceStoreStatus.ok, store.retire(.{ .resource = atlas, .retire_seq = 1 }));
+    try std.testing.expectEqual(RenderResourceStoreStatus.retired_resource, store.applySurface(&surface));
+}
+
+test "host retained render resource store rejects glyph order exact statuses" {
+    const atlas = testGlyphAlphaResource(56, 1);
+    var bytes = [_]u8{255};
+    var creates = [_]Create{createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)};
+    var uploads = [_]Upload{uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)};
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(atlas, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(testPreparedInfo());
+    surface.commands = commandSpan(&commands);
+    var store = RenderResourceStore{};
+
+    creates[0].create_seq = 1;
+    surface.creates = createSpan(&creates);
+    try std.testing.expectEqual(RenderResourceStoreStatus.invalid_resource, store.applySurface(&surface));
+    creates[0].create_seq = 0;
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    var retires = [_]Retire{.{ .resource = atlas, .retire_seq = 1 }};
+    var prefix = [_]Command{ fillCommand(c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, makeRect(0, 0, 1, 1), 0), glyphCommand(&glyphs) };
+    surface.commands = commandSpan(&prefix);
+    surface.retires = retireSpan(&retires);
+    try std.testing.expectEqual(RenderResourceStoreStatus.invalid_retire, store.applySurface(&surface));
+}
+
+test "host retained render resource store rejects glyph shape exact statuses" {
+    const atlas = testGlyphAlphaResource(57, 1);
+    const unsupported = testResource(58, 1, c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR);
+    var bytes = [_]u8{255};
+    var store = RenderResourceStore{};
+    try std.testing.expectEqual(RenderResourceStoreStatus.ok, store.create(createResource(atlas, glyph_atlas_width_px, glyph_atlas_height_px, c.HOWL_RENDER_UPLOAD_ALPHA8)));
+    try std.testing.expectEqual(RenderResourceStoreStatus.ok, store.upload(uploadResource(atlas, makeRect(0, 0, 1, 1), &bytes, 1)));
+
+    var glyphs = [_]c.HowlRenderGlyphRef{glyphRef(unsupported, makeRect(0, 0, 1, 1), 0, 0, 0xffffffff)};
+    var commands = [_]Command{glyphCommand(&glyphs)};
+    var surface = testRenderSurfaceSurface(testPreparedInfo());
+    surface.commands = commandSpan(&commands);
+
+    try std.testing.expectEqual(RenderResourceStoreStatus.invalid_resource, store.applySurface(&surface));
 }
 
 test "host retained render resource store rejects color atlas" {

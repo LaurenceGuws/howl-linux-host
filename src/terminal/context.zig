@@ -772,14 +772,14 @@ pub const Context = struct {
             return prepared_upload.render_surface != null;
         }
 
-        fn execution(self: *Context, prepared_upload: *const render_retained.PreparedUpload, start_ns: u64) render_c.HowlRenderSubmitExecution {
+        fn execution(self: anytype, prepared_upload: *const render_retained.PreparedUpload, start_ns: u64) render_c.HowlRenderSubmitExecution {
             return .{
                 .host_surface = .{
                     .host_surface_id = self.term_texture.host_surface_id,
                     .width = prepared_upload.info.render_px.width,
                     .height = prepared_upload.info.render_px.height,
                 },
-                .uploads_committed = 0,
+                .uploads_committed = prepared_upload.info.prepare_metrics.uploads,
                 .render_us = renderUs(start_ns),
             };
         }
@@ -2079,6 +2079,8 @@ fn testPreparedHandle() render_c.HowlRenderPreparedSurfaceHandle {
 }
 
 fn testPreparedUploadInfo() render_c.HowlRenderPreparedSurfaceInfo {
+    var metrics = std.mem.zeroes(render_c.HowlRenderMetrics);
+    metrics.uploads = 3;
     return .{
         .status = render_c.HOWL_RENDER_CALL_OK,
         .snapshot_seq = 51,
@@ -2088,7 +2090,7 @@ fn testPreparedUploadInfo() render_c.HowlRenderPreparedSurfaceInfo {
         .render_px = .{ .width = 2, .height = 1 },
         .cell_px = .{ .width = 1, .height = 1 },
         .grid = .{ .cols = 2, .rows = 1 },
-        .prepare_metrics = std.mem.zeroes(render_c.HowlRenderMetrics),
+        .prepare_metrics = metrics,
         .damage_kind = render_c.HOWL_RENDER_DAMAGE_FULL,
         .reserved0 = 0,
         .reserved1 = 0,
@@ -2108,6 +2110,7 @@ fn fillTestPreparedUpload(upload: *render_retained.PreparedUpload) void {
 const TestSubmitRender = struct {
     submit_calls: u8 = 0,
     submit_observed_locked: bool = false,
+    last_execution: render_c.HowlRenderSubmitExecution = std.mem.zeroes(render_c.HowlRenderSubmitExecution),
     mutex: ?*terminal_term.Mutex = null,
     handle: render_c.HowlRenderPreparedSurfaceHandle = testPreparedHandle(),
 
@@ -2130,6 +2133,7 @@ const TestSubmitRender = struct {
 
     fn submit(self: *@This(), execution: *const render_c.HowlRenderSubmitExecution, result: *render_c.HowlRenderSubmitResult) render_retained.SubmitResult {
         self.submit_calls += 1;
+        self.last_execution = execution.*;
         if (self.mutex) |mutex| {
             const relock_probe = mutex.tryLockUnfair();
             if (relock_probe) mutex.unlock();
@@ -2184,7 +2188,7 @@ const TestLockedBackend = struct {
     }
 
     fn execution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, _: u64) render_c.HowlRenderSubmitExecution {
-        return testSubmitExecution(self, prepared_upload);
+        return Context.ContextSubmitBackend.execution(self, prepared_upload, 0);
     }
 };
 
@@ -2240,6 +2244,17 @@ test "render submit runs under terminal mutex after backend upload" {
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
     try std.testing.expect(context.term.render.submit_observed_locked);
+}
+
+test "context submit backend reports prepared upload count after upload succeeds" {
+    var context = TestSubmitContext{};
+    context.term.mutex.lockFair();
+    defer context.term.mutex.unlock();
+
+    const result = Context.submitPreparedLockedWith(&context, TestLockedBackend);
+
+    try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
+    try std.testing.expectEqual(@as(u32, 3), context.term.render.last_execution.uploads_committed);
 }
 
 test "host upload failure returns failed submit without render submit" {

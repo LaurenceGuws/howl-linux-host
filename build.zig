@@ -330,9 +330,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
         .root_module = unit_test_mod,
         .filters = filters,
     });
-    unit_tests.use_llvm = true;
-    unit_tests.root_module.linkLibrary(deps.howl_render_lib);
-    unit_tests.root_module.link_libc = true;
+    configureHostTests(unit_tests, deps);
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
     if (b.args != null) run_unit_tests.has_side_effects = true;
@@ -358,12 +356,23 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     const run_term_texture_tests = b.addRunArtifact(term_texture_tests);
     if (b.args != null) run_term_texture_tests.has_side_effects = true;
 
+    const terminal_context_tests = b.addTest(.{
+        .name = "test-terminal-context",
+        .root_module = terminalContextTestModule(b, deps),
+        .filters = filters,
+    });
+    configureHostTests(terminal_context_tests, deps);
+    const run_terminal_context_tests = b.addRunArtifact(terminal_context_tests);
+    if (b.args != null) run_terminal_context_tests.has_side_effects = true;
+
     stageTestArtifact(steps.test_unit_build, unit_tests);
     stageTestArtifact(steps.test_unit_build, retained_tests);
     stageTestArtifact(steps.test_unit_build, term_texture_tests);
+    stageTestArtifact(steps.test_unit_build, terminal_context_tests);
     steps.test_unit.dependOn(&run_unit_tests.step);
     steps.test_unit.dependOn(&run_retained_tests.step);
     steps.test_unit.dependOn(&run_term_texture_tests.step);
+    steps.test_unit.dependOn(&run_terminal_context_tests.step);
     steps.test_all.dependOn(steps.test_unit);
 
     const host_test_mod = HostTests.createModule(b, deps.testDeps());
@@ -411,6 +420,22 @@ fn termTextureTestModule(b: *Build, deps: HostDeps) *Module {
     });
     module.addImport("gl_c", deps.gl_c);
     module.addImport("howl_render_c", deps.howl_render_c);
+    return module;
+}
+
+fn terminalContextTestModule(b: *Build, deps: HostDeps) *Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/test_root.zig"),
+        .target = deps.target,
+        .optimize = deps.optimize,
+    });
+    module.addImport("howl_lua", deps.howl_lua_mod);
+    addHostCImports(module, deps);
+    module.addIncludePath(deps.sdl_include);
+    module.addIncludePath(deps.vendor_include);
+    module.addIncludePath(deps.howl_render_include);
+    module.addIncludePath(deps.howl_pty_include);
+    module.addIncludePath(deps.howl_vt_include);
     return module;
 }
 
