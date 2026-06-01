@@ -28,6 +28,10 @@ pub fn deleteTexture(surface_id: *u64) void {
     surface_id.* = 0;
 }
 
+fn panicGlBroken(comptime message: []const u8, code: c_uint) noreturn {
+    std.debug.panic("GL backend invariant failed: {s}: error={}", .{ message, code });
+}
+
 pub const RenderResourceTextures = struct {
     slots: [render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX]Slot = [_]Slot{.{}} **
         render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX,
@@ -616,7 +620,7 @@ pub const TrustedTextureFailureAction = enum { invariant, operating, reserved_un
 
 pub fn trustedTextureFailureAction(bucket: RenderResourceTextures.FailureBucket, resource_kind: ?u32) TrustedTextureFailureAction {
     return switch (bucket) {
-        .gl_error => .operating,
+        .gl_error => .invariant,
         .unsupported_resource_format => if (resource_kind == render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR)
             .reserved_unsupported
         else
@@ -1922,9 +1926,9 @@ test "render surface diagnostics record slot maxima and gl error bucket" {
     try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_delete_textures);
 }
 
-test "trusted texture failure actions classify gl error as operating" {
+test "trusted texture failure actions classify gl error as invariant" {
     try std.testing.expectEqual(
-        TrustedTextureFailureAction.operating,
+        TrustedTextureFailureAction.invariant,
         trustedTextureFailureAction(.gl_error, null),
     );
 }
@@ -1963,9 +1967,9 @@ test "trusted texture failure action preserves reserved color glyph unsupported"
     );
 }
 
-test "trusted texture upload command failures distinguish gl operating from invariant validation" {
+test "trusted texture upload command failures classify gl as invariant" {
     try std.testing.expectEqual(
-        TrustedTextureFailureAction.operating,
+        TrustedTextureFailureAction.invariant,
         trustedTextureFailureAction(.gl_error, null),
     );
     try std.testing.expectEqual(
@@ -1996,7 +2000,7 @@ test "trusted texture unrecorded failure action is invariant not gl error" {
         trustedTextureMissingFailureAction(),
     );
     try std.testing.expectEqual(
-        TrustedTextureFailureAction.operating,
+        TrustedTextureFailureAction.invariant,
         trustedTextureFailureAction(.gl_error, null),
     );
 }
@@ -2063,7 +2067,7 @@ pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
 
     var texture_id: c_uint = 0;
     gl_c.glGenTextures(1, &texture_id);
-    if (texture_id == 0) return false;
+    if (texture_id == 0) panicGlBroken("glGenTextures returned zero for host surface", 0);
     surface.host_surface_id = texture_id;
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(surface.host_surface_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
@@ -2082,11 +2086,12 @@ pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
         gl_c.GL_UNSIGNED_BYTE,
         null,
     );
-    if (gl_c.glGetError() != 0) {
+    const error_code = gl_c.glGetError();
+    if (error_code != 0) {
         deleteTexture(&surface.host_surface_id);
         surface.width = 0;
         surface.height = 0;
-        return false;
+        panicGlBroken("glTexImage2D failed for host surface", error_code);
     }
     surface.width = width;
     surface.height = height;
@@ -2164,7 +2169,7 @@ fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: 
 
     var framebuffer: c_uint = 0;
     glGenFramebuffers(1, &framebuffer);
-    if (framebuffer == 0) return false;
+    if (framebuffer == 0) panicGlBroken("glGenFramebuffers returned zero", 0);
     defer glDeleteFramebuffers(1, &framebuffer);
 
     var prior_framebuffer: c_int = 0;
@@ -2178,8 +2183,9 @@ fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: 
         @intCast(host_surface.host_surface_id),
         0,
     );
-    if (glCheckFramebufferStatus(gl_c.GL_FRAMEBUFFER) != gl_c.GL_FRAMEBUFFER_COMPLETE) {
-        return false;
+    const framebuffer_status = glCheckFramebufferStatus(gl_c.GL_FRAMEBUFFER);
+    if (framebuffer_status != gl_c.GL_FRAMEBUFFER_COMPLETE) {
+        std.debug.panic("GL backend invariant failed: framebuffer incomplete: status={}", .{framebuffer_status});
     }
 
     var prior_viewport: [4]c_int = .{ 0, 0, 0, 0 };
@@ -2252,7 +2258,9 @@ fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: 
             else => std.debug.panic("trusted render surface has unknown command kind={}", .{command.kind}),
         }
     }
-    return gl_c.glGetError() == 0;
+    const error_code = gl_c.glGetError();
+    if (error_code != 0) panicGlBroken("render surface command upload failed", error_code);
+    return true;
 }
 
 pub fn renderSurfaceFillOnly(surface: *const render_c.HowlRenderSurface) bool {
