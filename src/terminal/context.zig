@@ -98,11 +98,8 @@ pub const Context = struct {
     window_focused: bool,
     widget_focused: bool,
     scrollbar: terminal_scrollbar.State,
-    link_cursor_active: bool,
-    hovered_link_cell: ?terminal_links.HoveredLinkCell,
-    selection_anchor: ?terminal_selection.SelectionCell,
-    selection_drag_active: bool,
-    hover_publish_pending: bool,
+    links: terminal_links.State,
+    selection: terminal_selection.State,
     cursor_blink: cursor_blink.State,
 
     const InitialRequest = struct {
@@ -161,17 +158,14 @@ pub const Context = struct {
         self.window_focused = true;
         self.widget_focused = true;
         self.scrollbar = .{};
-        self.link_cursor_active = false;
-        self.hovered_link_cell = null;
-        self.selection_anchor = null;
-        self.selection_drag_active = false;
-        self.hover_publish_pending = false;
+        self.links = .{};
+        self.selection = .{};
         self.cursor_blink = .{};
     }
 
     pub fn deinit(self: *Context) void {
-        if (self.link_cursor_active) window.useDefaultCursor();
-        self.link_cursor_active = false;
+        if (self.links.cursor_active) window.useDefaultCursor();
+        self.links.cursor_active = false;
         term_texture.deleteTexture(&self.term_texture.host_surface_id);
         self.render_surface_textures.deinit();
         self.term_texture.width = 0;
@@ -524,9 +518,9 @@ pub const Context = struct {
 
     fn maybePublishSource(self: *Context, bootstrap_surface: bool, work: render_retained.WorkState) void {
         self.maybeCommitGridResizeLocked();
-        if (bootstrap_surface or !work.needsRenderSurface() or self.hover_publish_pending) {
+        if (bootstrap_surface or !work.needsRenderSurface() or self.links.hover_publish_pending) {
             _ = vt_surface.publishSourceLocked(&self.term, terminal_links.hoverDecoration(self));
-            self.hover_publish_pending = false;
+            self.links.hover_publish_pending = false;
         }
     }
 
@@ -1275,11 +1269,8 @@ test "cursor activity pushes blink deadline while visible" {
         .window_focused = true,
         .widget_focused = true,
         .scrollbar = .{},
-        .link_cursor_active = false,
-        .hovered_link_cell = null,
-        .selection_anchor = null,
-        .selection_drag_active = false,
-        .hover_publish_pending = false,
+        .links = .{},
+        .selection = .{},
         .cursor_blink = .{},
     };
 

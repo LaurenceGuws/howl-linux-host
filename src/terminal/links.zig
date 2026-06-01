@@ -11,6 +11,12 @@ pub const HoveredLinkCell = struct {
     col: u16,
 };
 
+pub const State = struct {
+    cursor_active: bool = false,
+    hovered_cell: ?HoveredLinkCell = null,
+    hover_publish_pending: bool = false,
+};
+
 pub fn handleMouse(context: anytype, mouse_event: HostInput.Mouse.Event) terminal_selection.MouseHandlingOutcome {
     switch (mouse_event.kind) {
         .move => return .{
@@ -30,13 +36,13 @@ pub fn handleMouse(context: anytype, mouse_event: HostInput.Mouse.Event) termina
 }
 
 pub fn clearHoveredLink(context: anytype) bool {
-    const had_hover = context.hovered_link_cell != null;
-    context.hovered_link_cell = null;
+    const had_hover = context.links.hovered_cell != null;
+    context.links.hovered_cell = null;
     return syncLinkCursor(context, false) or had_hover;
 }
 
 pub fn hoverDecoration(context: anytype) ?vt_surface.HyperlinkHover {
-    const cell = context.hovered_link_cell orelse return null;
+    const cell = context.links.hovered_cell orelse return null;
     if (!hoverShowsUnderline(context.conf.link_hover)) return null;
     return .{
         .row = cell.row,
@@ -48,7 +54,7 @@ pub fn hoverDecoration(context: anytype) ?vt_surface.HyperlinkHover {
 fn updateHoveredLinkCell(context: anytype, mouse_event: HostInput.Mouse.Event) bool {
     if (context.conf.link_hover == .off or !mouse_event.mods.ctrl) {
         if (clearHoveredLink(context)) {
-            context.hover_publish_pending = true;
+            context.links.hover_publish_pending = true;
             return true;
         }
         return false;
@@ -58,25 +64,25 @@ fn updateHoveredLinkCell(context: anytype, mouse_event: HostInput.Mouse.Event) b
     const uri = vt_retained.copyVisibleHyperlinkAt(&context.term, cell.row, cell.col) catch null;
     if (uri == null or uri.?.len == 0) {
         if (clearHoveredLink(context)) {
-            context.hover_publish_pending = true;
+            context.links.hover_publish_pending = true;
             return true;
         }
         return false;
     }
 
     var changed = false;
-    if (context.hovered_link_cell) |current| {
+    if (context.links.hovered_cell) |current| {
         if (current.row != cell.row or current.col != cell.col) {
-            context.hovered_link_cell = cell;
+            context.links.hovered_cell = cell;
             changed = true;
         }
     } else {
-        context.hovered_link_cell = cell;
+        context.links.hovered_cell = cell;
         changed = true;
     }
     changed = syncLinkCursor(context, true) or changed;
     if (changed) {
-        context.hover_publish_pending = true;
+        context.links.hover_publish_pending = true;
         return true;
     }
     return false;
@@ -87,13 +93,13 @@ fn syncLinkCursor(context: anytype, active: bool) bool {
         .cursor, .underline_and_cursor => active,
         .off, .underline => false,
     };
-    if (context.link_cursor_active == wants_cursor) return false;
+    if (context.links.cursor_active == wants_cursor) return false;
     if (wants_cursor) {
         window.usePointerCursor();
     } else {
         window.useDefaultCursor();
     }
-    context.link_cursor_active = wants_cursor;
+    context.links.cursor_active = wants_cursor;
     return true;
 }
 
