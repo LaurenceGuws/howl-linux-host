@@ -26,6 +26,7 @@ const CursorStyle = @import("../config/terminal.zig").CursorStyle;
 const ClipboardOsc52Policy = @import("../config/terminal.zig").ClipboardOsc52Policy;
 const font_size = @import("render/font_size.zig");
 const surface_layout = @import("render/surface_layout.zig");
+const terminal_input = @import("input.zig");
 const term_input = @import("vt/input.zig");
 const terminal_links = @import("links.zig");
 const cursor_blink = @import("cursor_blink.zig");
@@ -52,10 +53,7 @@ const VtInitOptions = struct {
 };
 
 pub const Context = struct {
-    pub const DrainInputOutcome = struct {
-        published_to_pty: bool,
-        host_visual_changed: bool,
-    };
+    pub const DrainInputOutcome = terminal_input.DrainInputOutcome;
 
     pub const OverlaySnapshot = struct {
         scrollbar: Layout.ScrollbarLayout,
@@ -78,7 +76,7 @@ pub const Context = struct {
         present_snapshot_seq: u64,
     };
 
-    pub const MouseHandlingOutcome = terminal_selection.MouseHandlingOutcome;
+    pub const MouseHandlingOutcome = terminal_input.MouseHandlingOutcome;
 
     pub const RenderSurfaceSubmitDiagnostics = temporary_render_surface_debugging.TemporaryDebugging;
 
@@ -217,41 +215,11 @@ pub const Context = struct {
     }
 
     pub fn drainTextInputFastPath(self: *Context, input_events: *HostInput) DrainInputOutcome {
-        return drainTextInputFastPathWith(self, input_events, ContextOps);
-    }
-
-    fn drainTextInputFastPathWith(self: anytype, input_events: *HostInput, comptime Ops: type) DrainInputOutcome {
-        var outcome: DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
-        var read_index: u16 = 0;
-        var write_index: u16 = 0;
-        const event_count = input_events.input_events.len;
-        while (read_index < event_count) : (read_index += 1) {
-            const source_index = (input_events.input_events.head + read_index) % input_events.input_events.buf.len;
-            const event = input_events.input_events.buf[source_index];
-            switch (event) {
-                .bytes, .key => mergeDrainInputOutcome(&outcome, handleTextInputFastPathEvent(self, event, Ops)),
-                .mouse => {
-                    const target_index = (input_events.input_events.head + write_index) % input_events.input_events.buf.len;
-                    input_events.input_events.buf[target_index] = event;
-                    write_index += 1;
-                },
-            }
-        }
-        input_events.input_events.len = write_index;
-        if (write_index == 0) input_events.input_events.head = 0;
-        return outcome;
+        return terminal_input.drainTextInputFastPathWith(self, input_events, ContextOps);
     }
 
     pub fn drainPointerAndUiInput(self: *Context, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) DrainInputOutcome {
-        return drainPointerAndUiInputWith(self, input_events, origin_x, origin_y, logical_width, logical_height, ContextOps);
-    }
-
-    fn drainPointerAndUiInputWith(self: anytype, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, comptime Ops: type) DrainInputOutcome {
-        var outcome: DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
-        while (input_events.drainInputEvent()) |event| {
-            mergeDrainInputOutcome(&outcome, handlePointerAndUiInputEvent(self, event, origin_x, origin_y, logical_width, logical_height, Ops));
-        }
-        return outcome;
+        return terminal_input.drainPointerAndUiInputWith(self, input_events, origin_x, origin_y, logical_width, logical_height, ContextOps);
     }
 
     pub fn handleScrollInput(self: *Context, input_events: *HostInput) void {
@@ -955,10 +923,7 @@ pub const Context = struct {
         return pixelToRow(&self.term, pixel_y);
     }
 
-    const ScrollMouseOutcome = struct {
-        consumed: bool,
-        host_visual_changed: bool,
-    };
+    const ScrollMouseOutcome = terminal_input.ScrollMouseOutcome;
 
     const ScrollVisualState = struct {
         mouse_logical_x: i32,
@@ -979,30 +944,30 @@ pub const Context = struct {
     };
 
     const ContextOps = struct {
-        fn resetCursorBlinkActivity(self: *Context, now_ns: u64) bool {
+        pub fn resetCursorBlinkActivity(self: *Context, now_ns: u64) bool {
             return self.resetCursorBlinkActivity(now_ns);
         }
 
-        fn publishTerminalBytes(self: *Context, bytes: []const u8) bool {
+        pub fn publishTerminalBytes(self: *Context, bytes: []const u8) bool {
             return self.publishTerminalBytes(bytes);
         }
 
-        fn publishTerminalKey(self: *Context, key: HostInput.Keys.Event) bool {
+        pub fn publishTerminalKey(self: *Context, key: HostInput.Keys.Event) bool {
             return self.publishTerminalKey(key);
         }
 
-        fn publishTerminalMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
+        pub fn publishTerminalMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
             return self.publishTerminalMouse(mouse_event);
         }
 
-        fn handleScrollMouse(self: *Context, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) ScrollMouseOutcome {
+        pub fn handleScrollMouse(self: *Context, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) ScrollMouseOutcome {
             const before = ScrollVisualState.capture(self);
             const consumed = terminal_scrollbar.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
             const after = ScrollVisualState.capture(self);
             return .{ .consumed = consumed, .host_visual_changed = !std.meta.eql(before, after) };
         }
 
-        fn contentRelativeEvent(
+        pub fn contentRelativeEvent(
             mouse_event: HostInput.Mouse.Event,
             origin_x: i32,
             origin_y: i32,
@@ -1011,14 +976,14 @@ pub const Context = struct {
             render_px_w: c_int,
             render_px_h: c_int,
         ) ?HostInput.Mouse.Event {
-            return Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);
+            return terminal_input.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);
         }
 
-        fn clearHoveredLinkOp(self: *Context) bool {
+        pub fn clearHoveredLinkOp(self: *Context) bool {
             return terminal_links.clearHoveredLink(self);
         }
 
-        fn handleWheelFallback(self: *Context, local_mouse: HostInput.Mouse.Event) bool {
+        pub fn handleWheelFallback(self: *Context, local_mouse: HostInput.Mouse.Event) bool {
             const before = vt_retained.scrollState(&self.term).scrollback_offset;
             const delta: i32 = switch (local_mouse.button) {
                 .wheel_up => 3,
@@ -1031,11 +996,11 @@ pub const Context = struct {
             return before != after;
         }
 
-        fn handleHostSelectionMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
+        pub fn handleHostSelectionMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
             return terminal_selection.handleMouse(self, mouse_event);
         }
 
-        fn handleHostLinkMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
+        pub fn handleHostLinkMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
             return terminal_links.handleMouse(self, mouse_event);
         }
     };
@@ -1201,85 +1166,6 @@ fn completePresentLockedWith(term: anytype, token: u64, comptime Ops: type) void
     const snapshot_seq = term.render.completePresent(token) orelse return;
     std.debug.assert(snapshot_seq != 0);
     Ops.ack(term, snapshot_seq);
-}
-
-fn handleTextInputFastPathEvent(self: anytype, event: HostInput.Event, comptime Ops: type) Context.DrainInputOutcome {
-    var outcome: Context.DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
-    switch (event) {
-        .bytes => |bytes| {
-            if (Ops.publishTerminalBytes(self, bytes.slice())) {
-                outcome.published_to_pty = true;
-                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, EventLoop.nowNs());
-            }
-        },
-        .key => |key| {
-            if (Ops.publishTerminalKey(self, key)) {
-                outcome.published_to_pty = true;
-                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, EventLoop.nowNs());
-            }
-        },
-        .mouse => {},
-    }
-    return outcome;
-}
-
-fn handlePointerAndUiInputEvent(
-    self: anytype,
-    event: HostInput.Event,
-    origin_x: i32,
-    origin_y: i32,
-    logical_width: c_int,
-    logical_height: c_int,
-    comptime Ops: type,
-) Context.DrainInputOutcome {
-    var outcome: Context.DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
-    switch (event) {
-        .bytes, .key => {},
-        .mouse => |mouse_event| {
-            const scroll_outcome = Ops.handleScrollMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
-            outcome.host_visual_changed = scroll_outcome.host_visual_changed;
-            if (scroll_outcome.consumed) return outcome;
-
-            const local_mouse = Ops.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.geometry.render_px_w, self.geometry.render_px_h) orelse {
-                if (mouse_event.host_only and Ops.clearHoveredLinkOp(self)) outcome.host_visual_changed = true;
-                return outcome;
-            };
-
-            if (local_mouse.kind == .wheel) {
-                if (Ops.publishTerminalMouse(self, local_mouse)) {
-                    outcome.published_to_pty = true;
-                    outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, EventLoop.nowNs()) or outcome.host_visual_changed;
-                } else {
-                    outcome.host_visual_changed = Ops.handleWheelFallback(self, local_mouse) or outcome.host_visual_changed;
-                }
-                return outcome;
-            }
-
-            const selection_outcome = Ops.handleHostSelectionMouse(self, local_mouse);
-            outcome.host_visual_changed = selection_outcome.host_visual_changed or outcome.host_visual_changed;
-            if (selection_outcome.consumed) return outcome;
-
-            const link_outcome = Ops.handleHostLinkMouse(self, local_mouse);
-            outcome.host_visual_changed = link_outcome.host_visual_changed or outcome.host_visual_changed;
-            if (link_outcome.consumed) return outcome;
-
-            if (mouse_event.host_only) {
-                if (Ops.clearHoveredLinkOp(self)) outcome.host_visual_changed = true;
-                return outcome;
-            }
-
-            if (Ops.publishTerminalMouse(self, local_mouse)) {
-                outcome.published_to_pty = true;
-                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, EventLoop.nowNs()) or outcome.host_visual_changed;
-            }
-        },
-    }
-    return outcome;
-}
-
-fn mergeDrainInputOutcome(total: *Context.DrainInputOutcome, next: Context.DrainInputOutcome) void {
-    total.published_to_pty = total.published_to_pty or next.published_to_pty;
-    total.host_visual_changed = total.host_visual_changed or next.host_visual_changed;
 }
 
 const WindowClipboardOps = struct {
@@ -1504,7 +1390,7 @@ test "text input fast path publishes text without pointer or UI operations" {
     bytes.len = 1;
     bytes.buf[0] = 'a';
     var bytes_context = FakeContext{ .publish_bytes_ok = true, .blink_changed = true };
-    const bytes_outcome = handleTextInputFastPathEvent(&bytes_context, .{ .bytes = bytes }, FakeOps);
+    const bytes_outcome = terminal_input.handleTextInputFastPathEvent(&bytes_context, .{ .bytes = bytes }, FakeOps);
     try std.testing.expect(bytes_outcome.published_to_pty);
     try std.testing.expect(bytes_outcome.host_visual_changed);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.bytes_calls);
@@ -1516,7 +1402,7 @@ test "text input fast path publishes text without pointer or UI operations" {
 
     FakeOps.reset();
     var key_only = FakeContext{ .publish_key_ok = true };
-    const key_outcome = handleTextInputFastPathEvent(&key_only, .{ .key = .{ .key = .up, .mods = .{} } }, FakeOps);
+    const key_outcome = terminal_input.handleTextInputFastPathEvent(&key_only, .{ .key = .{ .key = .up, .mods = .{} } }, FakeOps);
     try std.testing.expect(key_outcome.published_to_pty);
     try std.testing.expect(!key_outcome.host_visual_changed);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.key_calls);
@@ -1528,7 +1414,7 @@ test "text input fast path publishes text without pointer or UI operations" {
 
     FakeOps.reset();
     var mouse_context = FakeContext{};
-    const mouse_outcome = handleTextInputFastPathEvent(&mouse_context, .{ .mouse = .{
+    const mouse_outcome = terminal_input.handleTextInputFastPathEvent(&mouse_context, .{ .mouse = .{
         .kind = .move,
         .button = .none,
         .pixel_x = 2,
@@ -1631,7 +1517,7 @@ test "text fast path compacts mixed input before pointer UI drain" {
     var order: [8]u8 = undefined;
     var order_len: u8 = 0;
     var context = FakeContext{ .order = &order, .order_len = &order_len };
-    const text_outcome = Context.drainTextInputFastPathWith(&context, &input, FakeOps);
+    const text_outcome = terminal_input.drainTextInputFastPathWith(&context, &input, FakeOps);
     try std.testing.expect(text_outcome.published_to_pty);
     try std.testing.expect(!text_outcome.host_visual_changed);
     try std.testing.expectEqual(@as(u16, 1), input.input_events.len);
@@ -1640,7 +1526,7 @@ test "text fast path compacts mixed input before pointer UI drain" {
         else => return error.UnexpectedEvent,
     }
 
-    const pointer_outcome = Context.drainPointerAndUiInputWith(&context, &input, 0, 0, 80, 25, FakeOps);
+    const pointer_outcome = terminal_input.drainPointerAndUiInputWith(&context, &input, 0, 0, 80, 25, FakeOps);
     try std.testing.expect(!pointer_outcome.published_to_pty);
     try std.testing.expect(!pointer_outcome.host_visual_changed);
     try std.testing.expectEqual(@as(u16, 0), input.input_events.len);
@@ -1691,7 +1577,7 @@ test "pointer UI drain keeps PTY publication separate from host visual mutation"
     };
 
     var wheel_only = FakeContext{ .wheel_changed = true };
-    const wheel_outcome = handlePointerAndUiInputEvent(&wheel_only, .{ .mouse = .{
+    const wheel_outcome = terminal_input.handlePointerAndUiInputEvent(&wheel_only, .{ .mouse = .{
         .kind = .wheel,
         .button = .wheel_up,
         .pixel_x = 2,
