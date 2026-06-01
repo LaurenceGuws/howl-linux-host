@@ -39,7 +39,6 @@ pub const RenderResourceTextures = struct {
     failure_count: u64 = 0,
     failure_bucket_last: ?FailureBucket = null,
     failure_resource_kind_last: ?u32 = null,
-    diagnostics: Diagnostics = .{},
 
     const Slot = struct {
         state: State = .empty,
@@ -56,47 +55,6 @@ pub const RenderResourceTextures = struct {
     };
 
     const CreatedResources = [render_c.HOWL_RENDER_SURFACE_CREATES_MAX]render_c.HowlRenderResourceId;
-
-    pub const Diagnostics = struct {
-        surface_count: u64 = 0,
-        snapshot_seq: u64 = 0,
-        surface_seq: u64 = 0,
-        geometry_epoch: u64 = 0,
-        resource_epoch: u64 = 0,
-        creates: u64 = 0,
-        uploads: u64 = 0,
-        retires: u64 = 0,
-        commands: u64 = 0,
-        upload_bytes: u64 = 0,
-        same_surface_create_upload_use_retire: u64 = 0,
-        persistent_resource_reuse: u64 = 0,
-        created_without_surviving_next_surface: u64 = 0,
-        creates_per_visible_command_x1000: u64 = 0,
-        slots_live: u32 = 0,
-        slots_retired: u32 = 0,
-        slots_empty: u32 = render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX,
-        slots_live_max: u32 = 0,
-        slots_retired_max: u32 = 0,
-        gl_gen_textures: u64 = 0,
-        gl_tex_image_2d: u64 = 0,
-        gl_tex_sub_image_2d: u64 = 0,
-        gl_delete_textures: u64 = 0,
-        gl_error: u64 = 0,
-        failure_invalid_spans: u64 = 0,
-        failure_invalid_command_shape: u64 = 0,
-        failure_invalid_order: u64 = 0,
-        failure_unsupported_resource_format: u64 = 0,
-        failure_upload_bounds: u64 = 0,
-        failure_tombstone_value_reuse: u64 = 0,
-        failure_capacity: u64 = 0,
-        failure_gl_error: u64 = 0,
-        create_gl_before: GlStateSample = .{},
-        create_gl_after: GlStateSample = .{},
-        upload_gl_before: GlStateSample = .{},
-        upload_gl_after: GlStateSample = .{},
-        retire_gl_before: GlStateSample = .{},
-        retire_gl_after: GlStateSample = .{},
-    };
 
     pub const FailureBucket = enum {
         invalid_spans,
@@ -117,21 +75,14 @@ pub const RenderResourceTextures = struct {
     };
 
     pub fn deinit(self: *RenderResourceTextures) void {
-        for (&self.slots) |*slot| self.deleteSlot(slot);
+        for (&self.slots) |*slot| deleteSlot(slot);
     }
 
     pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
         self.failure_bucket_last = null;
         self.failure_resource_kind_last = null;
-        self.diagnostics.surface_count +|= 1;
-        self.diagnostics.snapshot_seq = surface.token.snapshot_seq;
-        self.diagnostics.surface_seq = surface.token.surface_seq;
-        self.diagnostics.geometry_epoch = surface.token.geometry_epoch;
-        self.diagnostics.resource_epoch = surface.token.resource_epoch;
-        self.recordSurfaceShape(surface);
         if (!self.realizeSurfaceLocked(surface)) {
             self.failure_count +|= 1;
-            self.refreshSlotDiagnostics();
             const bucket = self.failure_bucket_last orelse {
                 std.debug.panic("trusted render texture failure without bucket", .{});
             };
@@ -144,7 +95,6 @@ pub const RenderResourceTextures = struct {
             };
         }
         self.success_count +|= 1;
-        self.refreshSlotDiagnostics();
         return true;
     }
 
@@ -157,18 +107,15 @@ pub const RenderResourceTextures = struct {
         );
         var created: CreatedResources = undefined;
         var created_count: u32 = 0;
-        self.diagnostics.create_gl_before = sampleGlState();
         for (creates) |create| {
             if (!self.createTexture(create)) {
-                self.diagnostics.create_gl_after = sampleGlState();
                 self.rollbackCreates(created[0..created_count]);
                 return false;
             }
             created[created_count] = create.resource;
             created_count += 1;
         }
-        self.diagnostics.create_gl_after = sampleGlState();
-        if (!self.glSampleOk(self.diagnostics.create_gl_after)) {
+        if (!self.glSampleOk(sampleGlState())) {
             self.rollbackCreates(created[0..created_count]);
             return false;
         }
@@ -177,17 +124,14 @@ pub const RenderResourceTextures = struct {
             surface.uploads.ptr,
             surface.uploads.count,
         );
-        self.diagnostics.upload_gl_before = sampleGlState();
         for (uploads) |upload| {
             if (!self.uploadTexture(upload)) {
-                self.diagnostics.upload_gl_after = sampleGlState();
                 self.invalidateUploads(uploads);
                 self.rollbackCreates(created[0..created_count]);
                 return false;
             }
         }
-        self.diagnostics.upload_gl_after = sampleGlState();
-        if (!self.glSampleOk(self.diagnostics.upload_gl_after)) {
+        if (!self.glSampleOk(sampleGlState())) {
             self.invalidateUploads(uploads);
             self.rollbackCreates(created[0..created_count]);
             return false;
@@ -198,16 +142,13 @@ pub const RenderResourceTextures = struct {
             surface.retires.ptr,
             surface.retires.count,
         );
-        self.diagnostics.retire_gl_before = sampleGlState();
         for (retires) |retire| {
             if (!self.retireTexture(retire.resource)) {
-                self.diagnostics.retire_gl_after = sampleGlState();
                 self.rollbackCreates(created[0..created_count]);
                 return false;
             }
         }
-        self.diagnostics.retire_gl_after = sampleGlState();
-        if (!self.glSampleOk(self.diagnostics.retire_gl_after)) {
+        if (!self.glSampleOk(sampleGlState())) {
             self.rollbackCreates(created[0..created_count]);
             return false;
         }
@@ -385,7 +326,6 @@ pub const RenderResourceTextures = struct {
         };
         var texture_id: c_uint = 0;
         gl_c.glGenTextures(1, &texture_id);
-        self.diagnostics.gl_gen_textures +|= 1;
         if (texture_id == 0) {
             self.recordFailure(.gl_error);
             return false;
@@ -416,7 +356,6 @@ pub const RenderResourceTextures = struct {
             gl_c.GL_UNSIGNED_BYTE,
             null,
         );
-        self.diagnostics.gl_tex_image_2d +|= 1;
         return true;
     }
 
@@ -445,7 +384,6 @@ pub const RenderResourceTextures = struct {
             gl_c.GL_UNSIGNED_BYTE,
             upload.bytes_ptr,
         );
-        self.diagnostics.gl_tex_sub_image_2d +|= 1;
         return true;
     }
 
@@ -461,13 +399,13 @@ pub const RenderResourceTextures = struct {
     fn invalidateUploads(self: *RenderResourceTextures, uploads: []const render_c.HowlRenderResourceUpload) void {
         for (uploads) |upload| {
             const slot = self.find(upload.resource) orelse continue;
-            self.retireSlot(slot);
+            retireSlot(slot);
         }
     }
 
     fn retireTexture(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) bool {
         const slot = self.find(resource) orelse return false;
-        self.retireSlot(slot);
+        retireSlot(slot);
         return true;
     }
 
@@ -506,7 +444,7 @@ pub const RenderResourceTextures = struct {
 
     fn rollbackCreates(self: *RenderResourceTextures, created: []const render_c.HowlRenderResourceId) void {
         for (created) |resource| {
-            if (self.find(resource)) |slot| self.deleteSlot(slot);
+            if (self.find(resource)) |slot| deleteSlot(slot);
         }
     }
 
@@ -522,85 +460,28 @@ pub const RenderResourceTextures = struct {
         return ok;
     }
 
-    fn recordSurfaceShape(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
-        self.diagnostics.creates +|= surface.creates.count;
-        self.diagnostics.uploads +|= surface.uploads.count;
-        self.diagnostics.retires +|= surface.retires.count;
-        self.diagnostics.commands +|= surface.commands.count;
-        self.diagnostics.upload_bytes +|= surface.uploads.bytes_count_total;
-        self.diagnostics.same_surface_create_upload_use_retire +|= sameSurfaceChurnCount(surface);
-        self.diagnostics.persistent_resource_reuse +|= persistentResourceUseCount(self, surface);
-        self.diagnostics.created_without_surviving_next_surface +|= createdAndRetiredCount(surface);
-        if (surface.commands.count > 0) {
-            self.diagnostics.creates_per_visible_command_x1000 =
-                (@as(u64, surface.creates.count) * 1000) / surface.commands.count;
-        } else {
-            self.diagnostics.creates_per_visible_command_x1000 = 0;
-        }
-    }
-
     fn recordFailure(self: *RenderResourceTextures, bucket: FailureBucket) void {
         self.failure_bucket_last = bucket;
         self.failure_resource_kind_last = null;
-        self.recordFailureCounters(bucket);
     }
 
     fn recordFailureForResource(self: *RenderResourceTextures, bucket: FailureBucket, resource_kind: u32) void {
         self.failure_bucket_last = bucket;
         self.failure_resource_kind_last = resource_kind;
-        self.recordFailureCounters(bucket);
     }
 
-    fn recordFailureCounters(self: *RenderResourceTextures, bucket: FailureBucket) void {
-        switch (bucket) {
-            .invalid_spans => self.diagnostics.failure_invalid_spans +|= 1,
-            .invalid_command_shape => self.diagnostics.failure_invalid_command_shape +|= 1,
-            .invalid_order => self.diagnostics.failure_invalid_order +|= 1,
-            .unsupported_resource_format => {
-                self.diagnostics.failure_unsupported_resource_format +|= 1;
-            },
-            .upload_bounds => self.diagnostics.failure_upload_bounds +|= 1,
-            .tombstone_value_reuse => self.diagnostics.failure_tombstone_value_reuse +|= 1,
-            .capacity => self.diagnostics.failure_capacity +|= 1,
-            .gl_error => {
-                self.diagnostics.failure_gl_error +|= 1;
-                self.diagnostics.gl_error +|= 1;
-            },
-        }
-    }
-
-    fn refreshSlotDiagnostics(self: *RenderResourceTextures) void {
-        var live: u32 = 0;
-        var retired: u32 = 0;
-        var empty: u32 = 0;
-        for (&self.slots) |*slot| {
-            switch (slot.state) {
-                .empty => empty += 1,
-                .live => live += 1,
-                .retired => retired += 1,
-            }
-        }
-        self.diagnostics.slots_live = live;
-        self.diagnostics.slots_retired = retired;
-        self.diagnostics.slots_empty = empty;
-        self.diagnostics.slots_live_max = @max(self.diagnostics.slots_live_max, live);
-        self.diagnostics.slots_retired_max = @max(self.diagnostics.slots_retired_max, retired);
-    }
-
-    fn deleteSlot(self: *RenderResourceTextures, slot: *Slot) void {
+    fn deleteSlot(slot: *Slot) void {
         if (slot.texture_id != 0) {
             var value: c_uint = @intCast(slot.texture_id);
             gl_c.glDeleteTextures(1, &value);
-            self.diagnostics.gl_delete_textures +|= 1;
         }
         slot.* = .{};
     }
 
-    fn retireSlot(self: *RenderResourceTextures, slot: *Slot) void {
+    fn retireSlot(slot: *Slot) void {
         if (slot.texture_id != 0) {
             var value: c_uint = @intCast(slot.texture_id);
             gl_c.glDeleteTextures(1, &value);
-            self.diagnostics.gl_delete_textures +|= 1;
         }
         slot.texture_id = 0;
         slot.state = .retired;
@@ -680,7 +561,25 @@ fn validateSurfaceOrderStatic(surface: *const render_c.HowlRenderSurface) bool {
     return true;
 }
 
-fn validateCommandsStatic(surface: *const render_c.HowlRenderSurface) bool {
+const CommandShapeError = error{
+    FillRectHasNoArea,
+    FillRectOutOfBounds,
+    FillRectUsesResource,
+    FillRectUsesGlyphs,
+    GlyphRunUsesRect,
+    GlyphRunUsesColor,
+    GlyphRunUsesResource,
+    GlyphRunEmpty,
+    GlyphRunInvalid,
+    SpriteRectHasNoArea,
+    SpriteMissingResource,
+    SpriteInvalidResourceKind,
+    SpriteUsesGlyphs,
+    ColorSpriteUsesTint,
+    UnknownCommandKind,
+};
+
+fn commandShapeErrorStatic(surface: *const render_c.HowlRenderSurface) ?CommandShapeError {
     const commands = spanSlice(
         render_c.HowlRenderSurfaceCommand,
         surface.commands.ptr,
@@ -691,32 +590,37 @@ fn validateCommandsStatic(surface: *const render_c.HowlRenderSurface) bool {
             render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             => {
-                if (!rectHasArea(command.rect)) return false;
-                if (!resourceEmpty(command.resource)) return false;
-                if (command.glyphs.count != 0) return false;
+                if (!rectHasArea(command.rect)) return error.FillRectHasNoArea;
+                if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return error.FillRectOutOfBounds;
+                if (!resourceEmpty(command.resource)) return error.FillRectUsesResource;
+                if (command.glyphs.count != 0) return error.FillRectUsesGlyphs;
             },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
-                if (command.rect.x_px != 0) return false;
-                if (command.rect.y_px != 0) return false;
-                if (command.rect.width_px != 0) return false;
-                if (command.rect.height_px != 0) return false;
-                if (command.color_rgba != 0) return false;
-                if (!resourceEmpty(command.resource)) return false;
-                if (command.glyphs.count == 0) return false;
-                if (!glyphCommandValid(surface, command)) return false;
+                if (command.rect.x_px != 0) return error.GlyphRunUsesRect;
+                if (command.rect.y_px != 0) return error.GlyphRunUsesRect;
+                if (command.rect.width_px != 0) return error.GlyphRunUsesRect;
+                if (command.rect.height_px != 0) return error.GlyphRunUsesRect;
+                if (command.color_rgba != 0) return error.GlyphRunUsesColor;
+                if (!resourceEmpty(command.resource)) return error.GlyphRunUsesResource;
+                if (command.glyphs.count == 0) return error.GlyphRunEmpty;
+                if (!glyphCommandValid(surface, command)) return error.GlyphRunInvalid;
             },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
-                if (!rectHasArea(command.rect)) return false;
-                if (command.resource.value == 0) return false;
-                if (!spriteResourceKind(command.resource.kind)) return false;
-                if (command.glyphs.count != 0) return false;
+                if (!rectHasArea(command.rect)) return error.SpriteRectHasNoArea;
+                if (command.resource.value == 0) return error.SpriteMissingResource;
+                if (!spriteResourceKind(command.resource.kind)) return error.SpriteInvalidResourceKind;
+                if (command.glyphs.count != 0) return error.SpriteUsesGlyphs;
                 if (command.resource.kind == render_c.HOWL_RENDER_RESOURCE_SPRITE_COLOR and
-                    command.color_rgba != 0) return false;
+                    command.color_rgba != 0) return error.ColorSpriteUsesTint;
             },
-            else => return false,
+            else => return error.UnknownCommandKind,
         }
     }
-    return true;
+    return null;
+}
+
+fn validateCommandsStatic(surface: *const render_c.HowlRenderSurface) bool {
+    return commandShapeErrorStatic(surface) == null;
 }
 
 fn rectHasArea(rect: render_c.HowlRenderSurfaceRect) bool {
@@ -1151,6 +1055,53 @@ test "render surface textures reject invalid command before mutation" {
     try std.testing.expect(!textures.validateSurface(&surface));
     try std.testing.expect(textures.find(resource) == null);
     try std.testing.expect(textures.findValue(resource.value) == null);
+}
+
+test "render surface command shape reports zero area fill" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = testRect(1, 0),
+        .color_rgba = 0xffffffff,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
+
+    try std.testing.expectEqual(CommandShapeError.FillRectHasNoArea, commandShapeErrorStatic(&surface).?);
+    try std.testing.expect(!validateCommandsStatic(&surface));
+}
+
+test "render surface command shape reports out of bounds fill" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
+        .{
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = testRect(2, 2),
+            .color_rgba = 0xffffffff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+        .{
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .rect = .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 1 },
+            .color_rgba = 0xffffffff,
+            .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+            .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+        },
+    };
+    var surface = testSurface();
+    surface.render_px = .{ .width = 2, .height = 2 };
+    surface.commands = commandSpan(&commands);
+
+    try std.testing.expectEqual(CommandShapeError.FillRectOutOfBounds, commandShapeErrorStatic(&surface).?);
+    try std.testing.expect(!validateCommandsStatic(&surface));
+    try std.testing.expect(!renderSurfaceFillOnly(&surface));
 }
 
 test "render surface fbo y coordinates target texture row zero first" {
@@ -1834,98 +1785,6 @@ test "render surface glyph surface rejects invalid glyph span" {
     try std.testing.expect(!renderSurfaceGlyphs(&surface));
 }
 
-test "render surface diagnostics record token surface shape and churn" {
-    const resource = testResource(7, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
-    var bytes = [_]u8{255};
-    var creates = [_]render_c.HowlRenderResourceCreate{.{
-        .resource = resource,
-        .width_px = 1,
-        .height_px = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
-        .create_seq = 0,
-    }};
-    var uploads = [_]render_c.HowlRenderResourceUpload{.{
-        .resource = resource,
-        .rect = testRect(1, 1),
-        .bytes_ptr = &bytes,
-        .bytes_count = 1,
-        .stride_bytes = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
-        .upload_seq = 0,
-    }};
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
-        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE,
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .rect = testRect(1, 1),
-        .color_rgba = 0,
-        .resource = resource,
-        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
-    }};
-    var retires = [_]render_c.HowlRenderResourceRetire{.{ .resource = resource, .retire_seq = 1 }};
-    var surface = testSurface();
-    surface.token = .{
-        .snapshot_seq = 11,
-        .surface_seq = 12,
-        .geometry_epoch = 13,
-        .resource_epoch = 14,
-    };
-    surface.creates = createSpan(&creates);
-    surface.uploads = uploadSpan(&uploads, 1);
-    surface.commands = commandSpan(&commands);
-    surface.retires = retireSpan(&retires);
-    var textures = RenderResourceTextures{};
-    textures.diagnostics.surface_count +|= 1;
-    textures.diagnostics.snapshot_seq = surface.token.snapshot_seq;
-    textures.diagnostics.surface_seq = surface.token.surface_seq;
-    textures.diagnostics.geometry_epoch = surface.token.geometry_epoch;
-    textures.diagnostics.resource_epoch = surface.token.resource_epoch;
-    textures.recordSurfaceShape(&surface);
-    try std.testing.expectEqual(@as(u64, 11), textures.diagnostics.snapshot_seq);
-    try std.testing.expectEqual(@as(u64, 12), textures.diagnostics.surface_seq);
-    try std.testing.expectEqual(@as(u64, 13), textures.diagnostics.geometry_epoch);
-    try std.testing.expectEqual(@as(u64, 14), textures.diagnostics.resource_epoch);
-    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.creates);
-    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.uploads);
-    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.retires);
-    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.commands);
-    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.upload_bytes);
-    try std.testing.expectEqual(
-        @as(u64, 1),
-        textures.diagnostics.same_surface_create_upload_use_retire,
-    );
-    try std.testing.expectEqual(
-        @as(u64, 1),
-        textures.diagnostics.created_without_surviving_next_surface,
-    );
-    try std.testing.expectEqual(
-        @as(u64, 1000),
-        textures.diagnostics.creates_per_visible_command_x1000,
-    );
-}
-
-test "render surface diagnostics record slot maxima and gl error bucket" {
-    var textures = RenderResourceTextures{};
-    textures.slots[0].state = .live;
-    textures.slots[1].state = .retired;
-    textures.refreshSlotDiagnostics();
-    try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_live);
-    try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_retired);
-    try std.testing.expectEqual(
-        @as(u32, render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX - 2),
-        textures.diagnostics.slots_empty,
-    );
-    try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_live_max);
-    try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_retired_max);
-    textures.recordFailure(.gl_error);
-    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.failure_gl_error);
-    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.gl_error);
-    try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_gen_textures);
-    try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_tex_image_2d);
-    try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_tex_sub_image_2d);
-    try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_delete_textures);
-}
-
 test "trusted texture failure actions classify gl error as invariant" {
     try std.testing.expectEqual(
         TrustedTextureFailureAction.invariant,
@@ -2018,10 +1877,7 @@ test "render surface create validation records precise failure buckets" {
     surface.creates = createSpan(&unsupported);
     var textures = RenderResourceTextures{};
     try std.testing.expect(!textures.validateSurface(&surface));
-    try std.testing.expectEqual(
-        @as(u64, 1),
-        textures.diagnostics.failure_unsupported_resource_format,
-    );
+    try std.testing.expectEqual(RenderResourceTextures.FailureBucket.unsupported_resource_format, textures.failure_bucket_last.?);
 
     textures = .{};
     textures.slots[0] = .{ .state = .retired, .resource = resource };
@@ -2035,7 +1891,7 @@ test "render surface create validation records precise failure buckets" {
     surface = testSurface();
     surface.creates = createSpan(&reuse);
     try std.testing.expect(!textures.validateSurface(&surface));
-    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.failure_tombstone_value_reuse);
+    try std.testing.expectEqual(RenderResourceTextures.FailureBucket.tombstone_value_reuse, textures.failure_bucket_last.?);
 
     textures = .{};
     for (&textures.slots, 0..) |*slot, index| {
@@ -2054,7 +1910,7 @@ test "render surface create validation records precise failure buckets" {
     surface = testSurface();
     surface.creates = createSpan(&capacity);
     try std.testing.expect(!textures.validateSurface(&surface));
-    try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.failure_capacity);
+    try std.testing.expectEqual(RenderResourceTextures.FailureBucket.capacity, textures.failure_bucket_last.?);
 }
 
 pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) bool {
@@ -2273,10 +2129,13 @@ pub fn renderSurfaceFillOnly(surface: *const render_c.HowlRenderSurface) bool {
         surface.commands.ptr,
         surface.commands.count,
     );
+    var has_full_clear = false;
     for (commands, 0..) |command, index| {
         if (!renderSurfaceFillCommand(command)) return false;
-        if (index == 0 and renderSurfaceFullClear(surface, command)) return true;
+        if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
+        if (index == 0) has_full_clear = renderSurfaceFullClear(surface, command);
     }
+    if (has_full_clear) return true;
     return renderSurfaceFillCoverage(surface, commands);
 }
 

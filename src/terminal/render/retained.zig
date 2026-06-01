@@ -65,7 +65,6 @@ pub const SurfaceLayout = struct {
 
 pub const PreparedUpload = struct {
     info: c.HowlRenderPreparedSurfaceInfo,
-    diagnostics: c.HowlRenderPreparedSurfaceDiagnostics,
     render_surface_probe: PreparedRenderSurfaceProbe,
     render_surface_resource_plan: PreparedRenderResourcePlan,
     render_surface: ?*const Surface,
@@ -807,22 +806,14 @@ pub const State = struct {
         return c.howl_render_prepared_surface_describe(prepared, info_out) == c.HOWL_RENDER_CALL_OK;
     }
 
-    pub fn preparedDiagnostics(self: *const State, diagnostics_out: *c.HowlRenderPreparedSurfaceDiagnostics) bool {
-        const prepared = self.prepared_surface orelse return false;
-        return c.howl_render_prepared_surface_diagnostics(prepared, diagnostics_out) ==
-            c.HOWL_RENDER_CALL_OK;
-    }
-
     pub fn preparedUpload(self: *State, upload_out: *PreparedUpload) bool {
         upload_out.* = .{
             .info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo),
-            .diagnostics = std.mem.zeroes(c.HowlRenderPreparedSurfaceDiagnostics),
             .render_surface_probe = .{},
             .render_surface_resource_plan = .{},
             .render_surface = null,
         };
         if (!self.preparedInfo(&upload_out.info)) return false;
-        _ = self.preparedDiagnostics(&upload_out.diagnostics);
         upload_out.render_surface_probe = self.probePreparedRenderSurface(
             upload_out.info,
             &upload_out.render_surface_resource_plan,
@@ -1591,8 +1582,8 @@ fn testPreparedInfo() c.HowlRenderPreparedSurfaceInfo {
         .render_px = .{ .width = 2, .height = 1 },
         .cell_px = .{ .width = 1, .height = 1 },
         .grid = .{ .cols = 2, .rows = 1 },
-        .prepare_metrics = std.mem.zeroes(c.HowlRenderMetrics),
         .damage_kind = c.HOWL_RENDER_DAMAGE_FULL,
+        .render_surface_emit_status = c.HOWL_RENDER_SURFACE_EMIT_OK,
         .reserved0 = 0,
         .reserved1 = 0,
     };
@@ -1797,9 +1788,6 @@ fn assertPreparedSurfaceHandle(prepared: c.HowlRenderPreparedSurfaceHandle) void
     if (prepared == null) return;
     var info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo);
     std.debug.assert(c.howl_render_prepared_surface_describe(prepared, &info) == c.HOWL_RENDER_CALL_OK);
-
-    var diagnostics = std.mem.zeroes(c.HowlRenderPreparedSurfaceDiagnostics);
-    std.debug.assert(c.howl_render_prepared_surface_diagnostics(prepared, &diagnostics) == c.HOWL_RENDER_CALL_OK);
 }
 
 fn testState() State {
@@ -1930,8 +1918,6 @@ test "submit is blocked while host present is pending" {
 
     const execution = c.HowlRenderSubmitExecution{
         .host_surface = .{ .host_surface_id = 1, .width = 1, .height = 1 },
-        .uploads_committed = 0,
-        .render_us = 0,
     };
     var result = std.mem.zeroes(c.HowlRenderSubmitResult);
 

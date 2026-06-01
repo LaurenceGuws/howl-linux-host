@@ -29,6 +29,11 @@ const LoopAction = enum {
     quit,
 };
 
+const ActiveTabExitAction = enum {
+    close_tab,
+    quit,
+};
+
 const LoopPending = FramePacing.Pending;
 
 const LoopDebugFacts = struct {
@@ -293,7 +298,7 @@ fn runLoopTurn(app: *App) !LoopAction {
         terminal_progress.drive_performed,
     );
     configureInputPolicies(app);
-    try ensureActiveTabHealthy(app);
+    if (try handleActiveTabProblem(app)) |action| return action;
 
     const intent = deriveRedrawRenderIntent(
         app.input.drainRedrawRequested(),
@@ -325,7 +330,7 @@ fn runLoopTurn(app: *App) !LoopAction {
     });
     maybeLogLoopTurn(app, now_ns, debug_facts, intent);
     if (quitRequested(app)) |action| return action;
-    try ensureActiveTabHealthy(app);
+    if (try handleActiveTabProblem(app)) |action| return action;
     return .continue_running;
 }
 
@@ -588,12 +593,24 @@ fn driveTabRuntimeTurn(tab: *TerminalContext, active: bool, now_ns: u64) @import
     return tab.driveProgress(active, now_ns);
 }
 
-fn ensureActiveTabHealthy(app: *App) !void {
-    const problem = activeTabProblem(app.tabs.items(), app.active_tab_idx.*) orelse return;
+fn handleActiveTabProblem(app: *App) !?LoopAction {
+    const problem = activeTabProblem(app.tabs.items(), app.active_tab_idx.*) orelse return null;
     return switch (problem) {
-        .exited => error.ActiveTabExited,
+        .exited => switch (activeTabExitAction(app.tabs.items().len)) {
+            .quit => .quit,
+            .close_tab => blk: {
+                closeActiveTab(app.window, app.tabs, app.active_tab_idx);
+                app.input.requestRedraw();
+                break :blk .continue_running;
+            },
+        },
         .runtime_failed => error.ActiveTabRuntimeFailed,
     };
+}
+
+fn activeTabExitAction(tab_count: usize) ActiveTabExitAction {
+    assert(tab_count > 0);
+    return if (tab_count == 1) .quit else .close_tab;
 }
 
 fn destroyTabs(tabs: *TabSlots) void {
@@ -1038,6 +1055,15 @@ test "host visual change can trigger present without PTY publication" {
     const needs_render_turn = host_redraw or terminal_redraw or false;
     try std.testing.expect(needs_render_turn);
     try std.testing.expect(host_redraw);
+}
+
+test "active exited last tab quits cleanly" {
+    try std.testing.expectEqual(ActiveTabExitAction.quit, activeTabExitAction(1));
+}
+
+test "active exited tab closes when another tab remains" {
+    try std.testing.expectEqual(ActiveTabExitAction.close_tab, activeTabExitAction(2));
+    try std.testing.expectEqual(ActiveTabExitAction.close_tab, activeTabExitAction(max_tabs));
 }
 
 test "runtime keepalive wake stays separate from host dirty" {
