@@ -1,6 +1,6 @@
 const std = @import("std");
 const feed_record = @import("pty/feed_record.zig");
-const InputWake = @import("../input/wake.zig");
+const EventLoop = @import("../event_loop.zig");
 const window = @import("../window/window.zig");
 const Layout = @import("../window/layout.zig");
 const term_texture = @import("../window/term_texture.zig");
@@ -130,6 +130,7 @@ pub const Context = struct {
     render_surface_submit_diagnostics_logged: RenderSurfaceSubmitDiagnostics,
     conf: *const TerminalConfig,
     input: *HostInput,
+    event_loop: *EventLoop.State,
     title_buf: [128]u8,
     title_len: u8,
     geometry: surface_layout.State,
@@ -145,10 +146,21 @@ pub const Context = struct {
     hover_publish_pending: bool,
     cursor_blink: cursor_blink.State,
 
+    const InitialRequest = struct {
+        conf: *const TerminalConfig,
+        input: *HostInput,
+        event_loop: *EventLoop.State,
+        render_width: c_int,
+        render_height: c_int,
+        logical_width: c_int,
+        logical_height: c_int,
+    };
+
     pub noinline fn init(
         self: *Context,
         io: std.Io,
         input: *HostInput,
+        event_loop: *EventLoop.State,
         feed_record_path: ?[]const u8,
         conf: *const TerminalConfig,
         render_width: c_int,
@@ -156,14 +168,22 @@ pub const Context = struct {
         logical_width: c_int,
         logical_height: c_int,
     ) !void {
-        initial(self, conf, input, render_width, render_height, logical_width, logical_height);
+        initial(self, .{
+            .conf = conf,
+            .input = input,
+            .event_loop = event_loop,
+            .render_width = render_width,
+            .render_height = render_height,
+            .logical_width = logical_width,
+            .logical_height = logical_height,
+        });
         errdefer self.deinit();
         try self.initTerm();
         try self.startRuntime(io, feed_record_path);
     }
 
-    noinline fn initial(self: *Context, conf: *const TerminalConfig, input: *HostInput, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
-        const start_font_px = @max(conf.font_size, 1);
+    noinline fn initial(self: *Context, request: InitialRequest) void {
+        const start_font_px = @max(request.conf.font_size, 1);
         self.term = undefined;
         self.progress = .{};
         self.live = false;
@@ -171,11 +191,12 @@ pub const Context = struct {
         self.render_surface_textures = .{};
         self.render_surface_submit_diagnostics = .{};
         self.render_surface_submit_diagnostics_logged = .{};
-        self.conf = conf;
-        self.input = input;
+        self.conf = request.conf;
+        self.input = request.input;
+        self.event_loop = request.event_loop;
         self.title_buf = undefined;
         self.title_len = 0;
-        self.geometry = surface_layout.init(render_width, render_height, logical_width, logical_height);
+        self.geometry = surface_layout.init(request.render_width, request.render_height, request.logical_width, request.logical_height);
         self.font_size_px = start_font_px;
         self.default_font_size_px = start_font_px;
         self.window_focused = true;
@@ -231,7 +252,7 @@ pub const Context = struct {
 
     pub fn paste(self: *Context, payload: []const u8) void {
         term_input.publishPaste(&self.term, payload) catch return;
-        _ = self.resetCursorBlinkActivity(InputWake.nowNs());
+        _ = self.resetCursorBlinkActivity(EventLoop.nowNs());
     }
 
     pub fn drainTextInputFastPath(self: *Context, input_events: *HostInput) DrainInputOutcome {
@@ -402,7 +423,7 @@ pub const Context = struct {
         if (active and outcome.should_redraw) {
             if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
             _ = vt_surface.publishSource(&self.term, terminal_links.hoverDecoration(self));
-            outcome.should_redraw = self.resetCursorBlinkActivity(InputWake.nowNs()) or outcome.should_redraw;
+            outcome.should_redraw = self.resetCursorBlinkActivity(EventLoop.nowNs()) or outcome.should_redraw;
         }
         self.applyPendingClipboardWrites();
         pty_wait_thread.ackWake(self);
@@ -484,7 +505,7 @@ pub const Context = struct {
         if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
         self.refreshTitle();
         self.syncInputFocus();
-        try self.progress.init(self.input);
+        try self.progress.init(self.event_loop);
         self.progress.stop.store(false, .release);
         const progress_thread = try std.Thread.spawn(.{}, pty_wait_thread.progressThreadMain, .{self});
         if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(progress_thread.getHandle(), "howl-term-host");
@@ -617,11 +638,11 @@ pub const Context = struct {
             var render_surface_resources_realized = false;
             if (shouldRealizeRenderSurface(prepared_upload)) {
                 const render_surface = prepared_upload.render_surface.?;
-                const render_surface_start_ns = InputWake.nowNs();
+                const render_surface_start_ns = EventLoop.nowNs();
                 render_surface_resources_realized = self.render_surface_textures.realizeSurface(render_surface);
                 self.recordRenderSurfaceRealization(renderUs(render_surface_start_ns));
             }
-            const upload_start_ns = InputWake.nowNs();
+            const upload_start_ns = EventLoop.nowNs();
             self.render_surface_submit_diagnostics.render_surface_emit_status =
                 prepared_upload.diagnostics.render_surface_emit_status;
             self.render_surface_submit_diagnostics.render_surface_resource_plan_status =
@@ -820,7 +841,7 @@ pub const Context = struct {
     };
 
     fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
-        const start_ns = InputWake.nowNs();
+        const start_ns = EventLoop.nowNs();
 
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
@@ -933,7 +954,7 @@ pub const Context = struct {
     }
 
     fn renderUs(start_ns: u64) u64 {
-        const elapsed_ns = InputWake.nowNs() - start_ns;
+        const elapsed_ns = EventLoop.nowNs() - start_ns;
         return elapsed_ns / std.time.ns_per_us;
     }
 
@@ -1556,13 +1577,13 @@ fn handleTextInputFastPathEvent(self: anytype, event: HostInput.Event, comptime 
         .bytes => |bytes| {
             if (Ops.publishTerminalBytes(self, bytes.slice())) {
                 outcome.published_to_pty = true;
-                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWake.nowNs());
+                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, EventLoop.nowNs());
             }
         },
         .key => |key| {
             if (Ops.publishTerminalKey(self, key)) {
                 outcome.published_to_pty = true;
-                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWake.nowNs());
+                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, EventLoop.nowNs());
             }
         },
         .mouse => {},
@@ -1595,7 +1616,7 @@ fn handlePointerAndUiInputEvent(
             if (local_mouse.kind == .wheel) {
                 if (Ops.publishTerminalMouse(self, local_mouse)) {
                     outcome.published_to_pty = true;
-                    outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWake.nowNs()) or outcome.host_visual_changed;
+                    outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, EventLoop.nowNs()) or outcome.host_visual_changed;
                 } else {
                     outcome.host_visual_changed = Ops.handleWheelFallback(self, local_mouse) or outcome.host_visual_changed;
                 }
@@ -1617,7 +1638,7 @@ fn handlePointerAndUiInputEvent(
 
             if (Ops.publishTerminalMouse(self, local_mouse)) {
                 outcome.published_to_pty = true;
-                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, InputWake.nowNs()) or outcome.host_visual_changed;
+                outcome.host_visual_changed = Ops.resetCursorBlinkActivity(self, EventLoop.nowNs()) or outcome.host_visual_changed;
             }
         },
     }

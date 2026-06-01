@@ -1,7 +1,6 @@
 const pty_session = @import("session.zig");
 const terminal_term = @import("../term.zig");
-const HostInput = @import("../../input/input.zig").Input;
-const InputWake = @import("../../input/wake.zig");
+const EventLoop = @import("../../event_loop.zig");
 const std = @import("std");
 
 const wait_slice_timeout_ms: i32 = 50;
@@ -9,21 +8,21 @@ const wait_slice_timeout_ms: i32 = 50;
 pub const State = struct {
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    wake_ack_sem: ?InputWake.WakeSemaphore = null,
+    wake_ack_sem: ?EventLoop.WakeSemaphore = null,
     thread: ?std.Thread = null,
-    wake_input: ?*HostInput = null,
+    wake_event_loop: ?*EventLoop.State = null,
 
-    pub fn init(self: *State, wake_input: *HostInput) !void {
+    pub fn init(self: *State, wake_event_loop: *EventLoop.State) !void {
         self.wake_pending.store(false, .release);
-        self.wake_input = wake_input;
-        self.wake_ack_sem = InputWake.createWakeSemaphore() orelse return error.ProgressSemaphoreUnavailable;
+        self.wake_event_loop = wake_event_loop;
+        self.wake_ack_sem = EventLoop.createWakeSemaphore() orelse return error.ProgressSemaphoreUnavailable;
     }
 
     pub fn deinit(self: *State) void {
         const sem = self.wake_ack_sem orelse return;
-        InputWake.destroyWakeSemaphore(sem);
+        EventLoop.destroyWakeSemaphore(sem);
         self.wake_ack_sem = null;
-        self.wake_input = null;
+        self.wake_event_loop = null;
         self.wake_pending.store(false, .release);
     }
 };
@@ -90,13 +89,13 @@ fn termRef(self: anytype) TermRef(@TypeOf(self.term)) {
 
 fn signalWake(self: anytype, comptime Ops: type) void {
     if (!self.progress.wake_pending.swap(true, .acq_rel)) {
-        Ops.wakeWindow(self);
+        Ops.wakeEventLoop(self);
     }
 }
 
 fn signalWakeAck(self: anytype) void {
     const sem = self.progress.wake_ack_sem orelse return;
-    InputWake.signalWakeSemaphore(sem);
+    EventLoop.signalWakeSemaphore(sem);
 }
 
 const RealOps = struct {
@@ -106,20 +105,20 @@ const RealOps = struct {
 
     fn waitWakeAck(self: anytype, timeout_ms: i32) void {
         const sem = self.progress.wake_ack_sem orelse return;
-        InputWake.waitWakeSemaphore(sem, timeout_ms);
+        EventLoop.waitWakeSemaphore(sem, timeout_ms);
     }
 
     fn isAlive(term: *const terminal_term.Term) bool {
         return pty_session.isAlive(term);
     }
 
-    fn wakeWindow(self: anytype) void {
-        const input = self.progress.wake_input orelse return;
-        input.wakeWindow();
+    fn wakeEventLoop(self: anytype) void {
+        const event_loop = self.progress.wake_event_loop orelse return;
+        event_loop.wake();
     }
 };
 
-test "progress thread waits and wakes owner thread once" {
+test "progress thread waits and wakes event loop owner thread once" {
     fake_state = .{};
     fake_state.is_alive = false;
     const term = FakeTerm.init();
@@ -129,7 +128,7 @@ test "progress thread waits and wakes owner thread once" {
     try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
 }
 
-test "ack wake clears pending handoff state" {
+test "ack wake clears pending event-loop handoff state" {
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     ctx.progress.wake_pending.store(true, .release);
     try std.testing.expect(wakePending(&ctx));
@@ -137,7 +136,7 @@ test "ack wake clears pending handoff state" {
     try std.testing.expect(!wakePending(&ctx));
 }
 
-test "signal wake coalesces duplicate owner-thread wake requests" {
+test "signal wake coalesces duplicate event-loop wake requests" {
     fake_state = .{};
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     signalWake(&ctx, FakeOps);
@@ -199,8 +198,8 @@ const FakeCtx = struct {
     progress: struct {
         stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-        wake_ack_sem: ?InputWake.WakeSemaphore = null,
-        wake_input: ?*HostInput = null,
+        wake_ack_sem: ?EventLoop.WakeSemaphore = null,
+        wake_event_loop: ?*EventLoop.State = null,
     } = .{},
 };
 
@@ -245,7 +244,7 @@ const FakeOps = struct {
         return fake_state.is_alive;
     }
 
-    fn wakeWindow(_: anytype) void {
+    fn wakeEventLoop(_: anytype) void {
         fake_state.wake_calls += 1;
     }
 };

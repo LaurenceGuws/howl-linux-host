@@ -1,5 +1,5 @@
 const std = @import("std");
-const InputWake = @import("../../input/wake.zig");
+const EventLoop = @import("../../event_loop.zig");
 const c = @import("howl_render_c");
 const pty_session = @import("../pty/session.zig");
 const retained = @import("retained.zig");
@@ -73,7 +73,7 @@ pub fn resize(context: anytype, render_width: c_int, render_height: c_int, logic
     // into the PTY grid can falsely halve the visible row count.
     context.geometry.pending_grid_px_w = rw;
     context.geometry.pending_grid_px_h = rh;
-    context.geometry.last_resize_ns = InputWake.nowNs();
+    context.geometry.last_resize_ns = EventLoop.nowNs();
     terminal_scrollbar.invalidate(context);
 }
 

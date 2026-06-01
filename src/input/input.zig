@@ -1,12 +1,10 @@
 const std = @import("std");
 const keys = @import("keys.zig");
 const mouse = @import("mouse.zig");
-const wake = @import("wake.zig");
 const sdl_c = @import("sdl_c");
 
 const c = sdl_c;
 const max_input_events = 256;
-const max_sdl_events_per_turn = max_input_events;
 
 fn FixedRing(comptime T: type, comptime capacity: comptime_int) type {
     comptime {
@@ -61,7 +59,6 @@ fn FixedRing(comptime T: type, comptime capacity: comptime_int) type {
 }
 
 pub const Input = struct {
-    pub const Signal = wake.EventSignal;
     pub const Keys = keys;
     pub const Mouse = mouse;
     pub const Bindings = keys.Bindings;
@@ -102,7 +99,6 @@ pub const Input = struct {
     current_mods: Mod,
     mouse_motion_enabled: bool,
     mouse_button_down: bool,
-    window_state: wake.State,
 
     pub fn init(self: *Input) void {
         self.* = .{
@@ -122,9 +118,7 @@ pub const Input = struct {
             .current_mods = .{},
             .mouse_motion_enabled = true,
             .mouse_button_down = false,
-            .window_state = .{},
         };
-        self.window_state.init();
         self.updateMouseMotionEvents();
     }
 
@@ -198,25 +192,6 @@ pub const Input = struct {
         return focused;
     }
 
-    pub fn pumpWindow(self: *Input, wait: bool, timeout_ms: ?u32) Signal {
-        if (self.window_state.quitRequested()) return .quit;
-
-        if (wait) {
-            const signal = self.waitAndDrainEvents(timeout_ms);
-            if (signal == .quit) return .quit;
-        } else {
-            const signal = self.drainPendingEvents(0);
-            if (signal == .quit) return .quit;
-        }
-
-        if (self.window_state.quitRequested()) return .quit;
-        return .none;
-    }
-
-    pub fn wakeWindow(self: *Input) void {
-        self.window_state.wakeEventLoop();
-    }
-
     pub fn requestRedraw(self: *Input) void {
         self.redraw_requested = true;
     }
@@ -225,46 +200,8 @@ pub const Input = struct {
         return keys.parseLabel(raw);
     }
 
-    fn waitAndDrainEvents(self: *Input, timeout_ms: ?u32) Signal {
-        var event: c.SDL_Event = undefined;
-        var processed: usize = 0;
-        const received = if (timeout_ms) |timeout|
-            c.SDL_WaitEventTimeout(&event, @intCast(timeout))
-        else
-            c.SDL_WaitEvent(&event);
-        if (received) {
-            self.processEvent(&event);
-            processed = 1;
-        }
-        return self.drainPendingEvents(processed);
-    }
-
-    fn drainPendingEvents(self: *Input, processed_start: usize) Signal {
-        var signal: Signal = if (self.window_state.quitRequested()) .quit else .none;
-        var processed = processed_start;
-        var event: c.SDL_Event = undefined;
-
-        // Bound SDL burst handling to one explicit host-turn slice.
-        while (processed < max_sdl_events_per_turn) : (processed += 1) {
-            if (!c.SDL_PollEvent(&event)) break;
-            self.processEvent(&event);
-            if (self.window_state.quitRequested()) signal = .quit;
-        }
-        return signal;
-    }
-
-    fn processEvent(self: *Input, event: *const c.SDL_Event) void {
-        if (self.window_state.isWakeEventType(event.type)) return;
-
+    pub fn processEvent(self: *Input, event: *const c.SDL_Event) void {
         switch (event.type) {
-            c.SDL_EVENT_QUIT,
-            c.SDL_EVENT_TERMINATING,
-            c.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
-            c.SDL_EVENT_WINDOW_DESTROYED,
-            => {
-                self.window_state.requestQuit();
-                return;
-            },
             c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
                 self.window_focus_changed = true;
                 self.redraw_requested = true;
@@ -704,14 +641,6 @@ fn flushAllSdlEvents() void {
     c.SDL_FlushEvents(0, std.math.maxInt(u32));
 }
 
-fn pushShiftPageUpEvent() !void {
-    var event: c.SDL_Event = std.mem.zeroes(c.SDL_Event);
-    event.type = c.SDL_EVENT_KEY_DOWN;
-    event.key.key = c.SDLK_PAGEUP;
-    event.key.mod = c.SDL_KMOD_SHIFT;
-    try std.testing.expect(c.SDL_PushEvent(&event));
-}
-
 fn singleByteInput(value: u8) keys.ByteInput {
     var chunk = keys.ByteInput{ .len = 1, .buf = undefined };
     chunk.buf[0] = value;
@@ -887,28 +816,6 @@ test "binding action queue preserves FIFO across wraparound" {
         try std.testing.expectEqual(Input.Bindings.Action.terminal_prev_tab, input.drainBindingAction().?);
     }
     try std.testing.expectEqual(@as(?Input.Bindings.Action, null), input.drainBindingAction());
-}
-
-test "pumpWindow bounds one SDL burst per turn" {
-    try std.testing.expect(c.SDL_Init(c.SDL_INIT_EVENTS));
-    defer c.SDL_Quit();
-
-    flushAllSdlEvents();
-    defer flushAllSdlEvents();
-
-    var input: Input = undefined;
-    input.init();
-
-    var i: usize = 0;
-    while (i < max_sdl_events_per_turn + 1) : (i += 1) {
-        try pushShiftPageUpEvent();
-    }
-
-    try std.testing.expectEqual(Input.Signal.none, input.pumpWindow(false, null));
-    try std.testing.expectEqual(@as(i32, @intCast(max_sdl_events_per_turn)), input.scroll_pages);
-
-    try std.testing.expectEqual(Input.Signal.none, input.pumpWindow(false, null));
-    try std.testing.expectEqual(@as(i32, @intCast(max_sdl_events_per_turn + 1)), input.scroll_pages);
 }
 
 test "redraw-only pending does not count as owner work" {

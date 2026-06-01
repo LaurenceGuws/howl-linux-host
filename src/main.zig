@@ -2,8 +2,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const cli_args = @import("cli/args.zig");
 const Config = @import("config/config.zig");
+const EventLoop = @import("event_loop.zig");
 const Input = @import("input/input.zig").Input;
-const InputWake = @import("input/wake.zig");
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("tab_bar/slots.zig").Slots;
 const AppPresent = @import("app/present.zig");
@@ -80,11 +80,23 @@ const App = struct {
     tabs: *TabSlots,
     active_tab_idx: *TabIndex,
     input: *Input,
+    event_loop: *EventLoop.State,
     terminal_input_admitted: bool,
     pending_terminal_present: ?Window.PresentToken,
     frame_pacing: FramePacing.State,
     accounting: ProcessAccounting.State,
     loop_turn_count: u64,
+};
+
+const OpenTabRequest = struct {
+    io: std.Io,
+    conf: *const Config.State,
+    input: *Input,
+    event_loop: *EventLoop.State,
+    feed_record_path: ?[]const u8,
+    window: *Window.State,
+    tabs: *TabSlots,
+    active_tab_idx: *TabIndex,
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -133,21 +145,35 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
     active_tab_idx.* = 0;
 
     const input = try std.heap.c_allocator.create(Input);
+    const event_loop = try std.heap.c_allocator.create(EventLoop.State);
     defer {
         destroyTabs(tabs);
         std.heap.c_allocator.destroy(tabs);
         std.heap.c_allocator.destroy(input);
+        std.heap.c_allocator.destroy(event_loop);
         std.heap.c_allocator.destroy(active_tab_idx);
     }
     input.* = try initInput();
-    input.window_state.initEventTypes();
     input.setBindings(Input.Bindings.Configured.init(conf));
 
-    applyChildEnvironmentPolicy();
-    try openTab(io, conf, input, feed_record_path, window, tabs, active_tab_idx);
+    event_loop.* = .{};
+    event_loop.init();
+    event_loop.initWakeEventType();
 
-    const duration_timer = InputWake.startQuitTimer(options.duration_ms);
-    defer InputWake.stopQuitTimer(duration_timer);
+    applyChildEnvironmentPolicy();
+    try openTab(.{
+        .io = io,
+        .conf = conf,
+        .input = input,
+        .event_loop = event_loop,
+        .feed_record_path = feed_record_path,
+        .window = window,
+        .tabs = tabs,
+        .active_tab_idx = active_tab_idx,
+    });
+
+    const duration_timer = EventLoop.startQuitTimer(options.duration_ms);
+    defer EventLoop.stopQuitTimer(duration_timer);
 
     var app = App{
         .conf = conf,
@@ -158,6 +184,7 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         .tabs = tabs,
         .active_tab_idx = active_tab_idx,
         .input = input,
+        .event_loop = event_loop,
         .terminal_input_admitted = false,
         .pending_terminal_present = null,
         .frame_pacing = FramePacing.State.init(),
@@ -165,7 +192,7 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
             io,
             options.debug_process_accounting,
             options.debug_log_every_ms,
-            InputWake.nowNs(),
+            EventLoop.nowNs(),
         ),
         .loop_turn_count = 0,
     };
@@ -233,7 +260,7 @@ fn runLoopTurn(app: *App) !LoopAction {
     if (quitRequested(app)) |action| return action;
 
     app.frame_pacing.beginTurn();
-    const now_ns = InputWake.nowNs();
+    const now_ns = EventLoop.nowNs();
     const debug_facts = if (app.accounting.enabled)
         collectLoopDebugFacts(app, now_ns)
     else
@@ -257,12 +284,12 @@ fn runLoopTurn(app: *App) !LoopAction {
         app.input.drainRedrawRequested(),
         host_mutations.input_outcome.host_visual_changed,
         terminal_progress,
-        syncActiveBlinkCadence(app, InputWake.nowNs()),
+        syncActiveBlinkCadence(app, EventLoop.nowNs()),
         activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
     );
     app.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
     if (terminal_progress.keep_running) {
-        if (app.frame_pacing.terminalKeepWakePermission()) app.input.wakeWindow();
+        if (app.frame_pacing.terminalKeepWakePermission()) app.event_loop.wake();
     }
     if (present_completed) {
         maybeLogLoopTurn(app, now_ns, debug_facts, intent);
@@ -405,13 +432,13 @@ fn tabsPendingRuntimeObligationCountWith(tabs: anytype, now_ns: u64) u8 {
 }
 
 fn quitRequested(app: *const App) ?LoopAction {
-    if (!app.input.window_state.quitRequested()) return null;
+    if (!app.event_loop.quitRequested()) return null;
     return .quit;
 }
 
 fn pumpWindowEvents(app: *App, admission: LoopAdmission) LoopAction {
     app.accounting.countSdlPump(admission.wait_for_window);
-    const signal = app.input.pumpWindow(admission.wait_for_window, admission.wait_ms);
+    const signal = app.event_loop.pumpInput(app.input, admission.wait_for_window, admission.wait_ms);
     return switch (signal) {
         .none => .continue_running,
         .quit => .quit,
@@ -486,7 +513,7 @@ fn applyFocusChange(app: *App) void {
 fn drainBindingActions(app: *App) !void {
     while (true) {
         const action = app.input.drainBindingAction() orelse return;
-        try handleBindingAction(app.conf, app.feed_record_path, app.io, app.input, app.window, app.tabs, app.active_tab_idx, action);
+        try handleBindingAction(app.conf, app.feed_record_path, app.io, app.input, app.event_loop, app.window, app.tabs, app.active_tab_idx, action);
     }
 }
 
@@ -614,7 +641,7 @@ fn submitPresent(app: *App, frame: RenderFrame, plan: PresentPlan) PresentSubmis
     app.frame_pacing.noteRenderSubmittedAt(.{
         .reason = submission.reason,
         .submitted = submission.submitted,
-    }, InputWake.nowNs());
+    }, EventLoop.nowNs());
     return submission;
 }
 
@@ -800,6 +827,7 @@ fn handleBindingAction(
     feed_record_path: ?[]const u8,
     io: std.Io,
     input: *Input,
+    event_loop: *EventLoop.State,
     window: *Window.State,
     tabs: *TabSlots,
     active_tab_idx: *TabIndex,
@@ -811,7 +839,16 @@ fn handleBindingAction(
         .zoom_reset => _ = activeContext(tabs.items(), active_tab_idx.*).resetFontSize(),
         .zoom_stress_toggle => _ = activeContext(tabs.items(), active_tab_idx.*).toggleStressFontSize(),
         .terminal_paste => pasteIntoActiveTab(activeContext(tabs.items(), active_tab_idx.*)),
-        .terminal_new_tab => try openTab(io, conf, input, feed_record_path, window, tabs, active_tab_idx),
+        .terminal_new_tab => try openTab(.{
+            .io = io,
+            .conf = conf,
+            .input = input,
+            .event_loop = event_loop,
+            .feed_record_path = feed_record_path,
+            .window = window,
+            .tabs = tabs,
+            .active_tab_idx = active_tab_idx,
+        }),
         .terminal_close_tab => closeActiveTab(window, tabs, active_tab_idx),
         .terminal_next_tab => selectRelative(window, tabs.items(), active_tab_idx, 1),
         .terminal_prev_tab => selectRelative(window, tabs.items(), active_tab_idx, -1),
@@ -819,26 +856,26 @@ fn handleBindingAction(
     }
 }
 
-noinline fn openTab(io: std.Io, conf: *const Config.State, input: *Input, feed_record_path: ?[]const u8, window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex) !void {
-    const items = tabs.items();
+noinline fn openTab(request: OpenTabRequest) !void {
+    const items = request.tabs.items();
     assert(items.len <= max_tabs);
-    const slot = tabs.acquireSlot() orelse return;
-    errdefer tabs.releaseSlot(slot.slot_idx);
+    const slot = request.tabs.acquireSlot() orelse return;
+    errdefer request.tabs.releaseSlot(slot.slot_idx);
 
-    const px = window.contentPixelSize(conf.tab_bar.height);
-    const logical = window.contentLogicalSize(conf.tab_bar.height);
-    try slot.tab.init(io, input, feed_record_path, &conf.term, px.width, px.height, logical.width, logical.height);
+    const px = request.window.contentPixelSize(request.conf.tab_bar.height);
+    const logical = request.window.contentLogicalSize(request.conf.tab_bar.height);
+    try slot.tab.init(request.io, request.input, request.event_loop, request.feed_record_path, &request.conf.term, px.width, px.height, logical.width, logical.height);
     errdefer slot.tab.deinit();
-    input.requestRedraw();
+    request.input.requestRedraw();
 
-    tabs.appendActive(slot.slot_idx, slot.tab);
-    const updated = tabs.items();
+    request.tabs.appendActive(slot.slot_idx, slot.tab);
+    const updated = request.tabs.items();
     assert(updated.len > 0);
     assert(updated.len <= max_tabs);
-    active_tab_idx.* = @intCast(updated.len - 1);
-    assert(tabIndexInRange(updated, active_tab_idx.*));
-    syncTerminalFocus(window, updated, active_tab_idx.*);
-    syncActiveWindowTitle(window, activeContext(updated, active_tab_idx.*));
+    request.active_tab_idx.* = @intCast(updated.len - 1);
+    assert(tabIndexInRange(updated, request.active_tab_idx.*));
+    syncTerminalFocus(request.window, updated, request.active_tab_idx.*);
+    syncActiveWindowTitle(request.window, activeContext(updated, request.active_tab_idx.*));
 }
 
 fn closeActiveTab(window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex) void {
