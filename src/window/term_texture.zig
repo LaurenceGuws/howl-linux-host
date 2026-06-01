@@ -26,6 +26,8 @@ pub const RenderResourceTextures = struct {
         render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX,
     success_count: u64 = 0,
     failure_count: u64 = 0,
+    failure_bucket_last: ?FailureBucket = null,
+    failure_resource_kind_last: ?u32 = null,
     diagnostics: Diagnostics = .{},
 
     const Slot = struct {
@@ -108,6 +110,8 @@ pub const RenderResourceTextures = struct {
     }
 
     pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
+        self.failure_bucket_last = null;
+        self.failure_resource_kind_last = null;
         self.diagnostics.surface_count +|= 1;
         self.diagnostics.snapshot_seq = surface.token.snapshot_seq;
         self.diagnostics.surface_seq = surface.token.surface_seq;
@@ -117,7 +121,16 @@ pub const RenderResourceTextures = struct {
         if (!self.realizeSurfaceLocked(surface)) {
             self.failure_count +|= 1;
             self.refreshSlotDiagnostics();
-            return false;
+            const bucket = self.failure_bucket_last orelse {
+                std.debug.panic("trusted render texture failure without bucket", .{});
+            };
+            return switch (trustedTextureFailureAction(bucket, self.failure_resource_kind_last)) {
+                .operating,
+                .reserved_unsupported,
+                => false,
+                .invariant => std.debug.panic("trusted render texture failure: bucket={s}", .{@tagName(bucket)}),
+                .defensive => false,
+            };
         }
         self.success_count +|= 1;
         self.refreshSlotDiagnostics();
@@ -276,7 +289,7 @@ pub const RenderResourceTextures = struct {
         );
         for (creates) |create| {
             if (next.noteCreate(create)) |bucket| {
-                self.recordFailure(bucket);
+                self.recordFailureForResource(bucket, create.resource.kind);
                 return false;
             }
         }
@@ -516,6 +529,18 @@ pub const RenderResourceTextures = struct {
     }
 
     fn recordFailure(self: *RenderResourceTextures, bucket: FailureBucket) void {
+        self.failure_bucket_last = bucket;
+        self.failure_resource_kind_last = null;
+        self.recordFailureCounters(bucket);
+    }
+
+    fn recordFailureForResource(self: *RenderResourceTextures, bucket: FailureBucket, resource_kind: u32) void {
+        self.failure_bucket_last = bucket;
+        self.failure_resource_kind_last = resource_kind;
+        self.recordFailureCounters(bucket);
+    }
+
+    fn recordFailureCounters(self: *RenderResourceTextures, bucket: FailureBucket) void {
         switch (bucket) {
             .invalid_spans => self.diagnostics.failure_invalid_spans +|= 1,
             .invalid_command_shape => self.diagnostics.failure_invalid_command_shape +|= 1,
@@ -579,6 +604,29 @@ pub const RenderSurfaceSummary = struct {
     glyph_count: u32 = 0,
     other_count: u32 = 0,
 };
+
+pub const TrustedTextureFailureAction = enum { invariant, operating, reserved_unsupported, defensive };
+
+pub fn trustedTextureFailureAction(bucket: RenderResourceTextures.FailureBucket, resource_kind: ?u32) TrustedTextureFailureAction {
+    return switch (bucket) {
+        .gl_error => .operating,
+        .unsupported_resource_format => if (resource_kind == render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR)
+            .reserved_unsupported
+        else
+            .invariant,
+        .invalid_spans,
+        .invalid_command_shape,
+        .invalid_order,
+        .upload_bounds,
+        .tombstone_value_reuse,
+        .capacity,
+        => .invariant,
+    };
+}
+
+fn trustedTextureMissingFailureAction() TrustedTextureFailureAction {
+    return .invariant;
+}
 
 fn validateSurfaceOrderStatic(surface: *const render_c.HowlRenderSurface) bool {
     const creates = spanSlice(
@@ -1867,6 +1915,85 @@ test "render surface diagnostics record slot maxima and gl error bucket" {
     try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_delete_textures);
 }
 
+test "trusted texture failure actions classify gl error as operating" {
+    try std.testing.expectEqual(
+        TrustedTextureFailureAction.operating,
+        trustedTextureFailureAction(.gl_error, null),
+    );
+}
+
+test "trusted texture failure actions classify trusted invalid buckets as invariants" {
+    inline for (std.meta.tags(RenderResourceTextures.FailureBucket)) |bucket| {
+        switch (bucket) {
+            .gl_error,
+            .unsupported_resource_format,
+            => {},
+            .invalid_spans,
+            .invalid_command_shape,
+            .invalid_order,
+            .upload_bounds,
+            .tombstone_value_reuse,
+            .capacity,
+            => try std.testing.expectEqual(
+                TrustedTextureFailureAction.invariant,
+                trustedTextureFailureAction(bucket, null),
+            ),
+        }
+    }
+}
+
+test "trusted texture failure action preserves reserved color glyph unsupported" {
+    try std.testing.expectEqual(
+        TrustedTextureFailureAction.reserved_unsupported,
+        trustedTextureFailureAction(
+            .unsupported_resource_format,
+            render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR,
+        ),
+    );
+    try std.testing.expectEqual(
+        TrustedTextureFailureAction.invariant,
+        trustedTextureFailureAction(.unsupported_resource_format, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
+    );
+}
+
+test "trusted texture upload command failures distinguish gl operating from invariant validation" {
+    try std.testing.expectEqual(
+        TrustedTextureFailureAction.operating,
+        trustedTextureFailureAction(.gl_error, null),
+    );
+    try std.testing.expectEqual(
+        TrustedTextureFailureAction.invariant,
+        trustedTextureFailureAction(.invalid_command_shape, null),
+    );
+    try std.testing.expectEqual(
+        TrustedTextureFailureAction.invariant,
+        trustedTextureFailureAction(.upload_bounds, null),
+    );
+}
+
+test "trusted fill upload oversized row is invariant host bound" {
+    var command = std.mem.zeroes(render_c.HowlRenderSurfaceCommand);
+    command.kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT;
+    command.rect = .{ .x_px = 0, .y_px = 0, .width_px = 8193, .height_px = 1 };
+
+    try std.testing.expect(!fillCommandFitsHostRow(command));
+    try std.testing.expectEqual(
+        TrustedTextureFailureAction.invariant,
+        trustedFillHostRowFailureAction(command).?,
+    );
+}
+
+test "trusted texture unrecorded failure action is invariant not gl error" {
+    try std.testing.expectEqual(
+        TrustedTextureFailureAction.invariant,
+        trustedTextureMissingFailureAction(),
+    );
+    try std.testing.expectEqual(
+        TrustedTextureFailureAction.operating,
+        trustedTextureFailureAction(.gl_error, null),
+    );
+}
+
 test "render surface create validation records precise failure buckets" {
     const resource = testResource(8, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
     var unsupported = [_]render_c.HowlRenderResourceCreate{.{
@@ -1952,10 +2079,10 @@ pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
 }
 
 pub fn uploadRenderSurfaceFillOnly(host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
-    if (!renderSurfaceFillOnly(render_surface)) return false;
-    if (host_surface.host_surface_id == 0) return false;
-    if (host_surface.width != render_surface.render_px.width) return false;
-    if (host_surface.height != render_surface.render_px.height) return false;
+    std.debug.assert(renderSurfaceFillOnly(render_surface));
+    std.debug.assert(host_surface.host_surface_id != 0);
+    std.debug.assert(host_surface.width == render_surface.render_px.width);
+    std.debug.assert(host_surface.height == render_surface.render_px.height);
 
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(host_surface.host_surface_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
@@ -1974,10 +2101,10 @@ pub fn uploadRenderSurfaceFillOnly(host_surface: render_c.HowlRenderHostSurface,
 }
 
 pub fn uploadRenderSurfaceFillPatch(host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
-    if (!renderSurfaceFillPatch(render_surface)) return false;
-    if (host_surface.host_surface_id == 0) return false;
-    if (host_surface.width != render_surface.render_px.width) return false;
-    if (host_surface.height != render_surface.render_px.height) return false;
+    std.debug.assert(renderSurfaceFillPatch(render_surface));
+    std.debug.assert(host_surface.host_surface_id != 0);
+    std.debug.assert(host_surface.width == render_surface.render_px.width);
+    std.debug.assert(host_surface.height == render_surface.render_px.height);
 
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(host_surface.host_surface_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
@@ -1996,29 +2123,29 @@ pub fn uploadRenderSurfaceFillPatch(host_surface: render_c.HowlRenderHostSurface
 }
 
 pub fn uploadRenderSurfaceSprites(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
-    if (!renderSurfaceSprite(render_surface)) return false;
+    std.debug.assert(renderSurfaceSprite(render_surface));
     return uploadRenderSurfaceCommands(textures, host_surface, render_surface);
 }
 
 pub fn uploadRenderSurfaceSpritePatch(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
-    if (!renderSurfaceSpritePatch(render_surface)) return false;
+    std.debug.assert(renderSurfaceSpritePatch(render_surface));
     return uploadRenderSurfaceCommands(textures, host_surface, render_surface);
 }
 
 pub fn uploadRenderSurfaceGlyphs(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
-    if (!renderSurfaceGlyphs(render_surface)) return false;
+    std.debug.assert(renderSurfaceGlyphs(render_surface));
     return uploadRenderSurfaceCommands(textures, host_surface, render_surface);
 }
 
 pub fn uploadRenderSurfaceGlyphPatch(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
-    if (!renderSurfaceGlyphPatch(render_surface)) return false;
+    std.debug.assert(renderSurfaceGlyphPatch(render_surface));
     return uploadRenderSurfaceCommands(textures, host_surface, render_surface);
 }
 
 fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
-    if (host_surface.host_surface_id == 0) return false;
-    if (host_surface.width != render_surface.render_px.width) return false;
-    if (host_surface.height != render_surface.render_px.height) return false;
+    std.debug.assert(host_surface.host_surface_id != 0);
+    std.debug.assert(host_surface.width == render_surface.render_px.width);
+    std.debug.assert(host_surface.height == render_surface.render_px.height);
 
     var framebuffer: c_uint = 0;
     glGenFramebuffers(1, &framebuffer);
@@ -2089,19 +2216,25 @@ fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: 
             render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             => drawFillCommand(host_surface, command),
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
-                const slot = textures.textureSlotFor(command.resource) orelse return false;
+                const slot = textures.textureSlotFor(command.resource) orelse {
+                    std.debug.panic("trusted sprite command missing texture slot", .{});
+                };
                 if (resourceHasFutureUpload(render_surface, command.resource, @intCast(command_index))) {
-                    return false;
+                    std.debug.panic("trusted sprite command used before final upload", .{});
                 }
-                if (!drawSpriteCommand(host_surface, command, slot)) return false;
+                if (!drawSpriteCommand(host_surface, command, slot)) {
+                    std.debug.panic("trusted sprite command failed validation", .{});
+                }
             },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
                 if (glyphCommandHasFutureUpload(render_surface, command, @intCast(command_index))) {
-                    return false;
+                    std.debug.panic("trusted glyph command used before final upload", .{});
                 }
-                if (!drawGlyphCommand(textures, host_surface, command)) return false;
+                if (!drawGlyphCommand(textures, host_surface, command)) {
+                    std.debug.panic("trusted glyph command failed validation", .{});
+                }
             },
-            else => return false,
+            else => std.debug.panic("trusted render surface has unknown command kind={}", .{command.kind}),
         }
     }
     return gl_c.glGetError() == 0;
@@ -2357,9 +2490,17 @@ fn renderSurfaceFullClear(surface: *const render_c.HowlRenderSurface, command: r
 fn uploadFillCommand(command: render_c.HowlRenderSurfaceCommand) bool {
     const width = command.rect.width_px;
     const height = command.rect.height_px;
-    if (width == 0 or height == 0) return false;
-    const row_pixels_max = 8192;
-    if (width > row_pixels_max) return false;
+    std.debug.assert(width != 0);
+    std.debug.assert(height != 0);
+    if (trustedFillHostRowFailureAction(command)) |action| {
+        switch (action) {
+            .invariant => std.debug.panic("trusted fill command exceeds host row buffer: width={}", .{width}),
+            .operating,
+            .reserved_unsupported,
+            .defensive,
+            => unreachable,
+        }
+    }
     var row: [row_pixels_max * 4]u8 = undefined;
     const rgba = unpackRenderSurfaceRgba(command.color_rgba);
     var x: usize = 0;
@@ -2387,6 +2528,17 @@ fn uploadFillCommand(command: render_c.HowlRenderSurfaceCommand) bool {
     return gl_c.glGetError() == 0;
 }
 
+const row_pixels_max = 8192;
+
+fn fillCommandFitsHostRow(command: render_c.HowlRenderSurfaceCommand) bool {
+    return command.rect.width_px <= row_pixels_max;
+}
+
+fn trustedFillHostRowFailureAction(command: render_c.HowlRenderSurfaceCommand) ?TrustedTextureFailureAction {
+    if (fillCommandFitsHostRow(command)) return null;
+    return .invariant;
+}
+
 fn drawFillCommand(surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand) void {
     gl_c.glDisable(gl_c.GL_TEXTURE_2D);
     const rgba = unpackRenderSurfaceRgba(command.color_rgba);
@@ -2395,7 +2547,7 @@ fn drawFillCommand(surface: render_c.HowlRenderHostSurface, command: render_c.Ho
 }
 
 fn drawSpriteCommand(surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand, slot: RenderResourceTextures.Slot) bool {
-    if (!spriteUploadCoversCommand(slot, command.rect)) return false;
+    std.debug.assert(spriteUploadCoversCommand(slot, command.rect));
     gl_c.glEnable(gl_c.GL_TEXTURE_2D);
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(slot.texture_id));
@@ -2458,8 +2610,10 @@ fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRen
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
     var bound_texture_id: u64 = 0;
     for (glyphs) |glyph| {
-        const slot = textures.textureSlotFor(glyph.atlas_resource) orelse return false;
-        if (!rectFitsResource(glyph.atlas_rect, slot.width_px, slot.height_px)) return false;
+        const slot = textures.textureSlotFor(glyph.atlas_resource) orelse {
+            std.debug.panic("trusted glyph command missing atlas texture slot", .{});
+        };
+        std.debug.assert(rectFitsResource(glyph.atlas_rect, slot.width_px, slot.height_px));
         if (bound_texture_id != slot.texture_id) {
             bound_texture_id = slot.texture_id;
             gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(bound_texture_id));

@@ -105,6 +105,30 @@ pub const PreparedRenderResourcePlanStatus = enum(u8) {
     invalid_upload,
 };
 
+pub const TrustedRenderSurfaceAction = enum { ok, invariant, reserved_unsupported, defensive };
+
+pub fn trustedResourcePlanStatusAction(status: PreparedRenderResourcePlanStatus) TrustedRenderSurfaceAction {
+    return switch (status) {
+        .ok => .ok,
+        .idle,
+        .call_failed,
+        .null_surface,
+        .version_mismatch,
+        .create_span_invalid,
+        .upload_span_invalid,
+        .command_span_invalid,
+        .retire_span_invalid,
+        .upload_bytes_overflow,
+        .upload_bytes_max_mismatch,
+        .unsupported_command,
+        .unsupported_resource,
+        .invalid_command,
+        .invalid_resource,
+        .invalid_upload,
+        => .invariant,
+    };
+}
+
 pub const RenderResourceStoreStatus = enum(u8) {
     ok,
     capacity_overflow,
@@ -116,6 +140,21 @@ pub const RenderResourceStoreStatus = enum(u8) {
     invalid_upload,
     invalid_retire,
 };
+
+pub fn trustedStoreStatusAction(status: RenderResourceStoreStatus) TrustedRenderSurfaceAction {
+    return switch (status) {
+        .ok => .ok,
+        .capacity_overflow,
+        .operation_capacity_overflow,
+        .duplicate_create,
+        .missing_resource,
+        .retired_resource,
+        .invalid_resource,
+        .invalid_upload,
+        .invalid_retire,
+        => .invariant,
+    };
+}
 
 pub const TextureResourceOperationKind = enum(u8) {
     create_texture,
@@ -544,6 +583,32 @@ pub const PreparedRenderSurfaceProbeStatus = enum(u8) {
     invalid_resource,
     invalid_upload,
 };
+
+pub fn trustedProbeStatusAction(status: PreparedRenderSurfaceProbeStatus) TrustedRenderSurfaceAction {
+    return switch (status) {
+        .ok => .ok,
+        .idle,
+        .call_failed,
+        .null_surface,
+        .version_mismatch,
+        .render_mismatch,
+        .cell_mismatch,
+        .grid_mismatch,
+        .damage_span_invalid,
+        .create_span_invalid,
+        .upload_span_invalid,
+        .command_span_invalid,
+        .retire_span_invalid,
+        .upload_bytes_overflow,
+        .upload_bytes_max_mismatch,
+        .unsupported_command,
+        .unsupported_resource,
+        .invalid_command,
+        .invalid_resource,
+        .invalid_upload,
+        => .invariant,
+    };
+}
 
 pub const State = struct {
     surface_layout: SurfaceLayout,
@@ -1764,6 +1829,78 @@ test "surface layout sync reports grid and cell changes" {
     const changed = state.surfaceLayoutSync(next);
     try std.testing.expect(changed.changed);
     try std.testing.expect(changed.grid_changed);
+}
+
+test "trusted resource plan status actions classify invariant statuses" {
+    inline for (std.meta.tags(PreparedRenderResourcePlanStatus)) |status| {
+        const expected: TrustedRenderSurfaceAction = switch (status) {
+            .ok => .ok,
+            .idle,
+            .call_failed,
+            .null_surface,
+            .version_mismatch,
+            .create_span_invalid,
+            .upload_span_invalid,
+            .command_span_invalid,
+            .retire_span_invalid,
+            .upload_bytes_overflow,
+            .upload_bytes_max_mismatch,
+            .unsupported_command,
+            .unsupported_resource,
+            .invalid_command,
+            .invalid_resource,
+            .invalid_upload,
+            => .invariant,
+        };
+        try std.testing.expectEqual(expected, trustedResourcePlanStatusAction(status));
+    }
+}
+
+test "trusted probe status actions classify invariant statuses" {
+    inline for (std.meta.tags(PreparedRenderSurfaceProbeStatus)) |status| {
+        const expected: TrustedRenderSurfaceAction = switch (status) {
+            .ok => .ok,
+            .idle,
+            .call_failed,
+            .null_surface,
+            .version_mismatch,
+            .render_mismatch,
+            .cell_mismatch,
+            .grid_mismatch,
+            .damage_span_invalid,
+            .create_span_invalid,
+            .upload_span_invalid,
+            .command_span_invalid,
+            .retire_span_invalid,
+            .upload_bytes_overflow,
+            .upload_bytes_max_mismatch,
+            .unsupported_command,
+            .unsupported_resource,
+            .invalid_command,
+            .invalid_resource,
+            .invalid_upload,
+            => .invariant,
+        };
+        try std.testing.expectEqual(expected, trustedProbeStatusAction(status));
+    }
+}
+
+test "trusted store status actions classify invariant statuses" {
+    inline for (std.meta.tags(RenderResourceStoreStatus)) |status| {
+        const expected: TrustedRenderSurfaceAction = switch (status) {
+            .ok => .ok,
+            .capacity_overflow,
+            .operation_capacity_overflow,
+            .duplicate_create,
+            .missing_resource,
+            .retired_resource,
+            .invalid_resource,
+            .invalid_upload,
+            .invalid_retire,
+            => .invariant,
+        };
+        try std.testing.expectEqual(expected, trustedStoreStatusAction(status));
+    }
 }
 
 test "present in flight contributes host-owned pending state" {
