@@ -83,13 +83,9 @@ pub const Context = struct {
         submit_count: u64 = 0,
         v0_realization_us_last: u64 = 0,
         v0_realization_us_max: u64 = 0,
-        full_rgba_upload_us_last: u64 = 0,
-        full_rgba_upload_us_max: u64 = 0,
-        full_rgba_gl_before: term_texture.ProtocolV0Textures.GlStateSample = .{},
-        full_rgba_gl_after: term_texture.ProtocolV0Textures.GlStateSample = .{},
-        full_rgba_gl_error: u64 = 0,
+        host_upload_us_last: u64 = 0,
+        host_upload_us_max: u64 = 0,
         logged_v0_failure_count: u64 = 0,
-        logged_full_rgba_gl_error: u64 = 0,
         submit_failure_count: u64 = 0,
         prepare_failure_count: u64 = 0,
         protocol_v0_emit_status: i32 = render_c.HOWL_RENDER_V0_EMIT_OK,
@@ -108,22 +104,21 @@ pub const Context = struct {
         v0_unsupported_sprite_command_count: u64 = 0,
         v0_unsupported_glyph_command_count: u64 = 0,
         v0_unsupported_other_command_count: u64 = 0,
-        v0_full_rgba_fallback_count: u64 = 0,
         v0_fill_patch_frame_count: u64 = 0,
         v0_fill_patch_present_count: u64 = 0,
-        v0_fill_patch_fallback_count: u64 = 0,
+        v0_fill_patch_failure_count: u64 = 0,
         v0_fill_only_frame_count: u64 = 0,
         v0_fill_only_present_count: u64 = 0,
-        v0_fill_only_fallback_count: u64 = 0,
+        v0_fill_only_failure_count: u64 = 0,
         v0_sprite_frame_count: u64 = 0,
         v0_sprite_present_count: u64 = 0,
-        v0_sprite_fallback_count: u64 = 0,
+        v0_sprite_failure_count: u64 = 0,
         v0_sprite_patch_frame_count: u64 = 0,
         v0_sprite_patch_present_count: u64 = 0,
-        v0_sprite_patch_fallback_count: u64 = 0,
+        v0_sprite_patch_failure_count: u64 = 0,
         v0_glyph_frame_count: u64 = 0,
         v0_glyph_present_count: u64 = 0,
-        v0_glyph_fallback_count: u64 = 0,
+        v0_glyph_failure_count: u64 = 0,
     };
 
     term: HowlTerm,
@@ -626,17 +621,11 @@ pub const Context = struct {
                 v0_resources_realized = self.protocol_v0_textures.realizeFrame(frame);
                 self.recordProtocolV0Realization(renderUs(v0_start_ns));
             }
-            const pixels: []const u8 = if (prepared_upload.buffer.rgba_pixels.len == 0)
-                &.{}
-            else
-                prepared_upload.buffer.rgba_pixels.ptr[0..prepared_upload.buffer.rgba_pixels.len];
-            const full_rgba_start_ns = InputWindow.nowNs();
+            const upload_start_ns = InputWindow.nowNs();
             self.protocol_v0_submit_diagnostics.protocol_v0_emit_status =
                 prepared_upload.diagnostics.protocol_v0_emit_status;
             self.protocol_v0_submit_diagnostics.protocol_v0_resource_plan_status =
                 prepared_upload.protocol_v0_resource_plan.status;
-            self.protocol_v0_submit_diagnostics.full_rgba_gl_before =
-                term_texture.sampleGlState();
             const had_matching_surface = self.term_texture.host_surface_id != 0 and
                 self.term_texture.width == prepared_upload.info.render_px.width and
                 self.term_texture.height == prepared_upload.info.render_px.height;
@@ -645,9 +634,7 @@ pub const Context = struct {
                 prepared_upload.info.render_px.width,
                 prepared_upload.info.render_px.height,
             )) {
-                self.protocol_v0_submit_diagnostics.full_rgba_gl_after =
-                    term_texture.sampleGlState();
-                self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
+                self.recordHostUpload(renderUs(upload_start_ns));
                 return false;
             }
             const v0_uploaded = if (prepared_upload.protocol_v0_frame) |frame| blk: {
@@ -658,22 +645,13 @@ pub const Context = struct {
                 break :blk false;
             };
             if (!v0_uploaded) {
-                self.protocol_v0_submit_diagnostics.v0_full_rgba_fallback_count +|= 1;
-            }
-            if (!v0_uploaded and !term_texture.uploadPreparedBuffer(self.term_texture, pixels)) {
-                self.protocol_v0_submit_diagnostics.full_rgba_gl_after =
-                    term_texture.sampleGlState();
                 self.term_texture.width = 0;
                 self.term_texture.height = 0;
-                self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
+                self.recordHostUpload(renderUs(upload_start_ns));
+                self.logProtocolV0Diagnostics();
                 return false;
             }
-            self.protocol_v0_submit_diagnostics.full_rgba_gl_after =
-                term_texture.sampleGlState();
-            if (self.protocol_v0_submit_diagnostics.full_rgba_gl_after.error_code != 0) {
-                self.protocol_v0_submit_diagnostics.full_rgba_gl_error +|= 1;
-            }
-            self.recordFullRgbaUpload(renderUs(full_rgba_start_ns));
+            self.recordHostUpload(renderUs(upload_start_ns));
             self.logProtocolV0Diagnostics();
             return true;
         }
@@ -689,7 +667,7 @@ pub const Context = struct {
                     self.protocol_v0_submit_diagnostics.v0_sprite_present_count +|= 1;
                     return true;
                 }
-                self.protocol_v0_submit_diagnostics.v0_sprite_fallback_count +|= 1;
+                self.protocol_v0_submit_diagnostics.v0_sprite_failure_count +|= 1;
                 return false;
             }
             if (term_texture.protocolV0SpritePatch(frame)) {
@@ -700,7 +678,7 @@ pub const Context = struct {
                     self.protocol_v0_submit_diagnostics.v0_sprite_patch_present_count +|= 1;
                     return true;
                 }
-                self.protocol_v0_submit_diagnostics.v0_sprite_patch_fallback_count +|= 1;
+                self.protocol_v0_submit_diagnostics.v0_sprite_patch_failure_count +|= 1;
                 return false;
             }
             if (term_texture.protocolV0GlyphFrame(frame)) {
@@ -709,7 +687,7 @@ pub const Context = struct {
                     self.protocol_v0_submit_diagnostics.v0_glyph_present_count +|= 1;
                     return true;
                 }
-                self.protocol_v0_submit_diagnostics.v0_glyph_fallback_count +|= 1;
+                self.protocol_v0_submit_diagnostics.v0_glyph_failure_count +|= 1;
                 return false;
             }
             if (term_texture.protocolV0GlyphPatch(frame)) {
@@ -720,19 +698,17 @@ pub const Context = struct {
                     self.protocol_v0_submit_diagnostics.v0_glyph_present_count +|= 1;
                     return true;
                 }
-                self.protocol_v0_submit_diagnostics.v0_glyph_fallback_count +|= 1;
+                self.protocol_v0_submit_diagnostics.v0_glyph_failure_count +|= 1;
                 return false;
             }
             if (!term_texture.protocolV0FillOnly(frame)) {
                 if (term_texture.protocolV0FillPatch(frame)) {
                     self.protocol_v0_submit_diagnostics.v0_fill_patch_frame_count +|= 1;
-                    if (had_matching_surface and
-                        term_texture.uploadProtocolV0FillPatch(self.term_texture, frame))
-                    {
+                    if (term_texture.uploadProtocolV0FillPatch(self.term_texture, frame)) {
                         self.protocol_v0_submit_diagnostics.v0_fill_patch_present_count +|= 1;
                         return true;
                     }
-                    self.protocol_v0_submit_diagnostics.v0_fill_patch_fallback_count +|= 1;
+                    self.protocol_v0_submit_diagnostics.v0_fill_patch_failure_count +|= 1;
                     return false;
                 }
                 recordUnsupportedProtocolV0Shape(self, frame);
@@ -743,7 +719,7 @@ pub const Context = struct {
                 self.protocol_v0_submit_diagnostics.v0_fill_only_present_count +|= 1;
                 return true;
             }
-            self.protocol_v0_submit_diagnostics.v0_fill_only_fallback_count +|= 1;
+            self.protocol_v0_submit_diagnostics.v0_fill_only_failure_count +|= 1;
             return false;
         }
 
@@ -819,7 +795,7 @@ pub const Context = struct {
                     .width = prepared_upload.info.render_px.width,
                     .height = prepared_upload.info.render_px.height,
                 },
-                .uploads_committed = prepared_upload.buffer.uploads_committed,
+                .uploads_committed = 0,
                 .render_us = renderUs(start_ns),
             };
         }
@@ -861,7 +837,7 @@ pub const Context = struct {
         else
             submitFailureReason(self.term.render.lastSubmitFailure());
         if (failure != .none) {
-            self.recordSubmitFailure(failure, upload.info, upload.buffer, execution);
+            self.recordSubmitFailure(failure, upload.info, execution);
         }
         if (result == .rendered) {
             self.term_texture = submit_result.host_surface;
@@ -908,7 +884,6 @@ pub const Context = struct {
         self: *Context,
         reason: SubmitFailureReason,
         info: render_c.HowlRenderPreparedSurfaceInfo,
-        buffer: render_c.HowlRenderPreparedSurfaceBuffer,
         execution: render_c.HowlRenderSubmitExecution,
     ) void {
         self.protocol_v0_submit_diagnostics.submit_failure_count +|= 1;
@@ -927,7 +902,7 @@ pub const Context = struct {
                 execution.host_surface.width,
                 execution.host_surface.height,
                 execution.host_surface.host_surface_id,
-                buffer.uploads_committed,
+                execution.uploads_committed,
                 execution.render_us,
             },
         );
@@ -958,11 +933,11 @@ pub const Context = struct {
             @max(self.protocol_v0_submit_diagnostics.v0_realization_us_max, elapsed_us);
     }
 
-    fn recordFullRgbaUpload(self: *Context, elapsed_us: u64) void {
+    fn recordHostUpload(self: *Context, elapsed_us: u64) void {
         self.protocol_v0_submit_diagnostics.submit_count +|= 1;
-        self.protocol_v0_submit_diagnostics.full_rgba_upload_us_last = elapsed_us;
-        self.protocol_v0_submit_diagnostics.full_rgba_upload_us_max =
-            @max(self.protocol_v0_submit_diagnostics.full_rgba_upload_us_max, elapsed_us);
+        self.protocol_v0_submit_diagnostics.host_upload_us_last = elapsed_us;
+        self.protocol_v0_submit_diagnostics.host_upload_us_max =
+            @max(self.protocol_v0_submit_diagnostics.host_upload_us_max, elapsed_us);
     }
 
     fn logProtocolV0Diagnostics(self: *Context) void {
@@ -993,15 +968,6 @@ pub const Context = struct {
                 should_log = true;
             }
         }
-        const rgba_error = self.protocol_v0_submit_diagnostics.full_rgba_gl_error;
-        if (rgba_error > self.protocol_v0_submit_diagnostics.logged_full_rgba_gl_error) {
-            if (self.protocol_v0_submit_diagnostics.logged_full_rgba_gl_error <
-                max_first_failure_logs)
-            {
-                self.protocol_v0_submit_diagnostics.logged_full_rgba_gl_error = rgba_error;
-                should_log = true;
-            }
-        }
         return should_log;
     }
 
@@ -1020,7 +986,6 @@ pub const Context = struct {
                 "slots live={} retired={} empty={} max_live={} max_retired={} " ++
                 "v0_emit_status={} resource_plan_status={s} " ++
                 "v0_no_sidecar={} v0_unsupported_shape={} " ++
-                "rgba_fallback={} " ++
                 "no_sidecar null={} call_failed={} unsupported={} invalid={} " ++
                 "overflow={} other={}\n",
             .{
@@ -1048,7 +1013,6 @@ pub const Context = struct {
                 @tagName(submit_diag.protocol_v0_resource_plan_status),
                 submit_diag.v0_no_sidecar_count,
                 submit_diag.v0_unsupported_shape_count,
-                submit_diag.v0_full_rgba_fallback_count,
                 submit_diag.v0_no_sidecar_null_frame_count,
                 submit_diag.v0_no_sidecar_call_failed_count,
                 submit_diag.v0_no_sidecar_unsupported_count,
@@ -1060,10 +1024,10 @@ pub const Context = struct {
         std.debug.print(
             "howl-debug v0 shape unsupported no_full_clear={} clear={} fill={} " ++
                 "sprite={} glyph={} other={} fill_only_frame={} fill_only_present={} " ++
-                "fill_only_fallback={} sprite_frame={} sprite_present={} sprite_fallback={} " ++
-                "sprite_patch_frame={} sprite_patch_present={} sprite_patch_fallback={} " ++
-                "glyph_frame={} glyph_present={} glyph_fallback={} " ++
-                "fill_patch_frame={} fill_patch_present={} fill_patch_fallback={}\n",
+                "fill_only_failure={} sprite_frame={} sprite_present={} sprite_failure={} " ++
+                "sprite_patch_frame={} sprite_patch_present={} sprite_patch_failure={} " ++
+                "glyph_frame={} glyph_present={} glyph_failure={} " ++
+                "fill_patch_frame={} fill_patch_present={} fill_patch_failure={}\n",
             .{
                 submit_diag.v0_unsupported_no_full_clear_count,
                 submit_diag.v0_unsupported_clear_command_count,
@@ -1073,19 +1037,19 @@ pub const Context = struct {
                 submit_diag.v0_unsupported_other_command_count,
                 submit_diag.v0_fill_only_frame_count,
                 submit_diag.v0_fill_only_present_count,
-                submit_diag.v0_fill_only_fallback_count,
+                submit_diag.v0_fill_only_failure_count,
                 submit_diag.v0_sprite_frame_count,
                 submit_diag.v0_sprite_present_count,
-                submit_diag.v0_sprite_fallback_count,
+                submit_diag.v0_sprite_failure_count,
                 submit_diag.v0_sprite_patch_frame_count,
                 submit_diag.v0_sprite_patch_present_count,
-                submit_diag.v0_sprite_patch_fallback_count,
+                submit_diag.v0_sprite_patch_failure_count,
                 submit_diag.v0_glyph_frame_count,
                 submit_diag.v0_glyph_present_count,
-                submit_diag.v0_glyph_fallback_count,
+                submit_diag.v0_glyph_failure_count,
                 submit_diag.v0_fill_patch_frame_count,
                 submit_diag.v0_fill_patch_present_count,
-                submit_diag.v0_fill_patch_fallback_count,
+                submit_diag.v0_fill_patch_failure_count,
             },
         );
     }
@@ -1098,10 +1062,10 @@ pub const Context = struct {
         std.debug.print(
             "howl-debug v0 interval submits={} no_sidecar={} no_sidecar_null={} " ++
                 "no_sidecar_call_failed={} no_sidecar_unsupported={} no_sidecar_invalid={} " ++
-                "no_sidecar_overflow={} no_sidecar_other={} rgba_fallback={} " ++
-                "fill_patch_present={} fill_patch_fallback={} sprite_patch_present={} " ++
-                "sprite_patch_fallback={} fill_only_present={} fill_only_fallback={} " ++
-                "sprite_present={} sprite_fallback={} glyph_present={} glyph_fallback={}\n",
+                "no_sidecar_overflow={} no_sidecar_other={} " ++
+                "fill_patch_present={} fill_patch_failure={} sprite_patch_present={} " ++
+                "sprite_patch_failure={} fill_only_present={} fill_only_failure={} " ++
+                "sprite_present={} sprite_failure={} glyph_present={} glyph_failure={}\n",
             .{
                 counterDelta(submit_diag.submit_count, previous.submit_count),
                 counterDelta(submit_diag.v0_no_sidecar_count, previous.v0_no_sidecar_count),
@@ -1130,48 +1094,44 @@ pub const Context = struct {
                     previous.v0_no_sidecar_other_count,
                 ),
                 counterDelta(
-                    submit_diag.v0_full_rgba_fallback_count,
-                    previous.v0_full_rgba_fallback_count,
-                ),
-                counterDelta(
                     submit_diag.v0_fill_patch_present_count,
                     previous.v0_fill_patch_present_count,
                 ),
                 counterDelta(
-                    submit_diag.v0_fill_patch_fallback_count,
-                    previous.v0_fill_patch_fallback_count,
+                    submit_diag.v0_fill_patch_failure_count,
+                    previous.v0_fill_patch_failure_count,
                 ),
                 counterDelta(
                     submit_diag.v0_sprite_patch_present_count,
                     previous.v0_sprite_patch_present_count,
                 ),
                 counterDelta(
-                    submit_diag.v0_sprite_patch_fallback_count,
-                    previous.v0_sprite_patch_fallback_count,
+                    submit_diag.v0_sprite_patch_failure_count,
+                    previous.v0_sprite_patch_failure_count,
                 ),
                 counterDelta(
                     submit_diag.v0_fill_only_present_count,
                     previous.v0_fill_only_present_count,
                 ),
                 counterDelta(
-                    submit_diag.v0_fill_only_fallback_count,
-                    previous.v0_fill_only_fallback_count,
+                    submit_diag.v0_fill_only_failure_count,
+                    previous.v0_fill_only_failure_count,
                 ),
                 counterDelta(
                     submit_diag.v0_sprite_present_count,
                     previous.v0_sprite_present_count,
                 ),
                 counterDelta(
-                    submit_diag.v0_sprite_fallback_count,
-                    previous.v0_sprite_fallback_count,
+                    submit_diag.v0_sprite_failure_count,
+                    previous.v0_sprite_failure_count,
                 ),
                 counterDelta(
                     submit_diag.v0_glyph_present_count,
                     previous.v0_glyph_present_count,
                 ),
                 counterDelta(
-                    submit_diag.v0_glyph_fallback_count,
-                    previous.v0_glyph_fallback_count,
+                    submit_diag.v0_glyph_failure_count,
+                    previous.v0_glyph_failure_count,
                 ),
             },
         );
@@ -1195,8 +1155,8 @@ pub const Context = struct {
         _ = self;
         std.debug.print(
             "howl-debug v0 gl gen={} image={} subimage={} delete={} " ++
-                "v0_us={} v0_us_max={} rgba_upload_us={} rgba_upload_us_max={} " ++
-                "glerr_v0={} glerr_rgba={} " ++
+                "v0_us={} v0_us_max={} host_upload_us={} host_upload_us_max={} " ++
+                "glerr_v0={} " ++
                 "create_before binding={} unpack_align={} unpack_row={} err={} " ++
                 "create_after binding={} unpack_align={} unpack_row={} err={} " ++
                 "upload_before binding={} unpack_align={} unpack_row={} err={} " ++
@@ -1208,10 +1168,9 @@ pub const Context = struct {
                 texture_diag.gl_delete_textures,
                 submit_diag.v0_realization_us_last,
                 submit_diag.v0_realization_us_max,
-                submit_diag.full_rgba_upload_us_last,
-                submit_diag.full_rgba_upload_us_max,
+                submit_diag.host_upload_us_last,
+                submit_diag.host_upload_us_max,
                 texture_diag.gl_error,
-                submit_diag.full_rgba_gl_error,
                 texture_diag.create_gl_before.texture_binding_2d,
                 texture_diag.create_gl_before.unpack_alignment,
                 texture_diag.create_gl_before.unpack_row_length,
@@ -1232,9 +1191,7 @@ pub const Context = struct {
         );
         std.debug.print(
             "howl-debug v0 gl retire_before binding={} unpack_align={} unpack_row={} err={} " ++
-                "retire_after binding={} unpack_align={} unpack_row={} err={} " ++
-                "rgba_before binding={} unpack_align={} unpack_row={} err={} " ++
-                "rgba_after binding={} unpack_align={} unpack_row={} err={}\n",
+                "retire_after binding={} unpack_align={} unpack_row={} err={}\n",
             .{
                 texture_diag.retire_gl_before.texture_binding_2d,
                 texture_diag.retire_gl_before.unpack_alignment,
@@ -1244,14 +1201,6 @@ pub const Context = struct {
                 texture_diag.retire_gl_after.unpack_alignment,
                 texture_diag.retire_gl_after.unpack_row_length,
                 texture_diag.retire_gl_after.error_code,
-                submit_diag.full_rgba_gl_before.texture_binding_2d,
-                submit_diag.full_rgba_gl_before.unpack_alignment,
-                submit_diag.full_rgba_gl_before.unpack_row_length,
-                submit_diag.full_rgba_gl_before.error_code,
-                submit_diag.full_rgba_gl_after.texture_binding_2d,
-                submit_diag.full_rgba_gl_after.unpack_alignment,
-                submit_diag.full_rgba_gl_after.unpack_row_length,
-                submit_diag.full_rgba_gl_after.error_code,
             },
         );
     }
@@ -2167,19 +2116,10 @@ fn testPreparedUploadInfo() render_c.HowlRenderPreparedSurfaceInfo {
     };
 }
 
-const test_submit_pixels = [_]u8{ 0, 0, 0, 255, 0, 0, 0, 255 };
-
 fn fillTestPreparedUpload(upload: *render_retained.PreparedUpload) void {
     upload.* = .{
         .info = testPreparedUploadInfo(),
-        .buffer = .{
-            .status = render_c.HOWL_RENDER_CALL_OK,
-            .rgba_pixels = .{
-                .ptr = &test_submit_pixels,
-                .len = test_submit_pixels.len,
-            },
-            .uploads_committed = 0,
-        },
+        .diagnostics = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceDiagnostics),
         .protocol_v0_probe = .{},
         .protocol_v0_resource_plan = .{},
         .protocol_v0_frame = null,
@@ -2243,9 +2183,10 @@ fn testSubmitExecution(
     self: *TestSubmitContext,
     prepared_upload: *const render_retained.PreparedUpload,
 ) render_c.HowlRenderSubmitExecution {
+    _ = prepared_upload;
     return .{
         .host_surface = self.term_texture,
-        .uploads_committed = prepared_upload.buffer.uploads_committed,
+        .uploads_committed = 0,
         .render_us = 0,
     };
 }
@@ -2257,9 +2198,7 @@ const TestUnlockedBackend = struct {
         self: *TestSubmitContext,
         prepared_upload: *const render_retained.PreparedUpload,
     ) bool {
-        std.debug.assert(
-            prepared_upload.buffer.rgba_pixels.len == test_submit_pixels.len,
-        );
+        _ = prepared_upload;
         saw_unlocked = self.term.mutex.tryLockUnfair();
         if (saw_unlocked) self.term.mutex.unlock();
         return true;
@@ -2381,7 +2320,6 @@ test "protocol v0 realization gate ignores frame-only resource plan validity" {
     var frame = std.mem.zeroes(render_c.HowlRenderV0Frame);
     var upload = render_retained.PreparedUpload{
         .info = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceInfo),
-        .buffer = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceBuffer),
         .diagnostics = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceDiagnostics),
         .protocol_v0_probe = .{},
         .protocol_v0_resource_plan = .{ .status = .invalid_resource, .valid = false },

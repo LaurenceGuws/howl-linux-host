@@ -740,9 +740,7 @@ fn resourceFormatValid(kind: u32, format: u32) bool {
         render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA,
         render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA,
         => format == render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
-        render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR,
-        render_c.HOWL_RENDER_V0_RESOURCE_FALLBACK_RGBA,
-        => format == render_c.HOWL_RENDER_V0_UPLOAD_RGBA8,
+        render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR => format == render_c.HOWL_RENDER_V0_UPLOAD_RGBA8,
         else => false,
     };
 }
@@ -2013,32 +2011,6 @@ pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
     surface.width = width;
     surface.height = height;
     return true;
-}
-
-pub fn uploadPreparedBuffer(surface: render_c.HowlRenderHostSurface, rgba_pixels: []const u8) bool {
-    if (surface.host_surface_id == 0) return false;
-    std.debug.assert(surface.width > 0);
-    std.debug.assert(surface.height > 0);
-    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(surface.host_surface_id));
-    defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
-    gl_c.glPixelStorei(gl_c.GL_UNPACK_ALIGNMENT, 1);
-    gl_c.glPixelStorei(gl_c.GL_UNPACK_ROW_LENGTH, 0);
-    // The host treats the prepared buffer as the complete realized surface.
-    // Render owns freshness and retained reuse; the host does one full upload
-    // and never reconstructs content from render-side damage rectangles.
-    if (rgba_pixels.len == 0) return true;
-    gl_c.glTexSubImage2D(
-        gl_c.GL_TEXTURE_2D,
-        0,
-        0,
-        0,
-        surface.width,
-        surface.height,
-        gl_c.GL_RGBA,
-        gl_c.GL_UNSIGNED_BYTE,
-        rgba_pixels.ptr,
-    );
-    return gl_c.glGetError() == 0;
 }
 
 pub fn uploadProtocolV0FillOnly(
