@@ -21,33 +21,33 @@ const glyph_atlas_height_px = 1024;
 
 const c_uchar_bool = u8;
 
-pub const ProtocolV0Textures = struct {
-    slots: [render_c.HOWL_RENDER_V0_RESOURCES_MAX]Slot = [_]Slot{.{}} **
-        render_c.HOWL_RENDER_V0_RESOURCES_MAX,
+pub const RenderResourceTextures = struct {
+    slots: [render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX]Slot = [_]Slot{.{}} **
+        render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX,
     success_count: u64 = 0,
     failure_count: u64 = 0,
     diagnostics: Diagnostics = .{},
 
     const Slot = struct {
         state: State = .empty,
-        resource: render_c.HowlRenderV0ResourceId = .{ .value = 0, .generation = 0, .kind = 0 },
+        resource: render_c.HowlRenderResourceId = .{ .value = 0, .generation = 0, .kind = 0 },
         texture_id: u64 = 0,
         width_px: u32 = 0,
         height_px: u32 = 0,
         format: u32 = 0,
-        upload_rect: render_c.HowlRenderV0Rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+        upload_rect: render_c.HowlRenderSurfaceRect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
         upload_stride_bytes: u32 = 0,
         upload_bytes_count: u32 = 0,
 
         const State = enum { empty, live, retired };
     };
 
-    const CreatedResources = [render_c.HOWL_RENDER_V0_CREATES_MAX]render_c.HowlRenderV0ResourceId;
+    const CreatedResources = [render_c.HOWL_RENDER_SURFACE_CREATES_MAX]render_c.HowlRenderResourceId;
 
     pub const Diagnostics = struct {
-        frame_count: u64 = 0,
+        surface_count: u64 = 0,
         snapshot_seq: u64 = 0,
-        frame_seq: u64 = 0,
+        surface_seq: u64 = 0,
         geometry_epoch: u64 = 0,
         resource_epoch: u64 = 0,
         creates: u64 = 0,
@@ -55,13 +55,13 @@ pub const ProtocolV0Textures = struct {
         retires: u64 = 0,
         commands: u64 = 0,
         upload_bytes: u64 = 0,
-        same_frame_create_upload_use_retire: u64 = 0,
+        same_surface_create_upload_use_retire: u64 = 0,
         persistent_resource_reuse: u64 = 0,
-        created_without_surviving_next_frame: u64 = 0,
+        created_without_surviving_next_surface: u64 = 0,
         creates_per_visible_command_x1000: u64 = 0,
         slots_live: u32 = 0,
         slots_retired: u32 = 0,
-        slots_empty: u32 = render_c.HOWL_RENDER_V0_RESOURCES_MAX,
+        slots_empty: u32 = render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX,
         slots_live_max: u32 = 0,
         slots_retired_max: u32 = 0,
         gl_gen_textures: u64 = 0,
@@ -103,21 +103,21 @@ pub const ProtocolV0Textures = struct {
         error_code: u32 = 0,
     };
 
-    pub fn deinit(self: *ProtocolV0Textures) void {
+    pub fn deinit(self: *RenderResourceTextures) void {
         for (&self.slots) |*slot| self.deleteSlot(slot);
     }
 
-    pub fn realizeFrame(
-        self: *ProtocolV0Textures,
-        frame: *const render_c.HowlRenderV0Frame,
+    pub fn realizeSurface(
+        self: *RenderResourceTextures,
+        surface: *const render_c.HowlRenderSurface,
     ) bool {
-        self.diagnostics.frame_count +|= 1;
-        self.diagnostics.snapshot_seq = frame.token.snapshot_seq;
-        self.diagnostics.frame_seq = frame.token.frame_seq;
-        self.diagnostics.geometry_epoch = frame.token.geometry_epoch;
-        self.diagnostics.resource_epoch = frame.token.resource_epoch;
-        self.recordFrameShape(frame);
-        if (!self.realizeFrameLocked(frame)) {
+        self.diagnostics.surface_count +|= 1;
+        self.diagnostics.snapshot_seq = surface.token.snapshot_seq;
+        self.diagnostics.surface_seq = surface.token.surface_seq;
+        self.diagnostics.geometry_epoch = surface.token.geometry_epoch;
+        self.diagnostics.resource_epoch = surface.token.resource_epoch;
+        self.recordSurfaceShape(surface);
+        if (!self.realizeSurfaceLocked(surface)) {
             self.failure_count +|= 1;
             self.refreshSlotDiagnostics();
             return false;
@@ -127,15 +127,15 @@ pub const ProtocolV0Textures = struct {
         return true;
     }
 
-    fn realizeFrameLocked(
-        self: *ProtocolV0Textures,
-        frame: *const render_c.HowlRenderV0Frame,
+    fn realizeSurfaceLocked(
+        self: *RenderResourceTextures,
+        surface: *const render_c.HowlRenderSurface,
     ) bool {
-        if (!self.validateFrame(frame)) return false;
+        if (!self.validateSurface(surface)) return false;
         const creates = spanSlice(
-            render_c.HowlRenderV0Create,
-            frame.creates.ptr,
-            frame.creates.count,
+            render_c.HowlRenderResourceCreate,
+            surface.creates.ptr,
+            surface.creates.count,
         );
         var created: CreatedResources = undefined;
         var created_count: u32 = 0;
@@ -155,9 +155,9 @@ pub const ProtocolV0Textures = struct {
             return false;
         }
         const uploads = spanSlice(
-            render_c.HowlRenderV0Upload,
-            frame.uploads.ptr,
-            frame.uploads.count,
+            render_c.HowlRenderResourceUpload,
+            surface.uploads.ptr,
+            surface.uploads.count,
         );
         self.diagnostics.upload_gl_before = sampleGlState();
         for (uploads) |upload| {
@@ -176,9 +176,9 @@ pub const ProtocolV0Textures = struct {
         }
         self.commitUploadMetadata(uploads);
         const retires = spanSlice(
-            render_c.HowlRenderV0Retire,
-            frame.retires.ptr,
-            frame.retires.count,
+            render_c.HowlRenderResourceRetire,
+            surface.retires.ptr,
+            surface.retires.count,
         );
         self.diagnostics.retire_gl_before = sampleGlState();
         for (retires) |retire| {
@@ -196,96 +196,96 @@ pub const ProtocolV0Textures = struct {
         return true;
     }
 
-    fn glSampleOk(self: *ProtocolV0Textures, sample: GlStateSample) bool {
+    fn glSampleOk(self: *RenderResourceTextures, sample: GlStateSample) bool {
         if (sample.error_code == 0) return true;
         self.recordFailure(.gl_error);
         return false;
     }
 
-    fn validateFrame(self: *ProtocolV0Textures, frame: *const render_c.HowlRenderV0Frame) bool {
-        if (self.validateFrameTransition(frame)) |_| return true;
+    fn validateSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
+        if (self.validateSurfaceTransition(surface)) |_| return true;
         return false;
     }
 
-    fn validateFrameTransition(
-        self: *ProtocolV0Textures,
-        frame: *const render_c.HowlRenderV0Frame,
-    ) ?ProtocolV0Textures {
-        if (frame.protocol_version != render_c.HOWL_RENDER_PROTOCOL_V0_VERSION) {
+    fn validateSurfaceTransition(
+        self: *RenderResourceTextures,
+        surface: *const render_c.HowlRenderSurface,
+    ) ?RenderResourceTextures {
+        if (surface.surface_version != render_c.HOWL_RENDER_SURFACE_VERSION) {
             self.recordFailure(.invalid_spans);
             return null;
         }
         if (!spanCountValid(
-            frame.damage.ptr,
-            frame.damage.count,
-            frame.damage.count_max,
-            render_c.HOWL_RENDER_V0_DAMAGE_ITEMS_MAX,
+            surface.damage.ptr,
+            surface.damage.count,
+            surface.damage.count_max,
+            render_c.HOWL_RENDER_SURFACE_DAMAGE_ITEMS_MAX,
         )) {
             self.recordFailure(.invalid_spans);
             return null;
         }
         if (!spanCountValid(
-            frame.creates.ptr,
-            frame.creates.count,
-            frame.creates.count_max,
-            render_c.HOWL_RENDER_V0_CREATES_MAX,
+            surface.creates.ptr,
+            surface.creates.count,
+            surface.creates.count_max,
+            render_c.HOWL_RENDER_SURFACE_CREATES_MAX,
         )) {
             self.recordFailure(.invalid_spans);
             return null;
         }
         if (!spanCountValid(
-            frame.uploads.ptr,
-            frame.uploads.count,
-            frame.uploads.count_max,
-            render_c.HOWL_RENDER_V0_UPLOADS_MAX,
+            surface.uploads.ptr,
+            surface.uploads.count,
+            surface.uploads.count_max,
+            render_c.HOWL_RENDER_SURFACE_UPLOADS_MAX,
         )) {
             self.recordFailure(.invalid_spans);
             return null;
         }
         if (!spanCountValid(
-            frame.commands.ptr,
-            frame.commands.count,
-            frame.commands.count_max,
-            render_c.HOWL_RENDER_V0_COMMANDS_MAX,
+            surface.commands.ptr,
+            surface.commands.count,
+            surface.commands.count_max,
+            render_c.HOWL_RENDER_SURFACE_COMMANDS_MAX,
         )) {
             self.recordFailure(.invalid_spans);
             return null;
         }
         if (!spanCountValid(
-            frame.retires.ptr,
-            frame.retires.count,
-            frame.retires.count_max,
-            render_c.HOWL_RENDER_V0_RETIRES_MAX,
+            surface.retires.ptr,
+            surface.retires.count,
+            surface.retires.count_max,
+            render_c.HOWL_RENDER_SURFACE_RETIRES_MAX,
         )) {
             self.recordFailure(.invalid_spans);
             return null;
         }
-        if (frame.uploads.bytes_count_total > render_c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
+        if (surface.uploads.bytes_count_total > render_c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX) {
             self.recordFailure(.upload_bounds);
             return null;
         }
-        if (frame.uploads.bytes_count_max != render_c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX) {
+        if (surface.uploads.bytes_count_max != render_c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX) {
             self.recordFailure(.upload_bounds);
             return null;
         }
-        if (!self.validateCommands(frame)) return null;
-        if (!self.validateFrameOrder(frame)) return null;
+        if (!self.validateCommands(surface)) return null;
+        if (!self.validateSurfaceOrder(surface)) return null;
         var next = self.*;
-        if (!self.validateCreates(frame, &next)) return null;
-        if (!self.validateUploads(frame, &next)) return null;
-        if (!self.validateRetires(frame, &next)) return null;
+        if (!self.validateCreates(surface, &next)) return null;
+        if (!self.validateUploads(surface, &next)) return null;
+        if (!self.validateRetires(surface, &next)) return null;
         return next;
     }
 
     fn validateCreates(
-        self: *ProtocolV0Textures,
-        frame: *const render_c.HowlRenderV0Frame,
-        next: *ProtocolV0Textures,
+        self: *RenderResourceTextures,
+        surface: *const render_c.HowlRenderSurface,
+        next: *RenderResourceTextures,
     ) bool {
         const creates = spanSlice(
-            render_c.HowlRenderV0Create,
-            frame.creates.ptr,
-            frame.creates.count,
+            render_c.HowlRenderResourceCreate,
+            surface.creates.ptr,
+            surface.creates.count,
         );
         for (creates) |create| {
             if (next.noteCreate(create)) |bucket| {
@@ -297,14 +297,14 @@ pub const ProtocolV0Textures = struct {
     }
 
     fn validateUploads(
-        self: *ProtocolV0Textures,
-        frame: *const render_c.HowlRenderV0Frame,
-        next: *ProtocolV0Textures,
+        self: *RenderResourceTextures,
+        surface: *const render_c.HowlRenderSurface,
+        next: *RenderResourceTextures,
     ) bool {
         const uploads = spanSlice(
-            render_c.HowlRenderV0Upload,
-            frame.uploads.ptr,
-            frame.uploads.count,
+            render_c.HowlRenderResourceUpload,
+            surface.uploads.ptr,
+            surface.uploads.count,
         );
         for (uploads) |upload| {
             if (!next.noteUpload(upload)) {
@@ -316,14 +316,14 @@ pub const ProtocolV0Textures = struct {
     }
 
     fn validateRetires(
-        self: *ProtocolV0Textures,
-        frame: *const render_c.HowlRenderV0Frame,
-        next: *ProtocolV0Textures,
+        self: *RenderResourceTextures,
+        surface: *const render_c.HowlRenderSurface,
+        next: *RenderResourceTextures,
     ) bool {
         const retires = spanSlice(
-            render_c.HowlRenderV0Retire,
-            frame.retires.ptr,
-            frame.retires.count,
+            render_c.HowlRenderResourceRetire,
+            surface.retires.ptr,
+            surface.retires.count,
         );
         for (retires) |retire| {
             if (!next.noteRetire(retire.resource)) {
@@ -334,7 +334,7 @@ pub const ProtocolV0Textures = struct {
         return true;
     }
 
-    fn noteCreate(self: *ProtocolV0Textures, create: render_c.HowlRenderV0Create) ?FailureBucket {
+    fn noteCreate(self: *RenderResourceTextures, create: render_c.HowlRenderResourceCreate) ?FailureBucket {
         if (create.width_px == 0) return .unsupported_resource_format;
         if (create.height_px == 0) return .unsupported_resource_format;
         if (!resourceFormatValid(create.resource.kind, create.format)) {
@@ -354,20 +354,20 @@ pub const ProtocolV0Textures = struct {
         return null;
     }
 
-    fn noteUpload(self: *ProtocolV0Textures, upload: render_c.HowlRenderV0Upload) bool {
+    fn noteUpload(self: *RenderResourceTextures, upload: render_c.HowlRenderResourceUpload) bool {
         const slot = self.find(upload.resource) orelse return false;
         if (upload.format != slot.format) return false;
         return uploadValidForSlot(slot.*, upload);
     }
 
-    fn noteRetire(self: *ProtocolV0Textures, resource: render_c.HowlRenderV0ResourceId) bool {
+    fn noteRetire(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) bool {
         const slot = self.find(resource) orelse return false;
         slot.texture_id = 0;
         slot.state = .retired;
         return true;
     }
 
-    fn createTexture(self: *ProtocolV0Textures, create: render_c.HowlRenderV0Create) bool {
+    fn createTexture(self: *RenderResourceTextures, create: render_c.HowlRenderResourceCreate) bool {
         if (self.find(create.resource) != null) {
             self.recordFailure(.tombstone_value_reuse);
             return false;
@@ -417,7 +417,7 @@ pub const ProtocolV0Textures = struct {
         return true;
     }
 
-    fn uploadTexture(self: *ProtocolV0Textures, upload: render_c.HowlRenderV0Upload) bool {
+    fn uploadTexture(self: *RenderResourceTextures, upload: render_c.HowlRenderResourceUpload) bool {
         const slot = self.find(upload.resource) orelse return false;
         if (slot.texture_id == 0) return false;
         if (upload.format != slot.format) return false;
@@ -446,7 +446,7 @@ pub const ProtocolV0Textures = struct {
         return true;
     }
 
-    fn commitUploadMetadata(self: *ProtocolV0Textures, uploads: []const render_c.HowlRenderV0Upload) void {
+    fn commitUploadMetadata(self: *RenderResourceTextures, uploads: []const render_c.HowlRenderResourceUpload) void {
         for (uploads) |upload| {
             const slot = self.find(upload.resource) orelse continue;
             slot.upload_rect = upload.rect;
@@ -455,20 +455,20 @@ pub const ProtocolV0Textures = struct {
         }
     }
 
-    fn invalidateUploads(self: *ProtocolV0Textures, uploads: []const render_c.HowlRenderV0Upload) void {
+    fn invalidateUploads(self: *RenderResourceTextures, uploads: []const render_c.HowlRenderResourceUpload) void {
         for (uploads) |upload| {
             const slot = self.find(upload.resource) orelse continue;
             self.retireSlot(slot);
         }
     }
 
-    fn retireTexture(self: *ProtocolV0Textures, resource: render_c.HowlRenderV0ResourceId) bool {
+    fn retireTexture(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) bool {
         const slot = self.find(resource) orelse return false;
         self.retireSlot(slot);
         return true;
     }
 
-    fn find(self: *ProtocolV0Textures, resource: render_c.HowlRenderV0ResourceId) ?*Slot {
+    fn find(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) ?*Slot {
         for (&self.slots) |*slot| {
             if (slot.state != .live) continue;
             if (sameResource(slot.resource, resource)) return slot;
@@ -476,24 +476,24 @@ pub const ProtocolV0Textures = struct {
         return null;
     }
 
-    fn textureIdFor(self: *ProtocolV0Textures, resource: render_c.HowlRenderV0ResourceId) ?u64 {
+    fn textureIdFor(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) ?u64 {
         const slot = self.find(resource) orelse return null;
         if (slot.texture_id == 0) return null;
         return slot.texture_id;
     }
 
-    fn textureSlotFor(self: *ProtocolV0Textures, resource: render_c.HowlRenderV0ResourceId) ?Slot {
+    fn textureSlotFor(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) ?Slot {
         const slot = self.find(resource) orelse return null;
         if (slot.texture_id == 0) return null;
         return slot.*;
     }
 
-    fn findEmpty(self: *ProtocolV0Textures) ?*Slot {
+    fn findEmpty(self: *RenderResourceTextures) ?*Slot {
         for (&self.slots) |*slot| if (slot.state == .empty) return slot;
         return null;
     }
 
-    fn findValue(self: *ProtocolV0Textures, value: u64) ?*Slot {
+    fn findValue(self: *RenderResourceTextures, value: u64) ?*Slot {
         for (&self.slots) |*slot| {
             if (slot.state == .empty) continue;
             if (slot.resource.value == value) return slot;
@@ -502,47 +502,47 @@ pub const ProtocolV0Textures = struct {
     }
 
     fn rollbackCreates(
-        self: *ProtocolV0Textures,
-        created: []const render_c.HowlRenderV0ResourceId,
+        self: *RenderResourceTextures,
+        created: []const render_c.HowlRenderResourceId,
     ) void {
         for (created) |resource| {
             if (self.find(resource)) |slot| self.deleteSlot(slot);
         }
     }
 
-    fn validateFrameOrder(
-        self: *ProtocolV0Textures,
-        frame: *const render_c.HowlRenderV0Frame,
+    fn validateSurfaceOrder(
+        self: *RenderResourceTextures,
+        surface: *const render_c.HowlRenderSurface,
     ) bool {
-        const ok = validateFrameOrderStatic(frame);
+        const ok = validateSurfaceOrderStatic(surface);
         if (!ok) self.recordFailure(.invalid_order);
         return ok;
     }
 
-    fn validateCommands(self: *ProtocolV0Textures, frame: *const render_c.HowlRenderV0Frame) bool {
-        const ok = validateCommandsStatic(frame);
+    fn validateCommands(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
+        const ok = validateCommandsStatic(surface);
         if (!ok) self.recordFailure(.invalid_command_shape);
         return ok;
     }
 
-    fn recordFrameShape(self: *ProtocolV0Textures, frame: *const render_c.HowlRenderV0Frame) void {
-        self.diagnostics.creates +|= frame.creates.count;
-        self.diagnostics.uploads +|= frame.uploads.count;
-        self.diagnostics.retires +|= frame.retires.count;
-        self.diagnostics.commands +|= frame.commands.count;
-        self.diagnostics.upload_bytes +|= frame.uploads.bytes_count_total;
-        self.diagnostics.same_frame_create_upload_use_retire +|= sameFrameChurnCount(frame);
-        self.diagnostics.persistent_resource_reuse +|= persistentResourceUseCount(self, frame);
-        self.diagnostics.created_without_surviving_next_frame +|= createdAndRetiredCount(frame);
-        if (frame.commands.count > 0) {
+    fn recordSurfaceShape(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
+        self.diagnostics.creates +|= surface.creates.count;
+        self.diagnostics.uploads +|= surface.uploads.count;
+        self.diagnostics.retires +|= surface.retires.count;
+        self.diagnostics.commands +|= surface.commands.count;
+        self.diagnostics.upload_bytes +|= surface.uploads.bytes_count_total;
+        self.diagnostics.same_surface_create_upload_use_retire +|= sameSurfaceChurnCount(surface);
+        self.diagnostics.persistent_resource_reuse +|= persistentResourceUseCount(self, surface);
+        self.diagnostics.created_without_surviving_next_surface +|= createdAndRetiredCount(surface);
+        if (surface.commands.count > 0) {
             self.diagnostics.creates_per_visible_command_x1000 =
-                (@as(u64, frame.creates.count) * 1000) / frame.commands.count;
+                (@as(u64, surface.creates.count) * 1000) / surface.commands.count;
         } else {
             self.diagnostics.creates_per_visible_command_x1000 = 0;
         }
     }
 
-    fn recordFailure(self: *ProtocolV0Textures, bucket: FailureBucket) void {
+    fn recordFailure(self: *RenderResourceTextures, bucket: FailureBucket) void {
         switch (bucket) {
             .invalid_spans => self.diagnostics.failure_invalid_spans +|= 1,
             .invalid_command_shape => self.diagnostics.failure_invalid_command_shape +|= 1,
@@ -560,7 +560,7 @@ pub const ProtocolV0Textures = struct {
         }
     }
 
-    fn refreshSlotDiagnostics(self: *ProtocolV0Textures) void {
+    fn refreshSlotDiagnostics(self: *RenderResourceTextures) void {
         var live: u32 = 0;
         var retired: u32 = 0;
         var empty: u32 = 0;
@@ -578,7 +578,7 @@ pub const ProtocolV0Textures = struct {
         self.diagnostics.slots_retired_max = @max(self.diagnostics.slots_retired_max, retired);
     }
 
-    fn deleteSlot(self: *ProtocolV0Textures, slot: *Slot) void {
+    fn deleteSlot(self: *RenderResourceTextures, slot: *Slot) void {
         if (slot.texture_id != 0) {
             var value: c_uint = @intCast(slot.texture_id);
             gl_c.glDeleteTextures(1, &value);
@@ -587,7 +587,7 @@ pub const ProtocolV0Textures = struct {
         slot.* = .{};
     }
 
-    fn retireSlot(self: *ProtocolV0Textures, slot: *Slot) void {
+    fn retireSlot(self: *RenderResourceTextures, slot: *Slot) void {
         if (slot.texture_id != 0) {
             var value: c_uint = @intCast(slot.texture_id);
             gl_c.glDeleteTextures(1, &value);
@@ -598,7 +598,7 @@ pub const ProtocolV0Textures = struct {
     }
 };
 
-pub const ProtocolV0FrameSummary = struct {
+pub const RenderSurfaceSummary = struct {
     first_full_clear: bool = false,
     clear_count: u32 = 0,
     fill_count: u32 = 0,
@@ -607,63 +607,63 @@ pub const ProtocolV0FrameSummary = struct {
     other_count: u32 = 0,
 };
 
-fn validateFrameOrderStatic(frame: *const render_c.HowlRenderV0Frame) bool {
+fn validateSurfaceOrderStatic(surface: *const render_c.HowlRenderSurface) bool {
     const creates = spanSlice(
-        render_c.HowlRenderV0Create,
-        frame.creates.ptr,
-        frame.creates.count,
+        render_c.HowlRenderResourceCreate,
+        surface.creates.ptr,
+        surface.creates.count,
     );
     for (creates) |create| {
-        if (create.create_seq > frame.commands.count) return false;
-        if (retireForResource(frame, create.resource)) |retire| {
+        if (create.create_seq > surface.commands.count) return false;
+        if (retireForResource(surface, create.resource)) |retire| {
             if (create.create_seq >= retire.retire_seq) return false;
         }
     }
     const uploads = spanSlice(
-        render_c.HowlRenderV0Upload,
-        frame.uploads.ptr,
-        frame.uploads.count,
+        render_c.HowlRenderResourceUpload,
+        surface.uploads.ptr,
+        surface.uploads.count,
     );
     var bytes_sum: u32 = 0;
     var previous_upload_seq: u32 = 0;
     for (uploads, 0..) |upload, upload_index| {
         if (upload_index > 0 and upload.upload_seq < previous_upload_seq) return false;
         previous_upload_seq = upload.upload_seq;
-        if (upload.upload_seq > frame.commands.count) return false;
+        if (upload.upload_seq > surface.commands.count) return false;
         bytes_sum = std.math.add(u32, bytes_sum, upload.bytes_count) catch return false;
-        if (findCreate(frame, upload.resource)) |create| {
+        if (findCreate(surface, upload.resource)) |create| {
             if (upload.upload_seq < create.create_seq) return false;
         }
-        if (retireForResource(frame, upload.resource)) |retire| {
+        if (retireForResource(surface, upload.resource)) |retire| {
             if (upload.upload_seq >= retire.retire_seq) return false;
         }
     }
-    if (bytes_sum != frame.uploads.bytes_count_total) return false;
+    if (bytes_sum != surface.uploads.bytes_count_total) return false;
     const retires = spanSlice(
-        render_c.HowlRenderV0Retire,
-        frame.retires.ptr,
-        frame.retires.count,
+        render_c.HowlRenderResourceRetire,
+        surface.retires.ptr,
+        surface.retires.count,
     );
-    for (retires) |retire| if (retire.retire_seq > frame.commands.count) return false;
+    for (retires) |retire| if (retire.retire_seq > surface.commands.count) return false;
     return true;
 }
 
-fn validateCommandsStatic(frame: *const render_c.HowlRenderV0Frame) bool {
+fn validateCommandsStatic(surface: *const render_c.HowlRenderSurface) bool {
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        surface.commands.ptr,
+        surface.commands.count,
     );
     for (commands) |command| {
         switch (command.kind) {
-            render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             => {
                 if (!rectHasArea(command.rect)) return false;
                 if (!resourceEmpty(command.resource)) return false;
                 if (command.glyphs.count != 0) return false;
             },
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => {
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
                 if (command.rect.x_px != 0) return false;
                 if (command.rect.y_px != 0) return false;
                 if (command.rect.width_px != 0) return false;
@@ -671,14 +671,14 @@ fn validateCommandsStatic(frame: *const render_c.HowlRenderV0Frame) bool {
                 if (command.color_rgba != 0) return false;
                 if (!resourceEmpty(command.resource)) return false;
                 if (command.glyphs.count == 0) return false;
-                if (!glyphCommandValid(frame, command)) return false;
+                if (!glyphCommandValid(surface, command)) return false;
             },
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
                 if (!rectHasArea(command.rect)) return false;
                 if (command.resource.value == 0) return false;
                 if (!spriteResourceKind(command.resource.kind)) return false;
                 if (command.glyphs.count != 0) return false;
-                if (command.resource.kind == render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR and
+                if (command.resource.kind == render_c.HOWL_RENDER_RESOURCE_SPRITE_COLOR and
                     command.color_rgba != 0) return false;
             },
             else => return false,
@@ -687,47 +687,47 @@ fn validateCommandsStatic(frame: *const render_c.HowlRenderV0Frame) bool {
     return true;
 }
 
-fn rectHasArea(rect: render_c.HowlRenderV0Rect) bool {
+fn rectHasArea(rect: render_c.HowlRenderSurfaceRect) bool {
     return rect.width_px > 0 and rect.height_px > 0;
 }
 
-fn resourceEmpty(resource: render_c.HowlRenderV0ResourceId) bool {
+fn resourceEmpty(resource: render_c.HowlRenderResourceId) bool {
     return resource.value == 0 and resource.generation == 0 and resource.kind == 0;
 }
 
 fn spriteResourceKind(kind: u32) bool {
-    return kind == render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA or
-        kind == render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR;
+    return kind == render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA or
+        kind == render_c.HOWL_RENDER_RESOURCE_SPRITE_COLOR;
 }
 
 fn findCreate(
-    frame: *const render_c.HowlRenderV0Frame,
-    resource: render_c.HowlRenderV0ResourceId,
-) ?render_c.HowlRenderV0Create {
+    surface: *const render_c.HowlRenderSurface,
+    resource: render_c.HowlRenderResourceId,
+) ?render_c.HowlRenderResourceCreate {
     const creates = spanSlice(
-        render_c.HowlRenderV0Create,
-        frame.creates.ptr,
-        frame.creates.count,
+        render_c.HowlRenderResourceCreate,
+        surface.creates.ptr,
+        surface.creates.count,
     );
     for (creates) |create| if (sameResource(create.resource, resource)) return create;
     return null;
 }
 
 fn retireForResource(
-    frame: *const render_c.HowlRenderV0Frame,
-    resource: render_c.HowlRenderV0ResourceId,
-) ?render_c.HowlRenderV0Retire {
-    const retires = spanSlice(render_c.HowlRenderV0Retire, frame.retires.ptr, frame.retires.count);
+    surface: *const render_c.HowlRenderSurface,
+    resource: render_c.HowlRenderResourceId,
+) ?render_c.HowlRenderResourceRetire {
+    const retires = spanSlice(render_c.HowlRenderResourceRetire, surface.retires.ptr, surface.retires.count);
     for (retires) |retire| if (sameResource(retire.resource, resource)) return retire;
     return null;
 }
 
 fn resourceHasFutureUpload(
-    frame: *const render_c.HowlRenderV0Frame,
-    resource: render_c.HowlRenderV0ResourceId,
+    surface: *const render_c.HowlRenderSurface,
+    resource: render_c.HowlRenderResourceId,
     command_index: u32,
 ) bool {
-    const uploads = spanSlice(render_c.HowlRenderV0Upload, frame.uploads.ptr, frame.uploads.count);
+    const uploads = spanSlice(render_c.HowlRenderResourceUpload, surface.uploads.ptr, surface.uploads.count);
     for (uploads) |upload| {
         if (!sameResource(upload.resource, resource)) continue;
         if (upload.upload_seq > command_index) return true;
@@ -737,17 +737,17 @@ fn resourceHasFutureUpload(
 
 fn resourceFormatValid(kind: u32, format: u32) bool {
     return switch (kind) {
-        render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA,
-        render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA,
-        => format == render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
-        render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR => format == render_c.HOWL_RENDER_V0_UPLOAD_RGBA8,
+        render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA,
+        render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA,
+        => format == render_c.HOWL_RENDER_UPLOAD_ALPHA8,
+        render_c.HOWL_RENDER_RESOURCE_SPRITE_COLOR => format == render_c.HOWL_RENDER_UPLOAD_RGBA8,
         else => false,
     };
 }
 
 fn uploadValidForSlot(
-    slot: ProtocolV0Textures.Slot,
-    upload: render_c.HowlRenderV0Upload,
+    slot: RenderResourceTextures.Slot,
+    upload: render_c.HowlRenderResourceUpload,
 ) bool {
     if (upload.bytes_ptr == null) return false;
     if (upload.rect.width_px == 0) return false;
@@ -764,7 +764,7 @@ fn uploadValidForSlot(
     return true;
 }
 
-fn rectFitsResource(rect: render_c.HowlRenderV0Rect, width_px: u32, height_px: u32) bool {
+fn rectFitsResource(rect: render_c.HowlRenderSurfaceRect, width_px: u32, height_px: u32) bool {
     if (rect.x_px < 0) return false;
     if (rect.y_px < 0) return false;
     const right = std.math.add(u32, @intCast(rect.x_px), rect.width_px) catch return false;
@@ -772,7 +772,7 @@ fn rectFitsResource(rect: render_c.HowlRenderV0Rect, width_px: u32, height_px: u
     return right <= width_px and bottom <= height_px;
 }
 
-fn rectsOverlap(a: render_c.HowlRenderV0Rect, b: render_c.HowlRenderV0Rect) bool {
+fn rectsOverlap(a: render_c.HowlRenderSurfaceRect, b: render_c.HowlRenderSurfaceRect) bool {
     const a_right = std.math.add(i32, a.x_px, a.width_px) catch return true;
     const a_bottom = std.math.add(i32, a.y_px, a.height_px) catch return true;
     const b_right = std.math.add(i32, b.x_px, b.width_px) catch return true;
@@ -784,7 +784,7 @@ fn destinationOverlaps(
     render_px: anytype,
     x_px: i32,
     y_px: i32,
-    rect: render_c.HowlRenderV0Rect,
+    rect: render_c.HowlRenderSurfaceRect,
 ) bool {
     const right = std.math.add(i32, x_px, rect.width_px) catch return false;
     const bottom = std.math.add(i32, y_px, rect.height_px) catch return false;
@@ -796,22 +796,22 @@ fn destinationOverlaps(
 }
 
 fn sameResource(
-    a: render_c.HowlRenderV0ResourceId,
-    b: render_c.HowlRenderV0ResourceId,
+    a: render_c.HowlRenderResourceId,
+    b: render_c.HowlRenderResourceId,
 ) bool {
     return a.value == b.value and a.generation == b.generation and a.kind == b.kind;
 }
 
 fn glFormat(format: u32) ?c_uint {
     return switch (format) {
-        render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8 => gl_alpha,
-        render_c.HOWL_RENDER_V0_UPLOAD_RGBA8 => gl_c.GL_RGBA,
+        render_c.HOWL_RENDER_UPLOAD_ALPHA8 => gl_alpha,
+        render_c.HOWL_RENDER_UPLOAD_RGBA8 => gl_c.GL_RGBA,
         else => null,
     };
 }
 
 fn bytesPerPixel(format: u32) u32 {
-    return if (format == render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8) 1 else 4;
+    return if (format == render_c.HOWL_RENDER_UPLOAD_ALPHA8) 1 else 4;
 }
 
 fn spanSlice(comptime T: type, ptr: anytype, count: u32) []const T {
@@ -826,68 +826,68 @@ fn spanCountValid(ptr: anytype, count: u32, count_max: u32, expected_max: u32) b
     return true;
 }
 
-fn sameFrameChurnCount(frame: *const render_c.HowlRenderV0Frame) u32 {
+fn sameSurfaceChurnCount(surface: *const render_c.HowlRenderSurface) u32 {
     var count: u32 = 0;
-    const creates = spanSlice(render_c.HowlRenderV0Create, frame.creates.ptr, frame.creates.count);
+    const creates = spanSlice(render_c.HowlRenderResourceCreate, surface.creates.ptr, surface.creates.count);
     for (creates) |create| {
-        if (findUploadStatic(frame, create.resource) == null) continue;
-        if (!commandUsesResource(frame, create.resource)) continue;
-        if (retireForResource(frame, create.resource) == null) continue;
+        if (findUploadStatic(surface, create.resource) == null) continue;
+        if (!commandUsesResource(surface, create.resource)) continue;
+        if (retireForResource(surface, create.resource) == null) continue;
         count += 1;
     }
     return count;
 }
 
-fn createdAndRetiredCount(frame: *const render_c.HowlRenderV0Frame) u32 {
+fn createdAndRetiredCount(surface: *const render_c.HowlRenderSurface) u32 {
     var count: u32 = 0;
-    const creates = spanSlice(render_c.HowlRenderV0Create, frame.creates.ptr, frame.creates.count);
+    const creates = spanSlice(render_c.HowlRenderResourceCreate, surface.creates.ptr, surface.creates.count);
     for (creates) |create| {
-        if (retireForResource(frame, create.resource) != null) count += 1;
+        if (retireForResource(surface, create.resource) != null) count += 1;
     }
     return count;
 }
 
 fn persistentResourceUseCount(
-    textures: *ProtocolV0Textures,
-    frame: *const render_c.HowlRenderV0Frame,
+    textures: *RenderResourceTextures,
+    surface: *const render_c.HowlRenderSurface,
 ) u32 {
     var count: u32 = 0;
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        surface.commands.ptr,
+        surface.commands.count,
     );
     for (commands) |command| {
         if (resourceEmpty(command.resource)) continue;
-        if (findCreate(frame, command.resource) != null) continue;
+        if (findCreate(surface, command.resource) != null) continue;
         if (textures.find(command.resource) != null) count += 1;
     }
     return count;
 }
 
 fn findUploadStatic(
-    frame: *const render_c.HowlRenderV0Frame,
-    resource: render_c.HowlRenderV0ResourceId,
-) ?render_c.HowlRenderV0Upload {
-    const uploads = spanSlice(render_c.HowlRenderV0Upload, frame.uploads.ptr, frame.uploads.count);
+    surface: *const render_c.HowlRenderSurface,
+    resource: render_c.HowlRenderResourceId,
+) ?render_c.HowlRenderResourceUpload {
+    const uploads = spanSlice(render_c.HowlRenderResourceUpload, surface.uploads.ptr, surface.uploads.count);
     for (uploads) |upload| if (sameResource(upload.resource, resource)) return upload;
     return null;
 }
 
 fn commandUsesResource(
-    frame: *const render_c.HowlRenderV0Frame,
-    resource: render_c.HowlRenderV0ResourceId,
+    surface: *const render_c.HowlRenderSurface,
+    resource: render_c.HowlRenderResourceId,
 ) bool {
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        surface.commands.ptr,
+        surface.commands.count,
     );
     for (commands) |command| {
         if (sameResource(command.resource, resource)) return true;
         if (!glyphSpanValid(command)) continue;
         const glyphs = spanSlice(
-            render_c.HowlRenderV0GlyphRef,
+            render_c.HowlRenderGlyphRef,
             command.glyphs.ptr,
             command.glyphs.count,
         );
@@ -896,7 +896,7 @@ fn commandUsesResource(
     return false;
 }
 
-pub fn sampleGlState() ProtocolV0Textures.GlStateSample {
+pub fn sampleGlState() RenderResourceTextures.GlStateSample {
     var texture_binding: c_int = 0;
     var unpack_alignment: c_int = 0;
     var unpack_row_length: c_int = 0;
@@ -911,60 +911,60 @@ pub fn sampleGlState() ProtocolV0Textures.GlStateSample {
     };
 }
 
-fn testResource(value: u64, kind: u32) render_c.HowlRenderV0ResourceId {
+fn testResource(value: u64, kind: u32) render_c.HowlRenderResourceId {
     return .{ .value = value, .generation = 1, .kind = kind };
 }
 
-fn testRect(width: u16, height: u16) render_c.HowlRenderV0Rect {
+fn testRect(width: u16, height: u16) render_c.HowlRenderSurfaceRect {
     return .{ .x_px = 0, .y_px = 0, .width_px = width, .height_px = height };
 }
 
-fn createSpan(creates: []const render_c.HowlRenderV0Create) render_c.HowlRenderV0CreateSpan {
+fn createSpan(creates: []const render_c.HowlRenderResourceCreate) render_c.HowlRenderResourceCreateSpan {
     return .{
         .ptr = creates.ptr,
         .count = @intCast(creates.len),
-        .count_max = render_c.HOWL_RENDER_V0_CREATES_MAX,
+        .count_max = render_c.HOWL_RENDER_SURFACE_CREATES_MAX,
     };
 }
 
 fn uploadSpan(
-    uploads: []const render_c.HowlRenderV0Upload,
+    uploads: []const render_c.HowlRenderResourceUpload,
     bytes_count_total: u32,
-) render_c.HowlRenderV0UploadSpan {
+) render_c.HowlRenderResourceUploadSpan {
     return .{
         .ptr = uploads.ptr,
         .count = @intCast(uploads.len),
-        .count_max = render_c.HOWL_RENDER_V0_UPLOADS_MAX,
+        .count_max = render_c.HOWL_RENDER_SURFACE_UPLOADS_MAX,
         .bytes_count_total = bytes_count_total,
-        .bytes_count_max = render_c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX,
+        .bytes_count_max = render_c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX,
     };
 }
 
 fn commandSpan(
-    commands: []const render_c.HowlRenderV0Command,
-) render_c.HowlRenderV0CommandSpan {
+    commands: []const render_c.HowlRenderSurfaceCommand,
+) render_c.HowlRenderSurfaceCommandSpan {
     return .{
         .ptr = commands.ptr,
         .count = @intCast(commands.len),
-        .count_max = render_c.HOWL_RENDER_V0_COMMANDS_MAX,
+        .count_max = render_c.HOWL_RENDER_SURFACE_COMMANDS_MAX,
     };
 }
 
-fn retireSpan(retires: []const render_c.HowlRenderV0Retire) render_c.HowlRenderV0RetireSpan {
+fn retireSpan(retires: []const render_c.HowlRenderResourceRetire) render_c.HowlRenderResourceRetireSpan {
     return .{
         .ptr = retires.ptr,
         .count = @intCast(retires.len),
-        .count_max = render_c.HOWL_RENDER_V0_RETIRES_MAX,
+        .count_max = render_c.HOWL_RENDER_SURFACE_RETIRES_MAX,
     };
 }
 
-fn testFrame() render_c.HowlRenderV0Frame {
+fn testSurface() render_c.HowlRenderSurface {
     return .{
-        .protocol_version = render_c.HOWL_RENDER_PROTOCOL_V0_VERSION,
+        .surface_version = render_c.HOWL_RENDER_SURFACE_VERSION,
         .reserved0 = 0,
         .token = .{
             .snapshot_seq = 1,
-            .frame_seq = 1,
+            .surface_seq = 1,
             .geometry_epoch = 1,
             .resource_epoch = 1,
         },
@@ -974,172 +974,172 @@ fn testFrame() render_c.HowlRenderV0Frame {
         .damage = .{
             .ptr = null,
             .count = 0,
-            .count_max = render_c.HOWL_RENDER_V0_DAMAGE_ITEMS_MAX,
+            .count_max = render_c.HOWL_RENDER_SURFACE_DAMAGE_ITEMS_MAX,
         },
         .creates = .{
             .ptr = null,
             .count = 0,
-            .count_max = render_c.HOWL_RENDER_V0_CREATES_MAX,
+            .count_max = render_c.HOWL_RENDER_SURFACE_CREATES_MAX,
         },
         .uploads = .{
             .ptr = null,
             .count = 0,
-            .count_max = render_c.HOWL_RENDER_V0_UPLOADS_MAX,
+            .count_max = render_c.HOWL_RENDER_SURFACE_UPLOADS_MAX,
             .bytes_count_total = 0,
-            .bytes_count_max = render_c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX,
+            .bytes_count_max = render_c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX,
         },
         .commands = .{
             .ptr = null,
             .count = 0,
-            .count_max = render_c.HOWL_RENDER_V0_COMMANDS_MAX,
+            .count_max = render_c.HOWL_RENDER_SURFACE_COMMANDS_MAX,
         },
         .retires = .{
             .ptr = null,
             .count = 0,
-            .count_max = render_c.HOWL_RENDER_V0_RETIRES_MAX,
+            .count_max = render_c.HOWL_RENDER_SURFACE_RETIRES_MAX,
         },
     };
 }
 
-test "protocol v0 textures reject color glyph atlas" {
-    const resource = testResource(1, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_COLOR);
-    var creates = [_]render_c.HowlRenderV0Create{.{
+test "render surface textures reject color glyph atlas" {
+    const resource = testResource(1, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR);
+    var creates = [_]render_c.HowlRenderResourceCreate{.{
         .resource = resource,
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_RGBA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_RGBA8,
         .create_seq = 0,
     }};
-    var frame = testFrame();
-    frame.creates = createSpan(&creates);
-    var textures = ProtocolV0Textures{};
-    try std.testing.expect(!textures.validateFrame(&frame));
+    var surface = testSurface();
+    surface.creates = createSpan(&creates);
+    var textures = RenderResourceTextures{};
+    try std.testing.expect(!textures.validateSurface(&surface));
 }
 
-test "protocol v0 textures reject wrong alpha format" {
-    const resource = testResource(2, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
-    var creates = [_]render_c.HowlRenderV0Create{.{
+test "render surface textures reject wrong alpha format" {
+    const resource = testResource(2, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
+    var creates = [_]render_c.HowlRenderResourceCreate{.{
         .resource = resource,
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_RGBA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_RGBA8,
         .create_seq = 0,
     }};
-    var frame = testFrame();
-    frame.creates = createSpan(&creates);
-    var textures = ProtocolV0Textures{};
-    try std.testing.expect(!textures.validateFrame(&frame));
+    var surface = testSurface();
+    surface.creates = createSpan(&creates);
+    var textures = RenderResourceTextures{};
+    try std.testing.expect(!textures.validateSurface(&surface));
 }
 
-test "protocol v0 textures reject invalid upload order" {
-    const resource = testResource(3, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
+test "render surface textures reject invalid upload order" {
+    const resource = testResource(3, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
     var bytes = [_]u8{255};
-    var creates = [_]render_c.HowlRenderV0Create{.{
+    var creates = [_]render_c.HowlRenderResourceCreate{.{
         .resource = resource,
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .create_seq = 1,
     }};
-    var uploads = [_]render_c.HowlRenderV0Upload{.{
+    var uploads = [_]render_c.HowlRenderResourceUpload{.{
         .resource = resource,
         .rect = testRect(1, 1),
         .bytes_ptr = &bytes,
         .bytes_count = 1,
         .stride_bytes = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .upload_seq = 0,
     }};
-    var commands = [_]render_c.HowlRenderV0Command{std.mem.zeroes(render_c.HowlRenderV0Command)};
-    var frame = testFrame();
-    frame.creates = createSpan(&creates);
-    frame.uploads = uploadSpan(&uploads, 1);
-    frame.commands = commandSpan(&commands);
-    var textures = ProtocolV0Textures{};
-    try std.testing.expect(!textures.validateFrame(&frame));
+    var commands = [_]render_c.HowlRenderSurfaceCommand{std.mem.zeroes(render_c.HowlRenderSurfaceCommand)};
+    var surface = testSurface();
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, 1);
+    surface.commands = commandSpan(&commands);
+    var textures = RenderResourceTextures{};
+    try std.testing.expect(!textures.validateSurface(&surface));
 }
 
-test "protocol v0 textures reject upload byte max mismatch" {
-    var frame = testFrame();
-    frame.uploads.bytes_count_max = render_c.HOWL_RENDER_V0_UPLOAD_BYTES_MAX - 1;
-    var textures = ProtocolV0Textures{};
-    try std.testing.expect(!textures.validateFrame(&frame));
+test "render surface textures reject upload byte max mismatch" {
+    var surface = testSurface();
+    surface.uploads.bytes_count_max = render_c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX - 1;
+    var textures = RenderResourceTextures{};
+    try std.testing.expect(!textures.validateSurface(&surface));
 }
 
-test "protocol v0 textures reject value reuse after retire" {
-    const first = testResource(4, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
-    const next = render_c.HowlRenderV0ResourceId{
+test "render surface textures reject value reuse after retire" {
+    const first = testResource(4, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
+    const next = render_c.HowlRenderResourceId{
         .value = first.value,
         .generation = first.generation + 1,
         .kind = first.kind,
     };
-    var textures = ProtocolV0Textures{};
-    const first_create = render_c.HowlRenderV0Create{
+    var textures = RenderResourceTextures{};
+    const first_create = render_c.HowlRenderResourceCreate{
         .resource = first,
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .create_seq = 0,
     };
-    var first_creates = [_]render_c.HowlRenderV0Create{first_create};
-    var first_frame = testFrame();
-    first_frame.creates = createSpan(&first_creates);
-    textures = textures.validateFrameTransition(&first_frame) orelse {
+    var first_creates = [_]render_c.HowlRenderResourceCreate{first_create};
+    var first_surface = testSurface();
+    first_surface.creates = createSpan(&first_creates);
+    textures = textures.validateSurfaceTransition(&first_surface) orelse {
         return error.TestUnexpectedResult;
     };
 
-    const first_retire = render_c.HowlRenderV0Retire{
+    const first_retire = render_c.HowlRenderResourceRetire{
         .resource = first,
         .retire_seq = 0,
     };
-    var first_retires = [_]render_c.HowlRenderV0Retire{first_retire};
-    var retire_frame = testFrame();
-    retire_frame.retires = retireSpan(&first_retires);
-    textures = textures.validateFrameTransition(&retire_frame) orelse {
+    var first_retires = [_]render_c.HowlRenderResourceRetire{first_retire};
+    var retire_surface = testSurface();
+    retire_surface.retires = retireSpan(&first_retires);
+    textures = textures.validateSurfaceTransition(&retire_surface) orelse {
         return error.TestUnexpectedResult;
     };
 
-    var creates = [_]render_c.HowlRenderV0Create{.{
+    var creates = [_]render_c.HowlRenderResourceCreate{.{
         .resource = next,
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .create_seq = 0,
     }};
-    var frame = testFrame();
-    frame.creates = createSpan(&creates);
-    try std.testing.expect(!textures.validateFrame(&frame));
+    var surface = testSurface();
+    surface.creates = createSpan(&creates);
+    try std.testing.expect(!textures.validateSurface(&surface));
 }
 
-test "protocol v0 textures reject invalid top level before mutation" {
-    const resource = testResource(5, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
-    var creates = [_]render_c.HowlRenderV0Create{.{
+test "render surface textures reject invalid top level before mutation" {
+    const resource = testResource(5, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
+    var creates = [_]render_c.HowlRenderResourceCreate{.{
         .resource = resource,
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .create_seq = 0,
     }};
-    var frame = testFrame();
-    frame.damage.count_max = 0;
-    frame.creates = createSpan(&creates);
-    var textures = ProtocolV0Textures{};
-    try std.testing.expect(!textures.validateFrame(&frame));
+    var surface = testSurface();
+    surface.damage.count_max = 0;
+    surface.creates = createSpan(&creates);
+    var textures = RenderResourceTextures{};
+    try std.testing.expect(!textures.validateSurface(&surface));
     try std.testing.expect(textures.find(resource) == null);
     try std.testing.expect(textures.findValue(resource.value) == null);
 }
 
-test "protocol v0 textures reject invalid command before mutation" {
-    const resource = testResource(6, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
-    var creates = [_]render_c.HowlRenderV0Create{.{
+test "render surface textures reject invalid command before mutation" {
+    const resource = testResource(6, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
+    var creates = [_]render_c.HowlRenderResourceCreate{.{
         .resource = resource,
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .create_seq = 0,
     }};
-    var commands = [_]render_c.HowlRenderV0Command{.{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = testRect(0, 1),
@@ -1147,24 +1147,24 @@ test "protocol v0 textures reject invalid command before mutation" {
         .resource = .{ .value = 0, .generation = 0, .kind = 0 },
         .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
     }};
-    var frame = testFrame();
-    frame.creates = createSpan(&creates);
-    frame.commands = commandSpan(&commands);
-    var textures = ProtocolV0Textures{};
-    try std.testing.expect(!textures.validateFrame(&frame));
+    var surface = testSurface();
+    surface.creates = createSpan(&creates);
+    surface.commands = commandSpan(&commands);
+    var textures = RenderResourceTextures{};
+    try std.testing.expect(!textures.validateSurface(&surface));
     try std.testing.expect(textures.find(resource) == null);
     try std.testing.expect(textures.findValue(resource.value) == null);
 }
 
-test "protocol v0 fbo y coordinates target texture row zero first" {
+test "render surface fbo y coordinates target texture row zero first" {
     try std.testing.expectEqual(@as(f32, -1.0), ndcY(0, 10));
     try std.testing.expectEqual(@as(f32, 1.0), ndcY(10, 10));
 }
 
-test "protocol v0 fill only accepts full clear and fill commands" {
-    var commands = [_]render_c.HowlRenderV0Command{
+test "render surface fill only accepts full clear and fill commands" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
@@ -1173,7 +1173,7 @@ test "protocol v0 fill only accepts full clear and fill commands" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
@@ -1182,16 +1182,16 @@ test "protocol v0 fill only accepts full clear and fill commands" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
     };
-    var frame = testFrame();
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(protocolV0FillOnly(&frame));
+    try std.testing.expect(renderSurfaceFillOnly(&surface));
 }
 
-test "protocol v0 frame summary counts command shape" {
-    var commands = [_]render_c.HowlRenderV0Command{
+test "render surface surface summary counts command shape" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
@@ -1200,7 +1200,7 @@ test "protocol v0 frame summary counts command shape" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
@@ -1209,19 +1209,19 @@ test "protocol v0 frame summary counts command shape" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
             .color_rgba = 0xffffffff,
-            .resource = testResource(14, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+            .resource = testResource(14, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
     };
-    var frame = testFrame();
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
 
-    const summary = protocolV0FrameSummary(&frame);
+    const summary = renderSurfaceSummary(&surface);
     try std.testing.expect(summary.first_full_clear);
     try std.testing.expectEqual(@as(u32, 1), summary.clear_count);
     try std.testing.expectEqual(@as(u32, 1), summary.fill_count);
@@ -1230,10 +1230,10 @@ test "protocol v0 frame summary counts command shape" {
     try std.testing.expectEqual(@as(u32, 0), summary.other_count);
 }
 
-test "protocol v0 fill only accepts full non-overlapping coverage without clear" {
-    var commands = [_]render_c.HowlRenderV0Command{
+test "render surface fill only accepts full non-overlapping coverage without clear" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 },
@@ -1242,7 +1242,7 @@ test "protocol v0 fill only accepts full non-overlapping coverage without clear"
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 },
@@ -1251,16 +1251,16 @@ test "protocol v0 fill only accepts full non-overlapping coverage without clear"
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
     };
-    var frame = testFrame();
-    frame.render_px = .{ .width = 2, .height = 2 };
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.render_px = .{ .width = 2, .height = 2 };
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(protocolV0FillOnly(&frame));
+    try std.testing.expect(renderSurfaceFillOnly(&surface));
 }
 
-test "protocol v0 fill only rejects coverage gaps without clear" {
-    var commands = [_]render_c.HowlRenderV0Command{.{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+test "render surface fill only rejects coverage gaps without clear" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 },
@@ -1268,17 +1268,17 @@ test "protocol v0 fill only rejects coverage gaps without clear" {
         .resource = .{ .value = 0, .generation = 0, .kind = 0 },
         .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
     }};
-    var frame = testFrame();
-    frame.render_px = .{ .width = 2, .height = 2 };
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.render_px = .{ .width = 2, .height = 2 };
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!protocolV0FillOnly(&frame));
+    try std.testing.expect(!renderSurfaceFillOnly(&surface));
 }
 
-test "protocol v0 fill only rejects coverage overlap without clear" {
-    var commands = [_]render_c.HowlRenderV0Command{
+test "render surface fill only rejects coverage overlap without clear" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 },
@@ -1287,7 +1287,7 @@ test "protocol v0 fill only rejects coverage overlap without clear" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 1 },
@@ -1296,16 +1296,16 @@ test "protocol v0 fill only rejects coverage overlap without clear" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
     };
-    var frame = testFrame();
-    frame.render_px = .{ .width = 2, .height = 2 };
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.render_px = .{ .width = 2, .height = 2 };
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!protocolV0FillOnly(&frame));
+    try std.testing.expect(!renderSurfaceFillOnly(&surface));
 }
 
-test "protocol v0 fill patch accepts partial bounded fills" {
-    var commands = [_]render_c.HowlRenderV0Command{.{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+test "render surface fill patch accepts partial bounded fills" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 },
@@ -1313,16 +1313,16 @@ test "protocol v0 fill patch accepts partial bounded fills" {
         .resource = .{ .value = 0, .generation = 0, .kind = 0 },
         .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
     }};
-    var frame = testFrame();
-    frame.render_px = .{ .width = 2, .height = 2 };
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.render_px = .{ .width = 2, .height = 2 };
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(protocolV0FillPatch(&frame));
+    try std.testing.expect(renderSurfaceFillPatch(&surface));
 }
 
-test "protocol v0 fill patch rejects out of bounds fill" {
-    var commands = [_]render_c.HowlRenderV0Command{.{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+test "render surface fill patch rejects out of bounds fill" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 2 },
@@ -1330,33 +1330,33 @@ test "protocol v0 fill patch rejects out of bounds fill" {
         .resource = .{ .value = 0, .generation = 0, .kind = 0 },
         .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
     }};
-    var frame = testFrame();
-    frame.render_px = .{ .width = 2, .height = 2 };
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.render_px = .{ .width = 2, .height = 2 };
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!protocolV0FillPatch(&frame));
+    try std.testing.expect(!renderSurfaceFillPatch(&surface));
 }
 
-test "protocol v0 fill only rejects mixed resource commands" {
-    var commands = [_]render_c.HowlRenderV0Command{.{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
+test "render surface fill only rejects mixed resource commands" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = testRect(1, 1),
         .color_rgba = 0xffffffff,
-        .resource = testResource(9, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+        .resource = testResource(9, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
         .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
     }};
-    var frame = testFrame();
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!protocolV0FillOnly(&frame));
+    try std.testing.expect(!renderSurfaceFillOnly(&surface));
 }
 
-test "protocol v0 sprite frame accepts clear fill and sprite commands" {
-    var commands = [_]render_c.HowlRenderV0Command{
+test "render surface sprite surface accepts clear fill and sprite commands" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
@@ -1365,48 +1365,48 @@ test "protocol v0 sprite frame accepts clear fill and sprite commands" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
             .color_rgba = 0xffffffff,
-            .resource = testResource(10, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+            .resource = testResource(10, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
     };
-    var frame = testFrame();
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(protocolV0SpriteFrame(&frame));
+    try std.testing.expect(renderSurfaceSprite(&surface));
 }
 
-test "protocol v0 sprite patch accepts bounded sprite commands without clear" {
-    var commands = [_]render_c.HowlRenderV0Command{.{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
+test "render surface sprite patch accepts bounded sprite commands without clear" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = testRect(1, 1),
         .color_rgba = 0xffffffff,
-        .resource = testResource(15, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+        .resource = testResource(15, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
         .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
     }};
-    var frame = testFrame();
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(protocolV0SpritePatch(&frame));
+    try std.testing.expect(renderSurfaceSpritePatch(&surface));
 }
 
-test "protocol v0 sprite patch rejects glyph commands" {
-    var glyph = render_c.HowlRenderV0GlyphRef{
-        .atlas_resource = testResource(16, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA),
+test "render surface sprite patch rejects glyph commands" {
+    var glyph = render_c.HowlRenderGlyphRef{
+        .atlas_resource = testResource(16, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA),
         .atlas_rect = testRect(1, 1),
         .x_px = 0,
         .y_px = 0,
         .glyph_id = 1,
         .color_rgba = 0xffffffff,
     };
-    var commands = [_]render_c.HowlRenderV0Command{.{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
@@ -1415,23 +1415,23 @@ test "protocol v0 sprite patch rejects glyph commands" {
         .glyphs = .{
             .ptr = &glyph,
             .count = 1,
-            .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+            .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
         },
     }};
-    var frame = testFrame();
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!protocolV0SpritePatch(&frame));
+    try std.testing.expect(!renderSurfaceSpritePatch(&surface));
 }
 
-test "protocol v0 sprite upload coverage matches command bounds" {
-    const slot = ProtocolV0Textures.Slot{
+test "render surface sprite upload coverage matches command bounds" {
+    const slot = RenderResourceTextures.Slot{
         .state = .live,
-        .resource = testResource(17, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+        .resource = testResource(17, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
         .texture_id = 1,
         .width_px = 8,
         .height_px = 8,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .upload_rect = .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 },
         .upload_stride_bytes = 2,
         .upload_bytes_count = 4,
@@ -1450,25 +1450,25 @@ test "protocol v0 sprite upload coverage matches command bounds" {
     ));
 }
 
-test "protocol v0 upload metadata commits after upload success" {
-    const resource = testResource(20, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
-    var textures = ProtocolV0Textures{};
+test "render surface upload metadata commits after upload success" {
+    const resource = testResource(20, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
+    var textures = RenderResourceTextures{};
     textures.slots[0] = .{
         .state = .live,
         .resource = resource,
         .texture_id = 1,
         .width_px = 2,
         .height_px = 2,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
     };
     var bytes = [_]u8{ 1, 2, 3, 4 };
-    var uploads = [_]render_c.HowlRenderV0Upload{.{
+    var uploads = [_]render_c.HowlRenderResourceUpload{.{
         .resource = resource,
         .rect = .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 },
         .bytes_ptr = &bytes,
         .bytes_count = 4,
         .stride_bytes = 2,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .upload_seq = 0,
     }};
 
@@ -1478,24 +1478,24 @@ test "protocol v0 upload metadata commits after upload success" {
     try std.testing.expectEqual(@as(u32, 4), textures.slots[0].upload_bytes_count);
 }
 
-test "protocol v0 textures reject out of order upload sequence" {
-    const resource = testResource(21, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
+test "render surface textures reject out of order upload sequence" {
+    const resource = testResource(21, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
     var bytes = [_]u8{ 1, 2 };
-    var creates = [_]render_c.HowlRenderV0Create{.{
+    var creates = [_]render_c.HowlRenderResourceCreate{.{
         .resource = resource,
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .create_seq = 0,
     }};
-    var uploads = [_]render_c.HowlRenderV0Upload{
+    var uploads = [_]render_c.HowlRenderResourceUpload{
         .{
             .resource = resource,
             .rect = testRect(1, 1),
             .bytes_ptr = &bytes,
             .bytes_count = 1,
             .stride_bytes = 1,
-            .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+            .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
             .upload_seq = 1,
         },
         .{
@@ -1504,29 +1504,29 @@ test "protocol v0 textures reject out of order upload sequence" {
             .bytes_ptr = &bytes,
             .bytes_count = 1,
             .stride_bytes = 1,
-            .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+            .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
             .upload_seq = 0,
         },
     };
-    var frame = testFrame();
-    frame.creates = createSpan(&creates);
-    frame.uploads = uploadSpan(&uploads, 2);
-    var textures = ProtocolV0Textures{};
+    var surface = testSurface();
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, 2);
+    var textures = RenderResourceTextures{};
 
-    try std.testing.expect(!textures.validateFrame(&frame));
+    try std.testing.expect(!textures.validateSurface(&surface));
 }
 
-test "protocol v0 future upload detects command visibility mismatch" {
-    const resource = testResource(18, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
+test "render surface future upload detects command visibility mismatch" {
+    const resource = testResource(18, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
     var bytes = [_]u8{ 0, 1, 2, 3 };
-    var uploads = [_]render_c.HowlRenderV0Upload{
+    var uploads = [_]render_c.HowlRenderResourceUpload{
         .{
             .resource = resource,
             .rect = testRect(1, 1),
             .bytes_ptr = &bytes,
             .bytes_count = 1,
             .stride_bytes = 1,
-            .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+            .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
             .upload_seq = 0,
         },
         .{
@@ -1535,20 +1535,20 @@ test "protocol v0 future upload detects command visibility mismatch" {
             .bytes_ptr = &bytes,
             .bytes_count = 1,
             .stride_bytes = 1,
-            .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+            .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
             .upload_seq = 1,
         },
     };
-    var frame = testFrame();
-    frame.uploads = uploadSpan(&uploads, 2);
+    var surface = testSurface();
+    surface.uploads = uploadSpan(&uploads, 2);
 
-    try std.testing.expect(resourceHasFutureUpload(&frame, resource, 0));
-    try std.testing.expect(!resourceHasFutureUpload(&frame, resource, 1));
+    try std.testing.expect(resourceHasFutureUpload(&surface, resource, 0));
+    try std.testing.expect(!resourceHasFutureUpload(&surface, resource, 1));
 }
 
-test "protocol v0 glyph future upload detects command visibility mismatch" {
-    const resource = testResource(19, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA);
-    var glyph = render_c.HowlRenderV0GlyphRef{
+test "render surface glyph future upload detects command visibility mismatch" {
+    const resource = testResource(19, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA);
+    var glyph = render_c.HowlRenderGlyphRef{
         .atlas_resource = resource,
         .atlas_rect = testRect(1, 1),
         .x_px = 0,
@@ -1556,8 +1556,8 @@ test "protocol v0 glyph future upload detects command visibility mismatch" {
         .glyph_id = 1,
         .color_rgba = 0xffffffff,
     };
-    const command = render_c.HowlRenderV0Command{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+    const command = render_c.HowlRenderSurfaceCommand{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
@@ -1566,37 +1566,37 @@ test "protocol v0 glyph future upload detects command visibility mismatch" {
         .glyphs = .{
             .ptr = &glyph,
             .count = 1,
-            .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+            .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
         },
     };
     var bytes = [_]u8{255};
-    var uploads = [_]render_c.HowlRenderV0Upload{.{
+    var uploads = [_]render_c.HowlRenderResourceUpload{.{
         .resource = resource,
         .rect = testRect(1, 1),
         .bytes_ptr = &bytes,
         .bytes_count = 1,
         .stride_bytes = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .upload_seq = 1,
     }};
-    var frame = testFrame();
-    frame.uploads = uploadSpan(&uploads, 1);
+    var surface = testSurface();
+    surface.uploads = uploadSpan(&uploads, 1);
 
-    try std.testing.expect(glyphCommandHasFutureUpload(&frame, command, 0));
-    try std.testing.expect(!glyphCommandHasFutureUpload(&frame, command, 1));
+    try std.testing.expect(glyphCommandHasFutureUpload(&surface, command, 0));
+    try std.testing.expect(!glyphCommandHasFutureUpload(&surface, command, 1));
 }
 
-test "protocol v0 sprite frame rejects glyph commands" {
-    var glyph = render_c.HowlRenderV0GlyphRef{
-        .atlas_resource = testResource(11, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA),
+test "render surface sprite surface rejects glyph commands" {
+    var glyph = render_c.HowlRenderGlyphRef{
+        .atlas_resource = testResource(11, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA),
         .atlas_rect = testRect(1, 1),
         .x_px = 0,
         .y_px = 0,
         .glyph_id = 1,
         .color_rgba = 0xffffffff,
     };
-    var commands = [_]render_c.HowlRenderV0Command{.{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = testRect(1, 1),
@@ -1604,24 +1604,24 @@ test "protocol v0 sprite frame rejects glyph commands" {
         .resource = .{ .value = 0, .generation = 0, .kind = 0 },
         .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = 1 },
     }};
-    var frame = testFrame();
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!protocolV0SpriteFrame(&frame));
+    try std.testing.expect(!renderSurfaceSprite(&surface));
 }
 
-test "protocol v0 glyph frame accepts clear fill sprite and glyph commands" {
-    var glyph = render_c.HowlRenderV0GlyphRef{
-        .atlas_resource = testResource(12, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA),
+test "render surface glyph surface accepts clear fill sprite and glyph commands" {
+    var glyph = render_c.HowlRenderGlyphRef{
+        .atlas_resource = testResource(12, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA),
         .atlas_rect = testRect(1, 1),
         .x_px = 0,
         .y_px = 0,
         .glyph_id = 1,
         .color_rgba = 0xffffffff,
     };
-    var commands = [_]render_c.HowlRenderV0Command{
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
@@ -1630,7 +1630,7 @@ test "protocol v0 glyph frame accepts clear fill sprite and glyph commands" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
@@ -1639,28 +1639,28 @@ test "protocol v0 glyph frame accepts clear fill sprite and glyph commands" {
             .glyphs = .{
                 .ptr = &glyph,
                 .count = 1,
-                .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+                .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
             },
         },
     };
-    var frame = testFrame();
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(protocolV0GlyphFrame(&frame));
+    try std.testing.expect(renderSurfaceGlyphs(&surface));
 }
 
-test "protocol v0 glyph frame rejects no full clear glyph patch frames" {
-    var glyph = render_c.HowlRenderV0GlyphRef{
-        .atlas_resource = testResource(22, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA),
+test "render surface glyph surface rejects no full clear glyph patch frames" {
+    var glyph = render_c.HowlRenderGlyphRef{
+        .atlas_resource = testResource(22, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA),
         .atlas_rect = testRect(1, 1),
         .x_px = 0,
         .y_px = 0,
         .glyph_id = 1,
         .color_rgba = 0xffffffff,
     };
-    var commands = [_]render_c.HowlRenderV0Command{
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
@@ -1669,7 +1669,7 @@ test "protocol v0 glyph frame rejects no full clear glyph patch frames" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
@@ -1678,29 +1678,29 @@ test "protocol v0 glyph frame rejects no full clear glyph patch frames" {
             .glyphs = .{
                 .ptr = &glyph,
                 .count = 1,
-                .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+                .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
             },
         },
     };
-    var frame = testFrame();
-    frame.render_px = .{ .width = 2, .height = 2 };
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.render_px = .{ .width = 2, .height = 2 };
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!protocolV0GlyphFrame(&frame));
+    try std.testing.expect(!renderSurfaceGlyphs(&surface));
 }
 
-test "protocol v0 glyph patch accepts bounded fill clear and glyph commands" {
-    var glyph = render_c.HowlRenderV0GlyphRef{
-        .atlas_resource = testResource(23, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA),
+test "render surface glyph patch accepts bounded fill clear and glyph commands" {
+    var glyph = render_c.HowlRenderGlyphRef{
+        .atlas_resource = testResource(23, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA),
         .atlas_rect = testRect(1, 1),
         .x_px = 1,
         .y_px = 0,
         .glyph_id = 1,
         .color_rgba = 0xffffffff,
     };
-    var commands = [_]render_c.HowlRenderV0Command{
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
@@ -1709,7 +1709,7 @@ test "protocol v0 glyph patch accepts bounded fill clear and glyph commands" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 1 },
@@ -1718,7 +1718,7 @@ test "protocol v0 glyph patch accepts bounded fill clear and glyph commands" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
@@ -1727,31 +1727,31 @@ test "protocol v0 glyph patch accepts bounded fill clear and glyph commands" {
             .glyphs = .{
                 .ptr = &glyph,
                 .count = 1,
-                .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+                .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
             },
         },
     };
-    var frame = testFrame();
-    frame.render_px = .{ .width = 2, .height = 2 };
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.render_px = .{ .width = 2, .height = 2 };
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(protocolV0GlyphPatch(&frame));
+    try std.testing.expect(renderSurfaceGlyphPatch(&surface));
 }
 
-test "protocol v0 glyph patch rejects sprite and unknown commands" {
-    var sprite_commands = [_]render_c.HowlRenderV0Command{.{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
+test "render surface glyph patch rejects sprite and unknown commands" {
+    var sprite_commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = testRect(1, 1),
         .color_rgba = 0xffffffff,
-        .resource = testResource(24, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+        .resource = testResource(24, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
         .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
     }};
-    var sprite_frame = testFrame();
-    sprite_frame.commands = commandSpan(&sprite_commands);
+    var sprite_surface = testSurface();
+    sprite_surface.commands = commandSpan(&sprite_commands);
 
-    var unknown_commands = [_]render_c.HowlRenderV0Command{.{
+    var unknown_commands = [_]render_c.HowlRenderSurfaceCommand{.{
         .kind = std.math.maxInt(u8),
         .reserved0 = 0,
         .reserved1 = 0,
@@ -1760,25 +1760,25 @@ test "protocol v0 glyph patch rejects sprite and unknown commands" {
         .resource = .{ .value = 0, .generation = 0, .kind = 0 },
         .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
     }};
-    var unknown_frame = testFrame();
-    unknown_frame.commands = commandSpan(&unknown_commands);
+    var unknown_surface = testSurface();
+    unknown_surface.commands = commandSpan(&unknown_commands);
 
-    try std.testing.expect(!protocolV0GlyphPatch(&sprite_frame));
-    try std.testing.expect(!protocolV0GlyphPatch(&unknown_frame));
+    try std.testing.expect(!renderSurfaceGlyphPatch(&sprite_surface));
+    try std.testing.expect(!renderSurfaceGlyphPatch(&unknown_surface));
 }
 
-test "protocol v0 glyph frame rejects color atlas" {
-    var glyph = render_c.HowlRenderV0GlyphRef{
-        .atlas_resource = testResource(13, render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_COLOR),
+test "render surface glyph surface rejects color atlas" {
+    var glyph = render_c.HowlRenderGlyphRef{
+        .atlas_resource = testResource(13, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR),
         .atlas_rect = testRect(1, 1),
         .x_px = 0,
         .y_px = 0,
         .glyph_id = 1,
         .color_rgba = 0xffffffff,
     };
-    var commands = [_]render_c.HowlRenderV0Command{
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
@@ -1787,7 +1787,7 @@ test "protocol v0 glyph frame rejects color atlas" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
@@ -1796,20 +1796,20 @@ test "protocol v0 glyph frame rejects color atlas" {
             .glyphs = .{
                 .ptr = &glyph,
                 .count = 1,
-                .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+                .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
             },
         },
     };
-    var frame = testFrame();
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!protocolV0GlyphFrame(&frame));
+    try std.testing.expect(!renderSurfaceGlyphs(&surface));
 }
 
-test "protocol v0 glyph frame rejects invalid glyph span" {
-    var commands = [_]render_c.HowlRenderV0Command{
+test "render surface glyph surface rejects invalid glyph span" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = testRect(1, 1),
@@ -1818,7 +1818,7 @@ test "protocol v0 glyph frame rejects invalid glyph span" {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         },
         .{
-            .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN,
+            .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
@@ -1827,37 +1827,37 @@ test "protocol v0 glyph frame rejects invalid glyph span" {
             .glyphs = .{
                 .ptr = null,
                 .count = 1,
-                .count_max = render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+                .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
             },
         },
     };
-    var frame = testFrame();
-    frame.commands = commandSpan(&commands);
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!protocolV0GlyphFrame(&frame));
+    try std.testing.expect(!renderSurfaceGlyphs(&surface));
 }
 
-test "protocol v0 diagnostics record token frame shape and churn" {
-    const resource = testResource(7, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
+test "render surface diagnostics record token surface shape and churn" {
+    const resource = testResource(7, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
     var bytes = [_]u8{255};
-    var creates = [_]render_c.HowlRenderV0Create{.{
+    var creates = [_]render_c.HowlRenderResourceCreate{.{
         .resource = resource,
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .create_seq = 0,
     }};
-    var uploads = [_]render_c.HowlRenderV0Upload{.{
+    var uploads = [_]render_c.HowlRenderResourceUpload{.{
         .resource = resource,
         .rect = testRect(1, 1),
         .bytes_ptr = &bytes,
         .bytes_count = 1,
         .stride_bytes = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .upload_seq = 0,
     }};
-    var commands = [_]render_c.HowlRenderV0Command{.{
-        .kind = render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE,
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = testRect(1, 1),
@@ -1865,27 +1865,27 @@ test "protocol v0 diagnostics record token frame shape and churn" {
         .resource = resource,
         .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
     }};
-    var retires = [_]render_c.HowlRenderV0Retire{.{ .resource = resource, .retire_seq = 1 }};
-    var frame = testFrame();
-    frame.token = .{
+    var retires = [_]render_c.HowlRenderResourceRetire{.{ .resource = resource, .retire_seq = 1 }};
+    var surface = testSurface();
+    surface.token = .{
         .snapshot_seq = 11,
-        .frame_seq = 12,
+        .surface_seq = 12,
         .geometry_epoch = 13,
         .resource_epoch = 14,
     };
-    frame.creates = createSpan(&creates);
-    frame.uploads = uploadSpan(&uploads, 1);
-    frame.commands = commandSpan(&commands);
-    frame.retires = retireSpan(&retires);
-    var textures = ProtocolV0Textures{};
-    textures.diagnostics.frame_count +|= 1;
-    textures.diagnostics.snapshot_seq = frame.token.snapshot_seq;
-    textures.diagnostics.frame_seq = frame.token.frame_seq;
-    textures.diagnostics.geometry_epoch = frame.token.geometry_epoch;
-    textures.diagnostics.resource_epoch = frame.token.resource_epoch;
-    textures.recordFrameShape(&frame);
+    surface.creates = createSpan(&creates);
+    surface.uploads = uploadSpan(&uploads, 1);
+    surface.commands = commandSpan(&commands);
+    surface.retires = retireSpan(&retires);
+    var textures = RenderResourceTextures{};
+    textures.diagnostics.surface_count +|= 1;
+    textures.diagnostics.snapshot_seq = surface.token.snapshot_seq;
+    textures.diagnostics.surface_seq = surface.token.surface_seq;
+    textures.diagnostics.geometry_epoch = surface.token.geometry_epoch;
+    textures.diagnostics.resource_epoch = surface.token.resource_epoch;
+    textures.recordSurfaceShape(&surface);
     try std.testing.expectEqual(@as(u64, 11), textures.diagnostics.snapshot_seq);
-    try std.testing.expectEqual(@as(u64, 12), textures.diagnostics.frame_seq);
+    try std.testing.expectEqual(@as(u64, 12), textures.diagnostics.surface_seq);
     try std.testing.expectEqual(@as(u64, 13), textures.diagnostics.geometry_epoch);
     try std.testing.expectEqual(@as(u64, 14), textures.diagnostics.resource_epoch);
     try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.creates);
@@ -1895,11 +1895,11 @@ test "protocol v0 diagnostics record token frame shape and churn" {
     try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.upload_bytes);
     try std.testing.expectEqual(
         @as(u64, 1),
-        textures.diagnostics.same_frame_create_upload_use_retire,
+        textures.diagnostics.same_surface_create_upload_use_retire,
     );
     try std.testing.expectEqual(
         @as(u64, 1),
-        textures.diagnostics.created_without_surviving_next_frame,
+        textures.diagnostics.created_without_surviving_next_surface,
     );
     try std.testing.expectEqual(
         @as(u64, 1000),
@@ -1907,15 +1907,15 @@ test "protocol v0 diagnostics record token frame shape and churn" {
     );
 }
 
-test "protocol v0 diagnostics record slot maxima and gl error bucket" {
-    var textures = ProtocolV0Textures{};
+test "render surface diagnostics record slot maxima and gl error bucket" {
+    var textures = RenderResourceTextures{};
     textures.slots[0].state = .live;
     textures.slots[1].state = .retired;
     textures.refreshSlotDiagnostics();
     try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_live);
     try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_retired);
     try std.testing.expectEqual(
-        @as(u32, render_c.HOWL_RENDER_V0_RESOURCES_MAX - 2),
+        @as(u32, render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX - 2),
         textures.diagnostics.slots_empty,
     );
     try std.testing.expectEqual(@as(u32, 1), textures.diagnostics.slots_live_max);
@@ -1929,19 +1929,19 @@ test "protocol v0 diagnostics record slot maxima and gl error bucket" {
     try std.testing.expectEqual(@as(u64, 0), textures.diagnostics.gl_delete_textures);
 }
 
-test "protocol v0 create validation records precise failure buckets" {
-    const resource = testResource(8, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA);
-    var unsupported = [_]render_c.HowlRenderV0Create{.{
+test "render surface create validation records precise failure buckets" {
+    const resource = testResource(8, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
+    var unsupported = [_]render_c.HowlRenderResourceCreate{.{
         .resource = resource,
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_RGBA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_RGBA8,
         .create_seq = 0,
     }};
-    var frame = testFrame();
-    frame.creates = createSpan(&unsupported);
-    var textures = ProtocolV0Textures{};
-    try std.testing.expect(!textures.validateFrame(&frame));
+    var surface = testSurface();
+    surface.creates = createSpan(&unsupported);
+    var textures = RenderResourceTextures{};
+    try std.testing.expect(!textures.validateSurface(&surface));
     try std.testing.expectEqual(
         @as(u64, 1),
         textures.diagnostics.failure_unsupported_resource_format,
@@ -1949,16 +1949,16 @@ test "protocol v0 create validation records precise failure buckets" {
 
     textures = .{};
     textures.slots[0] = .{ .state = .retired, .resource = resource };
-    var reuse = [_]render_c.HowlRenderV0Create{.{
+    var reuse = [_]render_c.HowlRenderResourceCreate{.{
         .resource = .{ .value = resource.value, .generation = 2, .kind = resource.kind },
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .create_seq = 0,
     }};
-    frame = testFrame();
-    frame.creates = createSpan(&reuse);
-    try std.testing.expect(!textures.validateFrame(&frame));
+    surface = testSurface();
+    surface.creates = createSpan(&reuse);
+    try std.testing.expect(!textures.validateSurface(&surface));
     try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.failure_tombstone_value_reuse);
 
     textures = .{};
@@ -1968,16 +1968,16 @@ test "protocol v0 create validation records precise failure buckets" {
             .resource = testResource(@intCast(index + 100), resource.kind),
         };
     }
-    var capacity = [_]render_c.HowlRenderV0Create{.{
-        .resource = testResource(9, render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA),
+    var capacity = [_]render_c.HowlRenderResourceCreate{.{
+        .resource = testResource(9, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
         .width_px = 1,
         .height_px = 1,
-        .format = render_c.HOWL_RENDER_V0_UPLOAD_ALPHA8,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .create_seq = 0,
     }};
-    frame = testFrame();
-    frame.creates = createSpan(&capacity);
-    try std.testing.expect(!textures.validateFrame(&frame));
+    surface = testSurface();
+    surface.creates = createSpan(&capacity);
+    try std.testing.expect(!textures.validateSurface(&surface));
     try std.testing.expectEqual(@as(u64, 1), textures.diagnostics.failure_capacity);
 }
 
@@ -2013,24 +2013,24 @@ pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
     return true;
 }
 
-pub fn uploadProtocolV0FillOnly(
-    surface: render_c.HowlRenderHostSurface,
-    frame: *const render_c.HowlRenderV0Frame,
+pub fn uploadRenderSurfaceFillOnly(
+    host_surface: render_c.HowlRenderHostSurface,
+    render_surface: *const render_c.HowlRenderSurface,
 ) bool {
-    if (!protocolV0FillOnly(frame)) return false;
-    if (surface.host_surface_id == 0) return false;
-    if (surface.width != frame.render_px.width) return false;
-    if (surface.height != frame.render_px.height) return false;
+    if (!renderSurfaceFillOnly(render_surface)) return false;
+    if (host_surface.host_surface_id == 0) return false;
+    if (host_surface.width != render_surface.render_px.width) return false;
+    if (host_surface.height != render_surface.render_px.height) return false;
 
-    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(surface.host_surface_id));
+    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(host_surface.host_surface_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
     gl_c.glPixelStorei(gl_c.GL_UNPACK_ALIGNMENT, 1);
     gl_c.glPixelStorei(gl_c.GL_UNPACK_ROW_LENGTH, 0);
 
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        render_surface.commands.ptr,
+        render_surface.commands.count,
     );
     for (commands) |command| {
         if (!uploadFillCommand(command)) return false;
@@ -2038,24 +2038,24 @@ pub fn uploadProtocolV0FillOnly(
     return true;
 }
 
-pub fn uploadProtocolV0FillPatch(
-    surface: render_c.HowlRenderHostSurface,
-    frame: *const render_c.HowlRenderV0Frame,
+pub fn uploadRenderSurfaceFillPatch(
+    host_surface: render_c.HowlRenderHostSurface,
+    render_surface: *const render_c.HowlRenderSurface,
 ) bool {
-    if (!protocolV0FillPatch(frame)) return false;
-    if (surface.host_surface_id == 0) return false;
-    if (surface.width != frame.render_px.width) return false;
-    if (surface.height != frame.render_px.height) return false;
+    if (!renderSurfaceFillPatch(render_surface)) return false;
+    if (host_surface.host_surface_id == 0) return false;
+    if (host_surface.width != render_surface.render_px.width) return false;
+    if (host_surface.height != render_surface.render_px.height) return false;
 
-    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(surface.host_surface_id));
+    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(host_surface.host_surface_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
     gl_c.glPixelStorei(gl_c.GL_UNPACK_ALIGNMENT, 1);
     gl_c.glPixelStorei(gl_c.GL_UNPACK_ROW_LENGTH, 0);
 
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        render_surface.commands.ptr,
+        render_surface.commands.count,
     );
     for (commands) |command| {
         if (!uploadFillCommand(command)) return false;
@@ -2063,50 +2063,50 @@ pub fn uploadProtocolV0FillPatch(
     return true;
 }
 
-pub fn uploadProtocolV0Sprites(
-    textures: *ProtocolV0Textures,
-    surface: render_c.HowlRenderHostSurface,
-    frame: *const render_c.HowlRenderV0Frame,
+pub fn uploadRenderSurfaceSprites(
+    textures: *RenderResourceTextures,
+    host_surface: render_c.HowlRenderHostSurface,
+    render_surface: *const render_c.HowlRenderSurface,
 ) bool {
-    if (!protocolV0SpriteFrame(frame)) return false;
-    return uploadProtocolV0Commands(textures, surface, frame);
+    if (!renderSurfaceSprite(render_surface)) return false;
+    return uploadRenderSurfaceCommands(textures, host_surface, render_surface);
 }
 
-pub fn uploadProtocolV0SpritePatch(
-    textures: *ProtocolV0Textures,
-    surface: render_c.HowlRenderHostSurface,
-    frame: *const render_c.HowlRenderV0Frame,
+pub fn uploadRenderSurfaceSpritePatch(
+    textures: *RenderResourceTextures,
+    host_surface: render_c.HowlRenderHostSurface,
+    render_surface: *const render_c.HowlRenderSurface,
 ) bool {
-    if (!protocolV0SpritePatch(frame)) return false;
-    return uploadProtocolV0Commands(textures, surface, frame);
+    if (!renderSurfaceSpritePatch(render_surface)) return false;
+    return uploadRenderSurfaceCommands(textures, host_surface, render_surface);
 }
 
-pub fn uploadProtocolV0Glyphs(
-    textures: *ProtocolV0Textures,
-    surface: render_c.HowlRenderHostSurface,
-    frame: *const render_c.HowlRenderV0Frame,
+pub fn uploadRenderSurfaceGlyphs(
+    textures: *RenderResourceTextures,
+    host_surface: render_c.HowlRenderHostSurface,
+    render_surface: *const render_c.HowlRenderSurface,
 ) bool {
-    if (!protocolV0GlyphFrame(frame)) return false;
-    return uploadProtocolV0Commands(textures, surface, frame);
+    if (!renderSurfaceGlyphs(render_surface)) return false;
+    return uploadRenderSurfaceCommands(textures, host_surface, render_surface);
 }
 
-pub fn uploadProtocolV0GlyphPatch(
-    textures: *ProtocolV0Textures,
-    surface: render_c.HowlRenderHostSurface,
-    frame: *const render_c.HowlRenderV0Frame,
+pub fn uploadRenderSurfaceGlyphPatch(
+    textures: *RenderResourceTextures,
+    host_surface: render_c.HowlRenderHostSurface,
+    render_surface: *const render_c.HowlRenderSurface,
 ) bool {
-    if (!protocolV0GlyphPatch(frame)) return false;
-    return uploadProtocolV0Commands(textures, surface, frame);
+    if (!renderSurfaceGlyphPatch(render_surface)) return false;
+    return uploadRenderSurfaceCommands(textures, host_surface, render_surface);
 }
 
-fn uploadProtocolV0Commands(
-    textures: *ProtocolV0Textures,
-    surface: render_c.HowlRenderHostSurface,
-    frame: *const render_c.HowlRenderV0Frame,
+fn uploadRenderSurfaceCommands(
+    textures: *RenderResourceTextures,
+    host_surface: render_c.HowlRenderHostSurface,
+    render_surface: *const render_c.HowlRenderSurface,
 ) bool {
-    if (surface.host_surface_id == 0) return false;
-    if (surface.width != frame.render_px.width) return false;
-    if (surface.height != frame.render_px.height) return false;
+    if (host_surface.host_surface_id == 0) return false;
+    if (host_surface.width != render_surface.render_px.width) return false;
+    if (host_surface.height != render_surface.render_px.height) return false;
 
     var framebuffer: c_uint = 0;
     glGenFramebuffers(1, &framebuffer);
@@ -2121,7 +2121,7 @@ fn uploadProtocolV0Commands(
         gl_c.GL_FRAMEBUFFER,
         gl_c.GL_COLOR_ATTACHMENT0,
         gl_c.GL_TEXTURE_2D,
-        @intCast(surface.host_surface_id),
+        @intCast(host_surface.host_surface_id),
         0,
     );
     if (glCheckFramebufferStatus(gl_c.GL_FRAMEBUFFER) != gl_c.GL_FRAMEBUFFER_COMPLETE) {
@@ -2153,7 +2153,7 @@ fn uploadProtocolV0Commands(
     );
     defer if (prior_blend_enabled) gl_c.glEnable(gl_c.GL_BLEND) else gl_c.glDisable(gl_c.GL_BLEND);
 
-    gl_c.glViewport(0, 0, surface.width, surface.height);
+    gl_c.glViewport(0, 0, host_surface.width, host_surface.height);
     gl_c.glDisable(gl_c.GL_DEPTH_TEST);
     gl_c.glEnable(gl_c.GL_BLEND);
     glBlendFuncSeparate(
@@ -2167,27 +2167,27 @@ fn uploadProtocolV0Commands(
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
 
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        render_surface.commands.ptr,
+        render_surface.commands.count,
     );
     for (commands, 0..) |command, command_index| {
         switch (command.kind) {
-            render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
-            => drawFillCommand(surface, command),
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
+            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+            => drawFillCommand(host_surface, command),
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
                 const slot = textures.textureSlotFor(command.resource) orelse return false;
-                if (resourceHasFutureUpload(frame, command.resource, @intCast(command_index))) {
+                if (resourceHasFutureUpload(render_surface, command.resource, @intCast(command_index))) {
                     return false;
                 }
-                if (!drawSpriteCommand(surface, command, slot)) return false;
+                if (!drawSpriteCommand(host_surface, command, slot)) return false;
             },
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => {
-                if (glyphCommandHasFutureUpload(frame, command, @intCast(command_index))) {
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
+                if (glyphCommandHasFutureUpload(render_surface, command, @intCast(command_index))) {
                     return false;
                 }
-                if (!drawGlyphCommand(textures, surface, command)) return false;
+                if (!drawGlyphCommand(textures, host_surface, command)) return false;
             },
             else => return false,
         }
@@ -2195,49 +2195,49 @@ fn uploadProtocolV0Commands(
     return gl_c.glGetError() == 0;
 }
 
-pub fn protocolV0FillOnly(frame: *const render_c.HowlRenderV0Frame) bool {
-    if (frame.creates.count != 0) return false;
-    if (frame.uploads.count != 0) return false;
-    if (frame.retires.count != 0) return false;
-    if (frame.commands.count == 0) return false;
+pub fn renderSurfaceFillOnly(surface: *const render_c.HowlRenderSurface) bool {
+    if (surface.creates.count != 0) return false;
+    if (surface.uploads.count != 0) return false;
+    if (surface.retires.count != 0) return false;
+    if (surface.commands.count == 0) return false;
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        surface.commands.ptr,
+        surface.commands.count,
     );
     for (commands, 0..) |command, index| {
-        if (!protocolV0FillCommand(command)) return false;
-        if (index == 0 and protocolV0FullClear(frame, command)) return true;
+        if (!renderSurfaceFillCommand(command)) return false;
+        if (index == 0 and renderSurfaceFullClear(surface, command)) return true;
     }
-    return protocolV0FillCoverage(frame, commands);
+    return renderSurfaceFillCoverage(surface, commands);
 }
 
-pub fn protocolV0FillPatch(frame: *const render_c.HowlRenderV0Frame) bool {
-    if (frame.creates.count != 0) return false;
-    if (frame.uploads.count != 0) return false;
-    if (frame.retires.count != 0) return false;
-    if (frame.commands.count == 0) return false;
+pub fn renderSurfaceFillPatch(surface: *const render_c.HowlRenderSurface) bool {
+    if (surface.creates.count != 0) return false;
+    if (surface.uploads.count != 0) return false;
+    if (surface.retires.count != 0) return false;
+    if (surface.commands.count == 0) return false;
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        surface.commands.ptr,
+        surface.commands.count,
     );
     for (commands) |command| {
-        if (command.kind != render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT) return false;
-        if (!protocolV0FillCommand(command)) return false;
-        if (!rectFitsResource(command.rect, frame.render_px.width, frame.render_px.height)) return false;
+        if (command.kind != render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT) return false;
+        if (!renderSurfaceFillCommand(command)) return false;
+        if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
     }
     return true;
 }
 
-fn protocolV0FillCoverage(
-    frame: *const render_c.HowlRenderV0Frame,
-    commands: []const render_c.HowlRenderV0Command,
+fn renderSurfaceFillCoverage(
+    surface: *const render_c.HowlRenderSurface,
+    commands: []const render_c.HowlRenderSurfaceCommand,
 ) bool {
     var covered_area: u64 = 0;
     for (commands, 0..) |command, index| {
-        if (command.kind != render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT) return false;
-        if (!rectFitsResource(command.rect, frame.render_px.width, frame.render_px.height)) return false;
+        if (command.kind != render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT) return false;
+        if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
         var prior_index: usize = 0;
         while (prior_index < index) : (prior_index += 1) {
             if (rectsOverlap(command.rect, commands[prior_index].rect)) return false;
@@ -2249,48 +2249,48 @@ fn protocolV0FillCoverage(
     }
     const surface_area = std.math.mul(
         u64,
-        frame.render_px.width,
-        frame.render_px.height,
+        surface.render_px.width,
+        surface.render_px.height,
     ) catch return false;
     return covered_area == surface_area;
 }
 
-pub fn protocolV0FrameSummary(frame: *const render_c.HowlRenderV0Frame) ProtocolV0FrameSummary {
-    var summary = ProtocolV0FrameSummary{};
+pub fn renderSurfaceSummary(surface: *const render_c.HowlRenderSurface) RenderSurfaceSummary {
+    var summary = RenderSurfaceSummary{};
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        surface.commands.ptr,
+        surface.commands.count,
     );
     for (commands, 0..) |command, index| {
-        if (index == 0) summary.first_full_clear = protocolV0FullClear(frame, command);
+        if (index == 0) summary.first_full_clear = renderSurfaceFullClear(surface, command);
         switch (command.kind) {
-            render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT => summary.clear_count += 1,
-            render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT => summary.fill_count += 1,
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => summary.sprite_count += 1,
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => summary.glyph_count += 1,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT => summary.clear_count += 1,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT => summary.fill_count += 1,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => summary.sprite_count += 1,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => summary.glyph_count += 1,
             else => summary.other_count += 1,
         }
     }
     return summary;
 }
 
-pub fn protocolV0SpriteFrame(frame: *const render_c.HowlRenderV0Frame) bool {
-    if (frame.commands.count == 0) return false;
+pub fn renderSurfaceSprite(surface: *const render_c.HowlRenderSurface) bool {
+    if (surface.commands.count == 0) return false;
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        surface.commands.ptr,
+        surface.commands.count,
     );
     var sprite_count: u32 = 0;
     for (commands, 0..) |command, index| {
-        if (index == 0 and !protocolV0FullClear(frame, command)) return false;
+        if (index == 0 and !renderSurfaceFullClear(surface, command)) return false;
         switch (command.kind) {
-            render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
-            => if (!protocolV0FillCommand(command)) return false,
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
-                if (!protocolV0SpriteCommand(command)) return false;
+            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+            => if (!renderSurfaceFillCommand(command)) return false,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
+                if (!renderSurfaceSpriteCommand(command)) return false;
                 sprite_count += 1;
             },
             else => return false,
@@ -2299,22 +2299,22 @@ pub fn protocolV0SpriteFrame(frame: *const render_c.HowlRenderV0Frame) bool {
     return sprite_count > 0;
 }
 
-pub fn protocolV0SpritePatch(frame: *const render_c.HowlRenderV0Frame) bool {
-    if (frame.commands.count == 0) return false;
+pub fn renderSurfaceSpritePatch(surface: *const render_c.HowlRenderSurface) bool {
+    if (surface.commands.count == 0) return false;
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        surface.commands.ptr,
+        surface.commands.count,
     );
     var sprite_count: u32 = 0;
     for (commands) |command| {
         switch (command.kind) {
-            render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
-            => if (!protocolV0FillCommand(command)) return false,
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => {
-                if (!protocolV0SpriteCommand(command)) return false;
-                if (!rectFitsResource(command.rect, frame.render_px.width, frame.render_px.height)) return false;
+            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+            => if (!renderSurfaceFillCommand(command)) return false,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
+                if (!renderSurfaceSpriteCommand(command)) return false;
+                if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
                 sprite_count += 1;
             },
             else => return false,
@@ -2323,23 +2323,23 @@ pub fn protocolV0SpritePatch(frame: *const render_c.HowlRenderV0Frame) bool {
     return sprite_count > 0;
 }
 
-pub fn protocolV0GlyphFrame(frame: *const render_c.HowlRenderV0Frame) bool {
-    if (frame.commands.count == 0) return false;
+pub fn renderSurfaceGlyphs(surface: *const render_c.HowlRenderSurface) bool {
+    if (surface.commands.count == 0) return false;
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        surface.commands.ptr,
+        surface.commands.count,
     );
     var glyph_count: u32 = 0;
     for (commands, 0..) |command, index| {
-        if (index == 0 and !protocolV0FullClear(frame, command)) return false;
+        if (index == 0 and !renderSurfaceFullClear(surface, command)) return false;
         switch (command.kind) {
-            render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
-            => if (!protocolV0FillCommand(command)) return false,
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE => if (!protocolV0SpriteCommand(command)) return false,
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => {
-                if (!protocolV0GlyphCommand(frame, command)) return false;
+            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+            => if (!renderSurfaceFillCommand(command)) return false,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => if (!renderSurfaceSpriteCommand(command)) return false,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
+                if (!renderSurfaceGlyphCommand(surface, command)) return false;
                 glyph_count += command.glyphs.count;
             },
             else => return false,
@@ -2348,25 +2348,25 @@ pub fn protocolV0GlyphFrame(frame: *const render_c.HowlRenderV0Frame) bool {
     return glyph_count > 0;
 }
 
-pub fn protocolV0GlyphPatch(frame: *const render_c.HowlRenderV0Frame) bool {
-    if (frame.commands.count == 0) return false;
+pub fn renderSurfaceGlyphPatch(surface: *const render_c.HowlRenderSurface) bool {
+    if (surface.commands.count == 0) return false;
     const commands = spanSlice(
-        render_c.HowlRenderV0Command,
-        frame.commands.ptr,
-        frame.commands.count,
+        render_c.HowlRenderSurfaceCommand,
+        surface.commands.ptr,
+        surface.commands.count,
     );
     var glyph_count: u32 = 0;
     for (commands) |command| {
         switch (command.kind) {
-            render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             => {
-                if (!protocolV0FillCommand(command)) return false;
+                if (!renderSurfaceFillCommand(command)) return false;
                 if (!rectHasArea(command.rect)) return false;
-                if (!rectFitsResource(command.rect, frame.render_px.width, frame.render_px.height)) return false;
+                if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
             },
-            render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN => {
-                if (!protocolV0GlyphCommand(frame, command)) return false;
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
+                if (!renderSurfaceGlyphCommand(surface, command)) return false;
                 glyph_count += command.glyphs.count;
             },
             else => return false,
@@ -2375,10 +2375,10 @@ pub fn protocolV0GlyphPatch(frame: *const render_c.HowlRenderV0Frame) bool {
     return glyph_count > 0;
 }
 
-fn protocolV0FillCommand(command: render_c.HowlRenderV0Command) bool {
+fn renderSurfaceFillCommand(command: render_c.HowlRenderSurfaceCommand) bool {
     switch (command.kind) {
-        render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT,
-        render_c.HOWL_RENDER_V0_COMMAND_FILL_RECT,
+        render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
+        render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
         => {},
         else => return false,
     }
@@ -2389,29 +2389,29 @@ fn protocolV0FillCommand(command: render_c.HowlRenderV0Command) bool {
     return true;
 }
 
-fn protocolV0SpriteCommand(command: render_c.HowlRenderV0Command) bool {
-    if (command.kind != render_c.HOWL_RENDER_V0_COMMAND_DRAW_SPRITE) return false;
+fn renderSurfaceSpriteCommand(command: render_c.HowlRenderSurfaceCommand) bool {
+    if (command.kind != render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE) return false;
     if (!rectHasArea(command.rect)) return false;
     if (command.glyphs.count != 0) return false;
     if (command.resource.value == 0) return false;
     if (!spriteResourceKind(command.resource.kind)) return false;
-    if (command.resource.kind == render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_COLOR and
+    if (command.resource.kind == render_c.HOWL_RENDER_RESOURCE_SPRITE_COLOR and
         command.color_rgba != 0) return false;
     return true;
 }
 
-fn protocolV0GlyphCommand(
-    frame: *const render_c.HowlRenderV0Frame,
-    command: render_c.HowlRenderV0Command,
+fn renderSurfaceGlyphCommand(
+    surface: *const render_c.HowlRenderSurface,
+    command: render_c.HowlRenderSurfaceCommand,
 ) bool {
-    return glyphCommandValid(frame, command);
+    return glyphCommandValid(surface, command);
 }
 
 fn glyphCommandValid(
-    frame: *const render_c.HowlRenderV0Frame,
-    command: render_c.HowlRenderV0Command,
+    surface: *const render_c.HowlRenderSurface,
+    command: render_c.HowlRenderSurfaceCommand,
 ) bool {
-    if (command.kind != render_c.HOWL_RENDER_V0_COMMAND_DRAW_GLYPH_RUN) return false;
+    if (command.kind != render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN) return false;
     if (command.rect.x_px != 0 or command.rect.y_px != 0) return false;
     if (command.rect.width_px != 0 or command.rect.height_px != 0) return false;
     if (command.color_rgba != 0) return false;
@@ -2419,49 +2419,49 @@ fn glyphCommandValid(
     if (command.glyphs.count == 0) return false;
     if (!glyphSpanValid(command)) return false;
     const glyphs = spanSlice(
-        render_c.HowlRenderV0GlyphRef,
+        render_c.HowlRenderGlyphRef,
         command.glyphs.ptr,
         command.glyphs.count,
     );
     for (glyphs) |glyph| {
-        if (glyph.atlas_resource.kind != render_c.HOWL_RENDER_V0_RESOURCE_GLYPH_ATLAS_ALPHA) return false;
+        if (glyph.atlas_resource.kind != render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA) return false;
         if (glyph.atlas_rect.width_px == 0 or glyph.atlas_rect.height_px == 0) return false;
         if (!rectFitsResource(glyph.atlas_rect, glyph_atlas_width_px, glyph_atlas_height_px)) return false;
-        if (!destinationOverlaps(frame.render_px, glyph.x_px, glyph.y_px, glyph.atlas_rect)) return false;
-        if (unpackProtocolV0Rgba(glyph.color_rgba)[3] == 0) return false;
+        if (!destinationOverlaps(surface.render_px, glyph.x_px, glyph.y_px, glyph.atlas_rect)) return false;
+        if (unpackRenderSurfaceRgba(glyph.color_rgba)[3] == 0) return false;
     }
     return true;
 }
 
-fn glyphSpanValid(command: render_c.HowlRenderV0Command) bool {
+fn glyphSpanValid(command: render_c.HowlRenderSurfaceCommand) bool {
     return spanCountValid(
         command.glyphs.ptr,
         command.glyphs.count,
         command.glyphs.count_max,
-        render_c.HOWL_RENDER_V0_GLYPHS_PER_RUN_MAX,
+        render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
     );
 }
 
-fn protocolV0FullClear(
-    frame: *const render_c.HowlRenderV0Frame,
-    command: render_c.HowlRenderV0Command,
+fn renderSurfaceFullClear(
+    surface: *const render_c.HowlRenderSurface,
+    command: render_c.HowlRenderSurfaceCommand,
 ) bool {
-    if (command.kind != render_c.HOWL_RENDER_V0_COMMAND_CLEAR_RECT) return false;
+    if (command.kind != render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT) return false;
     if (command.rect.x_px != 0) return false;
     if (command.rect.y_px != 0) return false;
-    if (command.rect.width_px != frame.render_px.width) return false;
-    if (command.rect.height_px != frame.render_px.height) return false;
+    if (command.rect.width_px != surface.render_px.width) return false;
+    if (command.rect.height_px != surface.render_px.height) return false;
     return true;
 }
 
-fn uploadFillCommand(command: render_c.HowlRenderV0Command) bool {
+fn uploadFillCommand(command: render_c.HowlRenderSurfaceCommand) bool {
     const width = command.rect.width_px;
     const height = command.rect.height_px;
     if (width == 0 or height == 0) return false;
     const row_pixels_max = 8192;
     if (width > row_pixels_max) return false;
     var row: [row_pixels_max * 4]u8 = undefined;
-    const rgba = unpackProtocolV0Rgba(command.color_rgba);
+    const rgba = unpackRenderSurfaceRgba(command.color_rgba);
     var x: usize = 0;
     while (x < width) : (x += 1) {
         const offset = x * 4;
@@ -2489,31 +2489,31 @@ fn uploadFillCommand(command: render_c.HowlRenderV0Command) bool {
 
 fn drawFillCommand(
     surface: render_c.HowlRenderHostSurface,
-    command: render_c.HowlRenderV0Command,
+    command: render_c.HowlRenderSurfaceCommand,
 ) void {
     gl_c.glDisable(gl_c.GL_TEXTURE_2D);
-    const rgba = unpackProtocolV0Rgba(command.color_rgba);
+    const rgba = unpackRenderSurfaceRgba(command.color_rgba);
     gl_c.glColor4ub(rgba[0], rgba[1], rgba[2], rgba[3]);
     drawQuad(surface, command.rect, null);
 }
 
 fn drawSpriteCommand(
     surface: render_c.HowlRenderHostSurface,
-    command: render_c.HowlRenderV0Command,
-    slot: ProtocolV0Textures.Slot,
+    command: render_c.HowlRenderSurfaceCommand,
+    slot: RenderResourceTextures.Slot,
 ) bool {
     if (!spriteUploadCoversCommand(slot, command.rect)) return false;
     gl_c.glEnable(gl_c.GL_TEXTURE_2D);
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(slot.texture_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
-    if (command.resource.kind == render_c.HOWL_RENDER_V0_RESOURCE_SPRITE_ALPHA) {
-        const rgba = unpackProtocolV0Rgba(command.color_rgba);
+    if (command.resource.kind == render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA) {
+        const rgba = unpackRenderSurfaceRgba(command.color_rgba);
         gl_c.glColor4ub(rgba[0], rgba[1], rgba[2], rgba[3]);
     } else {
         gl_c.glColor4ub(255, 255, 255, 255);
     }
-    const source_rect = render_c.HowlRenderV0Rect{
+    const source_rect = render_c.HowlRenderSurfaceRect{
         .x_px = 0,
         .y_px = 0,
         .width_px = command.rect.width_px,
@@ -2524,8 +2524,8 @@ fn drawSpriteCommand(
 }
 
 fn spriteUploadCoversCommand(
-    slot: ProtocolV0Textures.Slot,
-    command_rect: render_c.HowlRenderV0Rect,
+    slot: RenderResourceTextures.Slot,
+    command_rect: render_c.HowlRenderSurfaceRect,
 ) bool {
     if (slot.upload_rect.x_px != 0) return false;
     if (slot.upload_rect.y_px != 0) return false;
@@ -2547,28 +2547,28 @@ fn spriteUploadCoversCommand(
 }
 
 fn glyphCommandHasFutureUpload(
-    frame: *const render_c.HowlRenderV0Frame,
-    command: render_c.HowlRenderV0Command,
+    surface: *const render_c.HowlRenderSurface,
+    command: render_c.HowlRenderSurfaceCommand,
     command_index: u32,
 ) bool {
     const glyphs = spanSlice(
-        render_c.HowlRenderV0GlyphRef,
+        render_c.HowlRenderGlyphRef,
         command.glyphs.ptr,
         command.glyphs.count,
     );
     for (glyphs) |glyph| {
-        if (resourceHasFutureUpload(frame, glyph.atlas_resource, command_index)) return true;
+        if (resourceHasFutureUpload(surface, glyph.atlas_resource, command_index)) return true;
     }
     return false;
 }
 
 fn drawGlyphCommand(
-    textures: *ProtocolV0Textures,
+    textures: *RenderResourceTextures,
     surface: render_c.HowlRenderHostSurface,
-    command: render_c.HowlRenderV0Command,
+    command: render_c.HowlRenderSurfaceCommand,
 ) bool {
     const glyphs = spanSlice(
-        render_c.HowlRenderV0GlyphRef,
+        render_c.HowlRenderGlyphRef,
         command.glyphs.ptr,
         command.glyphs.count,
     );
@@ -2582,9 +2582,9 @@ fn drawGlyphCommand(
             bound_texture_id = slot.texture_id;
             gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(bound_texture_id));
         }
-        const rgba = unpackProtocolV0Rgba(glyph.color_rgba);
+        const rgba = unpackRenderSurfaceRgba(glyph.color_rgba);
         gl_c.glColor4ub(rgba[0], rgba[1], rgba[2], rgba[3]);
-        const rect = render_c.HowlRenderV0Rect{
+        const rect = render_c.HowlRenderSurfaceRect{
             .x_px = glyph.x_px,
             .y_px = glyph.y_px,
             .width_px = glyph.atlas_rect.width_px,
@@ -2598,8 +2598,8 @@ fn drawGlyphCommand(
 
 fn drawQuad(
     surface: render_c.HowlRenderHostSurface,
-    rect: render_c.HowlRenderV0Rect,
-    texture_rect_optional: ?render_c.HowlRenderV0Rect,
+    rect: render_c.HowlRenderSurfaceRect,
+    texture_rect_optional: ?render_c.HowlRenderSurfaceRect,
 ) void {
     const left = ndcX(rect.x_px, surface.width);
     const right = ndcX(rect.x_px + rect.width_px, surface.width);
@@ -2625,8 +2625,8 @@ fn drawQuad(
 
 fn drawTexturedQuad(
     surface: render_c.HowlRenderHostSurface,
-    rect: render_c.HowlRenderV0Rect,
-    texture_rect: render_c.HowlRenderV0Rect,
+    rect: render_c.HowlRenderSurfaceRect,
+    texture_rect: render_c.HowlRenderSurfaceRect,
     texture_width: u32,
     texture_height: u32,
 ) void {
@@ -2663,7 +2663,7 @@ fn ndcY(y: i32, height: u16) f32 {
     return (@as(f32, @floatFromInt(y)) / @as(f32, @floatFromInt(@max(height, 1)))) * 2.0 - 1.0;
 }
 
-fn unpackProtocolV0Rgba(color_rgba: u32) [4]u8 {
+fn unpackRenderSurfaceRgba(color_rgba: u32) [4]u8 {
     return .{
         @intCast((color_rgba >> 24) & 0xff),
         @intCast((color_rgba >> 16) & 0xff),
