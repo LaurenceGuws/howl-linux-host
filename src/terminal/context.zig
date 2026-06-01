@@ -31,6 +31,7 @@ const terminal_links = @import("links.zig");
 const cursor_blink = @import("cursor_blink.zig");
 const terminal_scrollbar = @import("scrollbar.zig");
 const terminal_selection = @import("selection.zig");
+const render_surface_submit_diagnostics = @import("render_surface_submit_diagnostics.zig");
 
 const default_history_capacity: u16 = 4096;
 const max_fallback_font_paths: u8 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
@@ -79,47 +80,7 @@ pub const Context = struct {
 
     pub const MouseHandlingOutcome = terminal_selection.MouseHandlingOutcome;
 
-    pub const RenderSurfaceSubmitDiagnostics = struct {
-        submit_count: u64 = 0,
-        render_surface_realization_us_last: u64 = 0,
-        render_surface_realization_us_max: u64 = 0,
-        host_upload_us_last: u64 = 0,
-        host_upload_us_max: u64 = 0,
-        logged_render_surface_failure_count: u64 = 0,
-        submit_failure_count: u64 = 0,
-        prepare_failure_count: u64 = 0,
-        render_surface_emit_status: i32 = render_c.HOWL_RENDER_SURFACE_EMIT_OK,
-        render_surface_resource_plan_status: render_retained.PreparedRenderResourcePlanStatus = .idle,
-        render_surface_unavailable_count: u64 = 0,
-        render_surface_unavailable_null_count: u64 = 0,
-        render_surface_unavailable_call_failed_count: u64 = 0,
-        render_surface_unavailable_unsupported_count: u64 = 0,
-        render_surface_unavailable_invalid_count: u64 = 0,
-        render_surface_unavailable_overflow_count: u64 = 0,
-        render_surface_unavailable_other_count: u64 = 0,
-        render_surface_unsupported_shape_count: u64 = 0,
-        render_surface_unsupported_no_full_clear_count: u64 = 0,
-        render_surface_unsupported_clear_command_count: u64 = 0,
-        render_surface_unsupported_fill_command_count: u64 = 0,
-        render_surface_unsupported_sprite_command_count: u64 = 0,
-        render_surface_unsupported_glyph_command_count: u64 = 0,
-        render_surface_unsupported_other_command_count: u64 = 0,
-        render_surface_fill_patch_count: u64 = 0,
-        render_surface_fill_patch_present_count: u64 = 0,
-        render_surface_fill_patch_failure_count: u64 = 0,
-        render_surface_fill_only_count: u64 = 0,
-        render_surface_fill_only_present_count: u64 = 0,
-        render_surface_fill_only_failure_count: u64 = 0,
-        render_surface_sprite_count: u64 = 0,
-        render_surface_sprite_present_count: u64 = 0,
-        render_surface_sprite_failure_count: u64 = 0,
-        render_surface_sprite_patch_count: u64 = 0,
-        render_surface_sprite_patch_present_count: u64 = 0,
-        render_surface_sprite_patch_failure_count: u64 = 0,
-        render_surface_glyph_count: u64 = 0,
-        render_surface_glyph_present_count: u64 = 0,
-        render_surface_glyph_failure_count: u64 = 0,
-    };
+    pub const RenderSurfaceSubmitDiagnostics = render_surface_submit_diagnostics.Diagnostics;
 
     term: HowlTerm,
     progress: pty_wait_thread.State = .{},
@@ -583,13 +544,7 @@ pub const Context = struct {
     }
 
     fn recordPrepareFailure(self: *Context, reason: render_retained.PrepareFailure) void {
-        self.render_surface_submit_diagnostics.prepare_failure_count +|= 1;
-        const count = self.render_surface_submit_diagnostics.prepare_failure_count;
-        if (count > 8 and count % 120 != 0) return;
-        std.debug.print(
-            "howl-debug prepare-failed count={} reason={s}\n",
-            .{ count, @tagName(reason) },
-        );
+        render_surface_submit_diagnostics.recordPrepareFailure(&self.render_surface_submit_diagnostics, reason);
     }
 
     fn renderAction(work: render_retained.WorkState, bootstrap_surface: bool) RenderAction {
@@ -643,10 +598,14 @@ pub const Context = struct {
                 self.recordRenderSurfaceRealization(renderUs(render_surface_start_ns));
             }
             const upload_start_ns = EventLoop.nowNs();
-            self.render_surface_submit_diagnostics.render_surface_emit_status =
-                prepared_upload.diagnostics.render_surface_emit_status;
-            self.render_surface_submit_diagnostics.render_surface_resource_plan_status =
-                prepared_upload.render_surface_resource_plan.status;
+            render_surface_submit_diagnostics.recordEmitStatus(
+                &self.render_surface_submit_diagnostics,
+                prepared_upload.diagnostics.render_surface_emit_status,
+            );
+            render_surface_submit_diagnostics.recordResourcePlanStatus(
+                &self.render_surface_submit_diagnostics,
+                prepared_upload.render_surface_resource_plan.status,
+            );
             const had_matching_surface = self.term_texture.host_surface_id != 0 and
                 self.term_texture.width == prepared_upload.info.render_px.width and
                 self.term_texture.height == prepared_upload.info.render_px.height;
@@ -682,82 +641,69 @@ pub const Context = struct {
 
         fn uploadRenderSurfaceCommands(self: *Context, render_surface: *const render_c.HowlRenderSurface, had_matching_surface: bool) bool {
             if (term_texture.renderSurfaceSprite(render_surface)) {
-                self.render_surface_submit_diagnostics.render_surface_sprite_count +|= 1;
+                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite, .surface);
                 if (term_texture.uploadRenderSurfaceSprites(&self.render_surface_textures, self.term_texture, render_surface)) {
-                    self.render_surface_submit_diagnostics.render_surface_sprite_present_count +|= 1;
+                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite, .present);
                     return true;
                 }
-                self.render_surface_submit_diagnostics.render_surface_sprite_failure_count +|= 1;
+                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite, .failure);
                 return false;
             }
             if (term_texture.renderSurfaceSpritePatch(render_surface)) {
-                self.render_surface_submit_diagnostics.render_surface_sprite_patch_count +|= 1;
+                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite_patch, .surface);
                 if (had_matching_surface and
                     term_texture.uploadRenderSurfaceSpritePatch(&self.render_surface_textures, self.term_texture, render_surface))
                 {
-                    self.render_surface_submit_diagnostics.render_surface_sprite_patch_present_count +|= 1;
+                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite_patch, .present);
                     return true;
                 }
-                self.render_surface_submit_diagnostics.render_surface_sprite_patch_failure_count +|= 1;
+                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite_patch, .failure);
                 return false;
             }
             if (term_texture.renderSurfaceGlyphs(render_surface)) {
-                self.render_surface_submit_diagnostics.render_surface_glyph_count +|= 1;
+                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph, .surface);
                 if (term_texture.uploadRenderSurfaceGlyphs(&self.render_surface_textures, self.term_texture, render_surface)) {
-                    self.render_surface_submit_diagnostics.render_surface_glyph_present_count +|= 1;
+                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph, .present);
                     return true;
                 }
-                self.render_surface_submit_diagnostics.render_surface_glyph_failure_count +|= 1;
+                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph, .failure);
                 return false;
             }
             if (term_texture.renderSurfaceGlyphPatch(render_surface)) {
-                self.render_surface_submit_diagnostics.render_surface_glyph_count +|= 1;
+                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph_patch, .surface);
                 if (had_matching_surface and
                     term_texture.uploadRenderSurfaceGlyphPatch(&self.render_surface_textures, self.term_texture, render_surface))
                 {
-                    self.render_surface_submit_diagnostics.render_surface_glyph_present_count +|= 1;
+                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph_patch, .present);
                     return true;
                 }
-                self.render_surface_submit_diagnostics.render_surface_glyph_failure_count +|= 1;
+                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph_patch, .failure);
                 return false;
             }
             if (!term_texture.renderSurfaceFillOnly(render_surface)) {
                 if (term_texture.renderSurfaceFillPatch(render_surface)) {
-                    self.render_surface_submit_diagnostics.render_surface_fill_patch_count +|= 1;
+                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_patch, .surface);
                     if (term_texture.uploadRenderSurfaceFillPatch(self.term_texture, render_surface)) {
-                        self.render_surface_submit_diagnostics.render_surface_fill_patch_present_count +|= 1;
+                        render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_patch, .present);
                         return true;
                     }
-                    self.render_surface_submit_diagnostics.render_surface_fill_patch_failure_count +|= 1;
+                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_patch, .failure);
                     return false;
                 }
                 panicUnsupportedTrustedRenderSurfaceShape(self, render_surface);
             }
-            self.render_surface_submit_diagnostics.render_surface_fill_only_count +|= 1;
+            render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_only, .surface);
             if (term_texture.uploadRenderSurfaceFillOnly(self.term_texture, render_surface)) {
-                self.render_surface_submit_diagnostics.render_surface_fill_only_present_count +|= 1;
+                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_only, .present);
                 return true;
             }
-            self.render_surface_submit_diagnostics.render_surface_fill_only_failure_count +|= 1;
+            render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_only, .failure);
             return false;
         }
 
         fn recordUnsupportedRenderSurfaceShape(self: *Context, render_surface: *const render_c.HowlRenderSurface) void {
             const summary = term_texture.renderSurfaceSummary(render_surface);
-            self.render_surface_submit_diagnostics.render_surface_unsupported_shape_count +|= 1;
-            if (!summary.first_full_clear) {
-                self.render_surface_submit_diagnostics.render_surface_unsupported_no_full_clear_count +|= 1;
-            }
-            self.render_surface_submit_diagnostics.render_surface_unsupported_clear_command_count +|=
-                summary.clear_count;
-            self.render_surface_submit_diagnostics.render_surface_unsupported_fill_command_count +|=
-                summary.fill_count;
-            self.render_surface_submit_diagnostics.render_surface_unsupported_sprite_command_count +|=
-                summary.sprite_count;
-            self.render_surface_submit_diagnostics.render_surface_unsupported_glyph_command_count +|=
-                summary.glyph_count;
-            self.render_surface_submit_diagnostics.render_surface_unsupported_other_command_count +|=
-                summary.other_count;
+            render_surface_submit_diagnostics.recordUnsupportedShape(&self.render_surface_submit_diagnostics, summary);
         }
 
         fn panicUnsupportedTrustedRenderSurfaceShape(self: *Context, render_surface: *const render_c.HowlRenderSurface) noreturn {
@@ -785,34 +731,7 @@ pub const Context = struct {
         }
 
         fn recordRenderSurfaceUnavailable(self: *Context, status: render_retained.PreparedRenderResourcePlanStatus) void {
-            self.render_surface_submit_diagnostics.render_surface_unavailable_count +|= 1;
-            switch (status) {
-                .null_surface => {
-                    self.render_surface_submit_diagnostics.render_surface_unavailable_null_count +|= 1;
-                },
-                .call_failed => {
-                    self.render_surface_submit_diagnostics.render_surface_unavailable_call_failed_count +|= 1;
-                },
-                .unsupported_command,
-                .unsupported_resource,
-                => self.render_surface_submit_diagnostics.render_surface_unavailable_unsupported_count +|= 1,
-                .invalid_command,
-                .invalid_resource,
-                .invalid_upload,
-                .create_span_invalid,
-                .upload_span_invalid,
-                .command_span_invalid,
-                .retire_span_invalid,
-                .version_mismatch,
-                .upload_bytes_max_mismatch,
-                => self.render_surface_submit_diagnostics.render_surface_unavailable_invalid_count +|= 1,
-                .upload_bytes_overflow => {
-                    self.render_surface_submit_diagnostics.render_surface_unavailable_overflow_count +|= 1;
-                },
-                .idle,
-                .ok,
-                => self.render_surface_submit_diagnostics.render_surface_unavailable_other_count +|= 1,
-            }
+            render_surface_submit_diagnostics.recordUnavailable(&self.render_surface_submit_diagnostics, status);
             switch (trustedRenderSurfaceUnavailableAction(status)) {
                 .ok,
                 .invariant,
@@ -920,26 +839,7 @@ pub const Context = struct {
     }
 
     fn recordSubmitFailure(self: *Context, reason: SubmitFailureReason, info: render_c.HowlRenderPreparedSurfaceInfo, execution: render_c.HowlRenderSubmitExecution) void {
-        self.render_surface_submit_diagnostics.submit_failure_count +|= 1;
-        const count = self.render_surface_submit_diagnostics.submit_failure_count;
-        if (count > 8 and count % 120 != 0) return;
-        std.debug.print(
-            "howl-debug submit-failed count={} reason={s} snapshot={} damage_kind={} " ++
-                "prepared_px={}x{} host_px={}x{} host_id={} uploads_committed={} render_us={}\n",
-            .{
-                count,
-                @tagName(reason),
-                info.snapshot_seq,
-                info.damage_kind,
-                info.render_px.width,
-                info.render_px.height,
-                execution.host_surface.width,
-                execution.host_surface.height,
-                execution.host_surface.host_surface_id,
-                execution.uploads_committed,
-                execution.render_us,
-            },
-        );
+        render_surface_submit_diagnostics.recordSubmitFailure(&self.render_surface_submit_diagnostics, @tagName(reason), info, execution);
     }
 
     fn preparedHandleStable(current: render_c.HowlRenderPreparedSurfaceHandle, prepared: render_c.HowlRenderPreparedSurfaceHandle) bool {
@@ -959,296 +859,28 @@ pub const Context = struct {
     }
 
     fn recordRenderSurfaceRealization(self: *Context, elapsed_us: u64) void {
-        self.render_surface_submit_diagnostics.render_surface_realization_us_last = elapsed_us;
-        self.render_surface_submit_diagnostics.render_surface_realization_us_max =
-            @max(self.render_surface_submit_diagnostics.render_surface_realization_us_max, elapsed_us);
+        render_surface_submit_diagnostics.recordRenderSurfaceRealization(&self.render_surface_submit_diagnostics, elapsed_us);
     }
 
     fn recordHostUpload(self: *Context, elapsed_us: u64) void {
-        self.render_surface_submit_diagnostics.submit_count +|= 1;
-        self.render_surface_submit_diagnostics.host_upload_us_last = elapsed_us;
-        self.render_surface_submit_diagnostics.host_upload_us_max =
-            @max(self.render_surface_submit_diagnostics.host_upload_us_max, elapsed_us);
+        render_surface_submit_diagnostics.recordHostUpload(&self.render_surface_submit_diagnostics, elapsed_us);
     }
 
     fn logRenderSurfaceDiagnostics(self: *Context) void {
-        const submit_diag = self.render_surface_submit_diagnostics;
-        const texture_diag = self.render_surface_textures.diagnostics;
-        if (submit_diag.submit_count == 0) return;
-        const should_log = submit_diag.submit_count == 1 or submit_diag.submit_count % 10 == 0 or
-            self.shouldLogRenderSurfaceFailure();
-        if (!should_log) return;
-        self.printRenderSurfaceSummaryDiagnostics(submit_diag, texture_diag);
-        self.printRenderSurfaceIntervalDiagnostics(submit_diag);
-        self.printRenderSurfaceGlDiagnostics(submit_diag, texture_diag);
-        if (renderSurfaceFailureTotal(texture_diag) != 0) {
-            printRenderSurfaceFailureDiagnostics(texture_diag);
-        }
-        self.render_surface_submit_diagnostics_logged = submit_diag;
-    }
-
-    fn shouldLogRenderSurfaceFailure(self: *Context) bool {
-        const max_first_failure_logs = 8;
-        var should_log = false;
-        const failure_count = self.render_surface_textures.failure_count;
-        if (failure_count > self.render_surface_submit_diagnostics.logged_render_surface_failure_count) {
-            if (self.render_surface_submit_diagnostics.logged_render_surface_failure_count <
-                max_first_failure_logs)
-            {
-                self.render_surface_submit_diagnostics.logged_render_surface_failure_count = failure_count;
-                should_log = true;
-            }
-        }
-        return should_log;
-    }
-
-    fn printRenderSurfaceSummaryDiagnostics(self: *Context, submit_diag: RenderSurfaceSubmitDiagnostics, texture_diag: term_texture.RenderResourceTextures.Diagnostics) void {
         const label = self.renderSurfaceLabel();
-        std.debug.print(
-            "howl-debug render_surface label='{s}' token snapshot={} surface={} geometry={} " ++
-                "resource={} submits={} " ++
-                "spans create={} upload={} retire={} " ++
-                "command={} upload_bytes={} churn_same_surface={} reuse_persistent={} " ++
-                "created_not_surviving={} creates_per_command_x1000={} " ++
-                "slots live={} retired={} empty={} max_live={} max_retired={} " ++
-                "render_surface_emit_status={} resource_plan_status={s} " ++
-                "render_surface_unavailable={} render_surface_unsupported_shape={} " ++
-                "unavailable null={} call_failed={} unsupported={} invalid={} " ++
-                "overflow={} other={}\n",
-            .{
-                label,
-                texture_diag.snapshot_seq,
-                texture_diag.surface_seq,
-                texture_diag.geometry_epoch,
-                texture_diag.resource_epoch,
-                submit_diag.submit_count,
-                texture_diag.creates,
-                texture_diag.uploads,
-                texture_diag.retires,
-                texture_diag.commands,
-                texture_diag.upload_bytes,
-                texture_diag.same_surface_create_upload_use_retire,
-                texture_diag.persistent_resource_reuse,
-                texture_diag.created_without_surviving_next_surface,
-                texture_diag.creates_per_visible_command_x1000,
-                texture_diag.slots_live,
-                texture_diag.slots_retired,
-                texture_diag.slots_empty,
-                texture_diag.slots_live_max,
-                texture_diag.slots_retired_max,
-                submit_diag.render_surface_emit_status,
-                @tagName(submit_diag.render_surface_resource_plan_status),
-                submit_diag.render_surface_unavailable_count,
-                submit_diag.render_surface_unsupported_shape_count,
-                submit_diag.render_surface_unavailable_null_count,
-                submit_diag.render_surface_unavailable_call_failed_count,
-                submit_diag.render_surface_unavailable_unsupported_count,
-                submit_diag.render_surface_unavailable_invalid_count,
-                submit_diag.render_surface_unavailable_overflow_count,
-                submit_diag.render_surface_unavailable_other_count,
-            },
-        );
-        std.debug.print(
-            "howl-debug render_surface shape unsupported no_full_clear={} clear={} fill={} " ++
-                "sprite={} glyph={} other={} fill_only_surface={} fill_only_present={} " ++
-                "fill_only_failure={} sprite_surface={} sprite_present={} sprite_failure={} " ++
-                "sprite_patch_surface={} sprite_patch_present={} sprite_patch_failure={} " ++
-                "glyph_surface={} glyph_present={} glyph_failure={} " ++
-                "fill_patch_surface={} fill_patch_present={} fill_patch_failure={}\n",
-            .{
-                submit_diag.render_surface_unsupported_no_full_clear_count,
-                submit_diag.render_surface_unsupported_clear_command_count,
-                submit_diag.render_surface_unsupported_fill_command_count,
-                submit_diag.render_surface_unsupported_sprite_command_count,
-                submit_diag.render_surface_unsupported_glyph_command_count,
-                submit_diag.render_surface_unsupported_other_command_count,
-                submit_diag.render_surface_fill_only_count,
-                submit_diag.render_surface_fill_only_present_count,
-                submit_diag.render_surface_fill_only_failure_count,
-                submit_diag.render_surface_sprite_count,
-                submit_diag.render_surface_sprite_present_count,
-                submit_diag.render_surface_sprite_failure_count,
-                submit_diag.render_surface_sprite_patch_count,
-                submit_diag.render_surface_sprite_patch_present_count,
-                submit_diag.render_surface_sprite_patch_failure_count,
-                submit_diag.render_surface_glyph_count,
-                submit_diag.render_surface_glyph_present_count,
-                submit_diag.render_surface_glyph_failure_count,
-                submit_diag.render_surface_fill_patch_count,
-                submit_diag.render_surface_fill_patch_present_count,
-                submit_diag.render_surface_fill_patch_failure_count,
-            },
-        );
-    }
-
-    fn printRenderSurfaceIntervalDiagnostics(self: *Context, submit_diag: RenderSurfaceSubmitDiagnostics) void {
-        const previous = self.render_surface_submit_diagnostics_logged;
-        std.debug.print(
-            "howl-debug render_surface interval submits={} unavailable={} unavailable_null={} " ++
-                "unavailable_call_failed={} unavailable_unsupported={} unavailable_invalid={} " ++
-                "unavailable_overflow={} unavailable_other={} " ++
-                "fill_patch_present={} fill_patch_failure={} sprite_patch_present={} " ++
-                "sprite_patch_failure={} fill_only_present={} fill_only_failure={} " ++
-                "sprite_present={} sprite_failure={} glyph_present={} glyph_failure={}\n",
-            .{
-                counterDelta(submit_diag.submit_count, previous.submit_count),
-                counterDelta(submit_diag.render_surface_unavailable_count, previous.render_surface_unavailable_count),
-                counterDelta(
-                    submit_diag.render_surface_unavailable_null_count,
-                    previous.render_surface_unavailable_null_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_unavailable_call_failed_count,
-                    previous.render_surface_unavailable_call_failed_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_unavailable_unsupported_count,
-                    previous.render_surface_unavailable_unsupported_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_unavailable_invalid_count,
-                    previous.render_surface_unavailable_invalid_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_unavailable_overflow_count,
-                    previous.render_surface_unavailable_overflow_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_unavailable_other_count,
-                    previous.render_surface_unavailable_other_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_fill_patch_present_count,
-                    previous.render_surface_fill_patch_present_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_fill_patch_failure_count,
-                    previous.render_surface_fill_patch_failure_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_sprite_patch_present_count,
-                    previous.render_surface_sprite_patch_present_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_sprite_patch_failure_count,
-                    previous.render_surface_sprite_patch_failure_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_fill_only_present_count,
-                    previous.render_surface_fill_only_present_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_fill_only_failure_count,
-                    previous.render_surface_fill_only_failure_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_sprite_present_count,
-                    previous.render_surface_sprite_present_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_sprite_failure_count,
-                    previous.render_surface_sprite_failure_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_glyph_present_count,
-                    previous.render_surface_glyph_present_count,
-                ),
-                counterDelta(
-                    submit_diag.render_surface_glyph_failure_count,
-                    previous.render_surface_glyph_failure_count,
-                ),
-            },
-        );
+        render_surface_submit_diagnostics.logRenderSurfaceDiagnostics(.{
+            .submit = &self.render_surface_submit_diagnostics,
+            .logged = &self.render_surface_submit_diagnostics_logged,
+            .texture = self.render_surface_textures.diagnostics,
+            .texture_failure_count = self.render_surface_textures.failure_count,
+            .label = label,
+        });
     }
 
     fn renderSurfaceLabel(self: *Context) []const u8 {
         self.refreshTitle();
         if (self.title_len != 0) return self.title_buf[0..self.title_len];
         return self.conf.command orelse self.conf.shell;
-    }
-
-    fn counterDelta(current: u64, previous: u64) u64 {
-        return if (current >= previous) current - previous else current;
-    }
-
-    fn printRenderSurfaceGlDiagnostics(self: *Context, submit_diag: RenderSurfaceSubmitDiagnostics, texture_diag: term_texture.RenderResourceTextures.Diagnostics) void {
-        _ = self;
-        std.debug.print(
-            "howl-debug render_surface gl gen={} image={} subimage={} delete={} " ++
-                "render_surface_us={} render_surface_us_max={} host_upload_us={} host_upload_us_max={} " ++
-                "glerr_render_surface={} " ++
-                "create_before binding={} unpack_align={} unpack_row={} err={} " ++
-                "create_after binding={} unpack_align={} unpack_row={} err={} " ++
-                "upload_before binding={} unpack_align={} unpack_row={} err={} " ++
-                "upload_after binding={} unpack_align={} unpack_row={} err={}\n",
-            .{
-                texture_diag.gl_gen_textures,
-                texture_diag.gl_tex_image_2d,
-                texture_diag.gl_tex_sub_image_2d,
-                texture_diag.gl_delete_textures,
-                submit_diag.render_surface_realization_us_last,
-                submit_diag.render_surface_realization_us_max,
-                submit_diag.host_upload_us_last,
-                submit_diag.host_upload_us_max,
-                texture_diag.gl_error,
-                texture_diag.create_gl_before.texture_binding_2d,
-                texture_diag.create_gl_before.unpack_alignment,
-                texture_diag.create_gl_before.unpack_row_length,
-                texture_diag.create_gl_before.error_code,
-                texture_diag.create_gl_after.texture_binding_2d,
-                texture_diag.create_gl_after.unpack_alignment,
-                texture_diag.create_gl_after.unpack_row_length,
-                texture_diag.create_gl_after.error_code,
-                texture_diag.upload_gl_before.texture_binding_2d,
-                texture_diag.upload_gl_before.unpack_alignment,
-                texture_diag.upload_gl_before.unpack_row_length,
-                texture_diag.upload_gl_before.error_code,
-                texture_diag.upload_gl_after.texture_binding_2d,
-                texture_diag.upload_gl_after.unpack_alignment,
-                texture_diag.upload_gl_after.unpack_row_length,
-                texture_diag.upload_gl_after.error_code,
-            },
-        );
-        std.debug.print(
-            "howl-debug render_surface gl retire_before binding={} unpack_align={} unpack_row={} err={} " ++
-                "retire_after binding={} unpack_align={} unpack_row={} err={}\n",
-            .{
-                texture_diag.retire_gl_before.texture_binding_2d,
-                texture_diag.retire_gl_before.unpack_alignment,
-                texture_diag.retire_gl_before.unpack_row_length,
-                texture_diag.retire_gl_before.error_code,
-                texture_diag.retire_gl_after.texture_binding_2d,
-                texture_diag.retire_gl_after.unpack_alignment,
-                texture_diag.retire_gl_after.unpack_row_length,
-                texture_diag.retire_gl_after.error_code,
-            },
-        );
-    }
-
-    fn printRenderSurfaceFailureDiagnostics(texture_diag: term_texture.RenderResourceTextures.Diagnostics) void {
-        std.debug.print(
-            "howl-debug render_surface failures invalid_spans={} invalid_command_shape={} " ++
-                "invalid_order={} unsupported_resource_format={} upload_bounds={} " ++
-                "tombstone_value_reuse={} capacity={} gl_error={}\n",
-            .{
-                texture_diag.failure_invalid_spans,
-                texture_diag.failure_invalid_command_shape,
-                texture_diag.failure_invalid_order,
-                texture_diag.failure_unsupported_resource_format,
-                texture_diag.failure_upload_bounds,
-                texture_diag.failure_tombstone_value_reuse,
-                texture_diag.failure_capacity,
-                texture_diag.failure_gl_error,
-            },
-        );
-    }
-
-    fn renderSurfaceFailureTotal(texture_diag: term_texture.RenderResourceTextures.Diagnostics) u64 {
-        return texture_diag.failure_invalid_spans +| texture_diag.failure_invalid_command_shape +|
-            texture_diag.failure_invalid_order +|
-            texture_diag.failure_unsupported_resource_format +|
-            texture_diag.failure_upload_bounds +| texture_diag.failure_tombstone_value_reuse +|
-            texture_diag.failure_capacity +| texture_diag.failure_gl_error;
     }
 
     fn submitStep(result: render_retained.SubmitResult) TurnStep {
@@ -1768,68 +1400,6 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(!context.resetCursorBlinkActivity(1234));
     try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.interval_ns, context.cursor_blink.deadline_ns);
     try std.testing.expect(context.cursor_blink.visible);
-}
-
-test "render surface diagnostic failure logging is first N bounded" {
-    var context = Context{
-        .term = undefined,
-        .progress = .{},
-        .live = false,
-        .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
-        .render_surface_textures = .{},
-        .render_surface_submit_diagnostics = .{},
-        .conf = undefined,
-        .input = undefined,
-        .title_buf = undefined,
-        .title_len = 0,
-        .geometry = undefined,
-        .font_size_px = 0,
-        .default_font_size_px = 0,
-        .window_focused = true,
-        .widget_focused = true,
-        .scrollbar = .{},
-        .link_cursor_active = false,
-        .hovered_link_cell = null,
-        .selection_anchor = null,
-        .selection_drag_active = false,
-        .hover_publish_pending = false,
-        .cursor_blink = .{},
-    };
-    var logged: u8 = 0;
-    while (logged < 8) : (logged += 1) {
-        context.render_surface_textures.failure_count += 1;
-        try std.testing.expect(context.shouldLogRenderSurfaceFailure());
-    }
-    context.render_surface_textures.failure_count += 1;
-    try std.testing.expect(!context.shouldLogRenderSurfaceFailure());
-    try std.testing.expectEqual(
-        @as(u64, 8),
-        context.render_surface_submit_diagnostics.logged_render_surface_failure_count,
-    );
-}
-
-test "render surface failure total sums exact buckets" {
-    var diagnostics = term_texture.RenderResourceTextures.Diagnostics{};
-    diagnostics.failure_invalid_spans = 1;
-    diagnostics.failure_invalid_command_shape = 2;
-    diagnostics.failure_invalid_order = 3;
-    diagnostics.failure_unsupported_resource_format = 4;
-    diagnostics.failure_upload_bounds = 5;
-    diagnostics.failure_tombstone_value_reuse = 6;
-    diagnostics.failure_capacity = 7;
-    diagnostics.failure_gl_error = 8;
-    try std.testing.expectEqual(@as(u64, 36), Context.renderSurfaceFailureTotal(diagnostics));
-}
-
-test "render surface unavailable diagnostics use render surface vocabulary" {
-    const Diagnostics = Context.RenderSurfaceSubmitDiagnostics;
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_null_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_call_failed_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_unsupported_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_invalid_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_overflow_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_other_count"));
 }
 
 test "trusted render surface unavailable ok and idle are invariant actions" {
