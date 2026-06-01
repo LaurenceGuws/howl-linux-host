@@ -1638,15 +1638,73 @@ fn fillTestPreparedUpload(upload: *render_retained.PreparedUpload) void {
     };
 }
 
+const TestResizeOperation = enum {
+    resize,
+    geometry_commit,
+    host_upload,
+    host_present_submit,
+    wrong_present_complete,
+    matching_present_complete,
+};
+
+const TestRenderOperation = enum {
+    geometry_sync,
+    prepare,
+    prepared_upload,
+    submit,
+    present_submitted,
+    present_completed,
+};
+
 const TestSubmitRender = struct {
     submit_calls: u8 = 0,
     submit_observed_locked: bool = false,
     last_execution: render_c.HowlRenderSubmitExecution = std.mem.zeroes(render_c.HowlRenderSubmitExecution),
     mutex: ?*terminal_term.Mutex = null,
     handle: render_c.HowlRenderPreparedSurfaceHandle = testPreparedHandle(),
+    geometry_epoch: u64 = 1,
+    present_in_flight: ?struct { snapshot_seq: u64, token: u64 } = null,
+    render_px: render_c.HowlRenderPixelSize = .{ .width = 2, .height = 1 },
+    prepared_info: render_c.HowlRenderPreparedSurfaceInfo = testPreparedUploadInfo(),
+    render_surface: render_c.HowlRenderSurface = testRenderSurface(testPreparedUploadInfo()),
+    operations: [8]TestRenderOperation = undefined,
+    operation_count: u8 = 0,
 
-    fn preparedUpload(_: *@This(), upload: *render_retained.PreparedUpload) bool {
-        fillTestPreparedUpload(upload);
+    fn record(self: *@This(), operation: TestRenderOperation) void {
+        std.debug.assert(self.operation_count < self.operations.len);
+        self.operations[self.operation_count] = operation;
+        self.operation_count += 1;
+    }
+
+    fn syncTestGeometry(self: *@This(), request: SurfaceLayoutRequest) void {
+        std.debug.assert(request.render_px.width > 0);
+        std.debug.assert(request.render_px.height > 0);
+        self.record(.geometry_sync);
+        self.geometry_epoch += 1;
+        self.render_px = request.render_px;
+    }
+
+    fn prepareTestSurface(self: *@This()) void {
+        self.record(.prepare);
+        self.prepared_info = testPreparedUploadInfo();
+        self.prepared_info.snapshot_seq = 52;
+        self.prepared_info.dirty_epoch = 2;
+        self.prepared_info.geometry_epoch = self.geometry_epoch;
+        self.prepared_info.render_px = self.render_px;
+        self.prepared_info.grid = .{ .cols = self.render_px.width, .rows = self.render_px.height };
+        self.prepared_info.damage_kind = render_c.HOWL_RENDER_DAMAGE_FULL;
+        self.render_surface = testRenderSurface(self.prepared_info);
+    }
+
+    fn preparedUpload(self: *@This(), upload: *render_retained.PreparedUpload) bool {
+        self.record(.prepared_upload);
+        upload.* = .{
+            .info = self.prepared_info,
+            .diagnostics = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceDiagnostics),
+            .render_surface_probe = .{},
+            .render_surface_resource_plan = .{ .status = .ok, .valid = true, .surface_seq = self.prepared_info.dirty_epoch },
+            .render_surface = &self.render_surface,
+        };
         return true;
     }
 
@@ -1654,8 +1712,8 @@ const TestSubmitRender = struct {
         return self.handle;
     }
 
-    fn presentPending(_: *@This()) bool {
-        return false;
+    fn presentPending(self: *@This()) bool {
+        return self.present_in_flight != null;
     }
 
     fn lastSubmitFailure(_: *const @This()) render_retained.SubmitFailure {
@@ -1663,6 +1721,7 @@ const TestSubmitRender = struct {
     }
 
     fn submit(self: *@This(), execution: *const render_c.HowlRenderSubmitExecution, result: *render_c.HowlRenderSubmitResult) render_retained.SubmitResult {
+        self.record(.submit);
         self.submit_calls += 1;
         self.last_execution = execution.*;
         if (self.mutex) |mutex| {
@@ -1673,7 +1732,37 @@ const TestSubmitRender = struct {
         result.* = .{ .host_surface = execution.host_surface };
         return .rendered;
     }
+
+    fn notePresentSubmitted(self: *@This(), snapshot_seq: u64, token: u64) void {
+        std.debug.assert(snapshot_seq != 0);
+        std.debug.assert(token != 0);
+        std.debug.assert(self.present_in_flight == null);
+        self.record(.present_submitted);
+        self.present_in_flight = .{ .snapshot_seq = snapshot_seq, .token = token };
+    }
+
+    fn completePresent(self: *@This(), token: u64) ?u64 {
+        const present = self.present_in_flight orelse return null;
+        if (present.token != token) return null;
+        self.record(.present_completed);
+        self.present_in_flight = null;
+        return present.snapshot_seq;
+    }
 };
+
+fn testRenderSurface(info: render_c.HowlRenderPreparedSurfaceInfo) render_c.HowlRenderSurface {
+    var surface = std.mem.zeroes(render_c.HowlRenderSurface);
+    surface.token = .{
+        .snapshot_seq = info.snapshot_seq,
+        .surface_seq = info.dirty_epoch,
+        .geometry_epoch = info.geometry_epoch,
+        .resource_epoch = 0,
+    };
+    surface.render_px = info.render_px;
+    surface.cell_px = info.cell_px;
+    surface.grid = info.grid;
+    return surface;
+}
 
 const TestSubmitTerm = struct {
     mutex: terminal_term.Mutex = .{},
@@ -1687,6 +1776,39 @@ const TestSubmitContext = struct {
         .width = 2,
         .height = 1,
     },
+    geometry: surface_layout.State = surface_layout.init(2, 1, 2, 1),
+    scrollbar: terminal_scrollbar.State = .{},
+    host_upload_calls: u8 = 0,
+    host_upload_had_matching_surface: bool = false,
+    host_upload_render_px: render_c.HowlRenderPixelSize = .{ .width = 0, .height = 0 },
+    host_upload_surface_px: render_c.HowlRenderPixelSize = .{ .width = 0, .height = 0 },
+    operations: [8]TestResizeOperation = undefined,
+    operation_count: u8 = 0,
+
+    fn record(self: *@This(), operation: TestResizeOperation) void {
+        std.debug.assert(self.operation_count < self.operations.len);
+        self.operations[self.operation_count] = operation;
+        self.operation_count += 1;
+    }
+
+    fn resizeForTest(self: *@This(), render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
+        self.record(.resize);
+        surface_layout.resize(self, render_width, render_height, logical_width, logical_height);
+    }
+
+    fn commitGeometryForTest(self: *@This()) SurfaceLayoutRequest {
+        self.record(.geometry_commit);
+        const request = blk: {
+            self.geometry.mutex.lock();
+            defer self.geometry.mutex.unlock();
+            self.geometry.grid_px_w = self.geometry.pending_grid_px_w;
+            self.geometry.grid_px_h = self.geometry.pending_grid_px_h;
+            self.geometry.last_resize_ns = 0;
+            break :blk surface_layout.snapshotSurfaceLayoutLocked(&self.geometry);
+        };
+        self.term.render.syncTestGeometry(request);
+        return request;
+    }
 };
 
 fn testSubmitExecution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
@@ -1752,6 +1874,79 @@ const TestMutatingBackend = struct {
     }
 };
 
+const TestResizeBackend = struct {
+    fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) bool {
+        std.debug.assert(prepared_upload.info.damage_kind == render_c.HOWL_RENDER_DAMAGE_FULL);
+        const render_surface = prepared_upload.render_surface orelse return false;
+        std.debug.assert(render_surface.token.snapshot_seq == prepared_upload.info.snapshot_seq);
+        std.debug.assert(render_surface.token.surface_seq == prepared_upload.info.dirty_epoch);
+        std.debug.assert(render_surface.token.geometry_epoch == prepared_upload.info.geometry_epoch);
+        std.debug.assert(render_surface.render_px.width == prepared_upload.info.render_px.width);
+        std.debug.assert(render_surface.render_px.height == prepared_upload.info.render_px.height);
+        self.host_upload_calls += 1;
+        self.host_upload_had_matching_surface = self.term_texture.host_surface_id != 0 and
+            self.term_texture.width == prepared_upload.info.render_px.width and
+            self.term_texture.height == prepared_upload.info.render_px.height;
+        self.host_upload_render_px = prepared_upload.info.render_px;
+        self.host_upload_surface_px = render_surface.render_px;
+        self.record(.host_upload);
+        self.term_texture = .{
+            .host_surface_id = 2,
+            .width = prepared_upload.info.render_px.width,
+            .height = prepared_upload.info.render_px.height,
+        };
+        return true;
+    }
+
+    fn execution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, _: u64) render_c.HowlRenderSubmitExecution {
+        return Context.ContextSubmitBackend.execution(self, prepared_upload, 0);
+    }
+};
+
+const TestPresentOwner = struct {
+    pending_terminal_present: ?u64 = null,
+    next_token: u64 = 900,
+    submit_count: u8 = 0,
+
+    fn submitTerminalFrame(self: *@This(), context: *TestSubmitContext, snapshot_seq: u64) u64 {
+        std.debug.assert(snapshot_seq != 0);
+        std.debug.assert(self.pending_terminal_present == null);
+        context.record(.host_present_submit);
+        const token = self.next_token;
+        self.next_token += 1;
+        self.submit_count += 1;
+        context.term.render.notePresentSubmitted(snapshot_seq, token);
+        self.pending_terminal_present = token;
+        return token;
+    }
+
+    fn drainComplete(self: *@This(), context: *TestSubmitContext, token: u64) void {
+        const pending = self.pending_terminal_present orelse return;
+        if (pending != token) {
+            context.record(.wrong_present_complete);
+            return;
+        }
+        context.record(.matching_present_complete);
+        completePresentLockedWith(&context.term, token, TestPresentAckOps);
+        self.pending_terminal_present = null;
+    }
+};
+
+const TestPresentAckOps = struct {
+    var ack_calls: u8 = 0;
+    var last_snapshot_seq: u64 = 0;
+
+    fn reset() void {
+        ack_calls = 0;
+        last_snapshot_seq = 0;
+    }
+
+    fn ack(_: *TestSubmitTerm, snapshot_seq: u64) void {
+        ack_calls += 1;
+        last_snapshot_seq = snapshot_seq;
+    }
+};
+
 test "submit backend upload observes terminal mutex unlocked" {
     TestUnlockedBackend.saw_unlocked = false;
     var context = TestSubmitContext{};
@@ -1813,6 +2008,93 @@ test "prepared handle mutation after upload does not submit" {
     try std.testing.expect(TestMutatingBackend.saw_unlocked);
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
     try std.testing.expectEqual(@as(u8, 0), context.term.render.submit_calls);
+}
+
+test "resize success path submits full surface and acks matching present token" {
+    TestPresentAckOps.reset();
+    var context = TestSubmitContext{};
+    var present = TestPresentOwner{};
+
+    try std.testing.expectEqual(@as(?u64, null), present.pending_terminal_present);
+    try std.testing.expectEqual(@as(u64, 1), context.term.render.geometry_epoch);
+    context.resizeForTest(4, 2, 4, 2);
+    const request = context.commitGeometryForTest();
+
+    try std.testing.expectEqual(@as(u16, 4), request.render_px.width);
+    try std.testing.expectEqual(@as(u16, 2), request.render_px.height);
+    try std.testing.expectEqual(@as(u64, 2), context.term.render.geometry_epoch);
+
+    context.term.render.prepareTestSurface();
+    const info = context.term.render.prepared_info;
+    const surface = context.term.render.render_surface;
+    try std.testing.expect(info.snapshot_seq != 0);
+    try std.testing.expect(info.dirty_epoch != 0);
+    try std.testing.expectEqual(context.term.render.geometry_epoch, info.geometry_epoch);
+    try std.testing.expectEqual(info.snapshot_seq, surface.token.snapshot_seq);
+    try std.testing.expectEqual(info.dirty_epoch, surface.token.surface_seq);
+    try std.testing.expectEqual(info.geometry_epoch, surface.token.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 0), surface.token.resource_epoch);
+    try std.testing.expectEqual(info.render_px.width, surface.render_px.width);
+    try std.testing.expectEqual(info.render_px.height, surface.render_px.height);
+
+    context.term.mutex.lockFair();
+    const submit = Context.submitPreparedLockedWith(&context, TestResizeBackend);
+    context.term.mutex.unlock();
+
+    try std.testing.expectEqual(render_retained.SubmitResult.rendered, submit.result);
+    try std.testing.expectEqual(info.snapshot_seq, submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u8, 1), context.term.render.submit_calls);
+    try std.testing.expectEqual(@as(u8, 1), context.host_upload_calls);
+    try std.testing.expect(!context.host_upload_had_matching_surface);
+    try std.testing.expectEqual(info.render_px.width, context.host_upload_render_px.width);
+    try std.testing.expectEqual(info.render_px.height, context.host_upload_render_px.height);
+    try std.testing.expectEqual(info.render_px.width, context.host_upload_surface_px.width);
+    try std.testing.expectEqual(info.render_px.height, context.host_upload_surface_px.height);
+    try std.testing.expectEqual(info.render_px.width, context.term_texture.width);
+    try std.testing.expectEqual(info.render_px.height, context.term_texture.height);
+    try std.testing.expectEqual(info.render_px.width, context.term.render.last_execution.host_surface.width);
+    try std.testing.expectEqual(info.render_px.height, context.term.render.last_execution.host_surface.height);
+
+    const token = present.submitTerminalFrame(&context, submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u8, 1), present.submit_count);
+    try std.testing.expectEqual(@as(?u64, token), present.pending_terminal_present);
+    try std.testing.expect(context.term.render.presentPending());
+
+    const blocked_work = render_retained.WorkState{
+        .source_pending = false,
+        .prepare_pending = false,
+        .submit_pending = true,
+        .present_pending = context.term.render.presentPending(),
+        .bootstrap_surface = false,
+    };
+    try std.testing.expectEqual(Context.RenderAction.blocked_present, Context.renderAction(blocked_work, false));
+
+    present.drainComplete(&context, token + 1);
+    try std.testing.expectEqual(@as(u8, 0), TestPresentAckOps.ack_calls);
+    try std.testing.expectEqual(@as(u64, 0), TestPresentAckOps.last_snapshot_seq);
+    try std.testing.expectEqual(@as(?u64, token), present.pending_terminal_present);
+    try std.testing.expect(context.term.render.presentPending());
+
+    present.drainComplete(&context, token);
+    try std.testing.expectEqual(@as(u8, 1), TestPresentAckOps.ack_calls);
+    try std.testing.expectEqual(submit.snapshot_seq, TestPresentAckOps.last_snapshot_seq);
+    try std.testing.expectEqual(@as(?u64, null), present.pending_terminal_present);
+    try std.testing.expect(!context.term.render.presentPending());
+
+    try std.testing.expectEqual(TestResizeOperation.resize, context.operations[0]);
+    try std.testing.expectEqual(TestResizeOperation.geometry_commit, context.operations[1]);
+    try std.testing.expectEqual(TestResizeOperation.host_upload, context.operations[2]);
+    try std.testing.expectEqual(TestResizeOperation.host_present_submit, context.operations[3]);
+    try std.testing.expectEqual(TestResizeOperation.wrong_present_complete, context.operations[4]);
+    try std.testing.expectEqual(TestResizeOperation.matching_present_complete, context.operations[5]);
+    try std.testing.expectEqual(@as(u8, 6), context.operation_count);
+    try std.testing.expectEqual(TestRenderOperation.geometry_sync, context.term.render.operations[0]);
+    try std.testing.expectEqual(TestRenderOperation.prepare, context.term.render.operations[1]);
+    try std.testing.expectEqual(TestRenderOperation.prepared_upload, context.term.render.operations[2]);
+    try std.testing.expectEqual(TestRenderOperation.submit, context.term.render.operations[3]);
+    try std.testing.expectEqual(TestRenderOperation.present_submitted, context.term.render.operations[4]);
+    try std.testing.expectEqual(TestRenderOperation.present_completed, context.term.render.operations[5]);
+    try std.testing.expectEqual(@as(u8, 6), context.term.render.operation_count);
 }
 
 test "render surface realization gate ignores surface-only resource plan validity" {
