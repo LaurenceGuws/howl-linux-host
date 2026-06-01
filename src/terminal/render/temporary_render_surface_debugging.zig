@@ -1,10 +1,14 @@
 const std = @import("std");
 
-const term_texture = @import("../window/term_texture.zig");
-const render_c = @import("howl_render_c");
-const render_retained = @import("render/retained.zig");
+// TEMPORARY RENDER-SURFACE DEBUGGING.
+// Delete this owner when retained render-surface submit debugging is no longer needed.
+// Do not promote this file into product diagnostics or render policy.
 
-pub const Diagnostics = struct {
+const term_texture = @import("../../display/renderer/render_surface.zig");
+const render_c = @import("howl_render_c");
+const render_retained = @import("retained.zig");
+
+pub const TemporaryDebugging = struct {
     submit_count: u64 = 0,
     render_surface_realization_us_last: u64 = 0,
     render_surface_realization_us_max: u64 = 0,
@@ -47,8 +51,8 @@ pub const Diagnostics = struct {
 };
 
 pub const LogRequest = struct {
-    submit: *Diagnostics,
-    logged: *Diagnostics,
+    submit: *TemporaryDebugging,
+    logged: *TemporaryDebugging,
     texture: term_texture.RenderResourceTextures.Diagnostics,
     texture_failure_count: u64,
     label: []const u8,
@@ -57,25 +61,25 @@ pub const LogRequest = struct {
 pub const ShapeKind = enum { fill_only, fill_patch, sprite, sprite_patch, glyph, glyph_patch };
 pub const ShapeOutcome = enum { surface, present, failure };
 
-pub fn recordPrepareFailure(diagnostics: *Diagnostics, reason: render_retained.PrepareFailure) void {
+pub fn recordPrepareFailure(diagnostics: *TemporaryDebugging, reason: render_retained.PrepareFailure) void {
     diagnostics.prepare_failure_count +|= 1;
     const count = diagnostics.prepare_failure_count;
     if (count > 8 and count % 120 != 0) return;
     std.debug.print("howl-debug prepare-failed count={} reason={s}\n", .{ count, @tagName(reason) });
 }
 
-pub fn recordRenderSurfaceRealization(diagnostics: *Diagnostics, elapsed_us: u64) void {
+pub fn recordRenderSurfaceRealization(diagnostics: *TemporaryDebugging, elapsed_us: u64) void {
     diagnostics.render_surface_realization_us_last = elapsed_us;
     diagnostics.render_surface_realization_us_max = @max(diagnostics.render_surface_realization_us_max, elapsed_us);
 }
 
-pub fn recordHostUpload(diagnostics: *Diagnostics, elapsed_us: u64) void {
+pub fn recordHostUpload(diagnostics: *TemporaryDebugging, elapsed_us: u64) void {
     diagnostics.submit_count +|= 1;
     diagnostics.host_upload_us_last = elapsed_us;
     diagnostics.host_upload_us_max = @max(diagnostics.host_upload_us_max, elapsed_us);
 }
 
-pub fn recordSubmitFailure(diagnostics: *Diagnostics, reason_name: []const u8, info: render_c.HowlRenderPreparedSurfaceInfo, execution: render_c.HowlRenderSubmitExecution) void {
+pub fn recordSubmitFailure(diagnostics: *TemporaryDebugging, reason_name: []const u8, info: render_c.HowlRenderPreparedSurfaceInfo, execution: render_c.HowlRenderSubmitExecution) void {
     diagnostics.submit_failure_count +|= 1;
     const count = diagnostics.submit_failure_count;
     if (count > 8 and count % 120 != 0) return;
@@ -98,15 +102,15 @@ pub fn recordSubmitFailure(diagnostics: *Diagnostics, reason_name: []const u8, i
     );
 }
 
-pub fn recordEmitStatus(diagnostics: *Diagnostics, status: c_int) void {
+pub fn recordEmitStatus(diagnostics: *TemporaryDebugging, status: c_int) void {
     diagnostics.render_surface_emit_status = status;
 }
 
-pub fn recordResourcePlanStatus(diagnostics: *Diagnostics, status: render_retained.PreparedRenderResourcePlanStatus) void {
+pub fn recordResourcePlanStatus(diagnostics: *TemporaryDebugging, status: render_retained.PreparedRenderResourcePlanStatus) void {
     diagnostics.render_surface_resource_plan_status = status;
 }
 
-pub fn recordUnavailable(diagnostics: *Diagnostics, status: render_retained.PreparedRenderResourcePlanStatus) void {
+pub fn recordUnavailable(diagnostics: *TemporaryDebugging, status: render_retained.PreparedRenderResourcePlanStatus) void {
     diagnostics.render_surface_unavailable_count +|= 1;
     switch (status) {
         .null_surface => diagnostics.render_surface_unavailable_null_count +|= 1,
@@ -131,7 +135,7 @@ pub fn recordUnavailable(diagnostics: *Diagnostics, status: render_retained.Prep
     }
 }
 
-pub fn recordUnsupportedShape(diagnostics: *Diagnostics, summary: term_texture.RenderSurfaceSummary) void {
+pub fn recordUnsupportedShape(diagnostics: *TemporaryDebugging, summary: term_texture.RenderSurfaceSummary) void {
     diagnostics.render_surface_unsupported_shape_count +|= 1;
     if (!summary.first_full_clear) diagnostics.render_surface_unsupported_no_full_clear_count +|= 1;
     diagnostics.render_surface_unsupported_clear_command_count +|= summary.clear_count;
@@ -141,7 +145,7 @@ pub fn recordUnsupportedShape(diagnostics: *Diagnostics, summary: term_texture.R
     diagnostics.render_surface_unsupported_other_command_count +|= summary.other_count;
 }
 
-pub fn recordShape(diagnostics: *Diagnostics, kind: ShapeKind, outcome: ShapeOutcome) void {
+pub fn recordShape(diagnostics: *TemporaryDebugging, kind: ShapeKind, outcome: ShapeOutcome) void {
     switch (kind) {
         .fill_only => recordShapeCounters(
             outcome,
@@ -180,7 +184,7 @@ pub fn logRenderSurfaceDiagnostics(request: LogRequest) void {
     request.logged.* = submit;
 }
 
-pub fn shouldLogRenderSurfaceFailure(diagnostics: *Diagnostics, texture_failure_count: u64) bool {
+pub fn shouldLogRenderSurfaceFailure(diagnostics: *TemporaryDebugging, texture_failure_count: u64) bool {
     const max_first_failure_logs = 8;
     if (texture_failure_count > diagnostics.logged_render_surface_failure_count) {
         if (diagnostics.logged_render_surface_failure_count < max_first_failure_logs) {
@@ -211,7 +215,7 @@ fn recordShapeCounters(outcome: ShapeOutcome, surface: *u64, present: *u64, fail
     }
 }
 
-fn printRenderSurfaceSummaryDiagnostics(submit: Diagnostics, texture: term_texture.RenderResourceTextures.Diagnostics, label: []const u8) void {
+fn printRenderSurfaceSummaryDiagnostics(submit: TemporaryDebugging, texture: term_texture.RenderResourceTextures.Diagnostics, label: []const u8) void {
     std.debug.print(
         "howl-debug render_surface label='{s}' token snapshot={} surface={} geometry={} " ++
             "resource={} submits={} spans create={} upload={} retire={} command={} upload_bytes={} " ++
@@ -284,7 +288,7 @@ fn printRenderSurfaceSummaryDiagnostics(submit: Diagnostics, texture: term_textu
     );
 }
 
-fn printRenderSurfaceIntervalDiagnostics(submit: Diagnostics, previous: Diagnostics) void {
+fn printRenderSurfaceIntervalDiagnostics(submit: TemporaryDebugging, previous: TemporaryDebugging) void {
     std.debug.print(
         "howl-debug render_surface interval submits={} unavailable={} unavailable_null={} unavailable_call_failed={} " ++
             "unavailable_unsupported={} unavailable_invalid={} unavailable_overflow={} unavailable_other={} " ++
@@ -313,7 +317,7 @@ fn printRenderSurfaceIntervalDiagnostics(submit: Diagnostics, previous: Diagnost
     );
 }
 
-fn printRenderSurfaceGlDiagnostics(submit: Diagnostics, texture: term_texture.RenderResourceTextures.Diagnostics) void {
+fn printRenderSurfaceGlDiagnostics(submit: TemporaryDebugging, texture: term_texture.RenderResourceTextures.Diagnostics) void {
     std.debug.print(
         "howl-debug render_surface gl gen={} image={} subimage={} delete={} render_surface_us={} " ++
             "render_surface_us_max={} host_upload_us={} host_upload_us_max={} glerr_render_surface={} " ++
@@ -381,7 +385,7 @@ fn printRenderSurfaceFailureDiagnostics(texture: term_texture.RenderResourceText
 }
 
 test "render surface diagnostic failure logging is first N bounded" {
-    var diagnostics = Diagnostics{};
+    var diagnostics = TemporaryDebugging{};
     var failures: u64 = 1;
     while (failures <= 8) : (failures += 1) {
         try std.testing.expect(shouldLogRenderSurfaceFailure(&diagnostics, failures));
@@ -404,13 +408,13 @@ test "render surface failure total sums exact buckets" {
 }
 
 test "render surface unavailable diagnostics use render surface vocabulary" {
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_null_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_call_failed_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_unsupported_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_invalid_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_overflow_count"));
-    try std.testing.expect(@hasField(Diagnostics, "render_surface_unavailable_other_count"));
+    try std.testing.expect(@hasField(TemporaryDebugging, "render_surface_unavailable_count"));
+    try std.testing.expect(@hasField(TemporaryDebugging, "render_surface_unavailable_null_count"));
+    try std.testing.expect(@hasField(TemporaryDebugging, "render_surface_unavailable_call_failed_count"));
+    try std.testing.expect(@hasField(TemporaryDebugging, "render_surface_unavailable_unsupported_count"));
+    try std.testing.expect(@hasField(TemporaryDebugging, "render_surface_unavailable_invalid_count"));
+    try std.testing.expect(@hasField(TemporaryDebugging, "render_surface_unavailable_overflow_count"));
+    try std.testing.expect(@hasField(TemporaryDebugging, "render_surface_unavailable_other_count"));
 }
 
 test "counter delta preserves reset current" {
@@ -419,7 +423,7 @@ test "counter delta preserves reset current" {
 }
 
 test "record host upload updates count last and max" {
-    var diagnostics = Diagnostics{};
+    var diagnostics = TemporaryDebugging{};
     recordHostUpload(&diagnostics, 9);
     recordHostUpload(&diagnostics, 4);
     try std.testing.expectEqual(@as(u64, 2), diagnostics.submit_count);
@@ -428,7 +432,7 @@ test "record host upload updates count last and max" {
 }
 
 test "record render surface realization updates last and max" {
-    var diagnostics = Diagnostics{};
+    var diagnostics = TemporaryDebugging{};
     recordRenderSurfaceRealization(&diagnostics, 5);
     recordRenderSurfaceRealization(&diagnostics, 7);
     recordRenderSurfaceRealization(&diagnostics, 3);
@@ -437,14 +441,14 @@ test "record render surface realization updates last and max" {
 }
 
 test "record prepare failure increments bounded counter" {
-    var diagnostics = Diagnostics{};
+    var diagnostics = TemporaryDebugging{};
     var count: u8 = 0;
     while (count < 9) : (count += 1) recordPrepareFailure(&diagnostics, .prepare_failed);
     try std.testing.expectEqual(@as(u64, 9), diagnostics.prepare_failure_count);
 }
 
 test "record submit failure increments bounded counter" {
-    var diagnostics = Diagnostics{};
+    var diagnostics = TemporaryDebugging{};
     const info = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceInfo);
     const execution = std.mem.zeroes(render_c.HowlRenderSubmitExecution);
     var count: u8 = 0;
@@ -453,7 +457,7 @@ test "record submit failure increments bounded counter" {
 }
 
 test "record unavailable classifies every resource plan status bucket" {
-    var diagnostics = Diagnostics{};
+    var diagnostics = TemporaryDebugging{};
     recordUnavailable(&diagnostics, .null_surface);
     recordUnavailable(&diagnostics, .call_failed);
     recordUnavailable(&diagnostics, .unsupported_command);
@@ -480,7 +484,7 @@ test "record unavailable classifies every resource plan status bucket" {
 }
 
 test "record shape tracks surface present and failure buckets" {
-    var diagnostics = Diagnostics{};
+    var diagnostics = TemporaryDebugging{};
     inline for (.{ ShapeKind.fill_only, .fill_patch, .sprite, .sprite_patch, .glyph, .glyph_patch }) |kind| {
         recordShape(&diagnostics, kind, .surface);
         recordShape(&diagnostics, kind, .present);

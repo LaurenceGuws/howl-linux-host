@@ -1,8 +1,69 @@
 const builtin = @import("builtin");
-const Draw = @import("draw.zig");
+const gl_c = @import("gl_c");
 const Layout = @import("layout.zig");
-const Texture = @import("texture.zig");
+const Rects = @import("renderer/rects.zig");
+const sdl_c = @import("sdl_c");
 const std = @import("std");
+
+pub const C = struct {
+    pub const SDL_GL_CONTEXT_MAJOR_VERSION = sdl_c.SDL_GL_CONTEXT_MAJOR_VERSION;
+    pub const SDL_GL_CONTEXT_MINOR_VERSION = sdl_c.SDL_GL_CONTEXT_MINOR_VERSION;
+    pub const SDL_GL_CONTEXT_PROFILE_COMPATIBILITY = sdl_c.SDL_GL_CONTEXT_PROFILE_COMPATIBILITY;
+    pub const SDL_GL_CONTEXT_PROFILE_MASK = sdl_c.SDL_GL_CONTEXT_PROFILE_MASK;
+    pub const SDL_GLContext = sdl_c.SDL_GLContext;
+    pub const SDL_WINDOW_OPENGL = sdl_c.SDL_WINDOW_OPENGL;
+    pub const SDL_WINDOW_RESIZABLE = sdl_c.SDL_WINDOW_RESIZABLE;
+    pub const SDL_Window = sdl_c.SDL_Window;
+
+    pub const GL_CLAMP_TO_EDGE = gl_c.GL_CLAMP_TO_EDGE;
+    pub const GL_COLOR_BUFFER_BIT = gl_c.GL_COLOR_BUFFER_BIT;
+    pub const GL_NEAREST = gl_c.GL_NEAREST;
+    pub const GL_PACK_ALIGNMENT = gl_c.GL_PACK_ALIGNMENT;
+    pub const GL_QUADS = gl_c.GL_QUADS;
+    pub const GL_RGBA = gl_c.GL_RGBA;
+    pub const GL_TEXTURE_2D = gl_c.GL_TEXTURE_2D;
+    pub const GL_TEXTURE_HEIGHT = gl_c.GL_TEXTURE_HEIGHT;
+    pub const GL_TEXTURE_MAG_FILTER = gl_c.GL_TEXTURE_MAG_FILTER;
+    pub const GL_TEXTURE_MIN_FILTER = gl_c.GL_TEXTURE_MIN_FILTER;
+    pub const GL_TEXTURE_WIDTH = gl_c.GL_TEXTURE_WIDTH;
+    pub const GL_TEXTURE_WRAP_S = gl_c.GL_TEXTURE_WRAP_S;
+    pub const GL_TEXTURE_WRAP_T = gl_c.GL_TEXTURE_WRAP_T;
+    pub const GL_UNSIGNED_BYTE = gl_c.GL_UNSIGNED_BYTE;
+
+    pub const SDL_GL_CreateContext = sdl_c.SDL_GL_CreateContext;
+    pub const SDL_GL_GetCurrentContext = sdl_c.SDL_GL_GetCurrentContext;
+    pub const SDL_GL_GetCurrentWindow = sdl_c.SDL_GL_GetCurrentWindow;
+    pub const SDL_GL_MakeCurrent = sdl_c.SDL_GL_MakeCurrent;
+    pub const SDL_GL_SetAttribute = sdl_c.SDL_GL_SetAttribute;
+    pub const SDL_GL_SetSwapInterval = sdl_c.SDL_GL_SetSwapInterval;
+    pub const SDL_GL_SwapWindow = sdl_c.SDL_GL_SwapWindow;
+    pub const SDL_GetWindowSizeInPixels = sdl_c.SDL_GetWindowSizeInPixels;
+    pub const SDL_GetTicksNS = sdl_c.SDL_GetTicksNS;
+    pub const SDL_IsMainThread = sdl_c.SDL_IsMainThread;
+
+    pub const glBegin = gl_c.glBegin;
+    pub const glBindTexture = gl_c.glBindTexture;
+    pub const glClear = gl_c.glClear;
+    pub const glClearColor = gl_c.glClearColor;
+    pub const glColor4f = gl_c.glColor4f;
+    pub const glCopyTexImage2D = gl_c.glCopyTexImage2D;
+    pub const glCopyTexSubImage2D = gl_c.glCopyTexSubImage2D;
+    pub const glDeleteTextures = gl_c.glDeleteTextures;
+    pub const glDisable = gl_c.glDisable;
+    pub const glEnable = gl_c.glEnable;
+    pub const glEnd = gl_c.glEnd;
+    pub const glGenTextures = gl_c.glGenTextures;
+    pub const glGetTexImage = gl_c.glGetTexImage;
+    pub const glGetTexLevelParameteriv = gl_c.glGetTexLevelParameteriv;
+    pub const glPixelStorei = gl_c.glPixelStorei;
+    pub const glReadPixels = gl_c.glReadPixels;
+    pub const glTexCoord2f = gl_c.glTexCoord2f;
+    pub const glTexParameteri = gl_c.glTexParameteri;
+    pub const glVertex2f = gl_c.glVertex2f;
+    pub const glViewport = gl_c.glViewport;
+};
+
+pub const State = GenericState(C);
 
 pub const PresentToken = u64;
 
@@ -62,7 +123,7 @@ const FramebufferObservation = struct {
     rgba: ?[]u8,
 };
 
-pub fn State(comptime c: type) type {
+pub fn GenericState(comptime c: type) type {
     return struct {
         window: ?*c.SDL_Window,
         gl_context: ?c.SDL_GLContext,
@@ -78,6 +139,22 @@ pub fn State(comptime c: type) type {
         submitted_present: ?PresentToken,
         completed_present: ?PresentToken,
         diagnostics: PresentDiagnostics,
+
+        pub fn submitPresent(self: *@This(), frame: Layout.Frame) PresentToken {
+            return displaySubmitPresent(C, self, frame);
+        }
+
+        pub fn drainPresentComplete(self: *@This()) ?PresentToken {
+            return displayDrainPresentComplete(C, self);
+        }
+
+        pub fn requestPresentProof(self: *@This()) void {
+            displayRequestPresentProof(C, self);
+        }
+
+        pub fn presentProofSnapshot(self: *const @This()) PresentProofSnapshot {
+            return displayPresentProofSnapshot(C, self);
+        }
     };
 }
 
@@ -85,7 +162,7 @@ pub fn flags(comptime c: type) c_uint {
     return @intCast(c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_OPENGL);
 }
 
-pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
+pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) !void {
     state.* = .{
         .window = handle,
         .gl_context = null,
@@ -112,7 +189,7 @@ pub fn init(comptime c: type, state: *State(c), handle: *c.SDL_Window) !void {
     _ = c.SDL_GL_SetSwapInterval(1);
 }
 
-pub fn deinit(comptime c: type, state: *State(c)) void {
+pub fn deinit(comptime c: type, state: *GenericState(c)) void {
     releaseTabCache(c, state);
     if (state.gl_context) |ctx| {
         _ = ctx;
@@ -123,7 +200,7 @@ pub fn deinit(comptime c: type, state: *State(c)) void {
     state.window = null;
 }
 
-pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) PresentToken {
+pub fn displaySubmitPresent(comptime c: type, state: *GenericState(c), frame: Layout.Frame) PresentToken {
     std.debug.assert(state.submitted_present == null);
     std.debug.assert(state.completed_present == null);
     const token = state.next_present_token;
@@ -157,7 +234,7 @@ pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) Pr
     else
         emptyFramebufferObservation();
     defer if (framebuffer_probe_before.rgba) |pixels| std.heap.c_allocator.free(pixels);
-    Texture.drawRect(
+    Rects.textureRect(
         c,
         @max(fb_w, 1),
         @max(fb_h, 1),
@@ -168,9 +245,9 @@ pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) Pr
         frame.term_texture_rect.height,
     );
     if (capture_present_proof) capturePresentProof(c, state, frame, probe_rect, framebuffer_before, framebuffer_probe_before);
-    Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
+    Rects.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
     const swap_start_ns = c.SDL_GetTicksNS();
-    Texture.swapWindow(c, handle);
+    _ = c.SDL_GL_SwapWindow(handle);
     recordSwap(state, elapsedUs(c, swap_start_ns));
     logPresentDiagnostics(state);
     std.debug.assert(state.submitted_present == token);
@@ -179,7 +256,7 @@ pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) Pr
     return token;
 }
 
-pub fn drainPresentComplete(comptime c: type, state: *State(c)) ?PresentToken {
+pub fn displayDrainPresentComplete(comptime c: type, state: *GenericState(c)) ?PresentToken {
     std.debug.assert(state.submitted_present == null);
     const token = state.completed_present orelse return null;
     state.completed_present = null;
@@ -187,15 +264,15 @@ pub fn drainPresentComplete(comptime c: type, state: *State(c)) ?PresentToken {
     return token;
 }
 
-pub fn requestPresentProof(comptime c: type, state: *State(c)) void {
+pub fn displayRequestPresentProof(comptime c: type, state: *GenericState(c)) void {
     state.proof_capture_requested = true;
 }
 
-pub fn presentProofSnapshot(comptime c: type, state: *const State(c)) PresentProofSnapshot {
+pub fn displayPresentProofSnapshot(comptime c: type, state: *const GenericState(c)) PresentProofSnapshot {
     return state.last_present_proof;
 }
 
-fn recordReadiness(comptime c: type, state: *State(c), handle: *c.SDL_Window) void {
+fn recordReadiness(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) void {
     const ready = readiness(c, state, handle);
     if (ready.main_thread) {
         state.diagnostics.main_thread_ok_count +|= 1;
@@ -214,7 +291,7 @@ fn recordReadiness(comptime c: type, state: *State(c), handle: *c.SDL_Window) vo
     }
 }
 
-fn readiness(comptime c: type, state: *State(c), handle: *c.SDL_Window) Readiness {
+fn readiness(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) Readiness {
     return .{
         .main_thread = c.SDL_IsMainThread(),
         .current_context = state.gl_context != null and
@@ -280,7 +357,7 @@ fn shouldLogPresentFailure(state: anytype) bool {
     return should_log;
 }
 
-fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {
+fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {
     const bar_h = @max(frame.term_texture_rect.y, 0);
     if (bar_h <= 0) {
         releaseTabCache(c, state);
@@ -296,7 +373,7 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h:
     c.glViewport(0, 0, fb_w, fb_h);
     c.glClearColor(0.0, 0.0, 0.0, 0.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
-    Draw.tabBar(c, fb_w, fb_h, frame);
+    Rects.tabBar(c, fb_w, fb_h, frame);
     c.glBindTexture(c.GL_TEXTURE_2D, state.tab_texture_id);
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
     setTextureParams(c);
@@ -311,19 +388,19 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *State(c), fb_w: c_int, fb_h:
     state.tab_cache_hash = cache_hash;
 }
 
-fn drawCachedTabBar(comptime c: type, state: *State(c), fb_w: c_int, fb_h: c_int, bar_h: c_int) void {
+fn drawCachedTabBar(comptime c: type, state: *GenericState(c), fb_w: c_int, fb_h: c_int, bar_h: c_int) void {
     if (!state.tab_cache_valid or state.tab_texture_id == 0 or bar_h <= 0) return;
-    Texture.drawRect(c, fb_w, fb_h, state.tab_texture_id, 0, 0, fb_w, bar_h);
+    Rects.textureRect(c, fb_w, fb_h, state.tab_texture_id, 0, 0, fb_w, bar_h);
 }
 
-fn ensureTabTexture(comptime c: type, state: *State(c)) void {
+fn ensureTabTexture(comptime c: type, state: *GenericState(c)) void {
     if (state.tab_texture_id != 0) return;
     var texture_id: c_uint = 0;
     c.glGenTextures(1, &texture_id);
     state.tab_texture_id = texture_id;
 }
 
-fn releaseTabCache(comptime c: type, state: *State(c)) void {
+fn releaseTabCache(comptime c: type, state: *GenericState(c)) void {
     if (state.tab_texture_id != 0) {
         var texture_id = state.tab_texture_id;
         c.glDeleteTextures(1, &texture_id);
@@ -387,7 +464,7 @@ fn emptyFramebufferObservation() FramebufferObservation {
 
 fn capturePresentProof(
     comptime c: type,
-    state: *State(c),
+    state: *GenericState(c),
     frame: Layout.Frame,
     probe_rect: ?Layout.Rect,
     framebuffer_before: FramebufferObservation,
@@ -583,7 +660,7 @@ const FakeC = struct {
     }
 };
 
-fn testState() State(FakeC) {
+fn testState() GenericState(FakeC) {
     return .{
         .window = @ptrFromInt(1),
         .gl_context = null,
@@ -615,14 +692,14 @@ fn testFrame() Layout.Frame {
 
 test "submit present returns monotonic nonzero tokens" {
     var state = testState();
-    const first = submitPresent(FakeC, &state, testFrame());
+    const first = displaySubmitPresent(FakeC, &state, testFrame());
     try std.testing.expect(first != 0);
-    try std.testing.expectEqual(first, drainPresentComplete(FakeC, &state).?);
+    try std.testing.expectEqual(first, displayDrainPresentComplete(FakeC, &state).?);
 
-    const second = submitPresent(FakeC, &state, testFrame());
+    const second = displaySubmitPresent(FakeC, &state, testFrame());
     try std.testing.expect(second != 0);
     try std.testing.expect(second > first);
-    try std.testing.expectEqual(second, drainPresentComplete(FakeC, &state).?);
+    try std.testing.expectEqual(second, displayDrainPresentComplete(FakeC, &state).?);
 }
 
 test "submit present enforces single in-flight state" {
@@ -633,13 +710,13 @@ test "submit present enforces single in-flight state" {
 
 test "present completion drains once before overwrite" {
     var state = testState();
-    const token = submitPresent(FakeC, &state, testFrame());
-    try std.testing.expectEqual(@as(?PresentToken, token), drainPresentComplete(FakeC, &state));
-    try std.testing.expectEqual(@as(?PresentToken, null), drainPresentComplete(FakeC, &state));
+    const token = displaySubmitPresent(FakeC, &state, testFrame());
+    try std.testing.expectEqual(@as(?PresentToken, token), displayDrainPresentComplete(FakeC, &state));
+    try std.testing.expectEqual(@as(?PresentToken, null), displayDrainPresentComplete(FakeC, &state));
 
-    const next = submitPresent(FakeC, &state, testFrame());
+    const next = displaySubmitPresent(FakeC, &state, testFrame());
     try std.testing.expect(next > token);
-    try std.testing.expectEqual(@as(?PresentToken, next), drainPresentComplete(FakeC, &state));
+    try std.testing.expectEqual(@as(?PresentToken, next), displayDrainPresentComplete(FakeC, &state));
 }
 
 test "present diagnostic failure logging is first N bounded" {

@@ -1,16 +1,16 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
+const DisplayLayout = @import("../display/layout.zig");
 const TerminalContext = @import("../terminal/context.zig").Context;
-const FramePacing = @import("../window/pacing.zig");
-const WindowLayout = @import("../window/layout.zig");
+const FramePacing = @import("../display/frame_timer.zig");
 
 pub const Reason = FramePacing.PresentReason;
 pub const PresentToken = u64;
 
 pub const Snapshot = struct {
-    texture_rect: WindowLayout.Rect,
-    scrollbar: WindowLayout.ScrollbarLayout,
+    texture_rect: DisplayLayout.Rect,
+    scrollbar: DisplayLayout.ScrollbarLayout,
     active_tab: u8,
     labels: []const []const u8,
 };
@@ -34,11 +34,11 @@ pub fn deriveReason(host_redraw: bool, step: TerminalContext.TurnStep) Reason {
     };
 }
 
-pub fn submitWith(window: anytype, tab: anytype, snapshot: Snapshot, reason: Reason) Submission {
+pub fn submitWith(display: anytype, tab: anytype, snapshot: Snapshot, reason: Reason) Submission {
     switch (reason) {
         .none, .terminal_retire => return .{ .reason = reason, .submitted = false, .token = null },
         .host_damage, .terminal_frame => {
-            const token = window.submitPresent(.{
+            const token = display.submitPresent(.{
                 .term_texture_id = @as(u32, @intCast(tab.termTextureId())),
                 .term_texture_rect = snapshot.texture_rect,
                 .scrollbar = snapshot.scrollbar,
@@ -75,7 +75,7 @@ pub fn recordSubmissionFor(app: anytype, tab: anytype, step: TerminalContext.Tur
 }
 
 pub fn drainComplete(app: anytype) void {
-    const token = app.window.drainPresentComplete() orelse return;
+    const token = app.display.drainPresentComplete() orelse return;
     noteFramePacingPresentComplete(app);
     if (app.pending_terminal_present) |terminal_token| {
         if (terminal_token != token) return;

@@ -2,6 +2,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 const cli_args = @import("cli/args.zig");
 const Config = @import("config/config.zig");
+const Display = @import("display/display.zig");
+const DisplayLayout = @import("display/layout.zig");
 const EventLoop = @import("event_loop.zig");
 const Input = @import("input/input.zig").Input;
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
@@ -10,8 +12,8 @@ const AppPresent = @import("app/present.zig");
 const ProcessAccounting = @import("app/process_accounting.zig");
 const pty_wait_thread = @import("terminal/pty/wait_thread.zig");
 const TerminalContext = @import("terminal/context.zig").Context;
-const FramePacing = @import("window/pacing.zig");
-const Window = @import("window/window.zig");
+const FramePacing = @import("display/frame_timer.zig");
+const Window = @import("window_chrome/window.zig");
 
 pub const Options = cli_args.Options;
 const feed_record_path_env = "HOWL_PTY_VT_RECORD_PATH";
@@ -76,13 +78,14 @@ const App = struct {
     feed_record_path: ?[]const u8,
     io: std.Io,
     window: *Window.State,
+    display: *Display.State,
     tab_bar: *TabBar,
     tabs: *TabSlots,
     active_tab_idx: *TabIndex,
     input: *Input,
     event_loop: *EventLoop.State,
     terminal_input_admitted: bool,
-    pending_terminal_present: ?Window.PresentToken,
+    pending_terminal_present: ?Display.PresentToken,
     frame_pacing: FramePacing.State,
     accounting: ProcessAccounting.State,
     loop_turn_count: u64,
@@ -95,6 +98,7 @@ const OpenTabRequest = struct {
     event_loop: *EventLoop.State,
     feed_record_path: ?[]const u8,
     window: *Window.State,
+    display: *Display.State,
     tabs: *TabSlots,
     active_tab_idx: *TabIndex,
 };
@@ -135,6 +139,15 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
     window.* = try createWindow(conf, options);
     window_created = true;
 
+    const display = try std.heap.c_allocator.create(Display.State);
+    var display_created = false;
+    defer {
+        if (display_created) Display.deinit(Display.C, display);
+        std.heap.c_allocator.destroy(display);
+    }
+    try Display.init(Display.C, display, window.handle);
+    display_created = true;
+
     const tab_bar = try std.heap.c_allocator.create(TabBar);
     tab_bar.* = .{};
     defer std.heap.c_allocator.destroy(tab_bar);
@@ -168,6 +181,7 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         .event_loop = event_loop,
         .feed_record_path = feed_record_path,
         .window = window,
+        .display = display,
         .tabs = tabs,
         .active_tab_idx = active_tab_idx,
     });
@@ -180,6 +194,7 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         .feed_record_path = feed_record_path,
         .io = io,
         .window = window,
+        .display = display,
         .tab_bar = tab_bar,
         .tabs = tabs,
         .active_tab_idx = active_tab_idx,
@@ -216,7 +231,7 @@ fn loadConfig(options: Options) !Config.State {
 
 fn createWindow(conf: *const Config.State, options: Options) !Window.State {
     const title: [*:0]const u8 = if (options.window_title) |value| value.ptr else conf.window.title.ptr;
-    var window = try Window.State.create(title, conf.window.width, conf.window.height);
+    var window = try Window.State.create(title, conf.window.width, conf.window.height, Display.flags(Display.C));
     errdefer window.deinit();
     return window;
 }
@@ -513,14 +528,14 @@ fn applyFocusChange(app: *App) void {
 fn drainBindingActions(app: *App) !void {
     while (true) {
         const action = app.input.drainBindingAction() orelse return;
-        try handleBindingAction(app.conf, app.feed_record_path, app.io, app.input, app.event_loop, app.window, app.tabs, app.active_tab_idx, action);
+        try handleBindingAction(app.conf, app.feed_record_path, app.io, app.input, app.event_loop, app.window, app.display, app.tabs, app.active_tab_idx, action);
     }
 }
 
 fn forwardTerminalInput(app: *App) TerminalContext.DrainInputOutcome {
     const tab = activeContext(app.tabs.items(), app.active_tab_idx.*);
-    const content_logical = app.window.contentLogicalSize(app.conf.tab_bar.height);
-    const origin_y = app.window.tabBarHeightLogical(app.conf.tab_bar.height);
+    const content_logical = DisplayLayout.contentLogicalSize(app.window, app.conf.tab_bar.height);
+    const origin_y = DisplayLayout.tabBarHeightLogical(app.window, app.conf.tab_bar.height);
     const outcome = forwardTerminalInputFlow(tab, app.input, 0, origin_y, content_logical.width, content_logical.height);
     app.terminal_input_admitted = app.terminal_input_admitted or outcome.published_to_pty;
     return outcome;
@@ -601,14 +616,14 @@ fn syncActiveWindowTitle(window: anytype, tab: anytype) void {
 }
 
 const RenderSnapshot = struct {
-    texture_rect: Window.Rect,
-    scrollbar: Window.ScrollbarLayout,
+    texture_rect: DisplayLayout.Rect,
+    scrollbar: DisplayLayout.ScrollbarLayout,
     active_tab: TabIndex,
     labels: []const []const u8,
 };
 
 fn renderSnapshot(app: *App, tab: *TerminalContext) RenderSnapshot {
-    const texture_rect = app.window.contentRect(app.conf.tab_bar.height);
+    const texture_rect = DisplayLayout.contentRect(app.window, app.conf.tab_bar.height);
     const overlay = tab.overlaySnapshot(texture_rect);
     var title_buf: [TabBar.max_tabs][]const u8 = undefined;
     const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items(), title_buf[0..]));
@@ -634,7 +649,7 @@ fn derivePresentReason(host_redraw: bool, step: TerminalContext.TurnStep) Presen
 fn submitPresent(app: *App, frame: RenderFrame, plan: PresentPlan) PresentSubmission {
     assert(plan.needs_render_turn);
     const submission = if (app.frame_pacing.presentSubmissionPermission(plan.reason) or plan.reason == .none or plan.reason == .terminal_retire)
-        submitPresentWith(app.window, frame.tab, frame.snapshot, plan.reason)
+        submitPresentWith(app.display, frame.tab, frame.snapshot, plan.reason)
     else
         PresentSubmission{ .reason = .none, .submitted = false, .token = null };
     recordPresentSubmission(app, frame, submission);
@@ -786,8 +801,8 @@ test "active window title sync uses the active context title" {
 }
 
 fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*TerminalContext) void {
-    const px = window.contentPixelSize(conf.tab_bar.height);
-    const logical = window.contentLogicalSize(conf.tab_bar.height);
+    const px = DisplayLayout.contentPixelSize(window, conf.tab_bar.height);
+    const logical = DisplayLayout.contentLogicalSize(window, conf.tab_bar.height);
     for (tabs) |tab| tab.resize(px.width, px.height, logical.width, logical.height);
 }
 
@@ -829,6 +844,7 @@ fn handleBindingAction(
     input: *Input,
     event_loop: *EventLoop.State,
     window: *Window.State,
+    display: *Display.State,
     tabs: *TabSlots,
     active_tab_idx: *TabIndex,
     action: Input.Bindings.Action,
@@ -846,6 +862,7 @@ fn handleBindingAction(
             .event_loop = event_loop,
             .feed_record_path = feed_record_path,
             .window = window,
+            .display = display,
             .tabs = tabs,
             .active_tab_idx = active_tab_idx,
         }),
@@ -862,8 +879,8 @@ noinline fn openTab(request: OpenTabRequest) !void {
     const slot = request.tabs.acquireSlot() orelse return;
     errdefer request.tabs.releaseSlot(slot.slot_idx);
 
-    const px = request.window.contentPixelSize(request.conf.tab_bar.height);
-    const logical = request.window.contentLogicalSize(request.conf.tab_bar.height);
+    const px = DisplayLayout.contentPixelSize(request.window, request.conf.tab_bar.height);
+    const logical = DisplayLayout.contentLogicalSize(request.window, request.conf.tab_bar.height);
     try slot.tab.init(request.io, request.input, request.event_loop, request.feed_record_path, &request.conf.term, px.width, px.height, logical.width, logical.height);
     errdefer slot.tab.deinit();
     request.input.requestRedraw();

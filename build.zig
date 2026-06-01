@@ -145,11 +145,11 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .howl_pty_c = translateCModule(b, b.path("src/howl_pty_c.h"), target, optimize, &.{howl_pty_include}),
         .howl_vt_c = translateCModule(b, b.path("src/howl_vt_c.h"), target, optimize, &.{howl_vt_include}),
         .howl_render_c = translateCModule(b, b.path("src/howl_render_c.h"), target, optimize, &.{howl_render_include}),
-        .sdl_c = translateCModule(b, b.path("src/window/sdl_c.h"), target, optimize, &.{sdl_include}),
-        .gl_c = translateCModule(b, b.path("src/window/gl_c.h"), target, optimize, &.{sdl_include}),
+        .sdl_c = translateCModule(b, b.path("src/sdl_c.h"), target, optimize, &.{sdl_include}),
+        .gl_c = translateCModule(b, b.path("src/display/renderer/gl_c.h"), target, optimize, &.{sdl_include}),
         .sdl_include = sdl_include,
         .sdl_lib = sdl_dep.artifact("SDL3"),
-        .stb_image = b.path("src/window/stb_image.c"),
+        .stb_image = b.path("src/window_chrome/stb_image.c"),
         .vendor_include = b.path("vendor"),
     };
 }
@@ -321,7 +321,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
                 .target = target,
                 .optimize = optimize,
             }) },
-            .{ .name = "term_texture", .module = termTextureTestModule(b, deps) },
+            .{ .name = "render_surface", .module = renderSurfaceTestModule(b, deps) },
         },
     });
 
@@ -346,15 +346,15 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     const run_retained_tests = b.addRunArtifact(retained_tests);
     if (b.args != null) run_retained_tests.has_side_effects = true;
 
-    const term_texture_tests = b.addTest(.{
-        .name = "test-term-texture",
-        .root_module = termTextureTestModule(b, deps),
+    const render_surface_tests = b.addTest(.{
+        .name = "test-render-surface",
+        .root_module = renderSurfaceTestModule(b, deps),
         .filters = filters,
     });
-    term_texture_tests.use_llvm = true;
-    term_texture_tests.root_module.link_libc = true;
-    const run_term_texture_tests = b.addRunArtifact(term_texture_tests);
-    if (b.args != null) run_term_texture_tests.has_side_effects = true;
+    render_surface_tests.use_llvm = true;
+    render_surface_tests.root_module.link_libc = true;
+    const run_render_surface_tests = b.addRunArtifact(render_surface_tests);
+    if (b.args != null) run_render_surface_tests.has_side_effects = true;
 
     const terminal_context_tests = b.addTest(.{
         .name = "test-terminal-context",
@@ -367,11 +367,11 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
 
     stageTestArtifact(steps.test_unit_build, unit_tests);
     stageTestArtifact(steps.test_unit_build, retained_tests);
-    stageTestArtifact(steps.test_unit_build, term_texture_tests);
+    stageTestArtifact(steps.test_unit_build, render_surface_tests);
     stageTestArtifact(steps.test_unit_build, terminal_context_tests);
     steps.test_unit.dependOn(&run_unit_tests.step);
     steps.test_unit.dependOn(&run_retained_tests.step);
-    steps.test_unit.dependOn(&run_term_texture_tests.step);
+    steps.test_unit.dependOn(&run_render_surface_tests.step);
     steps.test_unit.dependOn(&run_terminal_context_tests.step);
     steps.test_all.dependOn(steps.test_unit);
 
@@ -412,9 +412,9 @@ fn retainedRenderTestModule(b: *Build, deps: HostDeps) *Module {
     return module;
 }
 
-fn termTextureTestModule(b: *Build, deps: HostDeps) *Module {
+fn renderSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
     const module = b.createModule(.{
-        .root_source_file = b.path("src/window/term_texture.zig"),
+        .root_source_file = b.path("src/display/renderer/render_surface.zig"),
         .target = deps.target,
         .optimize = deps.optimize,
     });

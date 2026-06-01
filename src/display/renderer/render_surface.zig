@@ -21,6 +21,13 @@ const glyph_atlas_height_px = 1024;
 
 const c_uchar_bool = u8;
 
+pub fn deleteTexture(surface_id: *u64) void {
+    if (surface_id.* == 0) return;
+    var value: c_uint = @intCast(surface_id.*);
+    gl_c.glDeleteTextures(1, &value);
+    surface_id.* = 0;
+}
+
 pub const RenderResourceTextures = struct {
     slots: [render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX]Slot = [_]Slot{.{}} **
         render_c.HOWL_RENDER_SURFACE_RESOURCES_MAX,

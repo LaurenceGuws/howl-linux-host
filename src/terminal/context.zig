@@ -1,9 +1,9 @@
 const std = @import("std");
 const feed_record = @import("pty/feed_record.zig");
 const EventLoop = @import("../event_loop.zig");
-const window = @import("../window/window.zig");
-const Layout = @import("../window/layout.zig");
-const term_texture = @import("../window/term_texture.zig");
+const window = @import("../window_chrome/window.zig");
+const Layout = @import("../display/layout.zig");
+const term_texture = @import("../display/renderer/render_surface.zig");
 const HostInput = @import("../input/input.zig").Input;
 const pty_c = @import("howl_pty_c");
 const render_c = @import("howl_render_c");
@@ -31,7 +31,7 @@ const terminal_links = @import("links.zig");
 const cursor_blink = @import("cursor_blink.zig");
 const terminal_scrollbar = @import("scrollbar.zig");
 const terminal_selection = @import("selection.zig");
-const render_surface_submit_diagnostics = @import("render_surface_submit_diagnostics.zig");
+const temporary_render_surface_debugging = @import("render/temporary_render_surface_debugging.zig");
 
 const default_history_capacity: u16 = 4096;
 const max_fallback_font_paths: u8 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
@@ -58,7 +58,7 @@ pub const Context = struct {
     };
 
     pub const OverlaySnapshot = struct {
-        scrollbar: window.ScrollbarLayout,
+        scrollbar: Layout.ScrollbarLayout,
     };
 
     pub const TurnStep = enum {
@@ -80,15 +80,15 @@ pub const Context = struct {
 
     pub const MouseHandlingOutcome = terminal_selection.MouseHandlingOutcome;
 
-    pub const RenderSurfaceSubmitDiagnostics = render_surface_submit_diagnostics.Diagnostics;
+    pub const RenderSurfaceSubmitDiagnostics = temporary_render_surface_debugging.TemporaryDebugging;
 
     term: HowlTerm,
     progress: pty_wait_thread.State = .{},
     live: bool,
     term_texture: render_c.HowlRenderHostSurface,
     render_surface_textures: term_texture.RenderResourceTextures,
-    render_surface_submit_diagnostics: RenderSurfaceSubmitDiagnostics,
-    render_surface_submit_diagnostics_logged: RenderSurfaceSubmitDiagnostics,
+    temporary_render_surface_debugging: RenderSurfaceSubmitDiagnostics,
+    temporary_render_surface_debugging_logged: RenderSurfaceSubmitDiagnostics,
     conf: *const TerminalConfig,
     input: *HostInput,
     event_loop: *EventLoop.State,
@@ -150,8 +150,8 @@ pub const Context = struct {
         self.live = false;
         self.term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 };
         self.render_surface_textures = .{};
-        self.render_surface_submit_diagnostics = .{};
-        self.render_surface_submit_diagnostics_logged = .{};
+        self.temporary_render_surface_debugging = .{};
+        self.temporary_render_surface_debugging_logged = .{};
         self.conf = request.conf;
         self.input = request.input;
         self.event_loop = request.event_loop;
@@ -174,7 +174,7 @@ pub const Context = struct {
     pub fn deinit(self: *Context) void {
         if (self.link_cursor_active) window.useDefaultCursor();
         self.link_cursor_active = false;
-        window.deleteTexture(&self.term_texture.host_surface_id);
+        term_texture.deleteTexture(&self.term_texture.host_surface_id);
         self.render_surface_textures.deinit();
         self.term_texture.width = 0;
         self.term_texture.height = 0;
@@ -272,7 +272,7 @@ pub const Context = struct {
         return term_input.wouldReportUnpressedMouseMotion(&self.term);
     }
 
-    pub fn overlaySnapshot(self: *const Context, texture_rect: window.Rect) OverlaySnapshot {
+    pub fn overlaySnapshot(self: *const Context, texture_rect: Layout.Rect) OverlaySnapshot {
         return .{
             .scrollbar = terminal_scrollbar.layout(@constCast(self), texture_rect),
         };
@@ -544,7 +544,7 @@ pub const Context = struct {
     }
 
     fn recordPrepareFailure(self: *Context, reason: render_retained.PrepareFailure) void {
-        render_surface_submit_diagnostics.recordPrepareFailure(&self.render_surface_submit_diagnostics, reason);
+        temporary_render_surface_debugging.recordPrepareFailure(&self.temporary_render_surface_debugging, reason);
     }
 
     fn renderAction(work: render_retained.WorkState, bootstrap_surface: bool) RenderAction {
@@ -598,12 +598,12 @@ pub const Context = struct {
                 self.recordRenderSurfaceRealization(renderUs(render_surface_start_ns));
             }
             const upload_start_ns = EventLoop.nowNs();
-            render_surface_submit_diagnostics.recordEmitStatus(
-                &self.render_surface_submit_diagnostics,
+            temporary_render_surface_debugging.recordEmitStatus(
+                &self.temporary_render_surface_debugging,
                 prepared_upload.diagnostics.render_surface_emit_status,
             );
-            render_surface_submit_diagnostics.recordResourcePlanStatus(
-                &self.render_surface_submit_diagnostics,
+            temporary_render_surface_debugging.recordResourcePlanStatus(
+                &self.temporary_render_surface_debugging,
                 prepared_upload.render_surface_resource_plan.status,
             );
             const had_matching_surface = self.term_texture.host_surface_id != 0 and
@@ -641,74 +641,74 @@ pub const Context = struct {
 
         fn uploadRenderSurfaceCommands(self: *Context, render_surface: *const render_c.HowlRenderSurface, had_matching_surface: bool) bool {
             if (term_texture.renderSurfaceSprite(render_surface)) {
-                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite, .surface);
+                temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .sprite, .surface);
                 if (term_texture.uploadRenderSurfaceSprites(&self.render_surface_textures, self.term_texture, render_surface)) {
-                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite, .present);
+                    temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .sprite, .present);
                     return true;
                 }
-                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite, .failure);
+                temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .sprite, .failure);
                 return false;
             }
             if (term_texture.renderSurfaceSpritePatch(render_surface)) {
-                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite_patch, .surface);
+                temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .sprite_patch, .surface);
                 if (had_matching_surface and
                     term_texture.uploadRenderSurfaceSpritePatch(&self.render_surface_textures, self.term_texture, render_surface))
                 {
-                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite_patch, .present);
+                    temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .sprite_patch, .present);
                     return true;
                 }
-                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .sprite_patch, .failure);
+                temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .sprite_patch, .failure);
                 return false;
             }
             if (term_texture.renderSurfaceGlyphs(render_surface)) {
-                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph, .surface);
+                temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .glyph, .surface);
                 if (term_texture.uploadRenderSurfaceGlyphs(&self.render_surface_textures, self.term_texture, render_surface)) {
-                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph, .present);
+                    temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .glyph, .present);
                     return true;
                 }
-                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph, .failure);
+                temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .glyph, .failure);
                 return false;
             }
             if (term_texture.renderSurfaceGlyphPatch(render_surface)) {
-                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph_patch, .surface);
+                temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .glyph_patch, .surface);
                 if (had_matching_surface and
                     term_texture.uploadRenderSurfaceGlyphPatch(&self.render_surface_textures, self.term_texture, render_surface))
                 {
-                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph_patch, .present);
+                    temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .glyph_patch, .present);
                     return true;
                 }
-                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .glyph_patch, .failure);
+                temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .glyph_patch, .failure);
                 return false;
             }
             if (!term_texture.renderSurfaceFillOnly(render_surface)) {
                 if (term_texture.renderSurfaceFillPatch(render_surface)) {
-                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_patch, .surface);
+                    temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .fill_patch, .surface);
                     if (term_texture.uploadRenderSurfaceFillPatch(self.term_texture, render_surface)) {
-                        render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_patch, .present);
+                        temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .fill_patch, .present);
                         return true;
                     }
-                    render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_patch, .failure);
+                    temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .fill_patch, .failure);
                     return false;
                 }
                 panicUnsupportedTrustedRenderSurfaceShape(self, render_surface);
             }
-            render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_only, .surface);
+            temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .fill_only, .surface);
             if (term_texture.uploadRenderSurfaceFillOnly(self.term_texture, render_surface)) {
-                render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_only, .present);
+                temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .fill_only, .present);
                 return true;
             }
-            render_surface_submit_diagnostics.recordShape(&self.render_surface_submit_diagnostics, .fill_only, .failure);
+            temporary_render_surface_debugging.recordShape(&self.temporary_render_surface_debugging, .fill_only, .failure);
             return false;
         }
 
         fn recordUnsupportedRenderSurfaceShape(self: *Context, render_surface: *const render_c.HowlRenderSurface) void {
             const summary = term_texture.renderSurfaceSummary(render_surface);
-            render_surface_submit_diagnostics.recordUnsupportedShape(&self.render_surface_submit_diagnostics, summary);
+            temporary_render_surface_debugging.recordUnsupportedShape(&self.temporary_render_surface_debugging, summary);
         }
 
         fn panicUnsupportedTrustedRenderSurfaceShape(self: *Context, render_surface: *const render_c.HowlRenderSurface) noreturn {
             recordUnsupportedRenderSurfaceShape(self, render_surface);
-            const diagnostics = self.render_surface_submit_diagnostics;
+            const diagnostics = self.temporary_render_surface_debugging;
             std.debug.panic(
                 "trusted render surface has unsupported shape: no_full_clear={} clear={} fill={} sprite={} glyph={} other={}",
                 .{
@@ -731,7 +731,7 @@ pub const Context = struct {
         }
 
         fn recordRenderSurfaceUnavailable(self: *Context, status: render_retained.PreparedRenderResourcePlanStatus) void {
-            render_surface_submit_diagnostics.recordUnavailable(&self.render_surface_submit_diagnostics, status);
+            temporary_render_surface_debugging.recordUnavailable(&self.temporary_render_surface_debugging, status);
             switch (trustedRenderSurfaceUnavailableAction(status)) {
                 .ok,
                 .invariant,
@@ -839,7 +839,7 @@ pub const Context = struct {
     }
 
     fn recordSubmitFailure(self: *Context, reason: SubmitFailureReason, info: render_c.HowlRenderPreparedSurfaceInfo, execution: render_c.HowlRenderSubmitExecution) void {
-        render_surface_submit_diagnostics.recordSubmitFailure(&self.render_surface_submit_diagnostics, @tagName(reason), info, execution);
+        temporary_render_surface_debugging.recordSubmitFailure(&self.temporary_render_surface_debugging, @tagName(reason), info, execution);
     }
 
     fn preparedHandleStable(current: render_c.HowlRenderPreparedSurfaceHandle, prepared: render_c.HowlRenderPreparedSurfaceHandle) bool {
@@ -859,18 +859,18 @@ pub const Context = struct {
     }
 
     fn recordRenderSurfaceRealization(self: *Context, elapsed_us: u64) void {
-        render_surface_submit_diagnostics.recordRenderSurfaceRealization(&self.render_surface_submit_diagnostics, elapsed_us);
+        temporary_render_surface_debugging.recordRenderSurfaceRealization(&self.temporary_render_surface_debugging, elapsed_us);
     }
 
     fn recordHostUpload(self: *Context, elapsed_us: u64) void {
-        render_surface_submit_diagnostics.recordHostUpload(&self.render_surface_submit_diagnostics, elapsed_us);
+        temporary_render_surface_debugging.recordHostUpload(&self.temporary_render_surface_debugging, elapsed_us);
     }
 
     fn logRenderSurfaceDiagnostics(self: *Context) void {
         const label = self.renderSurfaceLabel();
-        render_surface_submit_diagnostics.logRenderSurfaceDiagnostics(.{
-            .submit = &self.render_surface_submit_diagnostics,
-            .logged = &self.render_surface_submit_diagnostics_logged,
+        temporary_render_surface_debugging.logRenderSurfaceDiagnostics(.{
+            .submit = &self.temporary_render_surface_debugging,
+            .logged = &self.temporary_render_surface_debugging_logged,
             .texture = self.render_surface_textures.diagnostics,
             .texture_failure_count = self.render_surface_textures.failure_count,
             .label = label,
@@ -1378,7 +1378,7 @@ test "cursor activity pushes blink deadline while visible" {
         .live = false,
         .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
         .render_surface_textures = .{},
-        .render_surface_submit_diagnostics = .{},
+        .temporary_render_surface_debugging = .{},
         .conf = undefined,
         .input = undefined,
         .title_buf = undefined,
