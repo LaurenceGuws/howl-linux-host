@@ -46,12 +46,7 @@ pub const State = struct {
         self.surface_cells_scratch = &.{};
     }
 
-    pub fn ensureSurfaceCellScratch(
-        self: *State,
-        allocator: std.mem.Allocator,
-        cols: u16,
-        rows: u16,
-    ) ![]c.HowlVtSurfaceCell {
+    pub fn ensureSurfaceCellScratch(self: *State, allocator: std.mem.Allocator, cols: u16, rows: u16) ![]c.HowlVtSurfaceCell {
         std.debug.assert(cols > 0);
         std.debug.assert(rows > 0);
         const cell_count = try std.math.mul(usize, cols, rows);

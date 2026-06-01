@@ -145,17 +145,7 @@ pub const Context = struct {
     hover_publish_pending: bool,
     cursor_blink: cursor_blink.State,
 
-    pub noinline fn init(
-        self: *Context,
-        io: std.Io,
-        input: *HostInput,
-        feed_record_path: ?[]const u8,
-        conf: *const TerminalConfig,
-        render_width: c_int,
-        render_height: c_int,
-        logical_width: c_int,
-        logical_height: c_int,
-    ) !void {
+    pub noinline fn init(self: *Context, io: std.Io, input: *HostInput, feed_record_path: ?[]const u8, conf: *const TerminalConfig, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) !void {
         initial(self, conf, input, render_width, render_height, logical_width, logical_height);
         errdefer self.deinit();
         try self.initTerm();
@@ -656,11 +646,7 @@ pub const Context = struct {
             return true;
         }
 
-        fn uploadRenderSurfaceCommands(
-            self: *Context,
-            render_surface: *const render_c.HowlRenderSurface,
-            had_matching_surface: bool,
-        ) bool {
+        fn uploadRenderSurfaceCommands(self: *Context, render_surface: *const render_c.HowlRenderSurface, had_matching_surface: bool) bool {
             if (term_texture.renderSurfaceSprite(render_surface)) {
                 self.render_surface_submit_diagnostics.render_surface_sprite_count +|= 1;
                 if (term_texture.uploadRenderSurfaceSprites(&self.render_surface_textures, self.term_texture, render_surface)) {
@@ -723,10 +709,7 @@ pub const Context = struct {
             return false;
         }
 
-        fn recordUnsupportedRenderSurfaceShape(
-            self: *Context,
-            render_surface: *const render_c.HowlRenderSurface,
-        ) void {
+        fn recordUnsupportedRenderSurfaceShape(self: *Context, render_surface: *const render_c.HowlRenderSurface) void {
             const summary = term_texture.renderSurfaceSummary(render_surface);
             self.render_surface_submit_diagnostics.render_surface_unsupported_shape_count +|= 1;
             if (!summary.first_full_clear) {
@@ -744,10 +727,7 @@ pub const Context = struct {
                 summary.other_count;
         }
 
-        fn recordRenderSurfaceNoSidecar(
-            self: *Context,
-            status: render_retained.PreparedRenderResourcePlanStatus,
-        ) void {
+        fn recordRenderSurfaceNoSidecar(self: *Context, status: render_retained.PreparedRenderResourcePlanStatus) void {
             self.render_surface_submit_diagnostics.render_surface_no_sidecar_count +|= 1;
             switch (status) {
                 .null_surface => {
@@ -778,17 +758,11 @@ pub const Context = struct {
             }
         }
 
-        fn shouldRealizeRenderSurface(
-            prepared_upload: *const render_retained.PreparedUpload,
-        ) bool {
+        fn shouldRealizeRenderSurface(prepared_upload: *const render_retained.PreparedUpload) bool {
             return prepared_upload.render_surface != null;
         }
 
-        fn execution(
-            self: *Context,
-            prepared_upload: *const render_retained.PreparedUpload,
-            start_ns: u64,
-        ) render_c.HowlRenderSubmitExecution {
+        fn execution(self: *Context, prepared_upload: *const render_retained.PreparedUpload, start_ns: u64) render_c.HowlRenderSubmitExecution {
             return .{
                 .host_surface = .{
                     .host_surface_id = self.term_texture.host_surface_id,
@@ -880,12 +854,7 @@ pub const Context = struct {
         };
     }
 
-    fn recordSubmitFailure(
-        self: *Context,
-        reason: SubmitFailureReason,
-        info: render_c.HowlRenderPreparedSurfaceInfo,
-        execution: render_c.HowlRenderSubmitExecution,
-    ) void {
+    fn recordSubmitFailure(self: *Context, reason: SubmitFailureReason, info: render_c.HowlRenderPreparedSurfaceInfo, execution: render_c.HowlRenderSubmitExecution) void {
         self.render_surface_submit_diagnostics.submit_failure_count +|= 1;
         const count = self.render_surface_submit_diagnostics.submit_failure_count;
         if (count > 8 and count % 120 != 0) return;
@@ -908,10 +877,7 @@ pub const Context = struct {
         );
     }
 
-    fn preparedHandleStable(
-        current: render_c.HowlRenderPreparedSurfaceHandle,
-        prepared: render_c.HowlRenderPreparedSurfaceHandle,
-    ) bool {
+    fn preparedHandleStable(current: render_c.HowlRenderPreparedSurfaceHandle, prepared: render_c.HowlRenderPreparedSurfaceHandle) bool {
         std.debug.assert(prepared != null);
         return current == prepared;
     }
@@ -971,11 +937,7 @@ pub const Context = struct {
         return should_log;
     }
 
-    fn printRenderSurfaceSummaryDiagnostics(
-        self: *Context,
-        submit_diag: RenderSurfaceSubmitDiagnostics,
-        texture_diag: term_texture.RenderResourceTextures.Diagnostics,
-    ) void {
+    fn printRenderSurfaceSummaryDiagnostics(self: *Context, submit_diag: RenderSurfaceSubmitDiagnostics, texture_diag: term_texture.RenderResourceTextures.Diagnostics) void {
         const label = self.renderSurfaceLabel();
         std.debug.print(
             "howl-debug render_surface label='{s}' token snapshot={} surface={} geometry={} " ++
@@ -1054,10 +1016,7 @@ pub const Context = struct {
         );
     }
 
-    fn printRenderSurfaceIntervalDiagnostics(
-        self: *Context,
-        submit_diag: RenderSurfaceSubmitDiagnostics,
-    ) void {
+    fn printRenderSurfaceIntervalDiagnostics(self: *Context, submit_diag: RenderSurfaceSubmitDiagnostics) void {
         const previous = self.render_surface_submit_diagnostics_logged;
         std.debug.print(
             "howl-debug render_surface interval submits={} no_sidecar={} no_sidecar_null={} " ++
@@ -1147,11 +1106,7 @@ pub const Context = struct {
         return if (current >= previous) current - previous else current;
     }
 
-    fn printRenderSurfaceGlDiagnostics(
-        self: *Context,
-        submit_diag: RenderSurfaceSubmitDiagnostics,
-        texture_diag: term_texture.RenderResourceTextures.Diagnostics,
-    ) void {
+    fn printRenderSurfaceGlDiagnostics(self: *Context, submit_diag: RenderSurfaceSubmitDiagnostics, texture_diag: term_texture.RenderResourceTextures.Diagnostics) void {
         _ = self;
         std.debug.print(
             "howl-debug render_surface gl gen={} image={} subimage={} delete={} " ++
@@ -1205,9 +1160,7 @@ pub const Context = struct {
         );
     }
 
-    fn printRenderSurfaceFailureDiagnostics(
-        texture_diag: term_texture.RenderResourceTextures.Diagnostics,
-    ) void {
+    fn printRenderSurfaceFailureDiagnostics(texture_diag: term_texture.RenderResourceTextures.Diagnostics) void {
         std.debug.print(
             "howl-debug render_surface failures invalid_spans={} invalid_command_shape={} " ++
                 "invalid_order={} unsupported_resource_format={} upload_bounds={} " ++
@@ -2149,11 +2102,7 @@ const TestSubmitRender = struct {
         return .none;
     }
 
-    fn submit(
-        self: *@This(),
-        execution: *const render_c.HowlRenderSubmitExecution,
-        result: *render_c.HowlRenderSubmitResult,
-    ) render_retained.SubmitResult {
+    fn submit(self: *@This(), execution: *const render_c.HowlRenderSubmitExecution, result: *render_c.HowlRenderSubmitResult) render_retained.SubmitResult {
         self.submit_calls += 1;
         if (self.mutex) |mutex| {
             const relock_probe = mutex.tryLockUnfair();
@@ -2179,10 +2128,7 @@ const TestSubmitContext = struct {
     },
 };
 
-fn testSubmitExecution(
-    self: *TestSubmitContext,
-    prepared_upload: *const render_retained.PreparedUpload,
-) render_c.HowlRenderSubmitExecution {
+fn testSubmitExecution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
     _ = prepared_upload;
     return .{
         .host_surface = self.term_texture,
@@ -2194,21 +2140,14 @@ fn testSubmitExecution(
 const TestUnlockedBackend = struct {
     var saw_unlocked = false;
 
-    fn upload(
-        self: *TestSubmitContext,
-        prepared_upload: *const render_retained.PreparedUpload,
-    ) bool {
+    fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) bool {
         _ = prepared_upload;
         saw_unlocked = self.term.mutex.tryLockUnfair();
         if (saw_unlocked) self.term.mutex.unlock();
         return true;
     }
 
-    fn execution(
-        self: *TestSubmitContext,
-        prepared_upload: *const render_retained.PreparedUpload,
-        _: u64,
-    ) render_c.HowlRenderSubmitExecution {
+    fn execution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, _: u64) render_c.HowlRenderSubmitExecution {
         return testSubmitExecution(self, prepared_upload);
     }
 };
@@ -2218,11 +2157,7 @@ const TestLockedBackend = struct {
         return true;
     }
 
-    fn execution(
-        self: *TestSubmitContext,
-        prepared_upload: *const render_retained.PreparedUpload,
-        _: u64,
-    ) render_c.HowlRenderSubmitExecution {
+    fn execution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, _: u64) render_c.HowlRenderSubmitExecution {
         return testSubmitExecution(self, prepared_upload);
     }
 };
@@ -2236,11 +2171,7 @@ const TestFailBackend = struct {
         return false;
     }
 
-    fn execution(
-        _: *TestSubmitContext,
-        _: *const render_retained.PreparedUpload,
-        _: u64,
-    ) render_c.HowlRenderSubmitExecution {
+    fn execution(_: *TestSubmitContext, _: *const render_retained.PreparedUpload, _: u64) render_c.HowlRenderSubmitExecution {
         unreachable;
     }
 };
@@ -2255,11 +2186,7 @@ const TestMutatingBackend = struct {
         return true;
     }
 
-    fn execution(
-        self: *TestSubmitContext,
-        prepared_upload: *const render_retained.PreparedUpload,
-        _: u64,
-    ) render_c.HowlRenderSubmitExecution {
+    fn execution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, _: u64) render_c.HowlRenderSubmitExecution {
         return testSubmitExecution(self, prepared_upload);
     }
 };

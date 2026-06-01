@@ -100,14 +100,7 @@ fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPump
     );
 }
 
-fn pumpTransportSliceWith(
-    term: anytype,
-    mode: pty_session.TransportPumpMode,
-    comptime Ops: type,
-    comptime backlog_bytes: u32,
-    comptime force_lock_backlog_bytes: u32,
-    comptime locked_feed_bytes: u32,
-) TransportProgress {
+fn pumpTransportSliceWith(term: anytype, mode: pty_session.TransportPumpMode, comptime Ops: type, comptime backlog_bytes: u32, comptime force_lock_backlog_bytes: u32, comptime locked_feed_bytes: u32) TransportProgress {
     comptime {
         std.debug.assert(backlog_bytes > 0);
         std.debug.assert(force_lock_backlog_bytes > 0);
@@ -202,12 +195,7 @@ fn transportForceThreshold(limits: pty_session.TransportLimits, force_lock_backl
     return @min(locked_feed_bytes, @min(force_lock_backlog_bytes, @min(limits.max_bytes, read_budget_bytes)));
 }
 
-fn transportReadRemaining(
-    limits: pty_session.TransportLimits,
-    backlog_len: u32,
-    force_threshold: u32,
-    backlog_bytes: u32,
-) usize {
+fn transportReadRemaining(limits: pty_session.TransportLimits, backlog_len: u32, force_threshold: u32, backlog_bytes: u32) usize {
     std.debug.assert(backlog_len < limits.max_bytes);
     std.debug.assert(backlog_len < force_threshold);
     std.debug.assert(force_threshold <= backlog_bytes);

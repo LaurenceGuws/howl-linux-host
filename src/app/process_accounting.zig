@@ -207,12 +207,7 @@ pub const State = struct {
         }
     }
 
-    pub fn maybeLog(
-        self: *State,
-        now_ns: u64,
-        turn_count: u64,
-        intent: RuntimeIntent,
-    ) void {
+    pub fn maybeLog(self: *State, now_ns: u64, turn_count: u64, intent: RuntimeIntent) void {
         if (!self.enabled) return;
         if (now_ns < self.next_log_ns) return;
 
@@ -275,12 +270,7 @@ pub fn parseStat(contents: []const u8, tid: u32) !ThreadStat {
     return stat;
 }
 
-pub fn formatThreadDelta(
-    buffer: []u8,
-    previous: ThreadStat,
-    current: ThreadStat,
-    interval_ns: u64,
-) ![]u8 {
+pub fn formatThreadDelta(buffer: []u8, previous: ThreadStat, current: ThreadStat, interval_ns: u64) ![]u8 {
     return formatThreadDeltaWithClock(
         buffer,
         previous,
@@ -290,13 +280,7 @@ pub fn formatThreadDelta(
     );
 }
 
-fn formatThreadDeltaWithClock(
-    buffer: []u8,
-    previous: ThreadStat,
-    current: ThreadStat,
-    interval_ns: u64,
-    clock_ticks_per_second: u64,
-) ![]u8 {
+fn formatThreadDeltaWithClock(buffer: []u8, previous: ThreadStat, current: ThreadStat, interval_ns: u64, clock_ticks_per_second: u64) ![]u8 {
     assert(buffer.len > 0);
     assert(previous.tid == current.tid);
     assert(interval_ns > 0);

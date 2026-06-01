@@ -318,12 +318,7 @@ fn computeLoopAdmission(app: *App, now_ns: u64, debug_facts: ?LoopDebugFacts) Lo
     };
 }
 
-fn maybeLogLoopTurn(
-    app: *App,
-    now_ns: u64,
-    debug_facts: ?LoopDebugFacts,
-    intent: RedrawRenderIntent,
-) void {
+fn maybeLogLoopTurn(app: *App, now_ns: u64, debug_facts: ?LoopDebugFacts, intent: RedrawRenderIntent) void {
     if (!app.accounting.enabled) return;
     assert(debug_facts != null);
     const facts = debug_facts.?;
@@ -436,13 +431,7 @@ fn driveRuntimeProgress(app: *App, now_ns: u64) TerminalProgress {
     return driveTerminalProgress(app.tabs.items(), app.active_tab_idx.*, now_ns);
 }
 
-fn deriveRedrawRenderIntent(
-    host_redraw_requested: bool,
-    host_visual_changed: bool,
-    terminal_progress: TerminalProgress,
-    blink_redraw: bool,
-    render_work_pending: bool,
-) RedrawRenderIntent {
+fn deriveRedrawRenderIntent(host_redraw_requested: bool, host_visual_changed: bool, terminal_progress: TerminalProgress, blink_redraw: bool, render_work_pending: bool) RedrawRenderIntent {
     return .{
         .host_redraw = host_redraw_requested or host_visual_changed,
         .terminal_redraw = terminal_progress.should_redraw or blink_redraw,

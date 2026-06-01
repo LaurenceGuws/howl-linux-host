@@ -53,24 +53,14 @@ fn resolveFallbacks(alloc: Allocator, fonts: terminal_config.FontStack) ![]const
     return owned;
 }
 
-fn appendConfiguredPaths(
-    alloc: Allocator,
-    out: *std.ArrayList([:0]u8),
-    configured: []const [:0]u8,
-    reserved: u16,
-) !void {
+fn appendConfiguredPaths(alloc: Allocator, out: *std.ArrayList([:0]u8), configured: []const [:0]u8, reserved: u16) !void {
     for (configured) |path| {
         const owned = try resolvePath(alloc, path);
         try appendConfiguredPath(alloc, out, owned, reserved);
     }
 }
 
-fn appendConfiguredPath(
-    alloc: Allocator,
-    out: *std.ArrayList([:0]u8),
-    owned: [:0]u8,
-    reserved: u16,
-) !void {
+fn appendConfiguredPath(alloc: Allocator, out: *std.ArrayList([:0]u8), owned: [:0]u8, reserved: u16) !void {
     if (pathPresent(out.items, owned)) {
         alloc.free(owned);
         return;
@@ -82,11 +72,7 @@ fn appendConfiguredPath(
     try out.append(alloc, owned);
 }
 
-fn appendBundledPath(
-    alloc: Allocator,
-    out: *std.ArrayList([:0]u8),
-    path: [:0]const u8,
-) !void {
+fn appendBundledPath(alloc: Allocator, out: *std.ArrayList([:0]u8), path: [:0]const u8) !void {
     const owned = try resolvePath(alloc, path);
     if (pathPresent(out.items, owned)) {
         alloc.free(owned);

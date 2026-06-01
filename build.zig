@@ -154,13 +154,7 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
     };
 }
 
-fn translateCModule(
-    b: *Build,
-    root_source_file: Build.LazyPath,
-    target: Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    include_paths: []const Build.LazyPath,
-) *Module {
+fn translateCModule(b: *Build, root_source_file: Build.LazyPath, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, include_paths: []const Build.LazyPath) *Module {
     const translated = b.addTranslateC(.{
         .root_source_file = root_source_file,
         .target = target,
@@ -221,13 +215,7 @@ fn linkLua(module: *Module) void {
     module.linkSystemLibrary("lua5.4", .{ .use_pkg_config = .force });
 }
 
-fn buildLibcExe(
-    b: *Build,
-    name: []const u8,
-    path: []const u8,
-    target: Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-) *Compile {
+fn buildLibcExe(b: *Build, name: []const u8, path: []const u8, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *Compile {
     const artifact_name = artifactName(b, name, optimize);
     const exe = b.addExecutable(.{
         .name = artifact_name,
@@ -304,13 +292,7 @@ fn stageHarnessArtifact(b: *Build, step: *Build.Step, exe: *Compile) void {
     }).step);
 }
 
-fn wireTestSteps(
-    b: *Build,
-    steps: Steps,
-    deps: HostDeps,
-    target: Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-) void {
+fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     const filters = b.args orelse &.{};
 
     const unit_test_mod = b.createModule(.{

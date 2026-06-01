@@ -137,10 +137,7 @@ pub const TextureResourceOperationRecorder = struct {
     operations: []TextureResourceOperation,
     count: u32 = 0,
 
-    pub fn createTexture(
-        self: *TextureResourceOperationRecorder,
-        create_item: Create,
-    ) RenderResourceStoreStatus {
+    pub fn createTexture(self: *TextureResourceOperationRecorder, create_item: Create) RenderResourceStoreStatus {
         return self.append(.{
             .kind = .create_texture,
             .resource = create_item.resource,
@@ -150,10 +147,7 @@ pub const TextureResourceOperationRecorder = struct {
         });
     }
 
-    pub fn uploadTextureRect(
-        self: *TextureResourceOperationRecorder,
-        upload_item: Upload,
-    ) RenderResourceStoreStatus {
+    pub fn uploadTextureRect(self: *TextureResourceOperationRecorder, upload_item: Upload) RenderResourceStoreStatus {
         return self.append(.{
             .kind = .upload_texture_rect,
             .resource = upload_item.resource,
@@ -163,17 +157,11 @@ pub const TextureResourceOperationRecorder = struct {
         });
     }
 
-    pub fn retireTexture(
-        self: *TextureResourceOperationRecorder,
-        retire_item: Retire,
-    ) RenderResourceStoreStatus {
+    pub fn retireTexture(self: *TextureResourceOperationRecorder, retire_item: Retire) RenderResourceStoreStatus {
         return self.append(.{ .kind = .retire_texture, .resource = retire_item.resource });
     }
 
-    fn append(
-        self: *TextureResourceOperationRecorder,
-        operation: TextureResourceOperation,
-    ) RenderResourceStoreStatus {
+    fn append(self: *TextureResourceOperationRecorder, operation: TextureResourceOperation) RenderResourceStoreStatus {
         if (self.count >= self.operations.len) return .operation_capacity_overflow;
         self.operations[self.count] = operation;
         self.count += 1;
@@ -209,18 +197,11 @@ pub const RenderResourceStore = struct {
     live_count: u32 = 0,
     retired_count: u32 = 0,
 
-    pub fn applySurface(
-        self: *RenderResourceStore,
-        surface: *const Surface,
-    ) RenderResourceStoreStatus {
+    pub fn applySurface(self: *RenderResourceStore, surface: *const Surface) RenderResourceStoreStatus {
         return self.applySurfaceWithRecorder(surface, null);
     }
 
-    pub fn applySurfaceWithRecorder(
-        self: *RenderResourceStore,
-        surface: *const Surface,
-        recorder_optional: ?*TextureResourceOperationRecorder,
-    ) RenderResourceStoreStatus {
+    pub fn applySurfaceWithRecorder(self: *RenderResourceStore, surface: *const Surface, recorder_optional: ?*TextureResourceOperationRecorder) RenderResourceStoreStatus {
         const span_status = validateResourceStoreSurfaceSpans(surface);
         if (span_status != .ok) return span_status;
         const order_status = validateResourceStoreSurfaceOrder(surface);
@@ -276,10 +257,7 @@ pub const RenderResourceStore = struct {
         return .ok;
     }
 
-    pub fn create(
-        self: *RenderResourceStore,
-        create_item: Create,
-    ) RenderResourceStoreStatus {
+    pub fn create(self: *RenderResourceStore, create_item: Create) RenderResourceStoreStatus {
         if (!resourceKindStorable(create_item.resource.kind)) return .invalid_resource;
         if (create_item.width_px == 0) return .invalid_resource;
         if (create_item.height_px == 0) return .invalid_resource;
@@ -300,10 +278,7 @@ pub const RenderResourceStore = struct {
         return .ok;
     }
 
-    pub fn upload(
-        self: *RenderResourceStore,
-        upload_item: Upload,
-    ) RenderResourceStoreStatus {
+    pub fn upload(self: *RenderResourceStore, upload_item: Upload) RenderResourceStoreStatus {
         const slot = self.find(upload_item.resource) orelse return .missing_resource;
         if (slot.state == .retired) return .retired_resource;
         if (slot.state != .live) return .missing_resource;
@@ -325,10 +300,7 @@ pub const RenderResourceStore = struct {
         return .ok;
     }
 
-    pub fn retire(
-        self: *RenderResourceStore,
-        retire_item: Retire,
-    ) RenderResourceStoreStatus {
+    pub fn retire(self: *RenderResourceStore, retire_item: Retire) RenderResourceStoreStatus {
         const slot = self.find(retire_item.resource) orelse return .missing_resource;
         if (slot.state == .retired) return .retired_resource;
         if (slot.state != .live) return .missing_resource;
@@ -361,10 +333,7 @@ pub const RenderResourceStore = struct {
         return null;
     }
 
-    fn validateResourceStoreSurfaceCommands(
-        self: *RenderResourceStore,
-        surface: *const Surface,
-    ) RenderResourceStoreStatus {
+    fn validateResourceStoreSurfaceCommands(self: *RenderResourceStore, surface: *const Surface) RenderResourceStoreStatus {
         for (spanSlice(Command, surface.commands.ptr, surface.commands.count), 0..) |command, index| {
             const command_index: u32 = @intCast(index);
             if (!spanCountValid(
@@ -391,12 +360,7 @@ pub const RenderResourceStore = struct {
         return .ok;
     }
 
-    fn validateCommandResource(
-        self: *RenderResourceStore,
-        surface: *const Surface,
-        resource: ResourceId,
-        command_index: u32,
-    ) RenderResourceStoreStatus {
+    fn validateCommandResource(self: *RenderResourceStore, surface: *const Surface, resource: ResourceId, command_index: u32) RenderResourceStoreStatus {
         if (!resourceKindStorable(resource.kind)) return .invalid_resource;
         if (findCreate(surface, resource)) |create_item| {
             if (command_index < create_item.create_seq) return .invalid_resource;
@@ -554,10 +518,7 @@ pub const State = struct {
     render_surface_resource_plan_failure_count: u64 = 0,
     render_surface_resource_plan_upload_bytes_count: u64 = 0,
 
-    pub fn init(
-        text_session: c.HowlRenderTextSessionHandle,
-        surface_layout: SurfaceLayout,
-    ) State {
+    pub fn init(text_session: c.HowlRenderTextSessionHandle, surface_layout: SurfaceLayout) State {
         return .{
             .surface_layout = surface_layout,
             .text_session = text_session,
@@ -634,10 +595,7 @@ pub const State = struct {
         self.geometry_epoch = geometry_epoch;
     }
 
-    pub fn storePreparedSurface(
-        self: *State,
-        prepared: c.HowlRenderPreparedSurfaceHandle,
-    ) void {
+    pub fn storePreparedSurface(self: *State, prepared: c.HowlRenderPreparedSurfaceHandle) void {
         self.prepared_surface = prepared;
     }
 
@@ -740,10 +698,7 @@ pub const State = struct {
         return c.howl_render_prepared_surface_describe(prepared, info_out) == c.HOWL_RENDER_CALL_OK;
     }
 
-    pub fn preparedDiagnostics(
-        self: *const State,
-        diagnostics_out: *c.HowlRenderPreparedSurfaceDiagnostics,
-    ) bool {
+    pub fn preparedDiagnostics(self: *const State, diagnostics_out: *c.HowlRenderPreparedSurfaceDiagnostics) bool {
         const prepared = self.prepared_surface orelse return false;
         return c.howl_render_prepared_surface_diagnostics(prepared, diagnostics_out) ==
             c.HOWL_RENDER_CALL_OK;
@@ -767,12 +722,7 @@ pub const State = struct {
         return true;
     }
 
-    fn probePreparedRenderSurface(
-        self: *State,
-        info: c.HowlRenderPreparedSurfaceInfo,
-        resource_plan_out: *PreparedRenderResourcePlan,
-        surface_out: *?*const Surface,
-    ) PreparedRenderSurfaceProbe {
+    fn probePreparedRenderSurface(self: *State, info: c.HowlRenderPreparedSurfaceInfo, resource_plan_out: *PreparedRenderResourcePlan, surface_out: *?*const Surface) PreparedRenderSurfaceProbe {
         const prepared = self.prepared_surface orelse {
             self.recordPreparedRenderSurfaceProbe(.{ .status = .call_failed });
             self.recordPreparedRenderResourcePlan(.{ .status = .call_failed });
@@ -804,10 +754,7 @@ pub const State = struct {
         }
     }
 
-    fn recordPreparedRenderResourcePlan(
-        self: *State,
-        plan: PreparedRenderResourcePlan,
-    ) void {
+    fn recordPreparedRenderResourcePlan(self: *State, plan: PreparedRenderResourcePlan) void {
         self.last_render_surface_resource_plan = plan;
         self.render_surface_resource_plan_upload_bytes_count +|= plan.upload_bytes_count;
         if (plan.valid) {
@@ -877,12 +824,7 @@ fn surfaceLayoutChanged(current: SurfaceLayout, next: SurfaceLayout) bool {
         current.cell_px.height != next.cell_px.height;
 }
 
-fn validatePreparedRenderSurfaceProbe(
-    info: c.HowlRenderPreparedSurfaceInfo,
-    status: c_int,
-    surface_optional: ?*const c.HowlRenderSurface,
-    retained_base_pixels: []const u8,
-) PreparedRenderSurfaceProbe {
+fn validatePreparedRenderSurfaceProbe(info: c.HowlRenderPreparedSurfaceInfo, status: c_int, surface_optional: ?*const c.HowlRenderSurface, retained_base_pixels: []const u8) PreparedRenderSurfaceProbe {
     if (status != c.HOWL_RENDER_CALL_OK) return .{ .status = .call_failed };
     const surface = surface_optional orelse return .{ .status = .null_surface };
     if (surface.surface_version != c.HOWL_RENDER_SURFACE_VERSION) {
@@ -955,10 +897,7 @@ const Command = c.HowlRenderSurfaceCommand;
 const Retire = c.HowlRenderResourceRetire;
 const Surface = c.HowlRenderSurface;
 
-fn validateRenderSurfaceResourcePlan(
-    status: c_int,
-    surface_optional: ?*const c.HowlRenderSurface,
-) PreparedRenderResourcePlan {
+fn validateRenderSurfaceResourcePlan(status: c_int, surface_optional: ?*const c.HowlRenderSurface) PreparedRenderResourcePlan {
     if (status != c.HOWL_RENDER_CALL_OK) return .{ .status = .call_failed };
     const surface = surface_optional orelse return .{ .status = .null_surface };
     const top_status = validateResourcePlanTopLevel(surface);
@@ -1034,11 +973,7 @@ fn validateResourcePlanLifecycle(surface: *const Surface) PreparedRenderResource
     return .ok;
 }
 
-fn validatePlanCreate(
-    surface: *const Surface,
-    create: Create,
-    index: usize,
-) PreparedRenderResourcePlanStatus {
+fn validatePlanCreate(surface: *const Surface, create: Create, index: usize) PreparedRenderResourcePlanStatus {
     if (!resourceKindSupported(create.resource.kind)) return .unsupported_resource;
     if (create.create_seq > surface.commands.count) return .invalid_resource;
     if (create.width_px == 0) return .invalid_resource;
@@ -1052,11 +987,7 @@ fn validatePlanCreate(
     return .ok;
 }
 
-fn validatePlanRetire(
-    surface: *const Surface,
-    retire: Retire,
-    index: usize,
-) PreparedRenderResourcePlanStatus {
+fn validatePlanRetire(surface: *const Surface, retire: Retire, index: usize) PreparedRenderResourcePlanStatus {
     if (!resourceKindSupported(retire.resource.kind)) return .unsupported_resource;
     if (retire.retire_seq > surface.commands.count) return .invalid_resource;
     const create = findCreate(surface, retire.resource) orelse return .invalid_resource;
@@ -1068,11 +999,7 @@ fn validatePlanRetire(
     return .ok;
 }
 
-fn validatePlanUpload(
-    surface: *const Surface,
-    upload: Upload,
-    bytes_sum: *u32,
-) PreparedRenderResourcePlanStatus {
+fn validatePlanUpload(surface: *const Surface, upload: Upload, bytes_sum: *u32) PreparedRenderResourcePlanStatus {
     if (!resourceKindSupported(upload.resource.kind)) return .unsupported_resource;
     if (upload.format != uploadFormatForResource(upload.resource.kind)) return .invalid_upload;
     if (upload.upload_seq > surface.commands.count) return .invalid_upload;
@@ -1092,11 +1019,7 @@ fn validatePlanUpload(
     return .ok;
 }
 
-fn validatePlanCommand(
-    surface: *const Surface,
-    command: Command,
-    index: u32,
-) PreparedRenderResourcePlanStatus {
+fn validatePlanCommand(surface: *const Surface, command: Command, index: u32) PreparedRenderResourcePlanStatus {
     if (!spanCountValid(
         command.glyphs.ptr,
         command.glyphs.count,
@@ -1119,11 +1042,7 @@ fn validatePlanFillCommand(command: Command) PreparedRenderResourcePlanStatus {
     return .ok;
 }
 
-fn validatePlanSpriteCommand(
-    surface: *const Surface,
-    command: Command,
-    index: u32,
-) PreparedRenderResourcePlanStatus {
+fn validatePlanSpriteCommand(surface: *const Surface, command: Command, index: u32) PreparedRenderResourcePlanStatus {
     if (command.glyphs.count != 0) return .invalid_command;
     if (!resourceKindSupported(command.resource.kind)) return .unsupported_resource;
     if (!resourceVisibleAtCommand(surface, command.resource, index)) return .invalid_resource;
@@ -1196,11 +1115,7 @@ fn validateRetire(surface: *const Surface, retire: Retire, index: usize) Prepare
     return .ok;
 }
 
-fn validateUpload(
-    surface: *const Surface,
-    upload: Upload,
-    bytes_sum: *u32,
-) PreparedRenderSurfaceProbeStatus {
+fn validateUpload(surface: *const Surface, upload: Upload, bytes_sum: *u32) PreparedRenderSurfaceProbeStatus {
     if (!resourceKindSupported(upload.resource.kind)) return .unsupported_resource;
     if (upload.format != uploadFormatForResource(upload.resource.kind)) return .invalid_upload;
     if (upload.upload_seq > surface.commands.count) return .invalid_upload;
@@ -1222,11 +1137,7 @@ fn validateUpload(
     return .ok;
 }
 
-fn validateCommand(
-    surface: *const Surface,
-    command: Command,
-    index: u32,
-) PreparedRenderSurfaceProbeStatus {
+fn validateCommand(surface: *const Surface, command: Command, index: u32) PreparedRenderSurfaceProbeStatus {
     if (!spanCountValid(
         command.glyphs.ptr,
         command.glyphs.count,
@@ -1252,11 +1163,7 @@ fn validateFillCommand(command: Command) PreparedRenderSurfaceProbeStatus {
     return .ok;
 }
 
-fn validateSpriteCommand(
-    surface: *const Surface,
-    command: Command,
-    index: u32,
-) PreparedRenderSurfaceProbeStatus {
+fn validateSpriteCommand(surface: *const Surface, command: Command, index: u32) PreparedRenderSurfaceProbeStatus {
     if (command.rect.width_px == 0) return .invalid_command;
     if (command.rect.height_px == 0) return .invalid_command;
     if (command.glyphs.count != 0) return .invalid_command;
@@ -1272,10 +1179,7 @@ fn validateSpriteCommand(
     return validateSpriteUploadCoverage(upload, command.rect);
 }
 
-fn validateSpriteUploadCoverage(
-    upload: Upload,
-    rect: c.HowlRenderSurfaceRect,
-) PreparedRenderSurfaceProbeStatus {
+fn validateSpriteUploadCoverage(upload: Upload, rect: c.HowlRenderSurfaceRect) PreparedRenderSurfaceProbeStatus {
     if (rect.width_px > upload.rect.width_px) return .invalid_upload;
     if (rect.height_px > upload.rect.height_px) return .invalid_upload;
     const row_bytes = std.math.mul(u32, rect.width_px, bytesPerPixel(upload.format)) catch {
@@ -1502,12 +1406,7 @@ fn createResource(resource: ResourceId, width_px: u32, height_px: u32, format: u
     };
 }
 
-fn uploadResource(
-    resource: ResourceId,
-    rect: c.HowlRenderSurfaceRect,
-    bytes: []const u8,
-    stride_bytes: u32,
-) Upload {
+fn uploadResource(resource: ResourceId, rect: c.HowlRenderSurfaceRect, bytes: []const u8, stride_bytes: u32) Upload {
     return .{
         .resource = resource,
         .rect = rect,
@@ -1581,31 +1480,17 @@ fn retireSpan(items: []const Retire) c.HowlRenderResourceRetireSpan {
     };
 }
 
-fn expectInvalidRenderSurfaceProbe(
-    info: c.HowlRenderPreparedSurfaceInfo,
-    status: c_int,
-    surface: ?*const c.HowlRenderSurface,
-    expected: PreparedRenderSurfaceProbeStatus,
-) !void {
+fn expectInvalidRenderSurfaceProbe(info: c.HowlRenderPreparedSurfaceInfo, status: c_int, surface: ?*const c.HowlRenderSurface, expected: PreparedRenderSurfaceProbeStatus) !void {
     const probe = validatePreparedRenderSurfaceProbe(info, status, surface, &.{});
     try std.testing.expect(!probe.valid);
     try std.testing.expectEqual(expected, probe.status);
 }
 
-fn expectInvalidRenderSurfaceSurface(
-    info: c.HowlRenderPreparedSurfaceInfo,
-    surface: *const c.HowlRenderSurface,
-    expected: PreparedRenderSurfaceProbeStatus,
-) !void {
+fn expectInvalidRenderSurfaceSurface(info: c.HowlRenderPreparedSurfaceInfo, surface: *const c.HowlRenderSurface, expected: PreparedRenderSurfaceProbeStatus) !void {
     try expectInvalidRenderSurfaceProbe(info, c.HOWL_RENDER_CALL_OK, surface, expected);
 }
 
-fn expectInvalidRenderSurfaceSurfaceWithBase(
-    info: c.HowlRenderPreparedSurfaceInfo,
-    surface: *const c.HowlRenderSurface,
-    retained_base_pixels: []const u8,
-    expected: PreparedRenderSurfaceProbeStatus,
-) !PreparedRenderSurfaceProbe {
+fn expectInvalidRenderSurfaceSurfaceWithBase(info: c.HowlRenderPreparedSurfaceInfo, surface: *const c.HowlRenderSurface, retained_base_pixels: []const u8, expected: PreparedRenderSurfaceProbeStatus) !PreparedRenderSurfaceProbe {
     const probe = validatePreparedRenderSurfaceProbe(
         info,
         c.HOWL_RENDER_CALL_OK,

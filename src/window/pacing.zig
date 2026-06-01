@@ -64,11 +64,7 @@ pub const State = struct {
         return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
     }
 
-    pub fn noteRedrawAndRenderWork(
-        self: *State,
-        redraw_requested: bool,
-        render_work_pending: bool,
-    ) void {
+    pub fn noteRedrawAndRenderWork(self: *State, redraw_requested: bool, render_work_pending: bool) void {
         self.redraw_requested = self.redraw_requested or redraw_requested;
         self.render_work_pending = render_work_pending;
         if (self.present_complete_pending) assert(self.present_in_flight);
