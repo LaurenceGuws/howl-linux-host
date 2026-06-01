@@ -1903,6 +1903,32 @@ const TestResizeBackend = struct {
     }
 };
 
+const TestResizeFailBackend = struct {
+    fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) bool {
+        std.debug.assert(prepared_upload.info.damage_kind == render_c.HOWL_RENDER_DAMAGE_FULL);
+        const render_surface = prepared_upload.render_surface orelse return false;
+        std.debug.assert(render_surface.token.snapshot_seq == prepared_upload.info.snapshot_seq);
+        std.debug.assert(render_surface.token.surface_seq == prepared_upload.info.dirty_epoch);
+        std.debug.assert(render_surface.token.geometry_epoch == prepared_upload.info.geometry_epoch);
+        std.debug.assert(render_surface.render_px.width == prepared_upload.info.render_px.width);
+        std.debug.assert(render_surface.render_px.height == prepared_upload.info.render_px.height);
+        self.host_upload_calls += 1;
+        self.host_upload_had_matching_surface = self.term_texture.host_surface_id != 0 and
+            self.term_texture.width == prepared_upload.info.render_px.width and
+            self.term_texture.height == prepared_upload.info.render_px.height;
+        self.host_upload_render_px = prepared_upload.info.render_px;
+        self.host_upload_surface_px = render_surface.render_px;
+        self.record(.host_upload);
+        self.term_texture.width = 0;
+        self.term_texture.height = 0;
+        return false;
+    }
+
+    fn execution(_: *TestSubmitContext, _: *const render_retained.PreparedUpload, _: u64) render_c.HowlRenderSubmitExecution {
+        unreachable;
+    }
+};
+
 const TestPresentOwner = struct {
     pending_terminal_present: ?u64 = null,
     next_token: u64 = 900,
@@ -2095,6 +2121,58 @@ test "resize success path submits full surface and acks matching present token" 
     try std.testing.expectEqual(TestRenderOperation.present_submitted, context.term.render.operations[4]);
     try std.testing.expectEqual(TestRenderOperation.present_completed, context.term.render.operations[5]);
     try std.testing.expectEqual(@as(u8, 6), context.term.render.operation_count);
+}
+
+test "resize upload failure zeros host dimensions and retry submits same full frame" {
+    var context = TestSubmitContext{};
+
+    try std.testing.expectEqual(@as(u16, 2), context.term_texture.width);
+    try std.testing.expectEqual(@as(u16, 1), context.term_texture.height);
+    context.resizeForTest(4, 2, 4, 2);
+    const request = context.commitGeometryForTest();
+    try std.testing.expectEqual(@as(u16, 4), request.render_px.width);
+    try std.testing.expectEqual(@as(u16, 2), request.render_px.height);
+
+    context.term.render.prepareTestSurface();
+    const info = context.term.render.prepared_info;
+    const surface = context.term.render.render_surface;
+    try std.testing.expectEqual(@as(u64, 52), info.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 2), info.geometry_epoch);
+    try std.testing.expectEqual(render_c.HOWL_RENDER_DAMAGE_FULL, info.damage_kind);
+    try std.testing.expectEqual(info.snapshot_seq, surface.token.snapshot_seq);
+    try std.testing.expectEqual(info.dirty_epoch, surface.token.surface_seq);
+    try std.testing.expectEqual(info.geometry_epoch, surface.token.geometry_epoch);
+
+    context.term.mutex.lockFair();
+    const failed_submit = Context.submitPreparedLockedWith(&context, TestResizeFailBackend);
+    context.term.mutex.unlock();
+
+    try std.testing.expectEqual(render_retained.SubmitResult.failed, failed_submit.result);
+    try std.testing.expectEqual(Context.SubmitFailureReason.backend_upload_failed, failed_submit.failure);
+    try std.testing.expectEqual(info.snapshot_seq, failed_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u8, 0), context.term.render.submit_calls);
+    try std.testing.expectEqual(@as(u8, 1), context.host_upload_calls);
+    try std.testing.expect(!context.host_upload_had_matching_surface);
+    try std.testing.expectEqual(info.render_px.width, context.host_upload_render_px.width);
+    try std.testing.expectEqual(info.render_px.height, context.host_upload_render_px.height);
+    try std.testing.expectEqual(info.render_px.width, context.host_upload_surface_px.width);
+    try std.testing.expectEqual(info.render_px.height, context.host_upload_surface_px.height);
+    try std.testing.expectEqual(@as(u16, 0), context.term_texture.width);
+    try std.testing.expectEqual(@as(u16, 0), context.term_texture.height);
+
+    context.term.mutex.lockFair();
+    const retried_submit = Context.submitPreparedLockedWith(&context, TestResizeBackend);
+    context.term.mutex.unlock();
+
+    try std.testing.expectEqual(render_retained.SubmitResult.rendered, retried_submit.result);
+    try std.testing.expectEqual(info.snapshot_seq, retried_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u8, 1), context.term.render.submit_calls);
+    try std.testing.expectEqual(@as(u8, 2), context.host_upload_calls);
+    try std.testing.expect(!context.host_upload_had_matching_surface);
+    try std.testing.expectEqual(info.render_px.width, context.term_texture.width);
+    try std.testing.expectEqual(info.render_px.height, context.term_texture.height);
+    try std.testing.expectEqual(info.render_px.width, context.term.render.last_execution.host_surface.width);
+    try std.testing.expectEqual(info.render_px.height, context.term.render.last_execution.host_surface.height);
 }
 
 test "resize while present pending waits for matching ack before resized submit" {
