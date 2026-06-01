@@ -795,7 +795,16 @@ fn activeContext(tabs: []*TerminalContext, active_tab_idx: TabIndex) *TerminalCo
     return activeTab(tabs, active_tab_idx);
 }
 
-fn handleBindingAction(conf: *const Config.State, feed_record_path: ?[]const u8, io: std.Io, input: *Input, window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex, action: Input.Bindings.Action) !void {
+fn handleBindingAction(
+    conf: *const Config.State,
+    feed_record_path: ?[]const u8,
+    io: std.Io,
+    input: *Input,
+    window: *Window.State,
+    tabs: *TabSlots,
+    active_tab_idx: *TabIndex,
+    action: Input.Bindings.Action,
+) !void {
     switch (action) {
         .zoom_in => _ = activeContext(tabs.items(), active_tab_idx.*).adjustFontSize(1),
         .zoom_out => _ = activeContext(tabs.items(), active_tab_idx.*).adjustFontSize(-1),

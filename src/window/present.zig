@@ -157,7 +157,16 @@ pub fn submitPresent(comptime c: type, state: *State(c), frame: Layout.Frame) Pr
     else
         emptyFramebufferObservation();
     defer if (framebuffer_probe_before.rgba) |pixels| std.heap.c_allocator.free(pixels);
-    Texture.drawRect(c, @max(fb_w, 1), @max(fb_h, 1), frame.term_texture_id, frame.term_texture_rect.x, frame.term_texture_rect.y, frame.term_texture_rect.width, frame.term_texture_rect.height);
+    Texture.drawRect(
+        c,
+        @max(fb_w, 1),
+        @max(fb_h, 1),
+        frame.term_texture_id,
+        frame.term_texture_rect.x,
+        frame.term_texture_rect.y,
+        frame.term_texture_rect.width,
+        frame.term_texture_rect.height,
+    );
     if (capture_present_proof) capturePresentProof(c, state, frame, probe_rect, framebuffer_before, framebuffer_probe_before);
     Draw.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
     const swap_start_ns = c.SDL_GetTicksNS();
@@ -376,7 +385,14 @@ fn emptyFramebufferObservation() FramebufferObservation {
     };
 }
 
-fn capturePresentProof(comptime c: type, state: *State(c), frame: Layout.Frame, probe_rect: ?Layout.Rect, framebuffer_before: FramebufferObservation, framebuffer_probe_before: FramebufferObservation) void {
+fn capturePresentProof(
+    comptime c: type,
+    state: *State(c),
+    frame: Layout.Frame,
+    probe_rect: ?Layout.Rect,
+    framebuffer_before: FramebufferObservation,
+    framebuffer_probe_before: FramebufferObservation,
+) void {
     state.proof_capture_requested = false;
     state.proof_probe_rect = null;
     const framebuffer_after = observeFramebufferBytes(c, frame.term_texture_rect);

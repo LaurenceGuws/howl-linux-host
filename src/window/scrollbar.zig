@@ -87,7 +87,16 @@ pub const State = struct {
         return out;
     }
 
-    pub fn handleMouse(self: *State, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, view: View, window_focused: bool) MouseResult {
+    pub fn handleMouse(
+        self: *State,
+        mouse_event: HostInput.Mouse.Event,
+        origin_x: i32,
+        origin_y: i32,
+        logical_width: c_int,
+        logical_height: c_int,
+        view: View,
+        window_focused: bool,
+    ) MouseResult {
         self.mouse_logical_x = mouse_event.pixel_x;
         self.mouse_logical_y = mouse_event.pixel_y;
         const model = modelFromView(view);

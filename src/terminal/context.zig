@@ -145,7 +145,17 @@ pub const Context = struct {
     hover_publish_pending: bool,
     cursor_blink: cursor_blink.State,
 
-    pub noinline fn init(self: *Context, io: std.Io, input: *HostInput, feed_record_path: ?[]const u8, conf: *const TerminalConfig, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) !void {
+    pub noinline fn init(
+        self: *Context,
+        io: std.Io,
+        input: *HostInput,
+        feed_record_path: ?[]const u8,
+        conf: *const TerminalConfig,
+        render_width: c_int,
+        render_height: c_int,
+        logical_width: c_int,
+        logical_height: c_int,
+    ) !void {
         initial(self, conf, input, render_width, render_height, logical_width, logical_height);
         errdefer self.deinit();
         try self.initTerm();
@@ -1305,7 +1315,15 @@ pub const Context = struct {
             return .{ .consumed = consumed, .host_visual_changed = !std.meta.eql(before, after) };
         }
 
-        fn contentRelativeEvent(mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, render_px_w: c_int, render_px_h: c_int) ?HostInput.Mouse.Event {
+        fn contentRelativeEvent(
+            mouse_event: HostInput.Mouse.Event,
+            origin_x: i32,
+            origin_y: i32,
+            logical_width: c_int,
+            logical_height: c_int,
+            render_px_w: c_int,
+            render_px_h: c_int,
+        ) ?HostInput.Mouse.Event {
             return Layout.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);
         }
 
@@ -1518,7 +1536,15 @@ fn handleTextInputFastPathEvent(self: anytype, event: HostInput.Event, comptime 
     return outcome;
 }
 
-fn handlePointerAndUiInputEvent(self: anytype, event: HostInput.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, comptime Ops: type) Context.DrainInputOutcome {
+fn handlePointerAndUiInputEvent(
+    self: anytype,
+    event: HostInput.Event,
+    origin_x: i32,
+    origin_y: i32,
+    logical_width: c_int,
+    logical_height: c_int,
+    comptime Ops: type,
+) Context.DrainInputOutcome {
     var outcome: Context.DrainInputOutcome = .{ .published_to_pty = false, .host_visual_changed = false };
     switch (event) {
         .bytes, .key => {},

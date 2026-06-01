@@ -60,7 +60,10 @@ pub fn resize(context: anytype, render_width: c_int, render_height: c_int, logic
     const lh = @max(logical_height, 1);
     context.geometry.mutex.lock();
     defer context.geometry.mutex.unlock();
-    if (rw == context.geometry.render_px_w and rh == context.geometry.render_px_h and rw == context.geometry.pending_grid_px_w and rh == context.geometry.pending_grid_px_h and lw == context.geometry.logical_w and lh == context.geometry.logical_h) return;
+    const render_size_same = rw == context.geometry.render_px_w and rh == context.geometry.render_px_h;
+    const grid_size_same = rw == context.geometry.pending_grid_px_w and rh == context.geometry.pending_grid_px_h;
+    const logical_size_same = lw == context.geometry.logical_w and lh == context.geometry.logical_h;
+    if (render_size_same and grid_size_same and logical_size_same) return;
     context.geometry.render_px_w = rw;
     context.geometry.render_px_h = rh;
     context.geometry.logical_w = lw;

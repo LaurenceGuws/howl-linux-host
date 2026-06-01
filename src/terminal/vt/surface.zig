@@ -69,7 +69,14 @@ fn publishSourceLockedWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: 
     const meta = Ops.visibleMeta(term.vt, term.vt_state.scrollback_offset);
     const slot = Ops.reserveSlot(term.render.text_session, meta.cols, meta.rows) catch return Ops.rejectPublish(term.render.text_session, meta.snapshot_seq);
 
-    var visible = Ops.acquireVisible(term.allocator, &term.vt_state, term.vt, term.vt_state.scrollback_offset, meta, slot) catch return Ops.rejectPublish(term.render.text_session, meta.snapshot_seq);
+    var visible = Ops.acquireVisible(
+        term.allocator,
+        &term.vt_state,
+        term.vt,
+        term.vt_state.scrollback_offset,
+        meta,
+        slot,
+    ) catch return Ops.rejectPublish(term.render.text_session, meta.snapshot_seq);
     defer visible.deinit(term.allocator);
     if (hover) |value| applyHyperlinkHover(slot, visible.rows, visible.cols, value);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.history_count);
@@ -80,7 +87,9 @@ fn publishSourceLockedWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: 
     const typed_response = Ops.commitVtSurface(term.render.text_session, visible);
     if (typed_response.status != render_c.HOWL_RENDER_CALL_OK) {
         std.debug.panic(
-            "render publish rejected: status={d} published={d} queued={d} damage={d} snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} rows={d} cols={d} history={d} scroll_row={d}",
+            "render publish rejected: status={d} published={d} queued={d} damage={d} " ++
+                "snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} " ++
+                "rows={d} cols={d} history={d} scroll_row={d}",
             .{
                 typed_response.status,
                 typed_response.published,
@@ -229,7 +238,14 @@ const RealAcquireOps = struct {
     }
 };
 
-fn vtAcquireVisibleIntoSlotWith(handle: vt_c.HowlVtHandle, scrollback_offset: u32, meta: VisibleMeta, vt_cells: []vt_c.HowlVtSurfaceCell, slot: ReservedVtSurfaceSlot, comptime Ops: type) !VisibleCopy {
+fn vtAcquireVisibleIntoSlotWith(
+    handle: vt_c.HowlVtHandle,
+    scrollback_offset: u32,
+    meta: VisibleMeta,
+    vt_cells: []vt_c.HowlVtSurfaceCell,
+    slot: ReservedVtSurfaceSlot,
+    comptime Ops: type,
+) !VisibleCopy {
     std.debug.assert(vt_cells.len == slot.cells.len);
     const source = Ops.copySurface(handle, scrollback_offset, vt_cells, slot);
     try requireVtOk(source.status);
@@ -562,7 +578,15 @@ test "publish rejects reserved slot when paired acquisition fails" {
         fn rejectPublish(_: render_c.HowlRenderTextSessionHandle, snapshot_seq: u64) render_c.HowlRenderVtSurfacePublishResult {
             reject_calls += 1;
             last_reject_snapshot_seq = snapshot_seq;
-            return .{ .status = render_c.HOWL_RENDER_CALL_FAILED, .published = 0, .queued = 0, .damage_kind = damage_none, .reserved0 = 0, .snapshot_seq = snapshot_seq, .geometry_epoch = 0 };
+            return .{
+                .status = render_c.HOWL_RENDER_CALL_FAILED,
+                .published = 0,
+                .queued = 0,
+                .damage_kind = damage_none,
+                .reserved0 = 0,
+                .snapshot_seq = snapshot_seq,
+                .geometry_epoch = 0,
+            };
         }
     };
 

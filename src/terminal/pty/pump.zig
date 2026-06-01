@@ -100,7 +100,14 @@ fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPump
     );
 }
 
-fn pumpTransportSliceWith(term: anytype, mode: pty_session.TransportPumpMode, comptime Ops: type, comptime backlog_bytes: u32, comptime force_lock_backlog_bytes: u32, comptime locked_feed_bytes: u32) TransportProgress {
+fn pumpTransportSliceWith(
+    term: anytype,
+    mode: pty_session.TransportPumpMode,
+    comptime Ops: type,
+    comptime backlog_bytes: u32,
+    comptime force_lock_backlog_bytes: u32,
+    comptime locked_feed_bytes: u32,
+) TransportProgress {
     comptime {
         std.debug.assert(backlog_bytes > 0);
         std.debug.assert(force_lock_backlog_bytes > 0);

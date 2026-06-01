@@ -2501,7 +2501,13 @@ fn drawQuad(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSu
     gl_c.glEnd();
 }
 
-fn drawTexturedQuad(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSurfaceRect, texture_rect: render_c.HowlRenderSurfaceRect, texture_width: u32, texture_height: u32) void {
+fn drawTexturedQuad(
+    surface: render_c.HowlRenderHostSurface,
+    rect: render_c.HowlRenderSurfaceRect,
+    texture_rect: render_c.HowlRenderSurfaceRect,
+    texture_width: u32,
+    texture_height: u32,
+) void {
     const left = ndcX(rect.x_px, surface.width);
     const right = ndcX(rect.x_px + rect.width_px, surface.width);
     const top = ndcY(rect.y_px, surface.height);

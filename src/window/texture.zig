@@ -2,7 +2,22 @@ pub fn drawRect(comptime c: type, fb_w: c_int, fb_h: c_int, texture_id: u32, x: 
     drawSubRect(c, fb_w, fb_h, texture_id, x, y, width, height, 0, 0, width, height, width, height);
 }
 
-fn drawSubRect(comptime c: type, fb_w: c_int, fb_h: c_int, texture_id: u32, x: c_int, y: c_int, width: c_int, height: c_int, src_x: c_int, src_y: c_int, src_width: c_int, src_height: c_int, texture_width: c_int, texture_height: c_int) void {
+fn drawSubRect(
+    comptime c: type,
+    fb_w: c_int,
+    fb_h: c_int,
+    texture_id: u32,
+    x: c_int,
+    y: c_int,
+    width: c_int,
+    height: c_int,
+    src_x: c_int,
+    src_y: c_int,
+    src_width: c_int,
+    src_height: c_int,
+    texture_width: c_int,
+    texture_height: c_int,
+) void {
     if (texture_id == 0 or width <= 0 or height <= 0) return;
     if (src_width <= 0 or src_height <= 0 or texture_width <= 0 or texture_height <= 0) return;
 

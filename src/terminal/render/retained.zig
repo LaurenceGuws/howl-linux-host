@@ -722,7 +722,12 @@ pub const State = struct {
         return true;
     }
 
-    fn probePreparedRenderSurface(self: *State, info: c.HowlRenderPreparedSurfaceInfo, resource_plan_out: *PreparedRenderResourcePlan, surface_out: *?*const Surface) PreparedRenderSurfaceProbe {
+    fn probePreparedRenderSurface(
+        self: *State,
+        info: c.HowlRenderPreparedSurfaceInfo,
+        resource_plan_out: *PreparedRenderResourcePlan,
+        surface_out: *?*const Surface,
+    ) PreparedRenderSurfaceProbe {
         const prepared = self.prepared_surface orelse {
             self.recordPreparedRenderSurfaceProbe(.{ .status = .call_failed });
             self.recordPreparedRenderResourcePlan(.{ .status = .call_failed });
@@ -824,7 +829,12 @@ fn surfaceLayoutChanged(current: SurfaceLayout, next: SurfaceLayout) bool {
         current.cell_px.height != next.cell_px.height;
 }
 
-fn validatePreparedRenderSurfaceProbe(info: c.HowlRenderPreparedSurfaceInfo, status: c_int, surface_optional: ?*const c.HowlRenderSurface, retained_base_pixels: []const u8) PreparedRenderSurfaceProbe {
+fn validatePreparedRenderSurfaceProbe(
+    info: c.HowlRenderPreparedSurfaceInfo,
+    status: c_int,
+    surface_optional: ?*const c.HowlRenderSurface,
+    retained_base_pixels: []const u8,
+) PreparedRenderSurfaceProbe {
     if (status != c.HOWL_RENDER_CALL_OK) return .{ .status = .call_failed };
     const surface = surface_optional orelse return .{ .status = .null_surface };
     if (surface.surface_version != c.HOWL_RENDER_SURFACE_VERSION) {
@@ -1490,7 +1500,12 @@ fn expectInvalidRenderSurfaceSurface(info: c.HowlRenderPreparedSurfaceInfo, surf
     try expectInvalidRenderSurfaceProbe(info, c.HOWL_RENDER_CALL_OK, surface, expected);
 }
 
-fn expectInvalidRenderSurfaceSurfaceWithBase(info: c.HowlRenderPreparedSurfaceInfo, surface: *const c.HowlRenderSurface, retained_base_pixels: []const u8, expected: PreparedRenderSurfaceProbeStatus) !PreparedRenderSurfaceProbe {
+fn expectInvalidRenderSurfaceSurfaceWithBase(
+    info: c.HowlRenderPreparedSurfaceInfo,
+    surface: *const c.HowlRenderSurface,
+    retained_base_pixels: []const u8,
+    expected: PreparedRenderSurfaceProbeStatus,
+) !PreparedRenderSurfaceProbe {
     const probe = validatePreparedRenderSurfaceProbe(
         info,
         c.HOWL_RENDER_CALL_OK,
