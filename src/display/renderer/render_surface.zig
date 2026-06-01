@@ -2056,13 +2056,15 @@ test "render surface create validation records precise failure buckets" {
 pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) bool {
     std.debug.assert(width > 0);
     std.debug.assert(height > 0);
-    if (surface.host_surface_id == 0) {
-        var texture_id: c_uint = 0;
-        gl_c.glGenTextures(1, &texture_id);
-        if (texture_id == 0) return false;
-        surface.host_surface_id = texture_id;
-    }
-    if (surface.width == width and surface.height == height) return true;
+    if (surface.host_surface_id != 0 and surface.width == width and surface.height == height) return true;
+    if (surface.host_surface_id != 0) deleteTexture(&surface.host_surface_id);
+    surface.width = 0;
+    surface.height = 0;
+
+    var texture_id: c_uint = 0;
+    gl_c.glGenTextures(1, &texture_id);
+    if (texture_id == 0) return false;
+    surface.host_surface_id = texture_id;
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(surface.host_surface_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
     gl_c.glTexParameteri(gl_c.GL_TEXTURE_2D, gl_c.GL_TEXTURE_MIN_FILTER, gl_c.GL_NEAREST);
@@ -2080,6 +2082,12 @@ pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
         gl_c.GL_UNSIGNED_BYTE,
         null,
     );
+    if (gl_c.glGetError() != 0) {
+        deleteTexture(&surface.host_surface_id);
+        surface.width = 0;
+        surface.height = 0;
+        return false;
+    }
     surface.width = width;
     surface.height = height;
     return true;
