@@ -2097,6 +2097,79 @@ test "resize success path submits full surface and acks matching present token" 
     try std.testing.expectEqual(@as(u8, 6), context.term.render.operation_count);
 }
 
+test "resize while present pending waits for matching ack before resized submit" {
+    TestPresentAckOps.reset();
+    var context = TestSubmitContext{};
+    var present = TestPresentOwner{};
+
+    context.term.mutex.lockFair();
+    const prior_submit = Context.submitPreparedLockedWith(&context, TestResizeBackend);
+    context.term.mutex.unlock();
+
+    try std.testing.expectEqual(render_retained.SubmitResult.rendered, prior_submit.result);
+    try std.testing.expectEqual(@as(u64, 51), prior_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u8, 1), context.term.render.submit_calls);
+
+    const prior_token = present.submitTerminalFrame(&context, prior_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(?u64, prior_token), present.pending_terminal_present);
+    try std.testing.expect(context.term.render.presentPending());
+
+    context.resizeForTest(4, 2, 4, 2);
+    const request = context.commitGeometryForTest();
+    try std.testing.expectEqual(@as(u16, 4), request.render_px.width);
+    try std.testing.expectEqual(@as(u16, 2), request.render_px.height);
+    try std.testing.expectEqual(@as(u64, 2), context.term.render.geometry_epoch);
+
+    context.term.render.prepareTestSurface();
+    try std.testing.expectEqual(@as(u64, 52), context.term.render.prepared_info.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 2), context.term.render.prepared_info.geometry_epoch);
+
+    const blocked_work = render_retained.WorkState{
+        .source_pending = false,
+        .prepare_pending = false,
+        .submit_pending = true,
+        .present_pending = context.term.render.presentPending(),
+        .bootstrap_surface = false,
+    };
+    try std.testing.expectEqual(Context.RenderAction.blocked_present, Context.renderAction(blocked_work, false));
+    try std.testing.expectEqual(@as(u8, 1), context.term.render.submit_calls);
+    try std.testing.expectEqual(@as(u8, 1), context.host_upload_calls);
+
+    present.drainComplete(&context, prior_token + 1);
+    try std.testing.expectEqual(@as(u8, 0), TestPresentAckOps.ack_calls);
+    try std.testing.expectEqual(@as(?u64, prior_token), present.pending_terminal_present);
+    try std.testing.expect(context.term.render.presentPending());
+    try std.testing.expectEqual(Context.RenderAction.blocked_present, Context.renderAction(blocked_work, false));
+    try std.testing.expectEqual(@as(u8, 1), context.term.render.submit_calls);
+
+    present.drainComplete(&context, prior_token);
+    try std.testing.expectEqual(@as(u8, 1), TestPresentAckOps.ack_calls);
+    try std.testing.expectEqual(prior_submit.snapshot_seq, TestPresentAckOps.last_snapshot_seq);
+    try std.testing.expectEqual(@as(?u64, null), present.pending_terminal_present);
+    try std.testing.expect(!context.term.render.presentPending());
+
+    const unblocked_work = render_retained.WorkState{
+        .source_pending = false,
+        .prepare_pending = false,
+        .submit_pending = true,
+        .present_pending = context.term.render.presentPending(),
+        .bootstrap_surface = false,
+    };
+    try std.testing.expectEqual(Context.RenderAction.submit_pending, Context.renderAction(unblocked_work, false));
+
+    context.term.mutex.lockFair();
+    const resized_submit = Context.submitPreparedLockedWith(&context, TestResizeBackend);
+    context.term.mutex.unlock();
+
+    try std.testing.expectEqual(render_retained.SubmitResult.rendered, resized_submit.result);
+    try std.testing.expectEqual(@as(u64, 52), resized_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u8, 2), context.term.render.submit_calls);
+    try std.testing.expectEqual(@as(u8, 2), context.host_upload_calls);
+    try std.testing.expect(!context.host_upload_had_matching_surface);
+    try std.testing.expectEqual(@as(u16, 4), context.term_texture.width);
+    try std.testing.expectEqual(@as(u16, 2), context.term_texture.height);
+}
+
 test "render surface realization gate ignores surface-only resource plan validity" {
     var render_surface = std.mem.zeroes(render_c.HowlRenderSurface);
     var upload = render_retained.PreparedUpload{
