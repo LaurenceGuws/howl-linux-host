@@ -712,6 +712,17 @@ pub const Context = struct {
                 self.protocol_v0_submit_diagnostics.v0_glyph_fallback_count +|= 1;
                 return false;
             }
+            if (term_texture.protocolV0GlyphPatch(frame)) {
+                self.protocol_v0_submit_diagnostics.v0_glyph_frame_count +|= 1;
+                if (had_matching_surface and
+                    term_texture.uploadProtocolV0GlyphPatch(&self.protocol_v0_textures, self.term_texture, frame))
+                {
+                    self.protocol_v0_submit_diagnostics.v0_glyph_present_count +|= 1;
+                    return true;
+                }
+                self.protocol_v0_submit_diagnostics.v0_glyph_fallback_count +|= 1;
+                return false;
+            }
             if (!term_texture.protocolV0FillOnly(frame)) {
                 if (term_texture.protocolV0FillPatch(frame)) {
                     self.protocol_v0_submit_diagnostics.v0_fill_patch_frame_count +|= 1;
