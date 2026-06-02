@@ -557,8 +557,7 @@ pub const Context = struct {
                 if (!render_surface_resources_realized) break :blk false;
                 break :blk uploadRenderSurfaceCommands(self, render_surface, had_matching_surface);
             } else blk: {
-                crashOnRenderSurfaceEmitError(renderSurfaceEmitError(prepared_upload.info.render_surface_emit_status));
-                crashOnRenderSurfaceUnavailable(prepared_upload.render_surface_resource_plan.status);
+                crashOnRenderSurfaceRetrievalStatus(prepared_upload.render_surface_status);
                 break :blk false;
             };
             if (!render_surface_uploaded) {
@@ -653,22 +652,10 @@ pub const Context = struct {
             return .invariant;
         }
 
-        fn trustedRenderSurfaceUnavailableAction(status: render_retained.PreparedRenderResourcePlanStatus) render_retained.TrustedRenderSurfaceAction {
-            return render_retained.trustedResourcePlanStatusAction(status);
-        }
-
-        fn crashOnRenderSurfaceUnavailable(status: render_retained.PreparedRenderResourcePlanStatus) void {
-            switch (trustedRenderSurfaceUnavailableAction(status)) {
-                .ok,
-                .invariant,
-                => std.debug.panic("trusted render surface unavailable: status={s}", .{@tagName(status)}),
-                .reserved_unsupported,
-                .defensive,
-                => {},
-            }
-        }
-
-        const RenderSurfaceEmitError = error{
+        const RenderSurfaceRetrievalError = error{
+            TrustedRenderSurfaceMissingSurface,
+            TrustedRenderSurfaceMissingHandle,
+            TrustedRenderSurfaceInvalidArgument,
             TrustedRenderSurfaceCommandBoundOverflow,
             TrustedRenderSurfaceCreateBoundOverflow,
             TrustedRenderSurfaceDamageBoundOverflow,
@@ -679,28 +666,35 @@ pub const Context = struct {
             TrustedRenderSurfaceInvalidPreparedSprite,
             TrustedRenderSurfaceMissingPreparedSprite,
             TrustedRenderSurfaceAllocationFailed,
-            TrustedRenderSurfaceUnknownEmitStatus,
+            TrustedRenderSurfaceUnknownRetrievalStatus,
         };
 
-        fn renderSurfaceEmitError(status: i32) RenderSurfaceEmitError!void {
+        fn unavailableRenderSurfaceRetrievalError(status: render_c.HowlRenderPreparedSurfaceRenderSurfaceStatus) RenderSurfaceRetrievalError!void {
+            if (status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK) return error.TrustedRenderSurfaceMissingSurface;
+            return renderSurfaceRetrievalError(status);
+        }
+
+        fn renderSurfaceRetrievalError(status: render_c.HowlRenderPreparedSurfaceRenderSurfaceStatus) RenderSurfaceRetrievalError!void {
             return switch (status) {
-                render_c.HOWL_RENDER_SURFACE_EMIT_OK => {},
-                render_c.HOWL_RENDER_SURFACE_EMIT_COMMAND_BOUND_OVERFLOW => error.TrustedRenderSurfaceCommandBoundOverflow,
-                render_c.HOWL_RENDER_SURFACE_EMIT_CREATE_BOUND_OVERFLOW => error.TrustedRenderSurfaceCreateBoundOverflow,
-                render_c.HOWL_RENDER_SURFACE_EMIT_DAMAGE_BOUND_OVERFLOW => error.TrustedRenderSurfaceDamageBoundOverflow,
-                render_c.HOWL_RENDER_SURFACE_EMIT_RETIRE_BOUND_OVERFLOW => error.TrustedRenderSurfaceRetireBoundOverflow,
-                render_c.HOWL_RENDER_SURFACE_EMIT_RESOURCE_BOUND_OVERFLOW => error.TrustedRenderSurfaceResourceBoundOverflow,
-                render_c.HOWL_RENDER_SURFACE_EMIT_UPLOAD_BOUND_OVERFLOW => error.TrustedRenderSurfaceUploadBoundOverflow,
-                render_c.HOWL_RENDER_SURFACE_EMIT_UPLOAD_BYTES_OVERFLOW => error.TrustedRenderSurfaceUploadBytesOverflow,
-                render_c.HOWL_RENDER_SURFACE_EMIT_INVALID_PREPARED_SPRITE => error.TrustedRenderSurfaceInvalidPreparedSprite,
-                render_c.HOWL_RENDER_SURFACE_EMIT_MISSING_PREPARED_SPRITE => error.TrustedRenderSurfaceMissingPreparedSprite,
-                render_c.HOWL_RENDER_SURFACE_EMIT_ALLOCATION_FAILED => error.TrustedRenderSurfaceAllocationFailed,
-                else => error.TrustedRenderSurfaceUnknownEmitStatus,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK => {},
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_MISSING_HANDLE => error.TrustedRenderSurfaceMissingHandle,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_INVALID_ARGUMENT => error.TrustedRenderSurfaceInvalidArgument,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW => error.TrustedRenderSurfaceCommandBoundOverflow,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_CREATE_BOUND_OVERFLOW => error.TrustedRenderSurfaceCreateBoundOverflow,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_DAMAGE_BOUND_OVERFLOW => error.TrustedRenderSurfaceDamageBoundOverflow,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_RETIRE_BOUND_OVERFLOW => error.TrustedRenderSurfaceRetireBoundOverflow,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_RESOURCE_BOUND_OVERFLOW => error.TrustedRenderSurfaceResourceBoundOverflow,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_UPLOAD_BOUND_OVERFLOW => error.TrustedRenderSurfaceUploadBoundOverflow,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_UPLOAD_BYTES_OVERFLOW => error.TrustedRenderSurfaceUploadBytesOverflow,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_INVALID_PREPARED_SPRITE => error.TrustedRenderSurfaceInvalidPreparedSprite,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_MISSING_PREPARED_SPRITE => error.TrustedRenderSurfaceMissingPreparedSprite,
+                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_ALLOCATION_FAILED => error.TrustedRenderSurfaceAllocationFailed,
+                else => error.TrustedRenderSurfaceUnknownRetrievalStatus,
             };
         }
 
-        fn crashOnRenderSurfaceEmitError(result: RenderSurfaceEmitError!void) void {
-            result catch |err| std.debug.panic("trusted render surface emit failed: error={s}", .{@errorName(err)});
+        fn crashOnRenderSurfaceRetrievalStatus(status: render_c.HowlRenderPreparedSurfaceRenderSurfaceStatus) void {
+            unavailableRenderSurfaceRetrievalError(status) catch |err| std.debug.panic("trusted render surface retrieval failed: error={s}", .{@errorName(err)});
         }
 
         fn shouldRealizeRenderSurface(prepared_upload: *const render_retained.PreparedUpload) bool {
@@ -1236,17 +1230,6 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(context.cursor_blink.visible);
 }
 
-test "trusted render surface unavailable ok and idle are invariant actions" {
-    try std.testing.expectEqual(
-        render_retained.TrustedRenderSurfaceAction.invariant,
-        Context.ContextSubmitBackend.trustedRenderSurfaceUnavailableAction(.ok),
-    );
-    try std.testing.expectEqual(
-        render_retained.TrustedRenderSurfaceAction.invariant,
-        Context.ContextSubmitBackend.trustedRenderSurfaceUnavailableAction(.idle),
-    );
-}
-
 test "trusted unsupported render surface shape does not continue as upload failure" {
     try std.testing.expectEqual(
         render_retained.TrustedRenderSurfaceAction.invariant,
@@ -1577,7 +1560,6 @@ fn testPreparedUploadInfo() render_c.HowlRenderPreparedSurfaceInfo {
         .cell_px = .{ .width = 1, .height = 1 },
         .grid = .{ .cols = 2, .rows = 1 },
         .damage_kind = render_c.HOWL_RENDER_DAMAGE_FULL,
-        .render_surface_emit_status = render_c.HOWL_RENDER_SURFACE_EMIT_OK,
         .reserved0 = 0,
         .reserved1 = 0,
     };
@@ -1586,6 +1568,7 @@ fn testPreparedUploadInfo() render_c.HowlRenderPreparedSurfaceInfo {
 fn fillTestPreparedUpload(upload: *render_retained.PreparedUpload) void {
     upload.* = .{
         .info = testPreparedUploadInfo(),
+        .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_INVALID_ARGUMENT,
         .render_surface_probe = .{},
         .render_surface_resource_plan = .{},
         .render_surface = null,
@@ -1654,6 +1637,7 @@ const TestSubmitRender = struct {
         self.record(.prepared_upload);
         upload.* = .{
             .info = self.prepared_info,
+            .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
             .render_surface_probe = .{},
             .render_surface_resource_plan = .{ .status = .ok, .valid = true, .surface_seq = self.prepared_info.dirty_epoch },
             .render_surface = &self.render_surface,
@@ -1808,12 +1792,39 @@ test "render surface upload policy rejects patches without matching host surface
     try Context.ContextSubmitBackend.renderSurfaceUploadPolicy(&glyph_patch_surface, true);
 }
 
-test "render surface emit status reports resource bound overflow" {
+test "render surface retrieval status reports resource bound overflow" {
     try std.testing.expectError(
         error.TrustedRenderSurfaceResourceBoundOverflow,
-        Context.ContextSubmitBackend.renderSurfaceEmitError(render_c.HOWL_RENDER_SURFACE_EMIT_RESOURCE_BOUND_OVERFLOW),
+        Context.ContextSubmitBackend.renderSurfaceRetrievalError(render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_RESOURCE_BOUND_OVERFLOW),
     );
-    try Context.ContextSubmitBackend.renderSurfaceEmitError(render_c.HOWL_RENDER_SURFACE_EMIT_OK);
+    try Context.ContextSubmitBackend.renderSurfaceRetrievalError(render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK);
+}
+
+test "context unavailable render surface path is keyed by retrieval status" {
+    var upload = render_retained.PreparedUpload{
+        .info = testPreparedUploadInfo(),
+        .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_MISSING_HANDLE,
+        .render_surface_probe = .{},
+        .render_surface_resource_plan = .{ .status = .ok, .valid = true },
+        .render_surface = null,
+    };
+
+    try std.testing.expectError(
+        error.TrustedRenderSurfaceMissingHandle,
+        Context.ContextSubmitBackend.unavailableRenderSurfaceRetrievalError(upload.render_surface_status),
+    );
+
+    upload.render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW;
+    try std.testing.expectError(
+        error.TrustedRenderSurfaceCommandBoundOverflow,
+        Context.ContextSubmitBackend.unavailableRenderSurfaceRetrievalError(upload.render_surface_status),
+    );
+
+    upload.render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK;
+    try std.testing.expectError(
+        error.TrustedRenderSurfaceMissingSurface,
+        Context.ContextSubmitBackend.unavailableRenderSurfaceRetrievalError(upload.render_surface_status),
+    );
 }
 
 const TestSubmitTerm = struct {
@@ -2304,6 +2315,7 @@ test "render surface realization gate ignores surface-only resource plan validit
     var render_surface = std.mem.zeroes(render_c.HowlRenderSurface);
     var upload = render_retained.PreparedUpload{
         .info = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceInfo),
+        .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
         .render_surface_probe = .{},
         .render_surface_resource_plan = .{ .status = .invalid_resource, .valid = false },
         .render_surface = &render_surface,

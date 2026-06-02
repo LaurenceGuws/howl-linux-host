@@ -65,6 +65,7 @@ pub const SurfaceLayout = struct {
 
 pub const PreparedUpload = struct {
     info: c.HowlRenderPreparedSurfaceInfo,
+    render_surface_status: c.HowlRenderPreparedSurfaceRenderSurfaceStatus,
     render_surface_probe: PreparedRenderSurfaceProbe,
     render_surface_resource_plan: PreparedRenderResourcePlan,
     render_surface: ?*const Surface,
@@ -809,6 +810,7 @@ pub const State = struct {
     pub fn preparedUpload(self: *State, upload_out: *PreparedUpload) bool {
         upload_out.* = .{
             .info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo),
+            .render_surface_status = c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_INVALID_ARGUMENT,
             .render_surface_probe = .{},
             .render_surface_resource_plan = .{},
             .render_surface = null,
@@ -816,6 +818,7 @@ pub const State = struct {
         if (!self.preparedInfo(&upload_out.info)) return false;
         upload_out.render_surface_probe = self.probePreparedRenderSurface(
             upload_out.info,
+            &upload_out.render_surface_status,
             &upload_out.render_surface_resource_plan,
             &upload_out.render_surface,
         );
@@ -825,10 +828,12 @@ pub const State = struct {
     fn probePreparedRenderSurface(
         self: *State,
         info: c.HowlRenderPreparedSurfaceInfo,
+        status_out: *c.HowlRenderPreparedSurfaceRenderSurfaceStatus,
         resource_plan_out: *PreparedRenderResourcePlan,
         surface_out: *?*const Surface,
     ) PreparedRenderSurfaceProbe {
         const prepared = self.prepared_surface orelse {
+            status_out.* = c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_MISSING_HANDLE;
             self.recordPreparedRenderSurfaceProbe(.{ .status = .call_failed });
             self.recordPreparedRenderResourcePlan(.{ .status = .call_failed });
             resource_plan_out.* = self.last_render_surface_resource_plan;
@@ -836,6 +841,7 @@ pub const State = struct {
         };
         var surface: ?*const c.HowlRenderSurface = null;
         const status = c.howl_render_prepared_surface_render_surface(prepared, &surface);
+        status_out.* = status;
         surface_out.* = surface;
         resource_plan_out.* = validateRenderSurfaceResourcePlan(status, surface);
         self.recordPreparedRenderResourcePlan(resource_plan_out.*);
@@ -931,11 +937,11 @@ fn surfaceLayoutChanged(current: SurfaceLayout, next: SurfaceLayout) bool {
 
 fn validatePreparedRenderSurfaceProbe(
     info: c.HowlRenderPreparedSurfaceInfo,
-    status: c_int,
+    status: c.HowlRenderPreparedSurfaceRenderSurfaceStatus,
     surface_optional: ?*const c.HowlRenderSurface,
     retained_base_pixels: []const u8,
 ) PreparedRenderSurfaceProbe {
-    if (status != c.HOWL_RENDER_CALL_OK) return .{ .status = .call_failed };
+    if (status != c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK) return .{ .status = .call_failed };
     const surface = surface_optional orelse return .{ .status = .null_surface };
     if (surface.surface_version != c.HOWL_RENDER_SURFACE_VERSION) {
         return .{ .status = .version_mismatch };
@@ -1015,8 +1021,8 @@ const CommandResourceUse = struct {
     glyph_rect: ?c.HowlRenderSurfaceRect,
 };
 
-fn validateRenderSurfaceResourcePlan(status: c_int, surface_optional: ?*const c.HowlRenderSurface) PreparedRenderResourcePlan {
-    if (status != c.HOWL_RENDER_CALL_OK) return .{ .status = .call_failed };
+fn validateRenderSurfaceResourcePlan(status: c.HowlRenderPreparedSurfaceRenderSurfaceStatus, surface_optional: ?*const c.HowlRenderSurface) PreparedRenderResourcePlan {
+    if (status != c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK) return .{ .status = .call_failed };
     const surface = surface_optional orelse return .{ .status = .null_surface };
     const top_status = validateResourcePlanTopLevel(surface);
     if (top_status != .ok) return .{ .status = top_status };
@@ -1583,7 +1589,6 @@ fn testPreparedInfo() c.HowlRenderPreparedSurfaceInfo {
         .cell_px = .{ .width = 1, .height = 1 },
         .grid = .{ .cols = 2, .rows = 1 },
         .damage_kind = c.HOWL_RENDER_DAMAGE_FULL,
-        .render_surface_emit_status = c.HOWL_RENDER_SURFACE_EMIT_OK,
         .reserved0 = 0,
         .reserved1 = 0,
     };
@@ -1751,18 +1756,23 @@ fn retireSpan(items: []const Retire) c.HowlRenderResourceRetireSpan {
     };
 }
 
-fn expectInvalidRenderSurfaceProbe(info: c.HowlRenderPreparedSurfaceInfo, status: c_int, surface: ?*const c.HowlRenderSurface, expected: PreparedRenderSurfaceProbeStatus) !void {
+fn expectInvalidRenderSurfaceProbe(
+    info: c.HowlRenderPreparedSurfaceInfo,
+    status: c.HowlRenderPreparedSurfaceRenderSurfaceStatus,
+    surface: ?*const c.HowlRenderSurface,
+    expected: PreparedRenderSurfaceProbeStatus,
+) !void {
     const probe = validatePreparedRenderSurfaceProbe(info, status, surface, &.{});
     try std.testing.expect(!probe.valid);
     try std.testing.expectEqual(expected, probe.status);
 }
 
 fn expectInvalidRenderSurfaceSurface(info: c.HowlRenderPreparedSurfaceInfo, surface: *const c.HowlRenderSurface, expected: PreparedRenderSurfaceProbeStatus) !void {
-    try expectInvalidRenderSurfaceProbe(info, c.HOWL_RENDER_CALL_OK, surface, expected);
+    try expectInvalidRenderSurfaceProbe(info, c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, surface, expected);
 }
 
 fn expectInvalidRenderSurfaceResourcePlan(surface: *const c.HowlRenderSurface, expected: PreparedRenderResourcePlanStatus) !void {
-    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_CALL_OK, surface);
+    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, surface);
     try std.testing.expect(!plan.valid);
     try std.testing.expectEqual(expected, plan.status);
 }
@@ -1775,7 +1785,7 @@ fn expectInvalidRenderSurfaceSurfaceWithBase(
 ) !PreparedRenderSurfaceProbe {
     const probe = validatePreparedRenderSurfaceProbe(
         info,
-        c.HOWL_RENDER_CALL_OK,
+        c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
         surface,
         retained_base_pixels,
     );
@@ -1797,6 +1807,61 @@ fn testState() State {
     });
     std.debug.assert(handle != null);
     return State.init(handle, testSurfaceLayout());
+}
+
+fn publishTestSource(handle: c.HowlRenderTextSessionHandle, layout: SurfaceLayout, snapshot_seq: u64) !void {
+    var slot = std.mem.zeroes(c.HowlRenderVtSurfaceSlot);
+    try std.testing.expectEqual(c.HOWL_RENDER_CALL_OK, c.howl_render_text_session_reserve_vt_surface_slot(handle, layout.cols, layout.rows, &slot));
+    const cell_count = @as(usize, layout.cols) * @as(usize, layout.rows);
+    try std.testing.expect(slot.cells.len >= cell_count);
+    var cell_index: usize = 0;
+    while (cell_index < cell_count) : (cell_index += 1) {
+        slot.cells.ptr[cell_index] = .{
+            .codepoint = 'a',
+            .flags = .{ .continuation = 0 },
+            .fg_color = .{ .kind = 0, .value = 0 },
+            .bg_color = .{ .kind = 0, .value = 0 },
+            .underline_color = .{ .kind = 0, .value = 0 },
+            .underline_style = 0,
+            .attrs = std.mem.zeroes(c.HowlRenderSourceCellAttrs),
+            .link_id = 0,
+        };
+    }
+    try std.testing.expect(slot.dirty_rows.len >= layout.rows);
+    try std.testing.expect(slot.dirty_cols_start.len >= layout.rows);
+    try std.testing.expect(slot.dirty_cols_end.len >= layout.rows);
+    var row: usize = 0;
+    while (row < layout.rows) : (row += 1) {
+        slot.dirty_rows.ptr[row] = 1;
+        slot.dirty_cols_start.ptr[row] = 0;
+        slot.dirty_cols_end.ptr[row] = layout.cols - 1;
+    }
+    const publish = c.howl_render_text_session_commit_vt_surface(handle, .{
+        .history_count = 0,
+        .scroll_row = 0,
+        .snapshot_seq = snapshot_seq,
+        .is_alternate_screen = 0,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .cursor = .{ .row = 0, .col = 0, .visible = 1, .shape = 0, .blink = 0, .reserved0 = 0 },
+        .colors = std.mem.zeroes(c.HowlRenderSourceColors),
+        .selection = .{ .active = 0, .selecting = 0, .reserved0 = 0, .start = .{ .row = 0, .col = 0, .reserved0 = 0 }, .end = .{ .row = 0, .col = 0, .reserved0 = 0 } },
+    });
+    try std.testing.expectEqual(c.HOWL_RENDER_CALL_OK, publish.status);
+}
+
+fn derivedTestSurfaceLayout(handle: c.HowlRenderTextSessionHandle) !SurfaceLayout {
+    const render_px = c.HowlRenderPixelSize{ .width = 100, .height = 80 };
+    const grid_px = c.HowlRenderPixelSize{ .width = 90, .height = 70 };
+    const layout = c.howl_render_text_session_derive_layout(handle, render_px, grid_px);
+    try std.testing.expectEqual(c.HOWL_RENDER_CALL_OK, layout.status);
+    return .{
+        .render_px = render_px,
+        .grid_px = grid_px,
+        .cols = layout.grid.cols,
+        .rows = layout.grid.rows,
+        .cell_px = layout.cell_px,
+    };
 }
 
 test "surface layout sync reports grid and cell changes" {
@@ -1940,7 +2005,7 @@ test "host retained render probes prepared render surface surface" {
 
     const probe = validatePreparedRenderSurfaceProbe(
         info,
-        c.HOWL_RENDER_CALL_OK,
+        c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
         &surface,
         &.{},
     );
@@ -1956,14 +2021,14 @@ test "host retained render rejects render surface call and dimension invariants"
 
     try expectInvalidRenderSurfaceProbe(
         info,
-        c.HOWL_RENDER_CALL_FAILED,
+        c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_RESOURCE_BOUND_OVERFLOW,
         null,
         .call_failed,
     );
 
     try expectInvalidRenderSurfaceProbe(
         info,
-        c.HOWL_RENDER_CALL_OK,
+        c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
         null,
         .null_surface,
     );
@@ -2067,6 +2132,23 @@ test "host retained render records render surface probe failures on owner" {
     try std.testing.expect(state.last_render_surface_probe.valid);
 }
 
+test "host retained prepared upload records render surface retrieval status" {
+    var state = testState();
+    defer state.deinit();
+    const layout = try derivedTestSurfaceLayout(state.text_session);
+    state.syncSurfaceLayout(layout);
+    try publishTestSource(state.text_session, state.surface_layout, 1);
+    try std.testing.expectEqual(PrepareResult.prepared, state.prepare());
+
+    var upload = std.mem.zeroes(PreparedUpload);
+    try std.testing.expect(state.preparedUpload(&upload));
+
+    try std.testing.expectEqual(c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, upload.render_surface_status);
+    try std.testing.expect(upload.render_surface != null);
+    try std.testing.expectEqual(PreparedRenderSurfaceProbeStatus.ok, upload.render_surface_probe.status);
+    try std.testing.expectEqual(PreparedRenderResourcePlanStatus.ok, upload.render_surface_resource_plan.status);
+}
+
 test "host retained render validates render surface fill surface without rgba oracle" {
     const info = testPreparedInfo();
     var commands = [_]Command{
@@ -2076,7 +2158,7 @@ test "host retained render validates render surface fill surface without rgba or
     surface.commands = commandSpan(&commands);
     const probe = validatePreparedRenderSurfaceProbe(
         info,
-        c.HOWL_RENDER_CALL_OK,
+        c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
         &surface,
         &.{},
     );
@@ -2097,7 +2179,7 @@ test "host retained render validates render surface sprite surface without rgba 
     surface.commands = commandSpan(&commands);
     const probe = validatePreparedRenderSurfaceProbe(
         info,
-        c.HOWL_RENDER_CALL_OK,
+        c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
         &surface,
         &.{},
     );
@@ -2115,7 +2197,7 @@ test "host retained render validates render surface partial surface without rgba
     const base = [_]u8{ 255, 0, 0, 255, 0, 255, 0, 255 };
     const probe = validatePreparedRenderSurfaceProbe(
         info,
-        c.HOWL_RENDER_CALL_OK,
+        c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
         &surface,
         &base,
     );
@@ -2138,7 +2220,7 @@ test "host retained render software probe accepts same-surface glyph run" {
 
     const probe = validatePreparedRenderSurfaceProbe(
         info,
-        c.HOWL_RENDER_CALL_OK,
+        c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
         &surface,
         &.{},
     );
@@ -2160,7 +2242,7 @@ test "host retained render software probe accepts non-origin glyph atlas upload"
     surface.uploads = uploadSpan(&uploads, bytes.len);
     surface.commands = commandSpan(&commands);
 
-    const probe = validatePreparedRenderSurfaceProbe(info, c.HOWL_RENDER_CALL_OK, &surface, &.{});
+    const probe = validatePreparedRenderSurfaceProbe(info, c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, &surface, &.{});
 
     try std.testing.expect(probe.valid);
     try std.testing.expectEqual(PreparedRenderSurfaceProbeStatus.ok, probe.status);
@@ -2183,7 +2265,7 @@ test "host retained render software probe accepts glyph rect covered before late
     surface.uploads = uploadSpan(&uploads, bytes.len);
     surface.commands = commandSpan(&commands);
 
-    const probe = validatePreparedRenderSurfaceProbe(info, c.HOWL_RENDER_CALL_OK, &surface, &.{});
+    const probe = validatePreparedRenderSurfaceProbe(info, c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, &surface, &.{});
 
     try std.testing.expect(probe.valid);
     try std.testing.expectEqual(PreparedRenderSurfaceProbeStatus.ok, probe.status);
@@ -2197,7 +2279,7 @@ test "host retained render software probe accepts persistent glyph ref as deferr
     var surface = testRenderSurfaceSurface(info);
     surface.commands = commandSpan(&commands);
 
-    const probe = validatePreparedRenderSurfaceProbe(info, c.HOWL_RENDER_CALL_OK, &surface, &.{});
+    const probe = validatePreparedRenderSurfaceProbe(info, c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, &surface, &.{});
 
     try std.testing.expect(probe.valid);
     try std.testing.expectEqual(PreparedRenderSurfaceProbeStatus.ok, probe.status);
@@ -2278,7 +2360,7 @@ test "host retained render plans render surface resource lifecycle" {
     surface.commands = commandSpan(&commands);
     surface.retires = retireSpan(&retires);
 
-    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_CALL_OK, &surface);
+    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, &surface);
 
     try std.testing.expect(plan.valid);
     try std.testing.expectEqual(PreparedRenderResourcePlanStatus.ok, plan.status);
@@ -2300,7 +2382,7 @@ test "host retained render plan accepts nonzero upload rect origin" {
     surface.creates = createSpan(&creates);
     surface.uploads = uploadSpan(&uploads, bytes.len);
 
-    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_CALL_OK, &surface);
+    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, &surface);
 
     try std.testing.expect(plan.valid);
     try std.testing.expectEqual(PreparedRenderResourcePlanStatus.ok, plan.status);
@@ -2325,7 +2407,7 @@ test "host retained render plan rejects upload before create" {
     surface.uploads = uploadSpan(&uploads, bytes.len);
     surface.commands = commandSpan(&commands);
 
-    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_CALL_OK, &surface);
+    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, &surface);
 
     try std.testing.expect(!plan.valid);
     try std.testing.expectEqual(PreparedRenderResourcePlanStatus.invalid_upload, plan.status);
@@ -2347,7 +2429,7 @@ test "host retained render plan accepts same-surface glyph atlas create upload u
     surface.uploads = uploadSpan(&uploads, bytes.len);
     surface.commands = commandSpan(&commands);
 
-    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_CALL_OK, &surface);
+    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, &surface);
 
     try std.testing.expect(plan.valid);
     try std.testing.expectEqual(PreparedRenderResourcePlanStatus.ok, plan.status);
@@ -2364,7 +2446,7 @@ test "host retained render plan accepts persistent glyph ref as deferred store p
     var surface = testRenderSurfaceSurface(info);
     surface.commands = commandSpan(&commands);
 
-    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_CALL_OK, &surface);
+    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, &surface);
 
     try std.testing.expect(plan.valid);
     try std.testing.expectEqual(PreparedRenderResourcePlanStatus.ok, plan.status);
@@ -2452,7 +2534,7 @@ test "host retained render plan rejects use after retire" {
     surface.commands = commandSpan(&commands);
     surface.retires = retireSpan(&retires);
 
-    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_CALL_OK, &surface);
+    const plan = validateRenderSurfaceResourcePlan(c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, &surface);
 
     try std.testing.expect(!plan.valid);
     try std.testing.expectEqual(PreparedRenderResourcePlanStatus.invalid_resource, plan.status);
