@@ -176,12 +176,14 @@ fn buildHostExe(b: *Build, deps: HostDeps) *Compile {
 }
 
 fn createHostModule(b: *Build, deps: HostDeps, path: []const u8) *Module {
+    const render_surface_contract = renderSurfaceContractModule(b, deps);
     const module = b.createModule(.{
         .root_source_file = b.path(path),
         .target = deps.target,
         .optimize = deps.optimize,
         .imports = &.{
             .{ .name = "howl_lua", .module = deps.howl_lua_mod },
+            .{ .name = "render_surface_contract", .module = render_surface_contract },
         },
     });
     addHostCImports(module, deps);
@@ -294,7 +296,6 @@ fn stageHarnessArtifact(b: *Build, step: *Build.Step, exe: *Compile) void {
 
 fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     const filters = b.args orelse &.{};
-
     const unit_test_mod = b.createModule(.{
         .root_source_file = b.path("src/test/test_entry.zig"),
         .target = target,
@@ -315,13 +316,12 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
                 .target = target,
                 .optimize = optimize,
             }) },
-            .{ .name = "retained_render", .module = retainedRenderTestModule(b, deps) },
+            .{ .name = "render_surface_contract", .module = renderSurfaceContractModule(b, deps) },
             .{ .name = "tab_bar", .module = b.createModule(.{
                 .root_source_file = b.path("src/tab_bar/tab_bar.zig"),
                 .target = target,
                 .optimize = optimize,
             }) },
-            .{ .name = "render_surface", .module = renderSurfaceTestModule(b, deps) },
         },
     });
 
@@ -403,8 +403,23 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
 }
 
 fn retainedRenderTestModule(b: *Build, deps: HostDeps) *Module {
+    return retainedRenderTestModuleWithContract(b, deps, renderSurfaceContractModule(b, deps));
+}
+
+fn retainedRenderTestModuleWithContract(b: *Build, deps: HostDeps, render_surface_contract: *Module) *Module {
     const module = b.createModule(.{
         .root_source_file = b.path("src/terminal/render/retained.zig"),
+        .target = deps.target,
+        .optimize = deps.optimize,
+    });
+    module.addImport("howl_render_c", deps.howl_render_c);
+    module.addImport("render_surface_contract", render_surface_contract);
+    return module;
+}
+
+fn renderSurfaceContractModule(b: *Build, deps: HostDeps) *Module {
+    const module = b.createModule(.{
+        .root_source_file = b.path("src/display/renderer/render_surface_contract.zig"),
         .target = deps.target,
         .optimize = deps.optimize,
     });
@@ -413,6 +428,10 @@ fn retainedRenderTestModule(b: *Build, deps: HostDeps) *Module {
 }
 
 fn renderSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
+    return renderSurfaceTestModuleWithContract(b, deps, renderSurfaceContractModule(b, deps));
+}
+
+fn renderSurfaceTestModuleWithContract(b: *Build, deps: HostDeps, render_surface_contract: *Module) *Module {
     const module = b.createModule(.{
         .root_source_file = b.path("src/display/renderer/render_surface.zig"),
         .target = deps.target,
@@ -420,6 +439,7 @@ fn renderSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
     });
     module.addImport("gl_c", deps.gl_c);
     module.addImport("howl_render_c", deps.howl_render_c);
+    module.addImport("render_surface_contract", render_surface_contract);
     return module;
 }
 
@@ -430,6 +450,7 @@ fn terminalContextTestModule(b: *Build, deps: HostDeps) *Module {
         .optimize = deps.optimize,
     });
     module.addImport("howl_lua", deps.howl_lua_mod);
+    module.addImport("render_surface_contract", renderSurfaceContractModule(b, deps));
     addHostCImports(module, deps);
     module.addIncludePath(deps.sdl_include);
     module.addIncludePath(deps.vendor_include);

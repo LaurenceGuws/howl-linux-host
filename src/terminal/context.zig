@@ -648,10 +648,6 @@ pub const Context = struct {
             );
         }
 
-        fn trustedUnsupportedRenderSurfaceShapeAction() render_retained.TrustedRenderSurfaceAction {
-            return .invariant;
-        }
-
         const RenderSurfaceRetrievalError = error{
             TrustedRenderSurfaceMissingSurface,
             TrustedRenderSurfaceMissingHandle,
@@ -1230,13 +1226,6 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(context.cursor_blink.visible);
 }
 
-test "trusted unsupported render surface shape does not continue as upload failure" {
-    try std.testing.expectEqual(
-        render_retained.TrustedRenderSurfaceAction.invariant,
-        Context.ContextSubmitBackend.trustedUnsupportedRenderSurfaceShapeAction(),
-    );
-}
-
 test "text input fast path publishes text without pointer or UI operations" {
     const FakeContext = struct {
         geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
@@ -1569,8 +1558,7 @@ fn fillTestPreparedUpload(upload: *render_retained.PreparedUpload) void {
     upload.* = .{
         .info = testPreparedUploadInfo(),
         .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_INVALID_ARGUMENT,
-        .render_surface_probe = .{},
-        .render_surface_resource_plan = .{},
+        .render_surface_contract = .{},
         .render_surface = null,
     };
 }
@@ -1638,8 +1626,7 @@ const TestSubmitRender = struct {
         upload.* = .{
             .info = self.prepared_info,
             .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
-            .render_surface_probe = .{},
-            .render_surface_resource_plan = .{ .status = .ok, .valid = true, .surface_seq = self.prepared_info.dirty_epoch },
+            .render_surface_contract = .{ .status = .ok, .valid = true, .surface_seq = self.prepared_info.dirty_epoch },
             .render_surface = &self.render_surface,
         };
         return true;
@@ -1804,8 +1791,7 @@ test "context unavailable render surface path is keyed by retrieval status" {
     var upload = render_retained.PreparedUpload{
         .info = testPreparedUploadInfo(),
         .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_MISSING_HANDLE,
-        .render_surface_probe = .{},
-        .render_surface_resource_plan = .{ .status = .ok, .valid = true },
+        .render_surface_contract = .{ .status = .ok, .valid = true },
         .render_surface = null,
     };
 
@@ -2311,13 +2297,12 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expectEqual(@as(u16, 2), context.term_texture.height);
 }
 
-test "render surface realization gate ignores surface-only resource plan validity" {
+test "render surface realization gate ignores surface-only contract validity" {
     var render_surface = std.mem.zeroes(render_c.HowlRenderSurface);
     var upload = render_retained.PreparedUpload{
         .info = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceInfo),
         .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
-        .render_surface_probe = .{},
-        .render_surface_resource_plan = .{ .status = .invalid_resource, .valid = false },
+        .render_surface_contract = .{ .status = .invalid_resource, .valid = false },
         .render_surface = &render_surface,
     };
 

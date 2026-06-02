@@ -1,6 +1,7 @@
 const std = @import("std");
 const gl_c = @import("gl_c");
 const render_c = @import("howl_render_c");
+const render_surface_contract = @import("render_surface_contract");
 
 extern fn glBindFramebuffer(target: c_uint, framebuffer: c_uint) void;
 extern fn glCheckFramebufferStatus(target: c_uint) c_uint;
@@ -162,70 +163,44 @@ pub const RenderResourceTextures = struct {
     }
 
     fn validateSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
-        if (self.validateSurfaceTransition(surface)) |_| return true;
+        const contract = render_surface_contract.validate(null, surface);
+        if (contract.valid) return self.validateSurfaceTransition(surface) != null;
+        self.recordContractFailure(contract.status);
         return false;
     }
 
+    fn recordContractFailure(self: *RenderResourceTextures, status: render_surface_contract.RenderSurfaceContractStatus) void {
+        switch (status) {
+            .ok => std.debug.panic("invalid render surface contract failure status", .{}),
+            .idle,
+            .call_failed,
+            .null_surface,
+            .version_mismatch,
+            .snapshot_mismatch,
+            .geometry_epoch_mismatch,
+            .damage_span_invalid,
+            .create_span_invalid,
+            .upload_span_invalid,
+            .command_span_invalid,
+            .retire_span_invalid,
+            .render_mismatch,
+            .cell_mismatch,
+            .grid_mismatch,
+            => self.recordFailure(.invalid_spans),
+            .upload_bytes_overflow,
+            .upload_bytes_max_mismatch,
+            .invalid_upload,
+            => self.recordFailure(.upload_bounds),
+            .unsupported_command,
+            .invalid_command,
+            => self.recordFailure(.invalid_command_shape),
+            .unsupported_resource,
+            .invalid_resource,
+            => self.recordFailure(.unsupported_resource_format),
+        }
+    }
+
     fn validateSurfaceTransition(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) ?RenderResourceTextures {
-        if (surface.surface_version != render_c.HOWL_RENDER_SURFACE_VERSION) {
-            self.recordFailure(.invalid_spans);
-            return null;
-        }
-        if (!spanCountValid(
-            surface.damage.ptr,
-            surface.damage.count,
-            surface.damage.count_max,
-            render_c.HOWL_RENDER_SURFACE_DAMAGE_ITEMS_MAX,
-        )) {
-            self.recordFailure(.invalid_spans);
-            return null;
-        }
-        if (!spanCountValid(
-            surface.creates.ptr,
-            surface.creates.count,
-            surface.creates.count_max,
-            render_c.HOWL_RENDER_SURFACE_CREATES_MAX,
-        )) {
-            self.recordFailure(.invalid_spans);
-            return null;
-        }
-        if (!spanCountValid(
-            surface.uploads.ptr,
-            surface.uploads.count,
-            surface.uploads.count_max,
-            render_c.HOWL_RENDER_SURFACE_UPLOADS_MAX,
-        )) {
-            self.recordFailure(.invalid_spans);
-            return null;
-        }
-        if (!spanCountValid(
-            surface.commands.ptr,
-            surface.commands.count,
-            surface.commands.count_max,
-            render_c.HOWL_RENDER_SURFACE_COMMANDS_MAX,
-        )) {
-            self.recordFailure(.invalid_spans);
-            return null;
-        }
-        if (!spanCountValid(
-            surface.retires.ptr,
-            surface.retires.count,
-            surface.retires.count_max,
-            render_c.HOWL_RENDER_SURFACE_RETIRES_MAX,
-        )) {
-            self.recordFailure(.invalid_spans);
-            return null;
-        }
-        if (surface.uploads.bytes_count_total > render_c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX) {
-            self.recordFailure(.upload_bounds);
-            return null;
-        }
-        if (surface.uploads.bytes_count_max != render_c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX) {
-            self.recordFailure(.upload_bounds);
-            return null;
-        }
-        if (!self.validateCommands(surface)) return null;
-        if (!self.validateSurfaceOrder(surface)) return null;
         var next = self.*;
         if (!self.validateCreates(surface, &next)) return null;
         if (!self.validateUploads(surface, &next)) return null;
@@ -448,18 +423,6 @@ pub const RenderResourceTextures = struct {
         }
     }
 
-    fn validateSurfaceOrder(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
-        const ok = validateSurfaceOrderStatic(surface);
-        if (!ok) self.recordFailure(.invalid_order);
-        return ok;
-    }
-
-    fn validateCommands(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
-        const ok = validateCommandsStatic(surface);
-        if (!ok) self.recordFailure(.invalid_command_shape);
-        return ok;
-    }
-
     fn recordFailure(self: *RenderResourceTextures, bucket: FailureBucket) void {
         self.failure_bucket_last = bucket;
         self.failure_resource_kind_last = null;
@@ -518,109 +481,6 @@ pub fn trustedTextureFailureAction(bucket: RenderResourceTextures.FailureBucket,
 
 fn trustedTextureMissingFailureAction() TrustedTextureFailureAction {
     return .invariant;
-}
-
-fn validateSurfaceOrderStatic(surface: *const render_c.HowlRenderSurface) bool {
-    const creates = spanSlice(
-        render_c.HowlRenderResourceCreate,
-        surface.creates.ptr,
-        surface.creates.count,
-    );
-    for (creates) |create| {
-        if (create.create_seq > surface.commands.count) return false;
-        if (retireForResource(surface, create.resource)) |retire| {
-            if (create.create_seq >= retire.retire_seq) return false;
-        }
-    }
-    const uploads = spanSlice(
-        render_c.HowlRenderResourceUpload,
-        surface.uploads.ptr,
-        surface.uploads.count,
-    );
-    var bytes_sum: u32 = 0;
-    var previous_upload_seq: u32 = 0;
-    for (uploads, 0..) |upload, upload_index| {
-        if (upload_index > 0 and upload.upload_seq < previous_upload_seq) return false;
-        previous_upload_seq = upload.upload_seq;
-        if (upload.upload_seq > surface.commands.count) return false;
-        bytes_sum = std.math.add(u32, bytes_sum, upload.bytes_count) catch return false;
-        if (findCreate(surface, upload.resource)) |create| {
-            if (upload.upload_seq < create.create_seq) return false;
-        }
-        if (retireForResource(surface, upload.resource)) |retire| {
-            if (upload.upload_seq >= retire.retire_seq) return false;
-        }
-    }
-    if (bytes_sum != surface.uploads.bytes_count_total) return false;
-    const retires = spanSlice(
-        render_c.HowlRenderResourceRetire,
-        surface.retires.ptr,
-        surface.retires.count,
-    );
-    for (retires) |retire| if (retire.retire_seq > surface.commands.count) return false;
-    return true;
-}
-
-const CommandShapeError = error{
-    FillRectHasNoArea,
-    FillRectOutOfBounds,
-    FillRectUsesResource,
-    FillRectUsesGlyphs,
-    GlyphRunUsesRect,
-    GlyphRunUsesColor,
-    GlyphRunUsesResource,
-    GlyphRunEmpty,
-    GlyphRunInvalid,
-    SpriteRectHasNoArea,
-    SpriteMissingResource,
-    SpriteInvalidResourceKind,
-    SpriteUsesGlyphs,
-    ColorSpriteUsesTint,
-    UnknownCommandKind,
-};
-
-fn commandShapeErrorStatic(surface: *const render_c.HowlRenderSurface) ?CommandShapeError {
-    const commands = spanSlice(
-        render_c.HowlRenderSurfaceCommand,
-        surface.commands.ptr,
-        surface.commands.count,
-    );
-    for (commands) |command| {
-        switch (command.kind) {
-            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
-            => {
-                if (!rectHasArea(command.rect)) return error.FillRectHasNoArea;
-                if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return error.FillRectOutOfBounds;
-                if (!resourceEmpty(command.resource)) return error.FillRectUsesResource;
-                if (command.glyphs.count != 0) return error.FillRectUsesGlyphs;
-            },
-            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
-                if (command.rect.x_px != 0) return error.GlyphRunUsesRect;
-                if (command.rect.y_px != 0) return error.GlyphRunUsesRect;
-                if (command.rect.width_px != 0) return error.GlyphRunUsesRect;
-                if (command.rect.height_px != 0) return error.GlyphRunUsesRect;
-                if (command.color_rgba != 0) return error.GlyphRunUsesColor;
-                if (!resourceEmpty(command.resource)) return error.GlyphRunUsesResource;
-                if (command.glyphs.count == 0) return error.GlyphRunEmpty;
-                if (!glyphCommandValid(surface, command)) return error.GlyphRunInvalid;
-            },
-            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
-                if (!rectHasArea(command.rect)) return error.SpriteRectHasNoArea;
-                if (command.resource.value == 0) return error.SpriteMissingResource;
-                if (!spriteResourceKind(command.resource.kind)) return error.SpriteInvalidResourceKind;
-                if (command.glyphs.count != 0) return error.SpriteUsesGlyphs;
-                if (command.resource.kind == render_c.HOWL_RENDER_RESOURCE_SPRITE_COLOR and
-                    command.color_rgba != 0) return error.ColorSpriteUsesTint;
-            },
-            else => return error.UnknownCommandKind,
-        }
-    }
-    return null;
-}
-
-fn validateCommandsStatic(surface: *const render_c.HowlRenderSurface) bool {
-    return commandShapeErrorStatic(surface) == null;
 }
 
 fn rectHasArea(rect: render_c.HowlRenderSurfaceRect) bool {
@@ -902,71 +762,6 @@ fn testSurface() render_c.HowlRenderSurface {
     };
 }
 
-test "render surface textures reject color glyph atlas" {
-    const resource = testResource(1, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR);
-    var creates = [_]render_c.HowlRenderResourceCreate{.{
-        .resource = resource,
-        .width_px = 1,
-        .height_px = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_RGBA8,
-        .create_seq = 0,
-    }};
-    var surface = testSurface();
-    surface.creates = createSpan(&creates);
-    var textures = RenderResourceTextures{};
-    try std.testing.expect(!textures.validateSurface(&surface));
-}
-
-test "render surface textures reject wrong alpha format" {
-    const resource = testResource(2, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
-    var creates = [_]render_c.HowlRenderResourceCreate{.{
-        .resource = resource,
-        .width_px = 1,
-        .height_px = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_RGBA8,
-        .create_seq = 0,
-    }};
-    var surface = testSurface();
-    surface.creates = createSpan(&creates);
-    var textures = RenderResourceTextures{};
-    try std.testing.expect(!textures.validateSurface(&surface));
-}
-
-test "render surface textures reject invalid upload order" {
-    const resource = testResource(3, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
-    var bytes = [_]u8{255};
-    var creates = [_]render_c.HowlRenderResourceCreate{.{
-        .resource = resource,
-        .width_px = 1,
-        .height_px = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
-        .create_seq = 1,
-    }};
-    var uploads = [_]render_c.HowlRenderResourceUpload{.{
-        .resource = resource,
-        .rect = testRect(1, 1),
-        .bytes_ptr = &bytes,
-        .bytes_count = 1,
-        .stride_bytes = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
-        .upload_seq = 0,
-    }};
-    var commands = [_]render_c.HowlRenderSurfaceCommand{std.mem.zeroes(render_c.HowlRenderSurfaceCommand)};
-    var surface = testSurface();
-    surface.creates = createSpan(&creates);
-    surface.uploads = uploadSpan(&uploads, 1);
-    surface.commands = commandSpan(&commands);
-    var textures = RenderResourceTextures{};
-    try std.testing.expect(!textures.validateSurface(&surface));
-}
-
-test "render surface textures reject upload byte max mismatch" {
-    var surface = testSurface();
-    surface.uploads.bytes_count_max = render_c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX - 1;
-    var textures = RenderResourceTextures{};
-    try std.testing.expect(!textures.validateSurface(&surface));
-}
-
 test "render surface textures reject value reuse after retire" {
     const first = testResource(4, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
     const next = render_c.HowlRenderResourceId{
@@ -1012,69 +807,7 @@ test "render surface textures reject value reuse after retire" {
     try std.testing.expect(!textures.validateSurface(&surface));
 }
 
-test "render surface textures reject invalid top level before mutation" {
-    const resource = testResource(5, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
-    var creates = [_]render_c.HowlRenderResourceCreate{.{
-        .resource = resource,
-        .width_px = 1,
-        .height_px = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
-        .create_seq = 0,
-    }};
-    var surface = testSurface();
-    surface.damage.count_max = 0;
-    surface.creates = createSpan(&creates);
-    var textures = RenderResourceTextures{};
-    try std.testing.expect(!textures.validateSurface(&surface));
-    try std.testing.expect(textures.find(resource) == null);
-    try std.testing.expect(textures.findValue(resource.value) == null);
-}
-
-test "render surface textures reject invalid command before mutation" {
-    const resource = testResource(6, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
-    var creates = [_]render_c.HowlRenderResourceCreate{.{
-        .resource = resource,
-        .width_px = 1,
-        .height_px = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
-        .create_seq = 0,
-    }};
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
-        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .rect = testRect(0, 1),
-        .color_rgba = 0xffffffff,
-        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
-        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
-    }};
-    var surface = testSurface();
-    surface.creates = createSpan(&creates);
-    surface.commands = commandSpan(&commands);
-    var textures = RenderResourceTextures{};
-    try std.testing.expect(!textures.validateSurface(&surface));
-    try std.testing.expect(textures.find(resource) == null);
-    try std.testing.expect(textures.findValue(resource.value) == null);
-}
-
-test "render surface command shape reports zero area fill" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
-        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .rect = testRect(1, 0),
-        .color_rgba = 0xffffffff,
-        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
-        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
-    }};
-    var surface = testSurface();
-    surface.commands = commandSpan(&commands);
-
-    try std.testing.expectEqual(CommandShapeError.FillRectHasNoArea, commandShapeErrorStatic(&surface).?);
-    try std.testing.expect(!validateCommandsStatic(&surface));
-}
-
-test "render surface command shape reports out of bounds fill" {
+test "render surface fill classifier rejects out of bounds fill" {
     var commands = [_]render_c.HowlRenderSurfaceCommand{
         .{
             .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
@@ -1099,8 +832,6 @@ test "render surface command shape reports out of bounds fill" {
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expectEqual(CommandShapeError.FillRectOutOfBounds, commandShapeErrorStatic(&surface).?);
-    try std.testing.expect(!validateCommandsStatic(&surface));
     try std.testing.expect(!renderSurfaceFillOnly(&surface));
 }
 
@@ -1866,20 +1597,7 @@ test "trusted texture unrecorded failure action is invariant not gl error" {
 
 test "render surface create validation records precise failure buckets" {
     const resource = testResource(8, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
-    var unsupported = [_]render_c.HowlRenderResourceCreate{.{
-        .resource = resource,
-        .width_px = 1,
-        .height_px = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_RGBA8,
-        .create_seq = 0,
-    }};
-    var surface = testSurface();
-    surface.creates = createSpan(&unsupported);
     var textures = RenderResourceTextures{};
-    try std.testing.expect(!textures.validateSurface(&surface));
-    try std.testing.expectEqual(RenderResourceTextures.FailureBucket.unsupported_resource_format, textures.failure_bucket_last.?);
-
-    textures = .{};
     textures.slots[0] = .{ .state = .retired, .resource = resource };
     var reuse = [_]render_c.HowlRenderResourceCreate{.{
         .resource = .{ .value = resource.value, .generation = 2, .kind = resource.kind },
@@ -1888,7 +1606,7 @@ test "render surface create validation records precise failure buckets" {
         .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
         .create_seq = 0,
     }};
-    surface = testSurface();
+    var surface = testSurface();
     surface.creates = createSpan(&reuse);
     try std.testing.expect(!textures.validateSurface(&surface));
     try std.testing.expectEqual(RenderResourceTextures.FailureBucket.tombstone_value_reuse, textures.failure_bucket_last.?);
@@ -1911,6 +1629,82 @@ test "render surface create validation records precise failure buckets" {
     surface.creates = createSpan(&capacity);
     try std.testing.expect(!textures.validateSurface(&surface));
     try std.testing.expectEqual(RenderResourceTextures.FailureBucket.capacity, textures.failure_bucket_last.?);
+}
+
+test "render surface textures accept live-slot persistent upload" {
+    const resource = testResource(44, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
+    var textures = RenderResourceTextures{};
+    textures.slots[0] = .{
+        .state = .live,
+        .resource = resource,
+        .texture_id = 1,
+        .width_px = 2,
+        .height_px = 2,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
+    };
+    var bytes = [_]u8{ 1, 2, 3, 4 };
+    var uploads = [_]render_c.HowlRenderResourceUpload{.{
+        .resource = resource,
+        .rect = .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 },
+        .bytes_ptr = &bytes,
+        .bytes_count = bytes.len,
+        .stride_bytes = 2,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
+        .upload_seq = 0,
+    }};
+    var surface = testSurface();
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+
+    try std.testing.expect(textures.validateSurface(&surface));
+}
+
+test "render surface textures reject missing persistent resource" {
+    const resource = testResource(45, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
+    var bytes = [_]u8{255};
+    var uploads = [_]render_c.HowlRenderResourceUpload{.{
+        .resource = resource,
+        .rect = testRect(1, 1),
+        .bytes_ptr = &bytes,
+        .bytes_count = bytes.len,
+        .stride_bytes = 1,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
+        .upload_seq = 0,
+    }};
+    var surface = testSurface();
+    surface.uploads = uploadSpan(&uploads, bytes.len);
+    var textures = RenderResourceTextures{};
+
+    try std.testing.expect(!textures.validateSurface(&surface));
+    try std.testing.expectEqual(RenderResourceTextures.FailureBucket.upload_bounds, textures.failure_bucket_last.?);
+}
+
+test "render surface textures do not mutate on invalid contract surface" {
+    const resource = testResource(46, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
+    var creates = [_]render_c.HowlRenderResourceCreate{.{
+        .resource = resource,
+        .width_px = 1,
+        .height_px = 1,
+        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
+        .create_seq = 0,
+    }};
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 1 },
+        .color_rgba = 0xffffffff,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX },
+    }};
+    var surface = testSurface();
+    surface.creates = createSpan(&creates);
+    surface.commands = commandSpan(&commands);
+    var textures = RenderResourceTextures{};
+
+    try std.testing.expect(!textures.validateSurface(&surface));
+    try std.testing.expect(textures.find(resource) == null);
+    try std.testing.expect(textures.findValue(resource.value) == null);
+    try std.testing.expectEqual(RenderResourceTextures.FailureBucket.invalid_command_shape, textures.failure_bucket_last.?);
 }
 
 pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) bool {
