@@ -538,114 +538,11 @@ pub const Context = struct {
 
     const ContextSubmitBackend = struct {
         fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload) bool {
-            var render_surface_resources_realized = false;
-            if (shouldRealizeRenderSurface(prepared_upload)) {
-                const render_surface = prepared_upload.render_surface.?;
-                render_surface_resources_realized = self.render_surface_textures.realizeSurface(render_surface);
-            }
-            const had_matching_surface = self.term_texture.host_surface_id != 0 and
-                self.term_texture.width == prepared_upload.info.render_px.width and
-                self.term_texture.height == prepared_upload.info.render_px.height;
-            if (!term_texture.ensureSurface(
-                &self.term_texture,
-                prepared_upload.info.render_px.width,
-                prepared_upload.info.render_px.height,
-            )) {
-                return false;
-            }
-            const render_surface_uploaded = if (prepared_upload.render_surface) |render_surface| blk: {
-                if (!render_surface_resources_realized) break :blk false;
-                break :blk uploadRenderSurfaceCommands(self, render_surface, had_matching_surface);
-            } else blk: {
+            const render_surface = prepared_upload.render_surface orelse {
                 crashOnRenderSurfaceRetrievalStatus(prepared_upload.render_surface_status);
-                break :blk false;
+                return false;
             };
-            if (!render_surface_uploaded) {
-                self.term_texture.width = 0;
-                self.term_texture.height = 0;
-                return false;
-            }
-            return true;
-        }
-
-        fn uploadRenderSurfaceCommands(self: *Context, render_surface: *const render_c.HowlRenderSurface, had_matching_surface: bool) bool {
-            if (term_texture.renderSurfaceSprite(render_surface)) {
-                if (term_texture.uploadRenderSurfaceSprites(&self.render_surface_textures, self.term_texture, render_surface)) {
-                    return true;
-                }
-                return false;
-            }
-            if (term_texture.renderSurfaceSpritePatch(render_surface)) {
-                crashOnRenderSurfaceUploadPolicyError(render_surface, renderSurfaceUploadPolicy(render_surface, had_matching_surface));
-                if (term_texture.uploadRenderSurfaceSpritePatch(&self.render_surface_textures, self.term_texture, render_surface)) {
-                    return true;
-                }
-                return false;
-            }
-            if (term_texture.renderSurfaceGlyphs(render_surface)) {
-                if (term_texture.uploadRenderSurfaceGlyphs(&self.render_surface_textures, self.term_texture, render_surface)) {
-                    return true;
-                }
-                return false;
-            }
-            if (term_texture.renderSurfaceGlyphPatch(render_surface)) {
-                crashOnRenderSurfaceUploadPolicyError(render_surface, renderSurfaceUploadPolicy(render_surface, had_matching_surface));
-                if (term_texture.uploadRenderSurfaceGlyphPatch(&self.render_surface_textures, self.term_texture, render_surface)) {
-                    return true;
-                }
-                return false;
-            }
-            if (!term_texture.renderSurfaceFillOnly(render_surface)) {
-                if (term_texture.renderSurfaceFillPatch(render_surface)) {
-                    crashOnRenderSurfaceUploadPolicyError(render_surface, renderSurfaceUploadPolicy(render_surface, had_matching_surface));
-                    if (term_texture.uploadRenderSurfaceFillPatch(self.term_texture, render_surface)) {
-                        return true;
-                    }
-                    return false;
-                }
-                panicUnsupportedTrustedRenderSurfaceShape(render_surface);
-            }
-            if (term_texture.uploadRenderSurfaceFillOnly(self.term_texture, render_surface)) {
-                return true;
-            }
-            return false;
-        }
-
-        const RenderSurfaceUploadPolicyError = error{
-            TrustedPatchRequiresMatchingHostSurface,
-            UnsupportedTrustedRenderSurfaceShape,
-        };
-
-        fn renderSurfaceUploadPolicy(render_surface: *const render_c.HowlRenderSurface, had_matching_surface: bool) RenderSurfaceUploadPolicyError!void {
-            if (term_texture.renderSurfaceSprite(render_surface)) return;
-            if (term_texture.renderSurfaceGlyphs(render_surface)) return;
-            if (term_texture.renderSurfaceFillOnly(render_surface)) return;
-            if (term_texture.renderSurfaceSpritePatch(render_surface)) return if (had_matching_surface) {} else error.TrustedPatchRequiresMatchingHostSurface;
-            if (term_texture.renderSurfaceGlyphPatch(render_surface)) return if (had_matching_surface) {} else error.TrustedPatchRequiresMatchingHostSurface;
-            if (term_texture.renderSurfaceFillPatch(render_surface)) return if (had_matching_surface) {} else error.TrustedPatchRequiresMatchingHostSurface;
-            return error.UnsupportedTrustedRenderSurfaceShape;
-        }
-
-        fn crashOnRenderSurfaceUploadPolicyError(render_surface: *const render_c.HowlRenderSurface, result: RenderSurfaceUploadPolicyError!void) void {
-            result catch |err| std.debug.panic(
-                "trusted render surface upload policy failed: error={s} snapshot={} surface={} geometry={}",
-                .{ @errorName(err), render_surface.token.snapshot_seq, render_surface.token.surface_seq, render_surface.token.geometry_epoch },
-            );
-        }
-
-        fn panicUnsupportedTrustedRenderSurfaceShape(render_surface: *const render_c.HowlRenderSurface) noreturn {
-            const summary = term_texture.renderSurfaceSummary(render_surface);
-            std.debug.panic(
-                "trusted render surface has unsupported shape: no_full_clear={} clear={} fill={} sprite={} glyph={} other={}",
-                .{
-                    @intFromBool(!summary.first_full_clear),
-                    summary.clear_count,
-                    summary.fill_count,
-                    summary.sprite_count,
-                    summary.glyph_count,
-                    summary.other_count,
-                },
-            );
+            return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, render_surface);
         }
 
         const RenderSurfaceRetrievalError = error{
@@ -691,10 +588,6 @@ pub const Context = struct {
 
         fn crashOnRenderSurfaceRetrievalStatus(status: render_c.HowlRenderPreparedSurfaceRenderSurfaceStatus) void {
             unavailableRenderSurfaceRetrievalError(status) catch |err| std.debug.panic("trusted render surface retrieval failed: error={s}", .{@errorName(err)});
-        }
-
-        fn shouldRealizeRenderSurface(prepared_upload: *const render_retained.PreparedUpload) bool {
-            return prepared_upload.render_surface != null;
         }
 
         fn execution(self: anytype, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
@@ -1688,97 +1581,6 @@ fn testRenderSurface(info: render_c.HowlRenderPreparedSurfaceInfo) render_c.Howl
     return surface;
 }
 
-fn testCommandSpan(commands: []const render_c.HowlRenderSurfaceCommand) render_c.HowlRenderSurfaceCommandSpan {
-    return .{
-        .ptr = commands.ptr,
-        .count = @intCast(commands.len),
-        .count_max = render_c.HOWL_RENDER_SURFACE_COMMANDS_MAX,
-    };
-}
-
-fn testRect(width_px: u16, height_px: u16) render_c.HowlRenderSurfaceRect {
-    return .{ .x_px = 0, .y_px = 0, .width_px = width_px, .height_px = height_px };
-}
-
-fn testRenderResource(value: u32, kind: u32) render_c.HowlRenderResourceId {
-    return .{ .value = value, .generation = 1, .kind = kind };
-}
-
-test "render surface upload policy rejects patches without matching host surface" {
-    var info = testPreparedUploadInfo();
-    info.render_px = .{ .width = 4, .height = 2 };
-    info.cell_px = .{ .width = 1, .height = 1 };
-    info.grid = .{ .cols = 4, .rows = 2 };
-
-    var full_commands = [_]render_c.HowlRenderSurfaceCommand{.{
-        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .rect = testRect(info.render_px.width, info.render_px.height),
-        .color_rgba = 0x000000ff,
-        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
-        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
-    }};
-    var full_surface = testRenderSurface(info);
-    full_surface.commands = testCommandSpan(&full_commands);
-
-    var fill_commands = [_]render_c.HowlRenderSurfaceCommand{.{
-        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .rect = testRect(1, 1),
-        .color_rgba = 0xffffffff,
-        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
-        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
-    }};
-    var fill_patch_surface = testRenderSurface(info);
-    fill_patch_surface.commands = testCommandSpan(&fill_commands);
-
-    var sprite_commands = [_]render_c.HowlRenderSurfaceCommand{.{
-        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE,
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .rect = testRect(1, 1),
-        .color_rgba = 0xffffffff,
-        .resource = testRenderResource(1, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
-        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
-    }};
-    var sprite_patch_surface = testRenderSurface(info);
-    sprite_patch_surface.commands = testCommandSpan(&sprite_commands);
-
-    var glyph = render_c.HowlRenderGlyphRef{
-        .atlas_resource = testRenderResource(2, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA),
-        .atlas_rect = testRect(1, 1),
-        .x_px = 0,
-        .y_px = 0,
-        .glyph_id = 1,
-        .color_rgba = 0xffffffff,
-    };
-    var glyph_commands = [_]render_c.HowlRenderSurfaceCommand{.{
-        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
-        .color_rgba = 0,
-        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
-        .glyphs = .{
-            .ptr = &glyph,
-            .count = 1,
-            .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
-        },
-    }};
-    var glyph_patch_surface = testRenderSurface(info);
-    glyph_patch_surface.commands = testCommandSpan(&glyph_commands);
-
-    try Context.ContextSubmitBackend.renderSurfaceUploadPolicy(&full_surface, false);
-    try std.testing.expectError(error.TrustedPatchRequiresMatchingHostSurface, Context.ContextSubmitBackend.renderSurfaceUploadPolicy(&fill_patch_surface, false));
-    try std.testing.expectError(error.TrustedPatchRequiresMatchingHostSurface, Context.ContextSubmitBackend.renderSurfaceUploadPolicy(&sprite_patch_surface, false));
-    try std.testing.expectError(error.TrustedPatchRequiresMatchingHostSurface, Context.ContextSubmitBackend.renderSurfaceUploadPolicy(&glyph_patch_surface, false));
-    try Context.ContextSubmitBackend.renderSurfaceUploadPolicy(&fill_patch_surface, true);
-    try Context.ContextSubmitBackend.renderSurfaceUploadPolicy(&sprite_patch_surface, true);
-    try Context.ContextSubmitBackend.renderSurfaceUploadPolicy(&glyph_patch_surface, true);
-}
-
 test "render surface retrieval status reports resource bound overflow" {
     try std.testing.expectError(
         error.TrustedRenderSurfaceResourceBoundOverflow,
@@ -2295,21 +2097,6 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expect(!context.host_upload_had_matching_surface);
     try std.testing.expectEqual(@as(u16, 4), context.term_texture.width);
     try std.testing.expectEqual(@as(u16, 2), context.term_texture.height);
-}
-
-test "render surface realization gate ignores surface-only contract validity" {
-    var render_surface = std.mem.zeroes(render_c.HowlRenderSurface);
-    var upload = render_retained.PreparedUpload{
-        .info = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceInfo),
-        .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
-        .render_surface_contract = .{ .status = .invalid_resource, .valid = false },
-        .render_surface = &render_surface,
-    };
-
-    try std.testing.expect(Context.ContextSubmitBackend.shouldRealizeRenderSurface(&upload));
-
-    upload.render_surface = null;
-    try std.testing.expect(!Context.ContextSubmitBackend.shouldRealizeRenderSurface(&upload));
 }
 
 test "complete present acks matching host-owned token once and clears" {

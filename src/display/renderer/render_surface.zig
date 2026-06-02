@@ -1446,6 +1446,80 @@ test "render surface glyph patch rejects sprite and unknown commands" {
     try std.testing.expect(!renderSurfaceGlyphPatch(&unknown_surface));
 }
 
+test "render surface upload policy rejects patches without matching host surface" {
+    var full_commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = testRect(4, 2),
+        .color_rgba = 0x000000ff,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var full_surface = testSurface();
+    full_surface.render_px = .{ .width = 4, .height = 2 };
+    full_surface.commands = commandSpan(&full_commands);
+
+    var fill_commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = testRect(1, 1),
+        .color_rgba = 0xffffffff,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var fill_patch_surface = testSurface();
+    fill_patch_surface.render_px = .{ .width = 4, .height = 2 };
+    fill_patch_surface.commands = commandSpan(&fill_commands);
+
+    var sprite_commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = testRect(1, 1),
+        .color_rgba = 0xffffffff,
+        .resource = testResource(81, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA),
+        .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
+    }};
+    var sprite_patch_surface = testSurface();
+    sprite_patch_surface.render_px = .{ .width = 4, .height = 2 };
+    sprite_patch_surface.commands = commandSpan(&sprite_commands);
+
+    var glyph = render_c.HowlRenderGlyphRef{
+        .atlas_resource = testResource(82, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA),
+        .atlas_rect = testRect(1, 1),
+        .x_px = 0,
+        .y_px = 0,
+        .glyph_id = 1,
+        .color_rgba = 0xffffffff,
+    };
+    var glyph_commands = [_]render_c.HowlRenderSurfaceCommand{.{
+        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN,
+        .reserved0 = 0,
+        .reserved1 = 0,
+        .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 },
+        .color_rgba = 0,
+        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
+        .glyphs = .{
+            .ptr = &glyph,
+            .count = 1,
+            .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX,
+        },
+    }};
+    var glyph_patch_surface = testSurface();
+    glyph_patch_surface.render_px = .{ .width = 4, .height = 2 };
+    glyph_patch_surface.commands = commandSpan(&glyph_commands);
+
+    try renderSurfaceUploadPolicy(&full_surface, false);
+    try std.testing.expectError(error.TrustedPatchRequiresMatchingHostSurface, renderSurfaceUploadPolicy(&fill_patch_surface, false));
+    try std.testing.expectError(error.TrustedPatchRequiresMatchingHostSurface, renderSurfaceUploadPolicy(&sprite_patch_surface, false));
+    try std.testing.expectError(error.TrustedPatchRequiresMatchingHostSurface, renderSurfaceUploadPolicy(&glyph_patch_surface, false));
+    try renderSurfaceUploadPolicy(&fill_patch_surface, true);
+    try renderSurfaceUploadPolicy(&sprite_patch_surface, true);
+    try renderSurfaceUploadPolicy(&glyph_patch_surface, true);
+}
+
 test "render surface glyph surface rejects color atlas" {
     var glyph = render_c.HowlRenderGlyphRef{
         .atlas_resource = testResource(13, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR),
@@ -1746,6 +1820,77 @@ pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
     surface.width = width;
     surface.height = height;
     return true;
+}
+
+pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurface) bool {
+    std.debug.assert(surface.render_px.width > 0);
+    std.debug.assert(surface.render_px.height > 0);
+    const had_matching_surface = host_surface.host_surface_id != 0 and
+        host_surface.width == surface.render_px.width and
+        host_surface.height == surface.render_px.height;
+    const resources_realized = textures.realizeSurface(surface);
+    const surface_ensured = ensureSurface(host_surface, surface.render_px.width, surface.render_px.height);
+    const surface_uploaded = if (resources_realized and surface_ensured) blk: {
+        if (renderSurfaceSprite(surface)) break :blk uploadRenderSurfaceSprites(textures, host_surface.*, surface);
+        if (renderSurfaceSpritePatch(surface)) {
+            crashOnRenderSurfaceUploadPolicyError(surface, renderSurfaceUploadPolicy(surface, had_matching_surface));
+            break :blk uploadRenderSurfaceSpritePatch(textures, host_surface.*, surface);
+        }
+        if (renderSurfaceGlyphs(surface)) break :blk uploadRenderSurfaceGlyphs(textures, host_surface.*, surface);
+        if (renderSurfaceGlyphPatch(surface)) {
+            crashOnRenderSurfaceUploadPolicyError(surface, renderSurfaceUploadPolicy(surface, had_matching_surface));
+            break :blk uploadRenderSurfaceGlyphPatch(textures, host_surface.*, surface);
+        }
+        if (renderSurfaceFillOnly(surface)) break :blk uploadRenderSurfaceFillOnly(host_surface.*, surface);
+        if (renderSurfaceFillPatch(surface)) {
+            crashOnRenderSurfaceUploadPolicyError(surface, renderSurfaceUploadPolicy(surface, had_matching_surface));
+            break :blk uploadRenderSurfaceFillPatch(host_surface.*, surface);
+        }
+        panicUnsupportedTrustedRenderSurfaceShape(surface);
+    } else false;
+    if (!surface_uploaded) {
+        host_surface.width = 0;
+        host_surface.height = 0;
+        return false;
+    }
+    return true;
+}
+
+const RenderSurfaceUploadPolicyError = error{
+    TrustedPatchRequiresMatchingHostSurface,
+    UnsupportedTrustedRenderSurfaceShape,
+};
+
+fn renderSurfaceUploadPolicy(surface: *const render_c.HowlRenderSurface, had_matching_surface: bool) RenderSurfaceUploadPolicyError!void {
+    if (renderSurfaceSprite(surface)) return;
+    if (renderSurfaceGlyphs(surface)) return;
+    if (renderSurfaceFillOnly(surface)) return;
+    if (renderSurfaceSpritePatch(surface)) return if (had_matching_surface) {} else error.TrustedPatchRequiresMatchingHostSurface;
+    if (renderSurfaceGlyphPatch(surface)) return if (had_matching_surface) {} else error.TrustedPatchRequiresMatchingHostSurface;
+    if (renderSurfaceFillPatch(surface)) return if (had_matching_surface) {} else error.TrustedPatchRequiresMatchingHostSurface;
+    return error.UnsupportedTrustedRenderSurfaceShape;
+}
+
+fn crashOnRenderSurfaceUploadPolicyError(surface: *const render_c.HowlRenderSurface, result: RenderSurfaceUploadPolicyError!void) void {
+    result catch |err| std.debug.panic(
+        "trusted render surface upload policy failed: error={s} snapshot={} surface={} geometry={}",
+        .{ @errorName(err), surface.token.snapshot_seq, surface.token.surface_seq, surface.token.geometry_epoch },
+    );
+}
+
+fn panicUnsupportedTrustedRenderSurfaceShape(surface: *const render_c.HowlRenderSurface) noreturn {
+    const summary = renderSurfaceSummary(surface);
+    std.debug.panic(
+        "trusted render surface has unsupported shape: no_full_clear={} clear={} fill={} sprite={} glyph={} other={}",
+        .{
+            @intFromBool(!summary.first_full_clear),
+            summary.clear_count,
+            summary.fill_count,
+            summary.sprite_count,
+            summary.glyph_count,
+            summary.other_count,
+        },
+    );
 }
 
 pub fn uploadRenderSurfaceFillOnly(host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
