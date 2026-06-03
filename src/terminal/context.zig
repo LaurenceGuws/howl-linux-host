@@ -87,6 +87,7 @@ pub const Context = struct {
     event_loop: *EventLoop.State,
     title_buf: [128]u8,
     title_len: u8,
+    title_generation_seen: u64,
     geometry: surface_layout.State,
     font_size_px: u16,
     default_font_size_px: u16,
@@ -145,6 +146,7 @@ pub const Context = struct {
         self.event_loop = request.event_loop;
         self.title_buf = undefined;
         self.title_len = 0;
+        self.title_generation_seen = 0;
         self.geometry = surface_layout.init(request.render_width, request.render_height, request.logical_width, request.logical_height);
         self.font_size_px = start_font_px;
         self.default_font_size_px = start_font_px;
@@ -250,12 +252,19 @@ pub const Context = struct {
     }
 
     pub fn titleSlice(self: *Context) []const u8 {
-        self.refreshTitle();
+        if (vt_retained.titleGeneration(&self.term) != self.title_generation_seen) {
+            self.refreshTitle();
+        }
         return self.title_buf[0..self.title_len];
+    }
+
+    pub fn titleGeneration(self: *const Context) u64 {
+        return vt_retained.titleGeneration(&self.term);
     }
 
     pub fn refreshTitle(self: *Context) void {
         self.title_len = @intCast(vt_retained.copyCurrentTitle(&self.term, self.title_buf[0..]));
+        self.title_generation_seen = vt_retained.titleGeneration(&self.term);
         if (self.title_len != 0) return;
         const fallback = self.conf.command orelse self.conf.shell;
         self.title_len = @intCast(@min(fallback.len, self.title_buf.len));
@@ -539,6 +548,7 @@ pub const Context = struct {
     const ContextSubmitBackend = struct {
         fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload) bool {
             const render_surface = prepared_upload.render_surface orelse {
+                if (isRecoverableRenderSurfaceRetrievalStatus(prepared_upload.render_surface_status)) return false;
                 crashOnRenderSurfaceRetrievalStatus(prepared_upload.render_surface_status);
                 return false;
             };
@@ -588,6 +598,10 @@ pub const Context = struct {
 
         fn crashOnRenderSurfaceRetrievalStatus(status: render_c.HowlRenderPreparedSurfaceRenderSurfaceStatus) void {
             unavailableRenderSurfaceRetrievalError(status) catch |err| std.debug.panic("trusted render surface retrieval failed: error={s}", .{@errorName(err)});
+        }
+
+        fn isRecoverableRenderSurfaceRetrievalStatus(status: render_c.HowlRenderPreparedSurfaceRenderSurfaceStatus) bool {
+            return status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW;
         }
 
         fn execution(self: anytype, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
@@ -1103,6 +1117,7 @@ test "cursor activity pushes blink deadline while visible" {
         .input = undefined,
         .title_buf = undefined,
         .title_len = 0,
+        .title_generation_seen = 0,
         .geometry = undefined,
         .font_size_px = 0,
         .default_font_size_px = 0,
@@ -1613,6 +1628,12 @@ test "context unavailable render surface path is keyed by retrieval status" {
         error.TrustedRenderSurfaceMissingSurface,
         Context.ContextSubmitBackend.unavailableRenderSurfaceRetrievalError(upload.render_surface_status),
     );
+}
+
+test "context render surface retrieval command overflow is recoverable" {
+    try std.testing.expect(Context.ContextSubmitBackend.isRecoverableRenderSurfaceRetrievalStatus(
+        render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW,
+    ));
 }
 
 const TestSubmitTerm = struct {

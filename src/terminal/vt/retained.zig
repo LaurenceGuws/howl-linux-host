@@ -33,6 +33,7 @@ pub const ScrollState = struct {
 pub const State = struct {
     title_buf: [title_max_bytes]u8 = undefined,
     title_len: u16 = 0,
+    title_generation: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     output_scratch: [output_max_bytes]u8 = undefined,
     input_scratch: [input_max_bytes]u8 = undefined,
     surface_cells_scratch: []c.HowlVtSurfaceCell = &.{},
@@ -91,6 +92,11 @@ fn setCurrentTitle(term: anytype, title: []const u8) void {
         std.mem.copyForwards(u8, term.vt_state.title_buf[0..written], title[0..written]);
     }
     term.vt_state.title_len = @intCast(written);
+    term.vt_state.title_generation.store(term.vt_state.title_generation.load(.acquire) + 1, .release);
+}
+
+pub fn titleGeneration(term: anytype) u64 {
+    return term.vt_state.title_generation.load(.acquire);
 }
 
 pub fn scrollState(term: anytype) ScrollState {
@@ -180,6 +186,7 @@ pub fn copyTitleLocked(term: anytype) ![]const u8 {
     std.debug.assert(result.written <= term.vt_state.title_buf.len);
     std.debug.assert(result.written <= std.math.maxInt(u16));
     term.vt_state.title_len = @intCast(result.written);
+    term.vt_state.title_generation.store(term.vt_state.title_generation.load(.acquire) + 1, .release);
     return currentTitle(term);
 }
 
