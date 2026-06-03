@@ -1,4 +1,3 @@
-const builtin = @import("builtin");
 const gl_c = @import("gl_c");
 const Layout = @import("layout.zig");
 const Rects = @import("renderer/rects.zig");
@@ -97,27 +96,6 @@ pub const PresentProofDelta = struct {
     first_changed_byte: usize,
 };
 
-pub const PresentDiagnostics = struct {
-    present_count: u64 = 0,
-    main_thread_ok_count: u64 = 0,
-    main_thread_bad_count: u64 = 0,
-    current_context_ok_count: u64 = 0,
-    current_context_bad_count: u64 = 0,
-    current_window_ok_count: u64 = 0,
-    current_window_bad_count: u64 = 0,
-    swap_us_last: u64 = 0,
-    swap_us_max: u64 = 0,
-    swap_failure_count: u64 = 0,
-    logged_readiness_failure_count: u64 = 0,
-    logged_swap_failure_count: u64 = 0,
-};
-
-const Readiness = struct {
-    main_thread: bool,
-    current_context: bool,
-    current_window: bool,
-};
-
 const FramebufferObservation = struct {
     stats: PresentProofStats,
     rgba: ?[]u8,
@@ -131,14 +109,13 @@ pub fn GenericState(comptime c: type) type {
         tab_cache_valid: bool,
         tab_cache_w: c_int,
         tab_cache_h: c_int,
-        tab_cache_hash: u64,
+        tab_cache_revision: u64,
         proof_capture_requested: bool,
         proof_probe_rect: ?Layout.Rect,
         last_present_proof: PresentProofSnapshot,
         next_present_token: PresentToken,
         submitted_present: ?PresentToken,
         completed_present: ?PresentToken,
-        diagnostics: PresentDiagnostics,
 
         pub fn submitPresent(self: *@This(), frame: Layout.Frame) PresentToken {
             return displaySubmitPresent(C, self, frame);
@@ -170,14 +147,13 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) !v
         .tab_cache_valid = false,
         .tab_cache_w = 0,
         .tab_cache_h = 0,
-        .tab_cache_hash = 0,
+        .tab_cache_revision = 0,
         .proof_capture_requested = false,
         .proof_probe_rect = null,
         .last_present_proof = emptyPresentProofSnapshot(),
         .next_present_token = 1,
         .submitted_present = null,
         .completed_present = null,
-        .diagnostics = .{},
     };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
@@ -210,7 +186,6 @@ pub fn displaySubmitPresent(comptime c: type, state: *GenericState(c), frame: La
     state.submitted_present = token;
 
     const handle = state.window orelse unreachable;
-    recordReadiness(c, state, handle);
     var fb_w: c_int = 0;
     var fb_h: c_int = 0;
     _ = c.SDL_GetWindowSizeInPixels(handle, &fb_w, &fb_h);
@@ -219,21 +194,6 @@ pub fn displaySubmitPresent(comptime c: type, state: *GenericState(c), frame: La
     c.glClearColor(0.06, 0.09, 0.14, 1.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.term_texture_rect.y);
-    const capture_present_proof = builtin.is_test and state.proof_capture_requested;
-    const framebuffer_before = if (capture_present_proof)
-        observeFramebufferBytes(c, frame.term_texture_rect)
-    else
-        emptyFramebufferObservation();
-    defer if (framebuffer_before.rgba) |pixels| std.heap.c_allocator.free(pixels);
-    const probe_rect = if (capture_present_proof and state.proof_probe_rect != null)
-        clipRectToBounds(state.proof_probe_rect.?, frame.term_texture_rect)
-    else
-        null;
-    const framebuffer_probe_before = if (probe_rect) |rect|
-        observeFramebufferBytes(c, rect)
-    else
-        emptyFramebufferObservation();
-    defer if (framebuffer_probe_before.rgba) |pixels| std.heap.c_allocator.free(pixels);
     Rects.textureRect(
         c,
         @max(fb_w, 1),
@@ -244,12 +204,8 @@ pub fn displaySubmitPresent(comptime c: type, state: *GenericState(c), frame: La
         frame.term_texture_rect.width,
         frame.term_texture_rect.height,
     );
-    if (capture_present_proof) capturePresentProof(c, state, frame, probe_rect, framebuffer_before, framebuffer_probe_before);
     Rects.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
-    const swap_start_ns = c.SDL_GetTicksNS();
     _ = c.SDL_GL_SwapWindow(handle);
-    recordSwap(state, elapsedUs(c, swap_start_ns));
-    logPresentDiagnostics(state);
     std.debug.assert(state.submitted_present == token);
     state.submitted_present = null;
     state.completed_present = token;
@@ -272,90 +228,6 @@ pub fn displayPresentProofSnapshot(comptime c: type, state: *const GenericState(
     return state.last_present_proof;
 }
 
-fn recordReadiness(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) void {
-    const ready = readiness(c, state, handle);
-    if (ready.main_thread) {
-        state.diagnostics.main_thread_ok_count +|= 1;
-    } else {
-        state.diagnostics.main_thread_bad_count +|= 1;
-    }
-    if (ready.current_context) {
-        state.diagnostics.current_context_ok_count +|= 1;
-    } else {
-        state.diagnostics.current_context_bad_count +|= 1;
-    }
-    if (ready.current_window) {
-        state.diagnostics.current_window_ok_count +|= 1;
-    } else {
-        state.diagnostics.current_window_bad_count +|= 1;
-    }
-}
-
-fn readiness(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) Readiness {
-    return .{
-        .main_thread = c.SDL_IsMainThread(),
-        .current_context = state.gl_context != null and
-            c.SDL_GL_GetCurrentContext() == state.gl_context.?,
-        .current_window = c.SDL_GL_GetCurrentWindow() == handle,
-    };
-}
-
-fn recordSwap(state: anytype, elapsed_us: u64) void {
-    state.diagnostics.present_count +|= 1;
-    state.diagnostics.swap_us_last = elapsed_us;
-    state.diagnostics.swap_us_max = @max(state.diagnostics.swap_us_max, elapsed_us);
-}
-
-fn elapsedUs(comptime c: type, start_ns: u64) u64 {
-    const now_ns = c.SDL_GetTicksNS();
-    if (now_ns <= start_ns) return 0;
-    return (now_ns - start_ns) / std.time.ns_per_us;
-}
-
-fn logPresentDiagnostics(state: anytype) void {
-    const diagnostics = state.diagnostics;
-    if (diagnostics.present_count == 0) return;
-    const should_log = diagnostics.present_count == 1 or diagnostics.present_count % 120 == 0 or
-        shouldLogPresentFailure(state);
-    if (!should_log) return;
-    std.debug.print(
-        "howl-debug present count={} swap_us={} swap_us_max={} swap_fail={} " ++
-            "main_ok={} main_bad={} context_ok={} context_bad={} " ++
-            "window_ok={} window_bad={}\n",
-        .{
-            diagnostics.present_count,
-            diagnostics.swap_us_last,
-            diagnostics.swap_us_max,
-            diagnostics.swap_failure_count,
-            diagnostics.main_thread_ok_count,
-            diagnostics.main_thread_bad_count,
-            diagnostics.current_context_ok_count,
-            diagnostics.current_context_bad_count,
-            diagnostics.current_window_ok_count,
-            diagnostics.current_window_bad_count,
-        },
-    );
-}
-
-fn shouldLogPresentFailure(state: anytype) bool {
-    const max_first_failure_logs = 8;
-    var should_log = false;
-    const readiness_failure_count = state.diagnostics.main_thread_bad_count +|
-        state.diagnostics.current_context_bad_count +| state.diagnostics.current_window_bad_count;
-    if (readiness_failure_count > state.diagnostics.logged_readiness_failure_count) {
-        if (state.diagnostics.logged_readiness_failure_count < max_first_failure_logs) {
-            state.diagnostics.logged_readiness_failure_count = readiness_failure_count;
-            should_log = true;
-        }
-    }
-    if (state.diagnostics.swap_failure_count > state.diagnostics.logged_swap_failure_count) {
-        if (state.diagnostics.logged_swap_failure_count < max_first_failure_logs) {
-            state.diagnostics.logged_swap_failure_count = state.diagnostics.swap_failure_count;
-            should_log = true;
-        }
-    }
-    return should_log;
-}
 
 fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {
     const bar_h = @max(frame.term_texture_rect.y, 0);
@@ -364,9 +236,8 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int
         return;
     }
 
-    const cache_hash = hashTabBarState(frame);
     const resized = state.tab_cache_w != fb_w or state.tab_cache_h != bar_h;
-    const changed = !state.tab_cache_valid or resized or state.tab_cache_hash != cache_hash;
+    const changed = !state.tab_cache_valid or resized or state.tab_cache_revision != frame.tab_bar_revision;
     if (!changed) return;
 
     ensureTabTexture(c, state);
@@ -385,7 +256,7 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int
     state.tab_cache_valid = true;
     state.tab_cache_w = fb_w;
     state.tab_cache_h = bar_h;
-    state.tab_cache_hash = cache_hash;
+    state.tab_cache_revision = frame.tab_bar_revision;
 }
 
 fn drawCachedTabBar(comptime c: type, state: *GenericState(c), fb_w: c_int, fb_h: c_int, bar_h: c_int) void {
@@ -409,7 +280,7 @@ fn releaseTabCache(comptime c: type, state: *GenericState(c)) void {
     state.tab_cache_valid = false;
     state.tab_cache_w = 0;
     state.tab_cache_h = 0;
-    state.tab_cache_hash = 0;
+    state.tab_cache_revision = 0;
 }
 
 fn setTextureParams(comptime c: type) void {
@@ -610,19 +481,6 @@ fn channelDiffers(value: u8, expected: u8) bool {
     return delta < -1 or delta > 1;
 }
 
-fn hashTabBarState(frame: Layout.Frame) u64 {
-    var hasher = std.hash.Wyhash.init(0);
-    const tab_count: @TypeOf(frame.tab_labels.len) = @intCast(frame.tab_count);
-    hasher.update(std.mem.asBytes(&frame.term_texture_rect.y));
-    hasher.update(std.mem.asBytes(&frame.tab_count));
-    hasher.update(std.mem.asBytes(&frame.active_tab));
-    for (frame.tab_labels[0..@min(frame.tab_labels.len, tab_count)]) |label| {
-        hasher.update(label);
-        hasher.update(&[_]u8{0});
-    }
-    return hasher.final();
-}
-
 const FakeC = struct {
     const SDL_Window = opaque {};
     const SDL_GLContext = ?*anyopaque;
@@ -630,15 +488,28 @@ const FakeC = struct {
     const SDL_WINDOW_OPENGL = 2;
     const GL_COLOR_BUFFER_BIT = 0x4000;
 
+    var copy_tex_image_calls: u32 = 0;
+    var copy_tex_subimage_calls: u32 = 0;
+
     fn SDL_GetWindowSizeInPixels(_: *SDL_Window, width: *c_int, height: *c_int) bool {
         width.* = 80;
         height.* = 25;
         return true;
     }
 
+    fn glBindTexture(_: c_uint, _: c_uint) void {}
+    fn glCopyTexImage2D(_: c_uint, _: c_int, _: c_uint, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int) void {
+        copy_tex_image_calls += 1;
+    }
+
+    fn glCopyTexSubImage2D(_: c_uint, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int) void {
+        copy_tex_subimage_calls += 1;
+    }
+
     fn glViewport(_: c_int, _: c_int, _: c_int, _: c_int) void {}
     fn glClearColor(_: f32, _: f32, _: f32, _: f32) void {}
     fn glClear(_: c_uint) void {}
+    fn glTexParameteri(_: c_uint, _: c_uint, _: c_int) void {}
     fn SDL_GL_SwapWindow(_: *SDL_Window) bool {
         return true;
     }
@@ -668,14 +539,13 @@ fn testState() GenericState(FakeC) {
         .tab_cache_valid = false,
         .tab_cache_w = 0,
         .tab_cache_h = 0,
-        .tab_cache_hash = 0,
+        .tab_cache_revision = 0,
         .proof_capture_requested = false,
         .proof_probe_rect = null,
         .last_present_proof = emptyPresentProofSnapshot(),
         .next_present_token = 1,
         .submitted_present = null,
         .completed_present = null,
-        .diagnostics = .{},
     };
 }
 
@@ -686,6 +556,7 @@ fn testFrame() Layout.Frame {
         .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
         .tab_count = 0,
         .active_tab = 0,
+        .tab_bar_revision = 1,
         .tab_labels = &.{},
     };
 }
@@ -708,6 +579,29 @@ test "submit present enforces single in-flight state" {
     try std.testing.expect(state.submitted_present != null);
 }
 
+test "tab cache refreshes only on revision change" {
+    FakeC.copy_tex_image_calls = 0;
+    FakeC.copy_tex_subimage_calls = 0;
+
+    var state = testState();
+    var frame = testFrame();
+
+    const first = displaySubmitPresent(FakeC, &state, frame);
+    _ = displayDrainPresentComplete(FakeC, &state);
+    try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
+
+    const second = displaySubmitPresent(FakeC, &state, frame);
+    _ = displayDrainPresentComplete(FakeC, &state);
+    try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
+    try std.testing.expect(second > first);
+
+    frame.tab_bar_revision = 2;
+    const third = displaySubmitPresent(FakeC, &state, frame);
+    _ = displayDrainPresentComplete(FakeC, &state);
+    try std.testing.expectEqual(@as(u32, 2), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
+    try std.testing.expect(third > second);
+}
+
 test "present completion drains once before overwrite" {
     var state = testState();
     const token = displaySubmitPresent(FakeC, &state, testFrame());
@@ -717,16 +611,4 @@ test "present completion drains once before overwrite" {
     const next = displaySubmitPresent(FakeC, &state, testFrame());
     try std.testing.expect(next > token);
     try std.testing.expectEqual(@as(?PresentToken, next), displayDrainPresentComplete(FakeC, &state));
-}
-
-test "present diagnostic failure logging is first N bounded" {
-    var state = testState();
-    var logged: u8 = 0;
-    while (logged < 8) : (logged += 1) {
-        state.diagnostics.current_context_bad_count += 1;
-        try std.testing.expect(shouldLogPresentFailure(&state));
-    }
-    state.diagnostics.current_context_bad_count += 1;
-    try std.testing.expect(!shouldLogPresentFailure(&state));
-    try std.testing.expectEqual(@as(u64, 8), state.diagnostics.logged_readiness_failure_count);
 }

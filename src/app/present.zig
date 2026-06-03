@@ -12,6 +12,7 @@ pub const Snapshot = struct {
     texture_rect: DisplayLayout.Rect,
     scrollbar: DisplayLayout.ScrollbarLayout,
     active_tab: u8,
+    tab_bar_revision: u64,
     labels: []const []const u8,
 };
 
@@ -44,6 +45,7 @@ pub fn submitWith(display: anytype, tab: anytype, snapshot: Snapshot, reason: Re
                 .scrollbar = snapshot.scrollbar,
                 .tab_count = @as(u8, @intCast(snapshot.labels.len)),
                 .active_tab = snapshot.active_tab,
+                .tab_bar_revision = snapshot.tab_bar_revision,
                 .tab_labels = snapshot.labels,
             });
             return .{ .reason = reason, .submitted = true, .token = token };
@@ -157,6 +159,7 @@ test "present completion only follows terminal present reasons" {
         .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
         .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
         .active_tab = 0,
+        .tab_bar_revision = 1,
         .labels = &.{"shell"},
     };
 
@@ -216,6 +219,7 @@ test "terminal retire submit does not require a new snapshot" {
         .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
         .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
         .active_tab = 0,
+        .tab_bar_revision = 1,
         .labels = &.{"shell"},
     };
 

@@ -28,6 +28,7 @@ pub const Frame = struct {
     scrollbar: ScrollbarLayout,
     tab_count: TabIndex,
     active_tab: TabIndex,
+    tab_bar_revision: u64,
     tab_labels: []const []const u8,
 };
 

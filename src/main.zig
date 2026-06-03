@@ -9,7 +9,6 @@ const Input = @import("input/input.zig").Input;
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("tab_bar/slots.zig").Slots;
 const AppPresent = @import("app/present.zig");
-const ProcessAccounting = @import("app/process_accounting.zig");
 const pty_wait_thread = @import("terminal/pty/wait_thread.zig");
 const TerminalContext = @import("terminal/context.zig").Context;
 const FramePacing = @import("display/frame_timer.zig");
@@ -39,6 +38,7 @@ const LoopPending = FramePacing.Pending;
 const LoopDebugFacts = struct {
     pending_wake_count: u8,
     pending_runtime_obligation_count: u8,
+    runtime_wait_ms: ?u32,
     render_work_pending: bool,
 };
 
@@ -92,8 +92,6 @@ const App = struct {
     terminal_input_admitted: bool,
     pending_terminal_present: ?Display.PresentToken,
     frame_pacing: FramePacing.State,
-    accounting: ProcessAccounting.State,
-    loop_turn_count: u64,
 };
 
 const OpenTabRequest = struct {
@@ -208,13 +206,6 @@ noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !
         .terminal_input_admitted = false,
         .pending_terminal_present = null,
         .frame_pacing = FramePacing.State.init(),
-        .accounting = ProcessAccounting.State.init(
-            io,
-            options.debug_process_accounting,
-            options.debug_log_every_ms,
-            EventLoop.nowNs(),
-        ),
-        .loop_turn_count = 0,
     };
     configureInputPolicies(&app);
     try runLoop(&app);
@@ -275,180 +266,88 @@ fn runLoop(app: *App) !void {
 }
 
 fn runLoopTurn(app: *App) !LoopAction {
-    app.loop_turn_count += 1;
-    app.accounting.countLoopTurn();
     if (quitRequested(app)) |action| return action;
 
     app.frame_pacing.beginTurn();
     const now_ns = EventLoop.nowNs();
-    const debug_facts = if (app.accounting.enabled)
-        collectLoopDebugFacts(app, now_ns)
-    else
-        null;
+    const debug_facts = collectLoopDebugFacts(app, now_ns);
     const admission = computeLoopAdmission(app, now_ns, debug_facts);
     const event_action = pumpWindowEvents(app, admission);
     if (event_action == .quit) return .quit;
 
-    const host_mutations = (try applyHostOwnedMutations(app)) orelse return .quit;
-    const present_completed = drainPresentComplete(app);
-    const terminal_progress = driveRuntimeProgress(app, now_ns);
-    app.accounting.countTerminalProgress(
-        terminal_progress.keep_running,
-        terminal_progress.should_redraw,
-        terminal_progress.drive_performed,
-    );
-    configureInputPolicies(app);
-    if (try handleActiveTabProblem(app)) |action| return action;
+    const host_mutations_opt = try applyHostOwnedMutations(app);
+    if (host_mutations_opt) |host_mutations| {
+        const present_completed = drainPresentComplete(app);
+        const terminal_progress = driveRuntimeProgress(app, now_ns);
+        configureInputPolicies(app);
+        if (try handleActiveTabProblem(app)) |action| return action;
 
-    const intent = deriveRedrawRenderIntent(
-        app.input.drainRedrawRequested(),
-        host_mutations.input_outcome.host_visual_changed,
-        terminal_progress,
-        syncActiveBlinkCadence(app, EventLoop.nowNs()),
-        activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*),
-    );
-    app.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
-    if (terminal_progress.keep_running) {
-        if (app.frame_pacing.terminalKeepWakePermission()) app.event_loop.wake();
-    }
-    if (present_completed) {
-        maybeLogLoopTurn(app, now_ns, debug_facts, intent);
-        return .continue_running;
-    }
-    if (!app.frame_pacing.renderPermission()) {
-        maybeLogLoopTurn(app, now_ns, debug_facts, intent);
-        return .continue_running;
-    }
+        const intent = deriveRedrawRenderIntent(
+            app.input.drainRedrawRequested(),
+            host_mutations.input_outcome.host_visual_changed,
+            terminal_progress,
+            syncActiveBlinkCadence(app, EventLoop.nowNs()),
+            debug_facts.render_work_pending,
+        );
+        app.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
+        if (terminal_progress.keep_running) {
+            if (app.frame_pacing.terminalKeepWakePermission()) app.event_loop.wake();
+        }
+        if (present_completed) return .continue_running;
+        if (!app.frame_pacing.renderPermission()) return .continue_running;
 
-    const frame = render(app);
-    app.accounting.countRenderStep(accountingRenderStep(frame.turn.step));
-    const present_plan = derivePresentPlan(frame, intent);
-    const submission = submitPresent(app, frame, present_plan);
-    app.accounting.countPresentSubmission(.{
-        .reason = accountingPresentReason(submission.reason),
-        .submitted = submission.submitted,
-    });
-    maybeLogLoopTurn(app, now_ns, debug_facts, intent);
-    if (quitRequested(app)) |action| return action;
-    if (try handleActiveTabProblem(app)) |action| return action;
-    return .continue_running;
+        const frame = render(app);
+        const present_plan = derivePresentPlan(frame, intent);
+        _ = submitPresent(app, frame, present_plan);
+        if (quitRequested(app)) |action| return action;
+        if (try handleActiveTabProblem(app)) |action| return action;
+        return .continue_running;
+    } else {
+        return .quit;
+    }
 }
 
-fn computeLoopAdmission(app: *App, now_ns: u64, debug_facts: ?LoopDebugFacts) LoopAdmission {
+fn computeLoopAdmission(app: *App, now_ns: u64, debug_facts: LoopDebugFacts) LoopAdmission {
     assert(now_ns > 0);
-    const render_work_pending = if (debug_facts) |facts|
-        facts.render_work_pending
-    else
-        activeTabNeedsRenderTurn(app.tabs.items(), app.active_tab_idx.*);
     app.frame_pacing.refreshFramePermit(now_ns);
-    app.frame_pacing.noteRedrawAndRenderWork(false, render_work_pending);
-    const pending = if (debug_facts) |facts|
-        collectLoopPendingFromDebug(app, facts)
-    else
-        collectLoopPending(app, now_ns);
+    app.frame_pacing.noteRedrawAndRenderWork(false, debug_facts.render_work_pending);
+    const pending = loopPendingFromFacts(app.input.hasPendingOwnerWork(), debug_facts);
     const runtime_admission = takeTerminalInputAdmission(&app.terminal_input_admitted);
     const wait_for_window = app.frame_pacing.shouldWaitForWindow(pending, runtime_admission);
-    const render_permission = app.frame_pacing.renderPermission();
-    app.accounting.countWaitAdmission(.{
-        .wait = wait_for_window,
-        .owner_work = pending.owner_work,
-        .runtime_admission = runtime_admission,
-        .runtime_wake = pending.runtime_wake,
-        .present_complete_pending = app.frame_pacing.present_complete_pending,
-        .render_permission = render_permission,
-        .redraw_requested = app.frame_pacing.redraw_requested,
-        .render_work_pending = app.frame_pacing.render_work_pending,
-    });
     return .{
         .wait_for_window = wait_for_window,
-        .wait_ms = loopWaitMs(app, now_ns, app.frame_pacing.framePermitWaitMs(now_ns)),
+        .wait_ms = loopWaitMs(app, now_ns, debug_facts.runtime_wait_ms, app.frame_pacing.framePermitWaitMs(now_ns)),
     };
-}
-
-fn maybeLogLoopTurn(app: *App, now_ns: u64, debug_facts: ?LoopDebugFacts, intent: RedrawRenderIntent) void {
-    if (!app.accounting.enabled) return;
-    assert(debug_facts != null);
-    const facts = debug_facts.?;
-    app.accounting.maybeLog(now_ns, app.loop_turn_count, .{
-        .pending_wake_count = facts.pending_wake_count,
-        .pending_runtime_obligation_count = facts.pending_runtime_obligation_count,
-        .render_work_pending_count = @intFromBool(intent.render_work_pending),
-        .host_redraw = intent.host_redraw,
-        .terminal_redraw = intent.terminal_redraw,
-    });
 }
 
 fn collectLoopDebugFacts(app: *App, now_ns: u64) LoopDebugFacts {
-    const tabs = app.tabs.items();
-    return .{
-        .pending_wake_count = tabsPendingWakeCount(tabs),
-        .pending_runtime_obligation_count = tabsPendingRuntimeObligationCount(tabs, now_ns),
-        .render_work_pending = activeTabNeedsRenderTurn(tabs, app.active_tab_idx.*),
-    };
+    return collectLoopDebugFactsWith(app.tabs.items(), app.active_tab_idx.*, now_ns);
 }
 
-fn collectLoopPending(app: *const App, now_ns: u64) LoopPending {
-    const tabs = app.tabs.items();
-    return .{
-        .owner_work = app.input.hasPendingOwnerWork(),
-        .runtime_wake = tabsHavePendingWake(tabs) or
-            tabsHavePendingRuntimeObligation(tabs, now_ns),
+fn collectLoopDebugFactsWith(tabs: anytype, active_tab_idx: TabIndex, now_ns: u64) LoopDebugFacts {
+    assert(tabs.len <= max_tabs);
+    assert(tabIndexInRange(tabs, active_tab_idx));
+    var facts = LoopDebugFacts{
+        .pending_wake_count = 0,
+        .pending_runtime_obligation_count = 0,
+        .runtime_wait_ms = null,
+        .render_work_pending = false,
     };
+    for (tabs, 0..) |tab, i| {
+        if (pty_wait_thread.wakePending(tab)) facts.pending_wake_count += 1;
+        if (tab.runtimeObligationDueNow(now_ns)) facts.pending_runtime_obligation_count += 1;
+        facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, tab.nextRuntimeObligationWaitMs(now_ns));
+        if (@as(TabIndex, @intCast(i)) == active_tab_idx) facts.render_work_pending = tab.wantsRenderTurn();
+    }
+    return facts;
 }
 
-fn collectLoopPendingFromDebug(app: *const App, debug_facts: LoopDebugFacts) LoopPending {
+fn loopPendingFromFacts(owner_work: bool, debug_facts: LoopDebugFacts) LoopPending {
     return .{
-        .owner_work = app.input.hasPendingOwnerWork(),
+        .owner_work = owner_work,
         .runtime_wake = debug_facts.pending_wake_count > 0 or
             debug_facts.pending_runtime_obligation_count > 0,
     };
-}
-
-fn activeTabNeedsRenderTurn(tabs: []*TerminalContext, active_tab_idx: TabIndex) bool {
-    const tab = activeTab(tabs, active_tab_idx);
-    return tab.wantsRenderTurn();
-}
-
-fn tabsHavePendingWake(tabs: []*TerminalContext) bool {
-    assert(tabs.len <= max_tabs);
-    for (tabs) |tab| {
-        if (pty_wait_thread.wakePending(tab)) return true;
-    }
-    return false;
-}
-
-fn tabsPendingWakeCount(tabs: []*TerminalContext) u8 {
-    assert(tabs.len <= max_tabs);
-    var count: u8 = 0;
-    for (tabs) |tab| {
-        if (pty_wait_thread.wakePending(tab)) count += 1;
-    }
-    return count;
-}
-
-fn tabsHavePendingRuntimeObligation(tabs: []*TerminalContext, now_ns: u64) bool {
-    return tabsHavePendingRuntimeObligationWith(tabs, now_ns);
-}
-
-fn tabsHavePendingRuntimeObligationWith(tabs: anytype, now_ns: u64) bool {
-    assert(tabs.len <= max_tabs);
-    for (tabs) |tab| {
-        if (tab.runtimeObligationDueNow(now_ns)) return true;
-    }
-    return false;
-}
-
-fn tabsPendingRuntimeObligationCount(tabs: []*TerminalContext, now_ns: u64) u8 {
-    return tabsPendingRuntimeObligationCountWith(tabs, now_ns);
-}
-
-fn tabsPendingRuntimeObligationCountWith(tabs: anytype, now_ns: u64) u8 {
-    assert(tabs.len <= max_tabs);
-    var count: u8 = 0;
-    for (tabs) |tab| {
-        if (tab.runtimeObligationDueNow(now_ns)) count += 1;
-    }
-    return count;
 }
 
 fn quitRequested(app: *const App) ?LoopAction {
@@ -457,7 +356,6 @@ fn quitRequested(app: *const App) ?LoopAction {
 }
 
 fn pumpWindowEvents(app: *App, admission: LoopAdmission) LoopAction {
-    app.accounting.countSdlPump(admission.wait_for_window);
     const signal = app.event_loop.pumpInput(app.input, admission.wait_for_window, admission.wait_ms);
     return switch (signal) {
         .none => .continue_running,
@@ -496,26 +394,13 @@ fn activeBlinkWaitMs(app: *App, now_ns: u64) ?u32 {
     return tab.nextCursorBlinkWaitMs(now_ns);
 }
 
-fn loopWaitMs(app: *App, now_ns: u64, frame_pacer_wait_ms: ?u32) ?u32 {
-    return loopWaitMsWith(activeBlinkWaitMs(app, now_ns), app.tabs.items(), now_ns, frame_pacer_wait_ms);
+fn loopWaitMs(app: *App, now_ns: u64, runtime_wait_ms: ?u32, frame_pacer_wait_ms: ?u32) ?u32 {
+    return loopWaitMsWith(activeBlinkWaitMs(app, now_ns), runtime_wait_ms, frame_pacer_wait_ms);
 }
 
-fn loopWaitMsWith(blink_wait_ms: ?u32, tabs: anytype, now_ns: u64, frame_pacer_wait_ms: ?u32) ?u32 {
-    var wait_ms = minRuntimeObligationWaitMsWith(blink_wait_ms, tabs, now_ns);
+fn loopWaitMsWith(blink_wait_ms: ?u32, runtime_wait_ms: ?u32, frame_pacer_wait_ms: ?u32) ?u32 {
+    var wait_ms = minOptionalWaitMs(blink_wait_ms, runtime_wait_ms);
     wait_ms = minOptionalWaitMs(wait_ms, frame_pacer_wait_ms);
-    return wait_ms;
-}
-
-fn minRuntimeObligationWaitMs(current_wait_ms: ?u32, tabs: []*TerminalContext, now_ns: u64) ?u32 {
-    return minRuntimeObligationWaitMsWith(current_wait_ms, tabs, now_ns);
-}
-
-fn minRuntimeObligationWaitMsWith(current_wait_ms: ?u32, tabs: anytype, now_ns: u64) ?u32 {
-    var wait_ms = current_wait_ms;
-    for (tabs) |tab| {
-        const tab_wait_ms = tab.nextRuntimeObligationWaitMs(now_ns) orelse continue;
-        wait_ms = minOptionalWaitMs(wait_ms, tab_wait_ms);
-    }
     return wait_ms;
 }
 
@@ -636,6 +521,7 @@ const RenderSnapshot = struct {
     texture_rect: DisplayLayout.Rect,
     scrollbar: DisplayLayout.ScrollbarLayout,
     active_tab: TabIndex,
+    tab_bar_revision: u64,
     labels: []const []const u8,
 };
 
@@ -643,11 +529,13 @@ fn renderSnapshot(app: *App, tab: *TerminalContext) RenderSnapshot {
     const texture_rect = DisplayLayout.contentRect(app.window, app.conf.tab_bar.height);
     const overlay = tab.overlaySnapshot(texture_rect);
     var title_buf: [TabBar.max_tabs][]const u8 = undefined;
-    const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(app.tabs.items(), title_buf[0..]));
+    const tabs = app.tabs.items();
+    const tab_bar_snapshot = app.tab_bar.snapshot(app.active_tab_idx.*, tabTitles(tabs, title_buf[0..]));
     return .{
         .texture_rect = texture_rect,
         .scrollbar = overlay.scrollbar,
         .active_tab = tab_bar_snapshot.active_idx,
+        .tab_bar_revision = tabBarRevision(tabs, app.active_tab_idx.*),
         .labels = tab_bar_snapshot.labels,
     };
 }
@@ -682,6 +570,7 @@ fn submitPresentWith(window: anytype, tab: anytype, snapshot: RenderSnapshot, re
         .texture_rect = snapshot.texture_rect,
         .scrollbar = snapshot.scrollbar,
         .active_tab = snapshot.active_tab,
+        .tab_bar_revision = snapshot.tab_bar_revision,
         .labels = snapshot.labels,
     }, reason);
 }
@@ -698,35 +587,19 @@ fn drainPresentComplete(app: anytype) bool {
     const completion_pending_before = app.frame_pacing.present_complete_pending;
     AppPresent.drainComplete(app);
     if (completion_pending_before and !app.frame_pacing.present_complete_pending) {
-        app.accounting.countPresentCompleteDrained();
         return true;
     }
     return false;
 }
 
-fn accountingRenderStep(step: TerminalContext.TurnStep) ProcessAccounting.RenderStep {
-    return switch (step) {
-        .surface_idle => .surface_idle,
-        .idle_prepare => .idle_prepare,
-        .idle_submit => .idle_submit,
-        .blocked_present => .blocked_present,
-        .rendered => .rendered,
-        .failed => .failed,
-    };
-}
-
-fn accountingPresentReason(reason: PresentReason) ProcessAccounting.PresentReason {
-    return switch (reason) {
-        .none => .none,
-        .host_damage => .host_damage,
-        .terminal_frame => .terminal_frame,
-        .terminal_retire => .terminal_retire,
-    };
-}
-
 test "runtime obligation due-now is treated as immediate loop work" {
     const FakeTab = struct {
+        wake_pending: bool,
         due_now: bool,
+
+        fn wakePending(self: @This()) bool {
+            return self.wake_pending;
+        }
 
         fn runtimeObligationDueNow(self: @This(), _: u64) bool {
             return self.due_now;
@@ -735,18 +608,21 @@ test "runtime obligation due-now is treated as immediate loop work" {
         fn nextRuntimeObligationWaitMs(_: @This(), _: u64) ?u32 {
             return null;
         }
+
+        fn wantsRenderTurn(_: @This()) bool {
+            return false;
+        }
     };
 
     const tabs = [_]FakeTab{
-        .{ .due_now = false },
-        .{ .due_now = true },
+        .{ .wake_pending = false, .due_now = false },
+        .{ .wake_pending = false, .due_now = true },
     };
-    try std.testing.expect(tabsHavePendingRuntimeObligationWith(tabs[0..], 1234));
+    const facts = collectLoopDebugFactsWith(tabs[0..], 0, 1234);
+    try std.testing.expectEqual(@as(u8, 1), facts.pending_runtime_obligation_count);
+    try std.testing.expectEqual(@as(?u32, null), facts.runtime_wait_ms);
 
-    const pending = LoopPending{
-        .owner_work = false,
-        .runtime_wake = tabsHavePendingRuntimeObligationWith(tabs[0..], 1234),
-    };
+    const pending = loopPendingFromFacts(false, facts);
     var pacing = FramePacing.State.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
 }
@@ -755,12 +631,20 @@ test "runtime obligation deadline is merged with blink wait by minimum" {
     const FakeTab = struct {
         wait_ms: ?u32,
 
+        fn wakePending(_: @This()) bool {
+            return false;
+        }
+
         fn runtimeObligationDueNow(_: @This(), _: u64) bool {
             return false;
         }
 
         fn nextRuntimeObligationWaitMs(self: @This(), _: u64) ?u32 {
             return self.wait_ms;
+        }
+
+        fn wantsRenderTurn(_: @This()) bool {
+            return false;
         }
     };
 
@@ -770,28 +654,17 @@ test "runtime obligation deadline is merged with blink wait by minimum" {
         .{ .wait_ms = null },
     };
 
-    try std.testing.expectEqual(@as(?u32, 12), minRuntimeObligationWaitMsWith(@as(?u32, 25), tabs[0..], 99));
-    try std.testing.expectEqual(@as(?u32, 12), minRuntimeObligationWaitMsWith(null, tabs[0..], 99));
-    try std.testing.expectEqual(@as(?u32, 25), minRuntimeObligationWaitMsWith(@as(?u32, 25), &[_]FakeTab{}, 99));
+    const facts = collectLoopDebugFactsWith(tabs[0..], 0, 99);
+    try std.testing.expectEqual(@as(?u32, 12), facts.runtime_wait_ms);
+    try std.testing.expectEqual(@as(?u32, 12), loopWaitMsWith(@as(?u32, 25), facts.runtime_wait_ms, null));
+    try std.testing.expectEqual(@as(?u32, 12), loopWaitMsWith(null, facts.runtime_wait_ms, null));
+    try std.testing.expectEqual(@as(?u32, 25), loopWaitMsWith(@as(?u32, 25), null, null));
 }
 
 test "frame deadlines participate in wait calculation" {
-    const FakeTab = struct {
-        wait_ms: ?u32,
-
-        fn nextRuntimeObligationWaitMs(self: @This(), _: u64) ?u32 {
-            return self.wait_ms;
-        }
-    };
-
-    const tabs = [_]FakeTab{
-        .{ .wait_ms = 30 },
-        .{ .wait_ms = null },
-    };
-
-    try std.testing.expectEqual(@as(?u32, 12), loopWaitMsWith(@as(?u32, 40), tabs[0..], 99, 12));
-    try std.testing.expectEqual(@as(?u32, 20), loopWaitMsWith(null, tabs[0..], 99, 20));
-    try std.testing.expectEqual(@as(?u32, 30), loopWaitMsWith(null, tabs[0..], 99, null));
+    try std.testing.expectEqual(@as(?u32, 12), loopWaitMsWith(@as(?u32, 40), @as(?u32, 30), 12));
+    try std.testing.expectEqual(@as(?u32, 20), loopWaitMsWith(null, @as(?u32, 30), 20));
+    try std.testing.expectEqual(@as(?u32, 30), loopWaitMsWith(null, @as(?u32, 30), null));
 }
 
 test "active window title sync uses the active context title" {
@@ -815,6 +688,27 @@ test "active window title sync uses the active context title" {
     var context = FakeContext{ .title = "top" };
     syncActiveWindowTitle(&window, &context);
     try std.testing.expectEqualStrings("top", window.last_title);
+}
+
+test "tab bar revision changes with title generation and active tab" {
+    const FakeContext = struct {
+        title_gen: u64,
+
+        fn titleGeneration(self: @This()) u64 {
+            return self.title_gen;
+        }
+    };
+
+    const tabs = [_]FakeContext{
+        .{ .title_gen = 1 },
+        .{ .title_gen = 2 },
+    };
+    const before = tabBarRevision(tabs[0..], 0);
+    const title_changed = tabBarRevision(([_]FakeContext{ .{ .title_gen = 1 }, .{ .title_gen = 3 } })[0..], 0);
+    const active_changed = tabBarRevision(tabs[0..], 1);
+
+    try std.testing.expect(before != title_changed);
+    try std.testing.expect(title_changed != active_changed);
 }
 
 fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*TerminalContext) void {
@@ -958,6 +852,18 @@ fn tabTitles(tabs: []*TerminalContext, buf: [][]const u8) []const []const u8 {
     return buf[0..tabs.len];
 }
 
+fn tabBarRevision(tabs: anytype, active_tab_idx: TabIndex) u64 {
+    assert(tabIndexInRange(tabs, active_tab_idx));
+    var revision: u64 = @as(u64, tabs.len) << 32;
+    revision ^= @as(u64, active_tab_idx) << 16;
+    for (tabs, 0..) |tab, i| {
+        const title_generation = tab.titleGeneration();
+        revision ^= title_generation +% (@as(u64, i) + 1) * 0x9e3779b97f4a7c15;
+        revision = std.math.rotl(u64, revision, 7);
+    }
+    return revision;
+}
+
 fn pasteIntoActiveTab(tab: *TerminalContext) void {
     const text = Window.getClipboardText(std.heap.c_allocator) catch return;
     defer if (text) |buf| std.heap.c_allocator.free(buf);
@@ -969,7 +875,7 @@ fn setCurrentThreadName(name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(std.c.pthread_self(), name.ptr);
 }
 
-fn tabIndexInRange(tabs: []*TerminalContext, idx: TabIndex) bool {
+fn tabIndexInRange(tabs: anytype, idx: TabIndex) bool {
     return idx < tabs.len;
 }
 

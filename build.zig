@@ -10,8 +10,6 @@ const Build = std.Build;
 const Compile = Build.Step.Compile;
 const Module = Build.Module;
 
-const harness_install_dir: Build.InstallDir = .{ .custom = "harness" };
-
 const HostDeps = struct {
     target: Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
@@ -52,14 +50,6 @@ const HostDeps = struct {
 const Steps = struct {
     check: *Build.Step,
     run: *Build.Step,
-    stress_rain: *Build.Step,
-    stress_rain_build: *Build.Step,
-    stress_rain_ascii: *Build.Step,
-    stress_rain_ascii_build: *Build.Step,
-    stress_rain_mixed: *Build.Step,
-    stress_rain_mixed_build: *Build.Step,
-    stress_rain_visual: *Build.Step,
-    stress_rain_visual_build: *Build.Step,
     test_all: *Build.Step,
     test_unit: *Build.Step,
     test_unit_build: *Build.Step,
@@ -80,9 +70,6 @@ pub fn build(b: *Build) void {
     steps.check.dependOn(host_install);
     wireRunStep(b, steps.run, exe);
 
-    const rain_stress = buildLibcExe(b, "ascii_rain_stress", "src/stress/ascii_rain_stress.zig", target, optimize);
-    const visual_rain_stress = buildLibcExe(b, "visual_rain_stress", "src/stress/visual_rain_stress.zig", target, optimize);
-    wireStressSteps(b, steps, rain_stress, visual_rain_stress);
     wireTestSteps(b, steps, deps, target, optimize);
 }
 
@@ -90,14 +77,6 @@ fn createSteps(b: *Build) Steps {
     return .{
         .check = b.step("check", "Build the default host harness without installing it"),
         .run = b.step("run", "Run host window"),
-        .stress_rain = b.step("stress:rain", "Run hostile ASCII rain terminal traffic generator"),
-        .stress_rain_build = b.step("stress:rain:build", "Build hostile ASCII rain terminal traffic generator"),
-        .stress_rain_ascii = b.step("stress:rain:ascii", "Run pure ASCII rain stress generator with metrics"),
-        .stress_rain_ascii_build = b.step("stress:rain:ascii:build", "Build pure ASCII rain stress generator with metrics defaults"),
-        .stress_rain_mixed = b.step("stress:rain:mixed", "Run mixed glyph rain stress generator with metrics"),
-        .stress_rain_mixed_build = b.step("stress:rain:mixed:build", "Build mixed glyph rain stress generator with metrics defaults"),
-        .stress_rain_visual = b.step("stress:rain:visual", "Run visual ASCII rain correctness stress generator"),
-        .stress_rain_visual_build = b.step("stress:rain:visual:build", "Build visual ASCII rain correctness stress generator"),
         .test_all = b.step("test", "Run all tests"),
         .test_unit = b.step("test:unit", "Run unit tests"),
         .test_unit_build = b.step("test:unit:build", "Build unit tests"),
@@ -234,11 +213,17 @@ fn buildLibcExe(b: *Build, name: []const u8, path: []const u8, target: Build.Res
 
 fn installHarnessArtifact(b: *Build, exe: *Compile) *Build.Step {
     const install = b.addInstallArtifact(exe, .{
-        .dest_dir = .{ .override = harness_install_dir },
+        .dest_dir = .{ .override = .{ .custom = "harness" } },
         .dest_sub_path = exe.out_filename,
     });
     b.getInstallStep().dependOn(&install.step);
     return &install.step;
+}
+
+fn wireRunStep(b: *Build, step: *Build.Step, exe: *Compile) void {
+    const run_cmd = b.addRunArtifact(exe);
+    if (b.args) |args| run_cmd.addArgs(args);
+    step.dependOn(&run_cmd.step);
 }
 
 fn artifactName(b: *Build, base: []const u8, optimize: std.builtin.OptimizeMode) []const u8 {
@@ -252,46 +237,6 @@ fn optimizeSuffix(optimize: std.builtin.OptimizeMode) []const u8 {
         .ReleaseFast => "release_fast",
         .ReleaseSmall => "release_small",
     };
-}
-
-fn wireRunStep(b: *Build, step: *Build.Step, exe: *Compile) void {
-    const run_cmd = b.addRunArtifact(exe);
-    if (b.args) |args| run_cmd.addArgs(args);
-    step.dependOn(&run_cmd.step);
-}
-
-fn wireStressSteps(b: *Build, steps: Steps, rain_stress: *Compile, visual_rain_stress: *Compile) void {
-    stageHarnessArtifact(b, steps.stress_rain_build, rain_stress);
-    stageHarnessArtifact(b, steps.stress_rain_ascii_build, rain_stress);
-    stageHarnessArtifact(b, steps.stress_rain_mixed_build, rain_stress);
-    stageHarnessArtifact(b, steps.stress_rain_visual_build, visual_rain_stress);
-
-    const run_rain = b.addRunArtifact(rain_stress);
-    if (b.args) |args| run_rain.addArgs(args);
-    steps.stress_rain.dependOn(&run_rain.step);
-
-    const run_rain_ascii = b.addRunArtifact(rain_stress);
-    run_rain_ascii.addArgs(&.{ "--ascii", "--metrics", "--flush-every", "1" });
-    steps.stress_rain_ascii.dependOn(&run_rain_ascii.step);
-
-    const run_rain_mixed = b.addRunArtifact(rain_stress);
-    run_rain_mixed.addArgs(&.{ "--mixed", "--metrics", "--flush-every", "1" });
-    steps.stress_rain_mixed.dependOn(&run_rain_mixed.step);
-
-    const run_visual = b.addRunArtifact(visual_rain_stress);
-    if (b.args) |args| {
-        run_visual.addArgs(args);
-    } else {
-        run_visual.addArgs(&.{"--metrics"});
-    }
-    steps.stress_rain_visual.dependOn(&run_visual.step);
-}
-
-fn stageHarnessArtifact(b: *Build, step: *Build.Step, exe: *Compile) void {
-    step.dependOn(&b.addInstallArtifact(exe, .{
-        .dest_dir = .{ .override = harness_install_dir },
-        .dest_sub_path = exe.out_filename,
-    }).step);
 }
 
 fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
@@ -308,11 +253,6 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
             }) },
             .{ .name = "config_env", .module = b.createModule(.{
                 .root_source_file = b.path("src/config/env.zig"),
-                .target = target,
-                .optimize = optimize,
-            }) },
-            .{ .name = "process_accounting", .module = b.createModule(.{
-                .root_source_file = b.path("src/app/process_accounting.zig"),
                 .target = target,
                 .optimize = optimize,
             }) },

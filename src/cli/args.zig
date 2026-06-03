@@ -6,8 +6,6 @@ pub const Options = struct {
     start_path: ?[]const u8 = null,
     pty_vt_record_path: ?[]const u8 = null,
     duration_ms: ?u64 = null,
-    debug_process_accounting: bool = false,
-    debug_log_every_ms: ?u32 = null,
     window_title: ?[:0]const u8 = null,
 };
 
@@ -34,13 +32,6 @@ pub fn parse(args: []const []const u8) !Options {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
             options.duration_ms = try std.fmt.parseInt(u64, args[i], 10);
-        } else if (std.mem.eql(u8, arg, "--debug-process-accounting")) {
-            options.debug_process_accounting = true;
-        } else if (std.mem.eql(u8, arg, "--debug-log-every-ms")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            options.debug_log_every_ms = try std.fmt.parseInt(u32, args[i], 10);
-            if (options.debug_log_every_ms.? == 0) return error.InvalidArgs;
         } else if (std.mem.eql(u8, arg, "--pty-vt-record-path")) {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
@@ -50,25 +41,6 @@ pub fn parse(args: []const []const u8) !Options {
         }
     }
     return options;
-}
-
-test "parse accepts debug accounting switches" {
-    const options = try parse(&.{
-        "howl_term",
-        "--debug-process-accounting",
-        "--debug-log-every-ms",
-        "250",
-    });
-    try std.testing.expect(options.debug_process_accounting);
-    try std.testing.expectEqual(@as(u32, 250), options.debug_log_every_ms.?);
-}
-
-test "parse rejects zero debug log interval" {
-    try std.testing.expectError(error.InvalidArgs, parse(&.{
-        "howl_term",
-        "--debug-log-every-ms",
-        "0",
-    }));
 }
 
 test "parse accepts pty vt record path" {
