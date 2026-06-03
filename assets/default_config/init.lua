@@ -20,7 +20,7 @@ return {
     -- Path must exist
     start_path = "$HOME",
     -- Default font size
-    font_size = 6,
+    font_size = 16,
     -- Explicit primary font path. If unset, the bundled default primary is used.
     font_primary = "assets/fonts/IosevkaTermNerdFont-Regular.ttf",
     -- One of: "block", "underline", "bar".
