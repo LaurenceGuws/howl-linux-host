@@ -632,7 +632,7 @@ pub const Context = struct {
     }
 
     fn publishTerminalBytes(self: *Context, bytes: []const u8) bool {
-        _ = vt_retained.followLiveBottom(&self.term);
+        _ = terminal_scrollbar.followLiveBottom(&self.term);
         pty_session.publishInputBytes(&self.term, bytes) catch {
             return false;
         };
@@ -696,7 +696,7 @@ pub const Context = struct {
                 .mouse_logical_y = self.scrollbar.mouse_logical_y,
                 .dragging = self.scrollbar.dragging,
                 .grab_offset = self.scrollbar.grab_offset,
-                .scrollback_offset = vt_retained.scrollState(&self.term).scrollback_offset,
+                .scrollback_offset = terminal_scrollbar.scrollState(&self.term).scrollback_offset,
             };
         }
     };
@@ -742,7 +742,7 @@ pub const Context = struct {
         }
 
         pub fn handleWheelFallback(self: *Context, local_mouse: HostInput.Mouse.Event) bool {
-            const before = vt_retained.scrollState(&self.term).scrollback_offset;
+            const before = terminal_scrollbar.scrollState(&self.term).scrollback_offset;
             const delta: i32 = switch (local_mouse.button) {
                 .wheel_up => 3,
                 .wheel_down => -3,
@@ -750,7 +750,7 @@ pub const Context = struct {
             };
             if (delta == 0) return false;
             terminal_scrollbar.byRows(self, delta);
-            const after = vt_retained.scrollState(&self.term).scrollback_offset;
+            const after = terminal_scrollbar.scrollState(&self.term).scrollback_offset;
             return before != after;
         }
 

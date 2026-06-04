@@ -2,6 +2,7 @@ const std = @import("std");
 const EventLoop = @import("../event_loop.zig");
 const Layout = @import("../display/layout.zig");
 const HostInput = @import("../input/input.zig").Input;
+const vt_surface = @import("vt/surface.zig");
 const vt_retained = @import("vt/retained.zig");
 
 const min_width_logical: c_int = 3;
@@ -19,6 +20,13 @@ pub const Model = struct {
 };
 
 pub const View = struct {
+    visible_rows: u16,
+    scrollback_count: u32,
+    scrollback_offset: u32,
+    alternate_screen: bool,
+};
+
+pub const ScrollState = struct {
     visible_rows: u16,
     scrollback_count: u32,
     scrollback_offset: u32,
@@ -192,6 +200,28 @@ pub const Geometry = struct {
     }
 };
 
+pub fn scrollState(term: anytype) ScrollState {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return scrollStateLocked(term);
+}
+
+pub fn setScrollbackOffset(term: anytype, offset: u32) bool {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    const history_count = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
+    return setScrollbackOffsetLocked(term, history_count, offset);
+}
+
+pub fn followLiveBottom(term: anytype) bool {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return vt_retained.followLiveBottomLocked(term);
+}
+
 fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, focus_t: f32) Geometry {
     const width_delta = max_width_logical - min_width_logical;
     const width = min_width_logical + @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(width_delta)) * focus_t)));
@@ -287,7 +317,7 @@ pub fn handlePages(self: anytype, input_events: *HostInput) void {
     const page_steps = input_events.drainScrollPages();
     var delta_rows: i32 = 0;
     if (page_steps != 0) {
-        const visible_rows: i32 = @intCast(@max(vt_retained.scrollState(&self.term).visible_rows, 1));
+        const visible_rows: i32 = @intCast(@max(scrollState(&self.term).visible_rows, 1));
         const page_rows: i32 = @max(visible_rows - 1, 1);
         delta_rows += page_steps * page_rows;
     }
@@ -295,7 +325,7 @@ pub fn handlePages(self: anytype, input_events: *HostInput) void {
 }
 
 pub fn byRows(self: anytype, delta_rows: i32) void {
-    const term_view = vt_retained.scrollState(&self.term);
+    const term_view = scrollState(&self.term);
     if (term_view.alternate_screen) return;
     const history_count: i32 = cappedI32(term_view.scrollback_count);
     const current: i32 = cappedI32(term_view.scrollback_offset);
@@ -305,7 +335,7 @@ pub fn byRows(self: anytype, delta_rows: i32) void {
 }
 
 pub fn handleMouse(self: anytype, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-    const result = self.scrollbar.handleMouse(mouse_event, origin_x, origin_y, logical_width, logical_height, viewFromTerm(vt_retained.scrollState(&self.term)), self.window_focused);
+    const result = self.scrollbar.handleMouse(mouse_event, origin_x, origin_y, logical_width, logical_height, viewFromTerm(scrollState(&self.term)), self.window_focused);
     if (result.target_offset) |offset| _ = setOffset(self, offset);
     return result.consumed;
 }
@@ -315,13 +345,13 @@ pub fn wantsPassiveHoverWake(self: anytype, origin_x: i32, origin_y: i32, logica
     _ = origin_y;
     _ = logical_width;
     _ = logical_height;
-    return self.scrollbar.wantsPassiveHoverWake(viewFromTerm(vt_retained.scrollState(&self.term)), self.window_focused);
+    return self.scrollbar.wantsPassiveHoverWake(viewFromTerm(scrollState(&self.term)), self.window_focused);
 }
 
 pub fn layout(self: anytype, texture_rect: Layout.Rect) Layout.ScrollbarLayout {
     return self.scrollbar.layout(
         texture_rect,
-        viewFromTerm(vt_retained.scrollState(&self.term)),
+        viewFromTerm(scrollState(&self.term)),
         self.geometry.logical_w,
         self.geometry.logical_h,
         self.window_focused,
@@ -331,14 +361,14 @@ pub fn layout(self: anytype, texture_rect: Layout.Rect) Layout.ScrollbarLayout {
 
 fn setOffset(self: anytype, offset: u32) bool {
     const changed = if (offset == 0)
-        vt_retained.followLiveBottom(&self.term)
+        followLiveBottom(&self.term)
     else
-        vt_retained.setScrollbackOffset(&self.term, offset);
+        setScrollbackOffset(&self.term, offset);
     if (changed) self.scrollbar.invalidate();
     return changed;
 }
 
-fn viewFromTerm(term_view: vt_retained.ScrollState) View {
+fn viewFromTerm(term_view: ScrollState) View {
     return .{
         .visible_rows = term_view.visible_rows,
         .scrollback_count = term_view.scrollback_count,
@@ -350,4 +380,26 @@ fn viewFromTerm(term_view: vt_retained.ScrollState) View {
 fn cappedI32(value: u32) i32 {
     if (value > @as(u32, @intCast(std.math.maxInt(i32)))) return std.math.maxInt(i32);
     return @intCast(value);
+}
+
+fn mutableTerm(term: anytype) *@TypeOf(term.*) {
+    return @constCast(term);
+}
+
+fn scrollStateLocked(term: anytype) ScrollState {
+    const info = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset);
+    return .{
+        .visible_rows = term.render.surface_layout.rows,
+        .scrollback_count = info.history_count,
+        .scrollback_offset = term.vt_state.scrollback_offset,
+        .alternate_screen = info.is_alternate_screen,
+    };
+}
+
+fn setScrollbackOffsetLocked(term: anytype, history_count: u32, offset: u32) bool {
+    const clamped = @min(offset, history_count);
+    std.debug.assert(clamped <= history_count);
+    if (clamped == term.vt_state.scrollback_offset) return false;
+    term.vt_state.scrollback_offset = clamped;
+    return true;
 }

@@ -1,7 +1,6 @@
 const std = @import("std");
 const c = @import("howl_vt_c");
 const terminal_term = @import("../term.zig");
-const surface = @import("surface.zig");
 
 pub const RuntimeObligation = struct {
     pending_now: bool,
@@ -12,20 +11,6 @@ pub const RuntimeProgress = struct {
     state_changed: bool,
     obligation: RuntimeObligation,
 };
-
-pub const ScrollState = struct {
-    visible_rows: u16,
-    scrollback_count: u32,
-    scrollback_offset: u32,
-    alternate_screen: bool,
-};
-
-pub fn scrollState(term: anytype) ScrollState {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    return scrollStateLocked(term);
-}
 
 fn callOk() i32 {
     return c.HOWL_VT_CALL_OK;
@@ -38,16 +23,6 @@ fn callShortBuffer() i32 {
 fn requireOk(status: i32) !void {
     if (status == callOk()) return;
     return error.VtCallFailed;
-}
-
-fn scrollStateLocked(term: anytype) ScrollState {
-    const info = surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset);
-    return .{
-        .visible_rows = term.render.surface_layout.rows,
-        .scrollback_count = info.history_count,
-        .scrollback_offset = term.vt_state.scrollback_offset,
-        .alternate_screen = info.is_alternate_screen,
-    };
 }
 
 pub fn inputScratch(term: anytype) []u8 {
@@ -128,29 +103,6 @@ pub fn copySelection(term: anytype) ![]const u8 {
     const out = term.vt_state.output_scratch[0..];
     const result = c.howl_vt_terminal_copy_selection(term.vt, out.ptr, out.len);
     return copyBoundedBytes(out, result);
-}
-
-pub fn setScrollbackOffset(term: anytype, offset: u32) bool {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    const history_count = surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
-    return setScrollbackOffsetLocked(term, history_count, offset);
-}
-
-fn setScrollbackOffsetLocked(term: anytype, history_count: u32, offset: u32) bool {
-    const clamped = @min(offset, history_count);
-    std.debug.assert(clamped <= history_count);
-    if (clamped == term.vt_state.scrollback_offset) return false;
-    term.vt_state.scrollback_offset = clamped;
-    return true;
-}
-
-pub fn followLiveBottom(term: anytype) bool {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    return followLiveBottomLocked(term);
 }
 
 fn mutableTerm(term: anytype) *@TypeOf(term.*) {
