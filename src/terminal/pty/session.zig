@@ -1,6 +1,5 @@
 const std = @import("std");
 const c = @import("howl_pty_c");
-const retained = @import("retained.zig");
 const terminal_term = @import("../term.zig");
 
 const default_pending_capacity: u32 = 4096;
@@ -57,7 +56,7 @@ pub const OutboundProgress = struct {
     pending_input_bytes: u64,
 };
 
-pub fn initHandle(launch: retained.LaunchConfig, cols: u16, rows: u16) !c.HowlPtySessionHandle {
+pub fn initHandle(launch: terminal_term.PtyLaunch, cols: u16, rows: u16) !c.HowlPtySessionHandle {
     const command_len: c_ulong = if (launch.command) |value| @intCast(value.len) else 0;
     const start_path_len: c_ulong = if (launch.start_path) |value| @intCast(value.len) else 0;
     const handle = c.howl_pty_session_init(

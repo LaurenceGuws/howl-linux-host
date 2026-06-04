@@ -11,14 +11,13 @@ const vt_c = @import("howl_vt_c");
 const pty_pump = @import("pty/pump.zig");
 const pty_wait_thread = @import("pty/wait_thread.zig");
 const fonts_linux = @import("render/fonts_linux.zig");
-const pty_retained = @import("pty/retained.zig");
 const pty_session = @import("pty/session.zig");
 const render_retained = @import("render/retained.zig");
 const vt_surface = @import("vt/surface.zig");
 const terminal_term = @import("term.zig");
 const vt_retained = @import("vt/retained.zig");
 const HowlTerm = terminal_term.Term;
-const LifecycleState = pty_retained.LifecycleState;
+const LifecycleState = terminal_term.LifecycleState;
 const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
@@ -771,7 +770,7 @@ pub const Context = struct {
         vt: vt_c.HowlVtHandle,
     };
 
-    fn launchConfig(conf: *const TerminalConfig) pty_retained.LaunchConfig {
+    fn launchConfig(conf: *const TerminalConfig) terminal_term.PtyLaunch {
         return .{
             .shell = conf.shell,
             .start_path = conf.start_path,
@@ -789,7 +788,7 @@ pub const Context = struct {
         };
     }
 
-    fn initTermState(conf: *const TerminalConfig, launch: pty_retained.LaunchConfig, render_init: RenderInit) !TermInit {
+    fn initTermState(conf: *const TerminalConfig, launch: terminal_term.PtyLaunch, render_init: RenderInit) !TermInit {
         const text_session = try initTextSession(render_init);
         errdefer if (text_session) |handle| render_c.howl_render_text_session_deinit(handle);
         const layout = try initSurfaceLayout(text_session, render_init);

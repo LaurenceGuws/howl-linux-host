@@ -1,11 +1,28 @@
 const std = @import("std");
 const pty_c = @import("howl_pty_c");
 const vt_c = @import("howl_vt_c");
-const pty_retained = @import("pty/retained.zig");
 const render_retained = @import("render/retained.zig");
 const vt_retained = @import("vt/retained.zig");
 
-pub const LifecycleState = pty_retained.LifecycleState;
+pub const PtyLaunch = struct {
+    shell: []const u8,
+    command: ?[]const u8 = null,
+    start_path: ?[]const u8 = null,
+};
+
+pub const LifecycleState = enum(u8) {
+    stopped,
+    starting,
+    ready,
+    failed,
+};
+
+pub const PtyState = struct {
+    launch: PtyLaunch,
+    lifecycle: LifecycleState = .stopped,
+    feed_record_file: ?std.Io.File = null,
+    feed_record_io: ?std.Io = null,
+};
 
 pub const Mutex = struct {
     data: std.Io.Mutex = .init,
@@ -49,7 +66,7 @@ pub const Mutex = struct {
 
 pub const Term = struct {
     allocator: std.mem.Allocator,
-    pty: pty_retained.State,
+    pty: PtyState,
     session: pty_c.HowlPtySessionHandle,
     vt: vt_c.HowlVtHandle,
     render: render_retained.State,
