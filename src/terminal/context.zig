@@ -251,19 +251,19 @@ pub const Context = struct {
     }
 
     pub fn titleSlice(self: *Context) []const u8 {
-        if (vt_retained.titleGeneration(&self.term) != self.title_generation_seen) {
+        if (terminal_term.titleGeneration(&self.term) != self.title_generation_seen) {
             self.refreshTitle();
         }
         return self.title_buf[0..self.title_len];
     }
 
     pub fn titleGeneration(self: *const Context) u64 {
-        return vt_retained.titleGeneration(&self.term);
+        return terminal_term.titleGeneration(&self.term);
     }
 
     pub fn refreshTitle(self: *Context) void {
-        self.title_len = @intCast(vt_retained.copyCurrentTitle(&self.term, self.title_buf[0..]));
-        self.title_generation_seen = vt_retained.titleGeneration(&self.term);
+        self.title_len = @intCast(terminal_term.copyCurrentTitle(&self.term, self.title_buf[0..]));
+        self.title_generation_seen = terminal_term.titleGeneration(&self.term);
         if (self.title_len != 0) return;
         const fallback = self.conf.command orelse self.conf.shell;
         self.title_len = @intCast(@min(fallback.len, self.title_buf.len));
@@ -423,7 +423,7 @@ pub const Context = struct {
     }
 
     fn startRuntime(self: *Context, io: std.Io, feed_record_path: ?[]const u8) !void {
-        try vt_retained.resetTitleFromLaunch(&self.term);
+        terminal_term.resetTitleFromLaunch(&self.term);
         _ = try feed_record.start(&self.term, io, feed_record_path);
         try pty_session.start(&self.term);
         if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;

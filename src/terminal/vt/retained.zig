@@ -3,8 +3,6 @@ const c = @import("howl_vt_c");
 const terminal_term = @import("../term.zig");
 const surface = @import("surface.zig");
 
-const title_max_bytes = terminal_term.vt_title_max_bytes;
-
 pub const RuntimeObligation = struct {
     pending_now: bool,
     deadline_ns: u64,
@@ -21,43 +19,6 @@ pub const ScrollState = struct {
     scrollback_offset: u32,
     alternate_screen: bool,
 };
-
-pub fn resetTitleFromLaunch(term: anytype) !void {
-    const title = if (term.pty.launch.command) |command| blk: {
-        const trimmed = std.mem.trim(u8, command, " \t\r\n");
-        if (trimmed.len > 0) break :blk trimmed;
-        break :blk std.mem.trim(u8, std.fs.path.basename(term.pty.launch.shell), " \t\r\n");
-    } else std.mem.trim(u8, std.fs.path.basename(term.pty.launch.shell), " \t\r\n");
-    setCurrentTitle(term, title);
-}
-
-pub fn copyCurrentTitle(term: anytype, out_buf: []u8) u32 {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return copyCurrentTitleLocked(term, out_buf);
-}
-
-fn copyCurrentTitleLocked(term: anytype, out_buf: []u8) u32 {
-    const len_usize = @min(out_buf.len, currentTitle(term).len);
-    std.debug.assert(len_usize <= std.math.maxInt(u32));
-    const len: u32 = @intCast(len_usize);
-    if (len != 0) @memcpy(out_buf[0..@intCast(len)], currentTitle(term)[0..@intCast(len)]);
-    return len;
-}
-
-fn setCurrentTitle(term: anytype, title: []const u8) void {
-    const written = @min(title.len, title_max_bytes);
-    std.debug.assert(written <= std.math.maxInt(u16));
-    if (written != 0) {
-        std.mem.copyForwards(u8, term.vt_state.title_buf[0..written], title[0..written]);
-    }
-    term.vt_state.title_len = @intCast(written);
-    term.vt_state.title_generation.store(term.vt_state.title_generation.load(.acquire) + 1, .release);
-}
-
-pub fn titleGeneration(term: anytype) u64 {
-    return term.vt_state.title_generation.load(.acquire);
-}
 
 pub fn scrollState(term: anytype) ScrollState {
     const mut = mutableTerm(term);
@@ -137,17 +98,6 @@ pub fn progressRuntimeLocked(term: anytype, now_ns: u64) !RuntimeProgress {
             .deadline_ns = result.obligation.deadline_ns,
         },
     };
-}
-
-pub fn copyTitleLocked(term: anytype) ![]const u8 {
-    const result = c.howl_vt_terminal_copy_title(term.vt, &term.vt_state.title_buf, term.vt_state.title_buf.len);
-    if (result.status == callShortBuffer()) return error.HostBufferTooSmall;
-    try requireOk(result.status);
-    std.debug.assert(result.written <= term.vt_state.title_buf.len);
-    std.debug.assert(result.written <= std.math.maxInt(u16));
-    term.vt_state.title_len = @intCast(result.written);
-    term.vt_state.title_generation.store(term.vt_state.title_generation.load(.acquire) + 1, .release);
-    return currentTitle(term);
 }
 
 pub fn copyPendingOutputLocked(term: anytype) ![]const u8 {
@@ -315,13 +265,9 @@ fn repairScrollback(term: anytype, history_before: u32, history_after: u32, any_
 }
 
 pub fn finishFeed(term: anytype, history_before: u32, history_after: u32, state_changed: bool, title: ?[]const u8) void {
-    if (title) |current| setCurrentTitle(term, current);
+    if (title) |current| terminal_term.setCurrentTitle(term, current);
     if (!state_changed) return;
     repairScrollback(term, history_before, history_after, true);
-}
-
-fn currentTitle(term: anytype) []const u8 {
-    return term.vt_state.title_buf[0..term.vt_state.title_len];
 }
 
 fn copyBoundedBytes(out: []u8, result: c.HowlVtBytesResult) ![]const u8 {
@@ -329,18 +275,4 @@ fn copyBoundedBytes(out: []u8, result: c.HowlVtBytesResult) ![]const u8 {
     try requireOk(result.status);
     std.debug.assert(result.written <= out.len);
     return out[0..@intCast(result.written)];
-}
-
-test "setCurrentTitle accepts aliased current title slice" {
-    const FakeTerm = struct {
-        vt_state: terminal_term.VtState = .{},
-    };
-
-    var term = FakeTerm{};
-    setCurrentTitle(&term, "hello");
-    const aliased = currentTitle(&term);
-    setCurrentTitle(&term, aliased);
-
-    try std.testing.expectEqual(@as(u16, 5), term.vt_state.title_len);
-    try std.testing.expectEqualStrings("hello", currentTitle(&term));
 }

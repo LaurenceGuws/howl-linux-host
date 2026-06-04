@@ -268,7 +268,7 @@ fn feedTermDataLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u
         _ = chunk_len;
         return false;
     }
-    const title = if (result.title_changed != 0) vt_retained.copyTitleLocked(term) catch null else null;
+    const title = if (result.title_changed != 0) terminal_term.copyTitleLocked(term) catch null else null;
     drainTerminalReplyLocked(term);
     const history_after = if (result.state_changed != 0)
         vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count
