@@ -1,8 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-pub const frame_interval_ns: u64 = std.time.ns_per_s / 60;
-
 pub const Pending = struct {
     owner_work: bool,
     runtime_wake: bool,
@@ -22,7 +20,6 @@ pub const State = struct {
     present_in_flight: bool,
     present_complete_pending: bool,
     present_complete_drain_pending: bool,
-    frame_permit_deadline_ns: u64,
 
     pub fn init() State {
         return .{
@@ -32,7 +29,6 @@ pub const State = struct {
             .present_in_flight = false,
             .present_complete_pending = false,
             .present_complete_drain_pending = false,
-            .frame_permit_deadline_ns = 0,
         };
     }
 
@@ -43,25 +39,13 @@ pub const State = struct {
 
     pub fn refreshFramePermit(self: *State, now_ns: u64) void {
         assert(now_ns > 0);
-        if (self.frame_permit_ready) return;
-        if (self.present_in_flight) return;
-        if (self.frame_permit_deadline_ns == 0) {
-            self.frame_permit_ready = true;
-            return;
-        }
-        if (now_ns < self.frame_permit_deadline_ns) return;
-        self.frame_permit_ready = true;
-        self.frame_permit_deadline_ns = 0;
+        _ = self;
     }
 
     pub fn framePermitWaitMs(self: State, now_ns: u64) ?u32 {
         assert(now_ns > 0);
-        if (self.frame_permit_ready) return null;
-        if (self.frame_permit_deadline_ns == 0) return null;
-        if (now_ns >= self.frame_permit_deadline_ns) return 0;
-        const remaining_ns = self.frame_permit_deadline_ns - now_ns;
-        const remaining_ms = std.math.divCeil(u64, remaining_ns, std.time.ns_per_ms) catch unreachable;
-        return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
+        _ = self;
+        return null;
     }
 
     pub fn noteRedrawAndRenderWork(self: *State, redraw_requested: bool, render_work_pending: bool) void {
@@ -77,7 +61,7 @@ pub const State = struct {
         self.present_complete_pending = false;
         self.present_complete_drain_pending = false;
         self.present_in_flight = false;
-        if (self.frame_permit_deadline_ns == 0) self.frame_permit_ready = true;
+        self.frame_permit_ready = true;
     }
 
     pub fn shouldWaitForWindow(self: *State, pending: Pending, runtime_admission: bool) bool {
@@ -142,7 +126,6 @@ pub const State = struct {
             self.present_complete_pending = true;
             self.present_complete_drain_pending = true;
             self.frame_permit_ready = false;
-            if (now_ns != 0) self.frame_permit_deadline_ns = now_ns + frame_interval_ns;
         }
         self.redraw_requested = false;
         if (self.present_complete_pending) assert(self.present_in_flight);
@@ -280,7 +263,7 @@ test "runtime wake does not spin while present completion is pending" {
     try std.testing.expect(pacing.shouldWaitForWindow(pending, false));
 }
 
-test "runtime wake waits for frame deadline after completion drain" {
+test "runtime wake waits only for present completion drain" {
     const pending = Pending{
         .owner_work = false,
         .runtime_wake = true,
@@ -290,23 +273,8 @@ test "runtime wake waits for frame deadline after completion drain" {
     pacing.noteRenderSubmittedAt(.{ .reason = .terminal_frame, .submitted = true }, 1_000);
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
     pacing.notePresentComplete();
-    try std.testing.expect(!pacing.frame_permit_ready);
-    try std.testing.expect(pacing.shouldWaitForWindow(pending, false));
-    try std.testing.expect(pacing.framePermitWaitMs(1_000) != null);
-
-    pacing.refreshFramePermit(1_000 + frame_interval_ns);
     try std.testing.expect(pacing.frame_permit_ready);
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
-}
-
-test "frame deadline wait rounds up to avoid early timeout spin" {
-    var pacing = State.init();
-    pacing.frame_permit_ready = false;
-    pacing.frame_permit_deadline_ns = 3 * std.time.ns_per_ms + 1;
-
-    try std.testing.expectEqual(@as(?u32, 4), pacing.framePermitWaitMs(1));
-    try std.testing.expectEqual(@as(?u32, 1), pacing.framePermitWaitMs(3 * std.time.ns_per_ms));
-    try std.testing.expectEqual(@as(?u32, 0), pacing.framePermitWaitMs(3 * std.time.ns_per_ms + 1));
 }
 
 test "terminal keep wake waits while frame permit is blocked" {

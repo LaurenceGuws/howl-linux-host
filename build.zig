@@ -4,8 +4,6 @@
 // Until further notice, this host exists to validate embedding assumptions early rather than grant host constraints special treatment.
 
 const std = @import("std");
-const HostTests = @import("build_support/host_tests.zig");
-
 const Build = std.Build;
 const Compile = Build.Step.Compile;
 const Module = Build.Module;
@@ -30,21 +28,6 @@ const HostDeps = struct {
     sdl_lib: *Compile,
     stb_image: Build.LazyPath,
 
-    fn testDeps(self: HostDeps) HostTests.Deps {
-        return .{
-            .target = self.target,
-            .optimize = self.optimize,
-            .howl_lua_mod = self.howl_lua_mod,
-            .howl_render_lib = self.howl_render_lib,
-            .howl_pty_lib = self.howl_pty_lib,
-            .howl_vt_lib = self.howl_vt_lib,
-            .howl_render_include = self.howl_render_include,
-            .howl_pty_include = self.howl_pty_include,
-            .howl_vt_include = self.howl_vt_include,
-            .sdl_include = self.sdl_include,
-            .vendor_include = self.vendor_include,
-        };
-    }
 };
 
 const Steps = struct {
@@ -322,8 +305,8 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     steps.test_unit.dependOn(&run_terminal_context_tests.step);
     steps.test_all.dependOn(steps.test_unit);
 
-    const host_test_mod = HostTests.createModule(b, deps.testDeps());
-    addHostCImports(host_test_mod, deps);
+    const host_test_mod = hostTestRootModule(b, deps);
+
     const integration_test_mod = b.createModule(.{
         .root_source_file = b.path("src/integration_test_root.zig"),
         .target = target,
@@ -371,19 +354,11 @@ fn renderSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
 }
 
 fn terminalContextTestModule(b: *Build, deps: HostDeps) *Module {
-    const module = b.createModule(.{
-        .root_source_file = b.path("src/host_test_root.zig"),
-        .target = deps.target,
-        .optimize = deps.optimize,
-    });
-    module.addImport("howl_lua", deps.howl_lua_mod);
-    addHostCImports(module, deps);
-    module.addIncludePath(deps.sdl_include);
-    module.addIncludePath(deps.vendor_include);
-    module.addIncludePath(deps.howl_render_include);
-    module.addIncludePath(deps.howl_pty_include);
-    module.addIncludePath(deps.howl_vt_include);
-    return module;
+    return hostTestRootModule(b, deps);
+}
+
+fn hostTestRootModule(b: *Build, deps: HostDeps) *Module {
+    return createHostModule(b, deps, "src/host_test_root.zig");
 }
 
 fn configureHostTests(mod_tests: *Compile, deps: HostDeps) void {

@@ -9,4 +9,6 @@ pub const Window = @import("window_chrome/window.zig");
 test {
     _ = EventLoop;
     _ = PtyWaitThread;
+    _ = @import("display/renderer/render_surface_test.zig");
+    _ = @import("terminal/context_test.zig");
 }
