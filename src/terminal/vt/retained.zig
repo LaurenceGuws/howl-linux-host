@@ -1,10 +1,9 @@
 const std = @import("std");
 const c = @import("howl_vt_c");
+const terminal_term = @import("../term.zig");
 const surface = @import("surface.zig");
 
-const title_max_bytes = @as(usize, c.HOWL_VT_TITLE_MAX_BYTES);
-const output_max_bytes = @as(usize, c.HOWL_VT_PENDING_OUTPUT_MAX_BYTES);
-const input_max_bytes = @as(usize, c.HOWL_VT_INPUT_ENCODE_MAX_BYTES);
+const title_max_bytes = terminal_term.vt_title_max_bytes;
 
 pub const RuntimeObligation = struct {
     pending_now: bool,
@@ -16,50 +15,11 @@ pub const RuntimeProgress = struct {
     obligation: RuntimeObligation,
 };
 
-comptime {
-    std.debug.assert(title_max_bytes > 0);
-    std.debug.assert(output_max_bytes > 0);
-    std.debug.assert(input_max_bytes > 0);
-    std.debug.assert(output_max_bytes >= c.HOWL_VT_CLIPBOARD_SCRATCH_MAX_BYTES);
-}
-
 pub const ScrollState = struct {
     visible_rows: u16,
     scrollback_count: u32,
     scrollback_offset: u32,
     alternate_screen: bool,
-};
-
-pub const State = struct {
-    title_buf: [title_max_bytes]u8 = undefined,
-    title_len: u16 = 0,
-    title_generation: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
-    output_scratch: [output_max_bytes]u8 = undefined,
-    input_scratch: [input_max_bytes]u8 = undefined,
-    surface_cells_scratch: []c.HowlVtSurfaceCell = &.{},
-    scrollback_offset: u32 = 0,
-    focused: bool = true,
-    cursor_visible: bool = true,
-    cursor_blink: bool = false,
-
-    pub fn deinit(self: *State, allocator: std.mem.Allocator) void {
-        if (self.surface_cells_scratch.len > 0) allocator.free(self.surface_cells_scratch);
-        self.surface_cells_scratch = &.{};
-    }
-
-    pub fn ensureSurfaceCellScratch(self: *State, allocator: std.mem.Allocator, cols: u16, rows: u16) ![]c.HowlVtSurfaceCell {
-        std.debug.assert(cols > 0);
-        std.debug.assert(rows > 0);
-        const cell_count = try std.math.mul(usize, cols, rows);
-        if (self.surface_cells_scratch.len >= cell_count) {
-            return self.surface_cells_scratch[0..cell_count];
-        }
-
-        const next = try allocator.alloc(c.HowlVtSurfaceCell, cell_count);
-        if (self.surface_cells_scratch.len > 0) allocator.free(self.surface_cells_scratch);
-        self.surface_cells_scratch = next;
-        return self.surface_cells_scratch[0..cell_count];
-    }
 };
 
 pub fn resetTitleFromLaunch(term: anytype) !void {
@@ -373,7 +333,7 @@ fn copyBoundedBytes(out: []u8, result: c.HowlVtBytesResult) ![]const u8 {
 
 test "setCurrentTitle accepts aliased current title slice" {
     const FakeTerm = struct {
-        vt_state: State = .{},
+        vt_state: terminal_term.VtState = .{},
     };
 
     var term = FakeTerm{};
