@@ -207,6 +207,12 @@ fn wireRunStep(b: *Build, step: *Build.Step, exe: *Compile) void {
     step.dependOn(&run_cmd.step);
 }
 
+fn addTestRunArtifact(b: *Build, tests: *Compile) *Build.Step.Run {
+    const run_tests = b.addRunArtifact(tests);
+    if (b.args != null) run_tests.has_side_effects = true;
+    return run_tests;
+}
+
 fn artifactName(b: *Build, base: []const u8, optimize: std.builtin.OptimizeMode) []const u8 {
     return b.fmt("{s}_{s}", .{ base, optimizeSuffix(optimize) });
 }
@@ -232,8 +238,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
         .filters = filters,
     });
     configureHostTests(cli_args_tests, deps);
-    const run_cli_args_tests = b.addRunArtifact(cli_args_tests);
-    if (b.args != null) run_cli_args_tests.has_side_effects = true;
+    const run_cli_args_tests = addTestRunArtifact(b, cli_args_tests);
 
     const config_env_tests = b.addTest(.{
         .name = "test-config-env",
@@ -245,8 +250,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
         .filters = filters,
     });
     configureHostTests(config_env_tests, deps);
-    const run_config_env_tests = b.addRunArtifact(config_env_tests);
-    if (b.args != null) run_config_env_tests.has_side_effects = true;
+    const run_config_env_tests = addTestRunArtifact(b, config_env_tests);
 
     const tab_bar_tests = b.addTest(.{
         .name = "test-tab-bar",
@@ -258,8 +262,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
         .filters = filters,
     });
     configureHostTests(tab_bar_tests, deps);
-    const run_tab_bar_tests = b.addRunArtifact(tab_bar_tests);
-    if (b.args != null) run_tab_bar_tests.has_side_effects = true;
+    const run_tab_bar_tests = addTestRunArtifact(b, tab_bar_tests);
 
     const retained_tests = b.addTest(.{
         .name = "test-retained-render",
@@ -269,8 +272,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     retained_tests.use_llvm = true;
     retained_tests.root_module.linkLibrary(deps.howl_render_lib);
     retained_tests.root_module.link_libc = true;
-    const run_retained_tests = b.addRunArtifact(retained_tests);
-    if (b.args != null) run_retained_tests.has_side_effects = true;
+    const run_retained_tests = addTestRunArtifact(b, retained_tests);
 
     const render_surface_tests = b.addTest(.{
         .name = "test-render-surface",
@@ -279,8 +281,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     });
     render_surface_tests.use_llvm = true;
     render_surface_tests.root_module.link_libc = true;
-    const run_render_surface_tests = b.addRunArtifact(render_surface_tests);
-    if (b.args != null) run_render_surface_tests.has_side_effects = true;
+    const run_render_surface_tests = addTestRunArtifact(b, render_surface_tests);
 
     const terminal_context_tests = b.addTest(.{
         .name = "test-terminal-context",
@@ -288,8 +289,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
         .filters = filters,
     });
     configureHostTests(terminal_context_tests, deps);
-    const run_terminal_context_tests = b.addRunArtifact(terminal_context_tests);
-    if (b.args != null) run_terminal_context_tests.has_side_effects = true;
+    const run_terminal_context_tests = addTestRunArtifact(b, terminal_context_tests);
 
     stageTestArtifact(steps.test_unit_build, cli_args_tests);
     stageTestArtifact(steps.test_unit_build, config_env_tests);
@@ -324,8 +324,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
 
     configureHostTests(integration_tests, deps);
 
-    const run_integration_tests = b.addRunArtifact(integration_tests);
-    if (b.args != null) run_integration_tests.has_side_effects = true;
+    const run_integration_tests = addTestRunArtifact(b, integration_tests);
 
     stageTestArtifact(steps.test_integration_build, integration_tests);
     steps.test_integration.dependOn(&run_integration_tests.step);
