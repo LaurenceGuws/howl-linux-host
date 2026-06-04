@@ -16,7 +16,7 @@ pub const Deps = struct {
 
 pub fn createModule(b: *std.Build, deps: Deps) *std.Build.Module {
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/test_root.zig"),
+        .root_source_file = b.path("src/host_test_root.zig"),
         .target = deps.target,
         .optimize = deps.optimize,
         .imports = &.{

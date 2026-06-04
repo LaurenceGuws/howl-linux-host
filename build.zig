@@ -239,38 +239,44 @@ fn optimizeSuffix(optimize: std.builtin.OptimizeMode) []const u8 {
 
 fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
     const filters = b.args orelse &.{};
-    const unit_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/test/test_entry.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "cli_args", .module = b.createModule(.{
-                .root_source_file = b.path("src/cli/args.zig"),
-                .target = target,
-                .optimize = optimize,
-            }) },
-            .{ .name = "config_env", .module = b.createModule(.{
-                .root_source_file = b.path("src/config/env.zig"),
-                .target = target,
-                .optimize = optimize,
-            }) },
-            .{ .name = "tab_bar", .module = b.createModule(.{
-                .root_source_file = b.path("src/tab_bar/tab_bar.zig"),
-                .target = target,
-                .optimize = optimize,
-            }) },
-        },
-    });
-
-    const unit_tests = b.addTest(.{
-        .name = "test-unit",
-        .root_module = unit_test_mod,
+    const cli_args_tests = b.addTest(.{
+        .name = "test-cli-args",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/args.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
         .filters = filters,
     });
-    configureHostTests(unit_tests, deps);
+    configureHostTests(cli_args_tests, deps);
+    const run_cli_args_tests = b.addRunArtifact(cli_args_tests);
+    if (b.args != null) run_cli_args_tests.has_side_effects = true;
 
-    const run_unit_tests = b.addRunArtifact(unit_tests);
-    if (b.args != null) run_unit_tests.has_side_effects = true;
+    const config_env_tests = b.addTest(.{
+        .name = "test-config-env",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/config/env.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = filters,
+    });
+    configureHostTests(config_env_tests, deps);
+    const run_config_env_tests = b.addRunArtifact(config_env_tests);
+    if (b.args != null) run_config_env_tests.has_side_effects = true;
+
+    const tab_bar_tests = b.addTest(.{
+        .name = "test-tab-bar",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tab_bar/tab_bar.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = filters,
+    });
+    configureHostTests(tab_bar_tests, deps);
+    const run_tab_bar_tests = b.addRunArtifact(tab_bar_tests);
+    if (b.args != null) run_tab_bar_tests.has_side_effects = true;
 
     const retained_tests = b.addTest(.{
         .name = "test-retained-render",
@@ -302,11 +308,15 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     const run_terminal_context_tests = b.addRunArtifact(terminal_context_tests);
     if (b.args != null) run_terminal_context_tests.has_side_effects = true;
 
-    stageTestArtifact(steps.test_unit_build, unit_tests);
+    stageTestArtifact(steps.test_unit_build, cli_args_tests);
+    stageTestArtifact(steps.test_unit_build, config_env_tests);
+    stageTestArtifact(steps.test_unit_build, tab_bar_tests);
     stageTestArtifact(steps.test_unit_build, retained_tests);
     stageTestArtifact(steps.test_unit_build, render_surface_tests);
     stageTestArtifact(steps.test_unit_build, terminal_context_tests);
-    steps.test_unit.dependOn(&run_unit_tests.step);
+    steps.test_unit.dependOn(&run_cli_args_tests.step);
+    steps.test_unit.dependOn(&run_config_env_tests.step);
+    steps.test_unit.dependOn(&run_tab_bar_tests.step);
     steps.test_unit.dependOn(&run_retained_tests.step);
     steps.test_unit.dependOn(&run_render_surface_tests.step);
     steps.test_unit.dependOn(&run_terminal_context_tests.step);
@@ -315,7 +325,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     const host_test_mod = HostTests.createModule(b, deps.testDeps());
     addHostCImports(host_test_mod, deps);
     const integration_test_mod = b.createModule(.{
-        .root_source_file = b.path("src/test/integration_entry.zig"),
+        .root_source_file = b.path("src/integration_test_root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -362,7 +372,7 @@ fn renderSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
 
 fn terminalContextTestModule(b: *Build, deps: HostDeps) *Module {
     const module = b.createModule(.{
-        .root_source_file = b.path("src/test_root.zig"),
+        .root_source_file = b.path("src/host_test_root.zig"),
         .target = deps.target,
         .optimize = deps.optimize,
     });
