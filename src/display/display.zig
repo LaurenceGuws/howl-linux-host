@@ -17,17 +17,13 @@ pub const C = struct {
     pub const GL_CLAMP_TO_EDGE = gl_c.GL_CLAMP_TO_EDGE;
     pub const GL_COLOR_BUFFER_BIT = gl_c.GL_COLOR_BUFFER_BIT;
     pub const GL_NEAREST = gl_c.GL_NEAREST;
-    pub const GL_PACK_ALIGNMENT = gl_c.GL_PACK_ALIGNMENT;
     pub const GL_QUADS = gl_c.GL_QUADS;
     pub const GL_RGBA = gl_c.GL_RGBA;
     pub const GL_TEXTURE_2D = gl_c.GL_TEXTURE_2D;
-    pub const GL_TEXTURE_HEIGHT = gl_c.GL_TEXTURE_HEIGHT;
     pub const GL_TEXTURE_MAG_FILTER = gl_c.GL_TEXTURE_MAG_FILTER;
     pub const GL_TEXTURE_MIN_FILTER = gl_c.GL_TEXTURE_MIN_FILTER;
-    pub const GL_TEXTURE_WIDTH = gl_c.GL_TEXTURE_WIDTH;
     pub const GL_TEXTURE_WRAP_S = gl_c.GL_TEXTURE_WRAP_S;
     pub const GL_TEXTURE_WRAP_T = gl_c.GL_TEXTURE_WRAP_T;
-    pub const GL_UNSIGNED_BYTE = gl_c.GL_UNSIGNED_BYTE;
 
     pub const SDL_GL_CreateContext = sdl_c.SDL_GL_CreateContext;
     pub const SDL_GL_GetCurrentContext = sdl_c.SDL_GL_GetCurrentContext;
@@ -52,10 +48,6 @@ pub const C = struct {
     pub const glEnable = gl_c.glEnable;
     pub const glEnd = gl_c.glEnd;
     pub const glGenTextures = gl_c.glGenTextures;
-    pub const glGetTexImage = gl_c.glGetTexImage;
-    pub const glGetTexLevelParameteriv = gl_c.glGetTexLevelParameteriv;
-    pub const glPixelStorei = gl_c.glPixelStorei;
-    pub const glReadPixels = gl_c.glReadPixels;
     pub const glTexCoord2f = gl_c.glTexCoord2f;
     pub const glTexParameteri = gl_c.glTexParameteri;
     pub const glVertex2f = gl_c.glVertex2f;
@@ -66,41 +58,6 @@ pub const State = GenericState(C);
 
 pub const PresentToken = u64;
 
-pub const PresentProofStats = struct {
-    observed: bool,
-    width: c_int,
-    height: c_int,
-    rgba_len: usize,
-    rgba_has_non_zero_byte: bool,
-    rgba_has_non_clear_pixel: bool,
-};
-
-pub const PresentProofSnapshot = struct {
-    observed: bool,
-    term_texture_id: u32,
-    texture: PresentProofStats,
-    framebuffer_before: PresentProofStats,
-    framebuffer_after: PresentProofStats,
-    framebuffer_delta: PresentProofDelta,
-    probe_rect: Layout.Rect,
-    framebuffer_probe_before: PresentProofStats,
-    framebuffer_probe_after: PresentProofStats,
-    framebuffer_probe_delta: PresentProofDelta,
-};
-
-pub const PresentProofDelta = struct {
-    observed: bool,
-    rgba_len: usize,
-    bytes_changed: bool,
-    changed_byte_count: usize,
-    first_changed_byte: usize,
-};
-
-const FramebufferObservation = struct {
-    stats: PresentProofStats,
-    rgba: ?[]u8,
-};
-
 pub fn GenericState(comptime c: type) type {
     return struct {
         window: ?*c.SDL_Window,
@@ -110,9 +67,6 @@ pub fn GenericState(comptime c: type) type {
         tab_cache_w: c_int,
         tab_cache_h: c_int,
         tab_cache_revision: u64,
-        proof_capture_requested: bool,
-        proof_probe_rect: ?Layout.Rect,
-        last_present_proof: PresentProofSnapshot,
         next_present_token: PresentToken,
         submitted_present: ?PresentToken,
         completed_present: ?PresentToken,
@@ -123,14 +77,6 @@ pub fn GenericState(comptime c: type) type {
 
         pub fn drainPresentComplete(self: *@This()) ?PresentToken {
             return displayDrainPresentComplete(C, self);
-        }
-
-        pub fn requestPresentProof(self: *@This()) void {
-            displayRequestPresentProof(C, self);
-        }
-
-        pub fn presentProofSnapshot(self: *const @This()) PresentProofSnapshot {
-            return displayPresentProofSnapshot(C, self);
         }
     };
 }
@@ -148,9 +94,6 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) !v
         .tab_cache_w = 0,
         .tab_cache_h = 0,
         .tab_cache_revision = 0,
-        .proof_capture_requested = false,
-        .proof_probe_rect = null,
-        .last_present_proof = emptyPresentProofSnapshot(),
         .next_present_token = 1,
         .submitted_present = null,
         .completed_present = null,
@@ -220,15 +163,6 @@ pub fn displayDrainPresentComplete(comptime c: type, state: *GenericState(c)) ?P
     return token;
 }
 
-pub fn displayRequestPresentProof(comptime c: type, state: *GenericState(c)) void {
-    state.proof_capture_requested = true;
-}
-
-pub fn displayPresentProofSnapshot(comptime c: type, state: *const GenericState(c)) PresentProofSnapshot {
-    return state.last_present_proof;
-}
-
-
 fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {
     const bar_h = @max(frame.term_texture_rect.y, 0);
     if (bar_h <= 0) {
@@ -290,197 +224,6 @@ fn setTextureParams(comptime c: type) void {
     c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
 }
 
-fn emptyPresentProofStats() PresentProofStats {
-    return .{
-        .observed = false,
-        .width = 0,
-        .height = 0,
-        .rgba_len = 0,
-        .rgba_has_non_zero_byte = false,
-        .rgba_has_non_clear_pixel = false,
-    };
-}
-
-fn emptyPresentProofSnapshot() PresentProofSnapshot {
-    return .{
-        .observed = false,
-        .term_texture_id = 0,
-        .texture = emptyPresentProofStats(),
-        .framebuffer_before = emptyPresentProofStats(),
-        .framebuffer_after = emptyPresentProofStats(),
-        .framebuffer_delta = emptyPresentProofDelta(),
-        .probe_rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-        .framebuffer_probe_before = emptyPresentProofStats(),
-        .framebuffer_probe_after = emptyPresentProofStats(),
-        .framebuffer_probe_delta = emptyPresentProofDelta(),
-    };
-}
-
-fn emptyPresentProofDelta() PresentProofDelta {
-    return .{
-        .observed = false,
-        .rgba_len = 0,
-        .bytes_changed = false,
-        .changed_byte_count = 0,
-        .first_changed_byte = 0,
-    };
-}
-
-fn emptyFramebufferObservation() FramebufferObservation {
-    return .{
-        .stats = emptyPresentProofStats(),
-        .rgba = null,
-    };
-}
-
-fn capturePresentProof(
-    comptime c: type,
-    state: *GenericState(c),
-    frame: Layout.Frame,
-    probe_rect: ?Layout.Rect,
-    framebuffer_before: FramebufferObservation,
-    framebuffer_probe_before: FramebufferObservation,
-) void {
-    state.proof_capture_requested = false;
-    state.proof_probe_rect = null;
-    const framebuffer_after = observeFramebufferBytes(c, frame.term_texture_rect);
-    defer if (framebuffer_after.rgba) |pixels| std.heap.c_allocator.free(pixels);
-    const framebuffer_probe_after = if (probe_rect) |rect|
-        observeFramebufferBytes(c, rect)
-    else
-        emptyFramebufferObservation();
-    defer if (framebuffer_probe_after.rgba) |pixels| std.heap.c_allocator.free(pixels);
-
-    state.last_present_proof = .{
-        .observed = true,
-        .term_texture_id = frame.term_texture_id,
-        .texture = observeTexture(c, frame.term_texture_id),
-        .framebuffer_before = framebuffer_before.stats,
-        .framebuffer_after = framebuffer_after.stats,
-        .framebuffer_delta = compareFramebufferBytes(framebuffer_before.rgba, framebuffer_after.rgba),
-        .probe_rect = probe_rect orelse .{ .x = 0, .y = 0, .width = 0, .height = 0 },
-        .framebuffer_probe_before = framebuffer_probe_before.stats,
-        .framebuffer_probe_after = framebuffer_probe_after.stats,
-        .framebuffer_probe_delta = compareFramebufferBytes(framebuffer_probe_before.rgba, framebuffer_probe_after.rgba),
-    };
-}
-
-fn clipRectToBounds(rect: Layout.Rect, bounds: Layout.Rect) ?Layout.Rect {
-    const left = @max(rect.x, bounds.x);
-    const top = @max(rect.y, bounds.y);
-    const right = @min(rect.x + rect.width, bounds.x + bounds.width);
-    const bottom = @min(rect.y + rect.height, bounds.y + bounds.height);
-    if (right <= left or bottom <= top) return null;
-    return .{
-        .x = left,
-        .y = top,
-        .width = right - left,
-        .height = bottom - top,
-    };
-}
-
-fn observeTexture(comptime c: type, texture_id: u32) PresentProofStats {
-    var stats = emptyPresentProofStats();
-    if (texture_id == 0) return stats;
-
-    c.glBindTexture(c.GL_TEXTURE_2D, texture_id);
-    defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
-
-    var width: c_int = 0;
-    var height: c_int = 0;
-    c.glGetTexLevelParameteriv(c.GL_TEXTURE_2D, 0, c.GL_TEXTURE_WIDTH, &width);
-    c.glGetTexLevelParameteriv(c.GL_TEXTURE_2D, 0, c.GL_TEXTURE_HEIGHT, &height);
-    if (width <= 0 or height <= 0) return stats;
-
-    const len = rgbaLen(width, height) orelse return stats;
-    const pixels = std.heap.c_allocator.alloc(u8, len) catch return stats;
-    defer std.heap.c_allocator.free(pixels);
-
-    c.glPixelStorei(c.GL_PACK_ALIGNMENT, 1);
-    c.glGetTexImage(c.GL_TEXTURE_2D, 0, c.GL_RGBA, c.GL_UNSIGNED_BYTE, pixels.ptr);
-    stats = observePixels(width, height, pixels);
-    return stats;
-}
-
-fn observeFramebufferBytes(comptime c: type, rect: Layout.Rect) FramebufferObservation {
-    var observation = emptyFramebufferObservation();
-    if (rect.width <= 0 or rect.height <= 0) return observation;
-
-    const len = rgbaLen(rect.width, rect.height) orelse return observation;
-    const pixels = std.heap.c_allocator.alloc(u8, len) catch return observation;
-
-    c.glPixelStorei(c.GL_PACK_ALIGNMENT, 1);
-    c.glReadPixels(rect.x, rect.y, rect.width, rect.height, c.GL_RGBA, c.GL_UNSIGNED_BYTE, pixels.ptr);
-    observation.stats = observePixels(rect.width, rect.height, pixels);
-    observation.rgba = pixels;
-    return observation;
-}
-
-fn compareFramebufferBytes(before: ?[]const u8, after: ?[]const u8) PresentProofDelta {
-    const before_pixels = before orelse return emptyPresentProofDelta();
-    const after_pixels = after orelse return emptyPresentProofDelta();
-    if (before_pixels.len != after_pixels.len) return emptyPresentProofDelta();
-
-    var delta = PresentProofDelta{
-        .observed = true,
-        .rgba_len = before_pixels.len,
-        .bytes_changed = false,
-        .changed_byte_count = 0,
-        .first_changed_byte = 0,
-    };
-    for (before_pixels, after_pixels, 0..) |before_byte, after_byte, i| {
-        if (before_byte == after_byte) continue;
-        if (!delta.bytes_changed) {
-            delta.bytes_changed = true;
-            delta.first_changed_byte = i;
-        }
-        delta.changed_byte_count += 1;
-    }
-    return delta;
-}
-
-fn rgbaLen(width: c_int, height: c_int) ?usize {
-    const w: usize = @intCast(width);
-    const h: usize = @intCast(height);
-    const pixels = std.math.mul(usize, w, h) catch return null;
-    return std.math.mul(usize, pixels, 4) catch return null;
-}
-
-fn observePixels(width: c_int, height: c_int, pixels: []const u8) PresentProofStats {
-    return .{
-        .observed = true,
-        .width = width,
-        .height = height,
-        .rgba_len = pixels.len,
-        .rgba_has_non_zero_byte = hasNonZeroByte(pixels),
-        .rgba_has_non_clear_pixel = hasNonClearPixel(pixels),
-    };
-}
-
-fn hasNonZeroByte(bytes: []const u8) bool {
-    for (bytes) |byte| {
-        if (byte != 0) return true;
-    }
-    return false;
-}
-
-fn hasNonClearPixel(bytes: []const u8) bool {
-    var i: usize = 0;
-    while (i + 3 < bytes.len) : (i += 4) {
-        if (pixelDiffersFromClear(bytes[i + 0], bytes[i + 1], bytes[i + 2], bytes[i + 3])) return true;
-    }
-    return false;
-}
-
-fn pixelDiffersFromClear(r: u8, g: u8, b: u8, a: u8) bool {
-    return channelDiffers(r, 15) or channelDiffers(g, 23) or channelDiffers(b, 36) or channelDiffers(a, 255);
-}
-
-fn channelDiffers(value: u8, expected: u8) bool {
-    const delta = @as(i16, value) - @as(i16, expected);
-    return delta < -1 or delta > 1;
-}
-
 const FakeC = struct {
     const SDL_Window = opaque {};
     const SDL_GLContext = ?*anyopaque;
@@ -540,9 +283,6 @@ fn testState() GenericState(FakeC) {
         .tab_cache_w = 0,
         .tab_cache_h = 0,
         .tab_cache_revision = 0,
-        .proof_capture_requested = false,
-        .proof_probe_rect = null,
-        .last_present_proof = emptyPresentProofSnapshot(),
         .next_present_token = 1,
         .submitted_present = null,
         .completed_present = null,

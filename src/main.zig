@@ -115,10 +115,6 @@ pub fn main(init: std.process.Init) !void {
     try start(init.io, options, feed_record_path);
 }
 
-pub fn startForTest(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
-    return start(io, options, feed_record_path);
-}
-
 noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
     setCurrentThreadName("howl-main");
     try initVideo();

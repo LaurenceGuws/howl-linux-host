@@ -548,60 +548,11 @@ pub const Context = struct {
     const ContextSubmitBackend = struct {
         fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload) bool {
             const render_surface = prepared_upload.render_surface orelse {
-                if (isRecoverableRenderSurfaceRetrievalStatus(prepared_upload.render_surface_status)) return false;
-                crashOnRenderSurfaceRetrievalStatus(prepared_upload.render_surface_status);
+                if (prepared_upload.render_surface_status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW) return false;
+                std.debug.panic("trusted render surface retrieval failed: status={}", .{prepared_upload.render_surface_status});
                 return false;
             };
             return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, render_surface);
-        }
-
-        const RenderSurfaceRetrievalError = error{
-            TrustedRenderSurfaceMissingSurface,
-            TrustedRenderSurfaceMissingHandle,
-            TrustedRenderSurfaceInvalidArgument,
-            TrustedRenderSurfaceCommandBoundOverflow,
-            TrustedRenderSurfaceCreateBoundOverflow,
-            TrustedRenderSurfaceDamageBoundOverflow,
-            TrustedRenderSurfaceRetireBoundOverflow,
-            TrustedRenderSurfaceResourceBoundOverflow,
-            TrustedRenderSurfaceUploadBoundOverflow,
-            TrustedRenderSurfaceUploadBytesOverflow,
-            TrustedRenderSurfaceInvalidPreparedSprite,
-            TrustedRenderSurfaceMissingPreparedSprite,
-            TrustedRenderSurfaceAllocationFailed,
-            TrustedRenderSurfaceUnknownRetrievalStatus,
-        };
-
-        fn unavailableRenderSurfaceRetrievalError(status: render_c.HowlRenderPreparedSurfaceRenderSurfaceStatus) RenderSurfaceRetrievalError!void {
-            if (status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK) return error.TrustedRenderSurfaceMissingSurface;
-            return renderSurfaceRetrievalError(status);
-        }
-
-        fn renderSurfaceRetrievalError(status: render_c.HowlRenderPreparedSurfaceRenderSurfaceStatus) RenderSurfaceRetrievalError!void {
-            return switch (status) {
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK => {},
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_MISSING_HANDLE => error.TrustedRenderSurfaceMissingHandle,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_INVALID_ARGUMENT => error.TrustedRenderSurfaceInvalidArgument,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW => error.TrustedRenderSurfaceCommandBoundOverflow,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_CREATE_BOUND_OVERFLOW => error.TrustedRenderSurfaceCreateBoundOverflow,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_DAMAGE_BOUND_OVERFLOW => error.TrustedRenderSurfaceDamageBoundOverflow,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_RETIRE_BOUND_OVERFLOW => error.TrustedRenderSurfaceRetireBoundOverflow,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_RESOURCE_BOUND_OVERFLOW => error.TrustedRenderSurfaceResourceBoundOverflow,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_UPLOAD_BOUND_OVERFLOW => error.TrustedRenderSurfaceUploadBoundOverflow,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_UPLOAD_BYTES_OVERFLOW => error.TrustedRenderSurfaceUploadBytesOverflow,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_INVALID_PREPARED_SPRITE => error.TrustedRenderSurfaceInvalidPreparedSprite,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_MISSING_PREPARED_SPRITE => error.TrustedRenderSurfaceMissingPreparedSprite,
-                render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_ALLOCATION_FAILED => error.TrustedRenderSurfaceAllocationFailed,
-                else => error.TrustedRenderSurfaceUnknownRetrievalStatus,
-            };
-        }
-
-        fn crashOnRenderSurfaceRetrievalStatus(status: render_c.HowlRenderPreparedSurfaceRenderSurfaceStatus) void {
-            unavailableRenderSurfaceRetrievalError(status) catch |err| std.debug.panic("trusted render surface retrieval failed: error={s}", .{@errorName(err)});
-        }
-
-        fn isRecoverableRenderSurfaceRetrievalStatus(status: render_c.HowlRenderPreparedSurfaceRenderSurfaceStatus) bool {
-            return status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW;
         }
 
         fn execution(self: anytype, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
@@ -618,7 +569,7 @@ pub const Context = struct {
     fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
-            return .{ .result = .failed, .snapshot_seq = 0, .failure = .missing_prepared_upload };
+            return .{ .result = .failed, .snapshot_seq = 0 };
         }
         defer upload.deinit();
         const prepared_handle = self.term.render.preparedSurfaceHandle();
@@ -631,68 +582,27 @@ pub const Context = struct {
         self.term.mutex.lockFair();
 
         const current_handle = self.term.render.preparedSurfaceHandle();
-        const prepared_stable = preparedHandleStable(current_handle, prepared_handle);
         std.debug.assert(!self.term.render.presentPending());
-        if (!prepared_stable) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .failure = .prepared_handle_changed };
+        if (current_handle != prepared_handle) {
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
-        std.debug.assert(prepared_stable);
         if (!upload_ok) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .failure = .backend_upload_failed };
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
         const execution = Backend.execution(self, &upload);
         const result = self.term.render.submit(&execution, &submit_result);
-        const failure = if (result == .rendered)
-            SubmitFailureReason.none
-        else
-            submitFailureReason(self.term.render.lastSubmitFailure());
         if (result == .rendered) {
             self.term_texture = submit_result.host_surface;
         }
-        return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq, .failure = failure };
+        return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq };
     }
 
     const SubmitPreparedResult = struct {
         result: render_retained.SubmitResult,
         snapshot_seq: u64,
-        failure: SubmitFailureReason = .none,
     };
-
-    const SubmitFailureReason = enum {
-        none,
-        missing_prepared_upload,
-        backend_upload_failed,
-        prepared_handle_changed,
-        retained_present_pending,
-        retained_decision_failed,
-        retained_decision_stale,
-        retained_decision_needs_prepare,
-        retained_submit_idle,
-        retained_submit_stale,
-        retained_submit_needs_prepare,
-        retained_submit_failed,
-    };
-
-    fn submitFailureReason(failure: render_retained.SubmitFailure) SubmitFailureReason {
-        return switch (failure) {
-            .none => .none,
-            .present_pending => .retained_present_pending,
-            .decision_failed => .retained_decision_failed,
-            .decision_stale => .retained_decision_stale,
-            .decision_needs_prepare => .retained_decision_needs_prepare,
-            .submit_idle => .retained_submit_idle,
-            .submit_stale => .retained_submit_stale,
-            .submit_needs_prepare => .retained_submit_needs_prepare,
-            .submit_failed => .retained_submit_failed,
-        };
-    }
-
-    fn preparedHandleStable(current: render_c.HowlRenderPreparedSurfaceHandle, prepared: render_c.HowlRenderPreparedSurfaceHandle) bool {
-        std.debug.assert(prepared != null);
-        return current == prepared;
-    }
 
     fn submit(self: *Context, execution: *const render_c.HowlRenderSubmitExecution, result: *render_c.HowlRenderSubmitResult) render_retained.SubmitResult {
         self.term.mutex.lockFair();
@@ -951,7 +861,7 @@ fn deinitVt(handle: vt_c.HowlVtHandle) void {
 fn setRenderCursorBlinkVisible(term: *HowlTerm, visible: bool) bool {
     term.mutex.lockFair();
     defer term.mutex.unlock();
-    return renderCallOk(render_c.howl_render_text_session_set_cursor_blink_visible(term.render.text_session, @intFromBool(visible)));
+    return render_c.howl_render_text_session_set_cursor_blink_visible(term.render.text_session, @intFromBool(visible)) == render_c.HOWL_RENDER_CALL_OK;
 }
 
 fn pixelToCol(term: *const HowlTerm, pixel_x: i32) u16 {
@@ -982,27 +892,23 @@ fn assertRenderInit(render_init: RenderInit) void {
 }
 
 fn applyPrimaryFontPath(text_session: render_c.HowlRenderTextSessionHandle, font_path: ?[:0]const u8) bool {
-    const path = font_path orelse return renderCallOk(render_c.howl_render_text_session_set_font_path(text_session, null, 0));
-    if (path.len == 0) return renderCallOk(render_c.howl_render_text_session_set_font_path(text_session, null, 0));
-    return renderCallOk(render_c.howl_render_text_session_set_font_path(text_session, path.ptr, path.len));
+    const path = font_path orelse return render_c.howl_render_text_session_set_font_path(text_session, null, 0) == render_c.HOWL_RENDER_CALL_OK;
+    if (path.len == 0) return render_c.howl_render_text_session_set_font_path(text_session, null, 0) == render_c.HOWL_RENDER_CALL_OK;
+    return render_c.howl_render_text_session_set_font_path(text_session, path.ptr, path.len) == render_c.HOWL_RENDER_CALL_OK;
 }
 
 fn applyFallbackFontPaths(text_session: render_c.HowlRenderTextSessionHandle, paths: []const [:0]const u8) bool {
     std.debug.assert(paths.len <= max_fallback_font_paths);
-    if (paths.len == 0) return renderCallOk(render_c.howl_render_text_session_set_fallback_font_paths(text_session, null, 0));
+    if (paths.len == 0) return render_c.howl_render_text_session_set_fallback_font_paths(text_session, null, 0) == render_c.HOWL_RENDER_CALL_OK;
     const path_count: u8 = @intCast(paths.len);
     var raw: [max_fallback_font_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_fallback_font_paths;
     var index: u8 = 0;
     while (index < path_count) : (index += 1) raw[index] = paths[index].ptr;
-    return renderCallOk(render_c.howl_render_text_session_set_fallback_font_paths(text_session, &raw, path_count));
+    return render_c.howl_render_text_session_set_fallback_font_paths(text_session, &raw, path_count) == render_c.HOWL_RENDER_CALL_OK;
 }
 
 fn renderFontValid(text_session: render_c.HowlRenderTextSessionHandle) bool {
-    return renderCallOk(render_c.howl_render_text_session_is_valid_font(text_session));
-}
-
-fn renderCallOk(status: i32) bool {
-    return status == render_c.HOWL_RENDER_CALL_OK;
+    return render_c.howl_render_text_session_is_valid_font(text_session) == render_c.HOWL_RENDER_CALL_OK;
 }
 
 const VtPresentAckOps = struct {
@@ -1462,14 +1368,6 @@ fn testPreparedUploadInfo() render_c.HowlRenderPreparedSurfaceInfo {
     };
 }
 
-fn fillTestPreparedUpload(upload: *render_retained.PreparedUpload) void {
-    upload.* = .{
-        .info = testPreparedUploadInfo(),
-        .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_INVALID_ARGUMENT,
-        .render_surface = null,
-    };
-}
-
 const TestResizeOperation = enum {
     resize,
     geometry_commit,
@@ -1546,10 +1444,6 @@ const TestSubmitRender = struct {
         return self.present_in_flight != null;
     }
 
-    fn lastSubmitFailure(_: *const @This()) render_retained.SubmitFailure {
-        return .none;
-    }
-
     fn submit(self: *@This(), execution: *const render_c.HowlRenderSubmitExecution, result: *render_c.HowlRenderSubmitResult) render_retained.SubmitResult {
         self.record(.submit);
         self.submit_calls += 1;
@@ -1592,45 +1486,6 @@ fn testRenderSurface(info: render_c.HowlRenderPreparedSurfaceInfo) render_c.Howl
     surface.cell_px = info.cell_px;
     surface.grid = info.grid;
     return surface;
-}
-
-test "render surface retrieval status reports resource bound overflow" {
-    try std.testing.expectError(
-        error.TrustedRenderSurfaceResourceBoundOverflow,
-        Context.ContextSubmitBackend.renderSurfaceRetrievalError(render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_RESOURCE_BOUND_OVERFLOW),
-    );
-    try Context.ContextSubmitBackend.renderSurfaceRetrievalError(render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK);
-}
-
-test "context unavailable render surface path is keyed by retrieval status" {
-    var upload = render_retained.PreparedUpload{
-        .info = testPreparedUploadInfo(),
-        .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_MISSING_HANDLE,
-        .render_surface = null,
-    };
-
-    try std.testing.expectError(
-        error.TrustedRenderSurfaceMissingHandle,
-        Context.ContextSubmitBackend.unavailableRenderSurfaceRetrievalError(upload.render_surface_status),
-    );
-
-    upload.render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW;
-    try std.testing.expectError(
-        error.TrustedRenderSurfaceCommandBoundOverflow,
-        Context.ContextSubmitBackend.unavailableRenderSurfaceRetrievalError(upload.render_surface_status),
-    );
-
-    upload.render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK;
-    try std.testing.expectError(
-        error.TrustedRenderSurfaceMissingSurface,
-        Context.ContextSubmitBackend.unavailableRenderSurfaceRetrievalError(upload.render_surface_status),
-    );
-}
-
-test "context render surface retrieval command overflow is recoverable" {
-    try std.testing.expect(Context.ContextSubmitBackend.isRecoverableRenderSurfaceRetrievalStatus(
-        render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW,
-    ));
 }
 
 const TestSubmitTerm = struct {
@@ -1680,13 +1535,6 @@ const TestSubmitContext = struct {
     }
 };
 
-fn testSubmitExecution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
-    _ = prepared_upload;
-    return .{
-        .host_surface = self.term_texture,
-    };
-}
-
 const TestUnlockedBackend = struct {
     var saw_unlocked = false;
 
@@ -1698,7 +1546,8 @@ const TestUnlockedBackend = struct {
     }
 
     fn execution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
-        return testSubmitExecution(self, prepared_upload);
+        _ = prepared_upload;
+        return .{ .host_surface = self.term_texture };
     }
 };
 
@@ -1737,7 +1586,8 @@ const TestMutatingBackend = struct {
     }
 
     fn execution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
-        return testSubmitExecution(self, prepared_upload);
+        _ = prepared_upload;
+        return .{ .host_surface = self.term_texture };
     }
 };
 
@@ -2017,7 +1867,6 @@ test "resize upload failure zeros host dimensions and retry submits same full fr
     context.term.mutex.unlock();
 
     try std.testing.expectEqual(render_retained.SubmitResult.failed, failed_submit.result);
-    try std.testing.expectEqual(Context.SubmitFailureReason.backend_upload_failed, failed_submit.failure);
     try std.testing.expectEqual(info.snapshot_seq, failed_submit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 0), context.term.render.submit_calls);
     try std.testing.expectEqual(@as(u8, 1), context.host_upload_calls);
