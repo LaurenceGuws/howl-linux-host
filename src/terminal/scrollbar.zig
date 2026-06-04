@@ -2,8 +2,8 @@ const std = @import("std");
 const EventLoop = @import("../event_loop.zig");
 const Layout = @import("../display/layout.zig");
 const HostInput = @import("../input/input.zig").Input;
+const terminal_term = @import("term.zig");
 const vt_surface = @import("vt/surface.zig");
-const vt_retained = @import("vt/retained.zig");
 
 const min_width_logical: c_int = 3;
 const max_width_logical: c_int = 11;
@@ -219,7 +219,7 @@ pub fn followLiveBottom(term: anytype) bool {
     const mut = mutableTerm(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return vt_retained.followLiveBottomLocked(term);
+    return terminal_term.followLiveBottomLocked(term);
 }
 
 fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, focus_t: f32) Geometry {

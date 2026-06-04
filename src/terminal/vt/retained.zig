@@ -25,10 +25,6 @@ fn requireOk(status: i32) !void {
     return error.VtCallFailed;
 }
 
-pub fn inputScratch(term: anytype) []u8 {
-    return term.vt_state.input_scratch[0..];
-}
-
 pub fn feedLocked(term: anytype, bytes: []const u8) c.HowlVtFeedResult {
     if (bytes.len == 0) {
         return .{
@@ -107,18 +103,6 @@ pub fn copySelection(term: anytype) ![]const u8 {
 
 fn mutableTerm(term: anytype) *@TypeOf(term.*) {
     return @constCast(term);
-}
-
-pub fn followLiveBottomLocked(term: anytype) bool {
-    if (term.vt_state.scrollback_offset == 0) return false;
-    term.vt_state.scrollback_offset = 0;
-    return true;
-}
-
-pub fn setFocused(term: anytype, focused: bool) bool {
-    if (term.vt_state.focused == focused) return false;
-    term.vt_state.focused = focused;
-    return true;
 }
 
 fn repairScrollback(term: anytype, history_before: u32, history_after: u32, any_read: bool) void {

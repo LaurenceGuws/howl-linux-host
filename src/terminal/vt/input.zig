@@ -1,6 +1,5 @@
 const Input = @import("../../input/input.zig").Input;
 const pty_session = @import("../pty/session.zig");
-const retained = @import("retained.zig");
 const std = @import("std");
 const c = @import("howl_vt_c");
 const terminal_term = @import("../term.zig");
@@ -96,7 +95,7 @@ pub fn publishPaste(term: *Term, text: []const u8) !void {
     if (text.len == 0) return;
     term.mutex.lock();
     defer term.mutex.unlock();
-    _ = retained.followLiveBottomLocked(term);
+    _ = terminal_term.followLiveBottomLocked(term);
     const start = try encodePasteStartBytes(term);
     if (start.len != 0) _ = try pty_session.publishInputBytesLocked(term, start);
     _ = try pty_session.publishInputBytesLocked(term, text);
@@ -107,7 +106,7 @@ pub fn publishPaste(term: *Term, text: []const u8) !void {
 pub fn publishKey(term: *Term, key_code: TermInput.Key, modifiers: TermInput.Modifier) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    _ = retained.followLiveBottomLocked(term);
+    _ = terminal_term.followLiveBottomLocked(term);
     _ = try pty_session.publishInputBytesLocked(term, try encodeKeyBytes(term, .{ .key = key_code, .mods = modifiers }));
 }
 
@@ -120,15 +119,15 @@ pub fn publishMouse(term: *Term, mouse: TermInput.MouseEvent) !bool {
 pub fn publishFocus(term: *Term, focused: bool) !bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    if (!retained.setFocused(term, focused)) return false;
-    _ = retained.followLiveBottomLocked(term);
+    if (!terminal_term.setFocused(term, focused)) return false;
+    _ = terminal_term.followLiveBottomLocked(term);
     return try pty_session.publishInputBytesLocked(term, try encodeFocusBytes(term, focused));
 }
 
 pub fn wouldReportUnpressedMouseMotion(term: *Term) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    const out = retained.inputScratch(term);
+    const out = terminal_term.inputScratch(term);
     const result = c.howl_vt_terminal_encode_mouse(
         term.vt,
         c.HOWL_VT_MOUSE_MOVE,
@@ -151,7 +150,7 @@ pub fn wouldReportUnpressedMouseMotion(term: *Term) bool {
 pub fn wouldReportMouse(term: *Term, mouse: TermInput.MouseEvent) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    const out = retained.inputScratch(term);
+    const out = terminal_term.inputScratch(term);
     const result = c.howl_vt_terminal_encode_mouse(
         term.vt,
         mouse.kind,
@@ -172,19 +171,19 @@ pub fn wouldReportMouse(term: *Term, mouse: TermInput.MouseEvent) bool {
 }
 
 fn encodeFocusBytes(term: *Term, focused: bool) ![]const u8 {
-    const out = retained.inputScratch(term);
+    const out = terminal_term.inputScratch(term);
     const result = c.howl_vt_terminal_encode_focus(term.vt, if (focused) 1 else 0, out.ptr, out.len);
     return encodedBytes(out, result);
 }
 
 fn encodeKeyBytes(term: *Term, key_event: TermInput.KeyEvent) ![]const u8 {
-    const out = retained.inputScratch(term);
+    const out = terminal_term.inputScratch(term);
     const result = c.howl_vt_terminal_encode_key(term.vt, key_event.key, @intCast(key_event.mods), out.ptr, out.len);
     return encodedBytes(out, result);
 }
 
 fn encodeMouseBytes(term: *Term, mouse: TermInput.MouseEvent) ![]const u8 {
-    const out = retained.inputScratch(term);
+    const out = terminal_term.inputScratch(term);
     const result = c.howl_vt_terminal_encode_mouse(
         term.vt,
         mouse.kind,
@@ -204,13 +203,13 @@ fn encodeMouseBytes(term: *Term, mouse: TermInput.MouseEvent) ![]const u8 {
 }
 
 fn encodePasteStartBytes(term: *Term) ![]const u8 {
-    const out = retained.inputScratch(term);
+    const out = terminal_term.inputScratch(term);
     const result = c.howl_vt_terminal_encode_paste_start(term.vt, out.ptr, out.len);
     return encodedBytes(out, result);
 }
 
 fn encodePasteEndBytes(term: *Term) ![]const u8 {
-    const out = retained.inputScratch(term);
+    const out = terminal_term.inputScratch(term);
     const result = c.howl_vt_terminal_encode_paste_end(term.vt, out.ptr, out.len);
     return encodedBytes(out, result);
 }

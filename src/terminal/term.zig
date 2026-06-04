@@ -160,6 +160,22 @@ pub fn currentTitle(term: anytype) []const u8 {
     return term.vt_state.title_buf[0..term.vt_state.title_len];
 }
 
+pub fn inputScratch(term: anytype) []u8 {
+    return term.vt_state.input_scratch[0..];
+}
+
+pub fn followLiveBottomLocked(term: anytype) bool {
+    if (term.vt_state.scrollback_offset == 0) return false;
+    term.vt_state.scrollback_offset = 0;
+    return true;
+}
+
+pub fn setFocused(term: anytype, focused: bool) bool {
+    if (term.vt_state.focused == focused) return false;
+    term.vt_state.focused = focused;
+    return true;
+}
+
 fn copyCurrentTitleLocked(term: anytype, out_buf: []u8) u32 {
     const len_usize = @min(out_buf.len, currentTitle(term).len);
     std.debug.assert(len_usize <= std.math.maxInt(u32));
