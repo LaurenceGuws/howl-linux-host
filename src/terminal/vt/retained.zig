@@ -120,53 +120,6 @@ pub fn drainPendingClipboardLocked(term: anytype) !?[]const u8 {
     return out[0..@intCast(result.written)];
 }
 
-pub fn copyVisibleHyperlinkAt(term: anytype, row: u16, col: u16) !?[]const u8 {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    return copyVisibleHyperlinkAtLocked(term, row, col);
-}
-
-pub fn copyVisibleHyperlinkAtLocked(term: anytype, row: u16, col: u16) !?[]const u8 {
-    const meta = surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset);
-    const out = term.vt_state.output_scratch[0..];
-    const result = c.howl_vt_terminal_copy_surface_hyperlink(
-        term.vt,
-        term.vt_state.scrollback_offset,
-        meta.snapshot_seq,
-        row,
-        col,
-        out.ptr,
-        out.len,
-    );
-    if (result.status == callShortBuffer()) return error.HostBufferTooSmall;
-    try requireOk(result.status);
-    std.debug.assert(result.written <= out.len);
-    if (result.written == 0 and result.needed == 0) return null;
-    return out[0..@intCast(result.written)];
-}
-
-pub fn startSelection(term: anytype, row: i32, col: u16) !void {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    try requireOk(c.howl_vt_terminal_start_selection(term.vt, row, col));
-}
-
-pub fn updateSelection(term: anytype, row: i32, col: u16) !void {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    try requireOk(c.howl_vt_terminal_update_selection(term.vt, row, col));
-}
-
-pub fn finishSelection(term: anytype) !void {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
-    try requireOk(c.howl_vt_terminal_finish_selection(term.vt));
-}
-
 pub fn clearSelection(term: anytype) !void {
     const mut = mutableTerm(term);
     mut.mutex.lock();

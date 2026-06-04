@@ -1,3 +1,5 @@
+const std = @import("std");
+const c = @import("howl_vt_c");
 const vt_retained = @import("vt/retained.zig");
 const HostInput = @import("../input/input.zig").Input;
 
@@ -39,12 +41,12 @@ pub fn handleMouse(context: anytype, mouse_event: HostInput.Mouse.Event) MouseHa
                 if (anchor.row == cell.row and anchor.col == cell.col) {
                     return .{ .consumed = true, .host_visual_changed = false };
                 }
-                vt_retained.startSelection(&context.term, anchor.row, anchor.col) catch {
+                startSelection(&context.term, anchor.row, anchor.col) catch {
                     return .{ .consumed = false, .host_visual_changed = false };
                 };
                 context.selection.drag_active = true;
             }
-            vt_retained.updateSelection(&context.term, cell.row, cell.col) catch {
+            updateSelection(&context.term, cell.row, cell.col) catch {
                 return .{ .consumed = false, .host_visual_changed = false };
             };
             return .{ .consumed = true, .host_visual_changed = true };
@@ -57,10 +59,10 @@ pub fn handleMouse(context: anytype, mouse_event: HostInput.Mouse.Event) MouseHa
                 return .{ .consumed = true, .host_visual_changed = false };
             }
             const cell = eventCell(context, mouse_event);
-            vt_retained.updateSelection(&context.term, cell.row, cell.col) catch {
+            updateSelection(&context.term, cell.row, cell.col) catch {
                 return .{ .consumed = false, .host_visual_changed = false };
             };
-            vt_retained.finishSelection(&context.term) catch {
+            finishSelection(&context.term) catch {
                 return .{ .consumed = false, .host_visual_changed = false };
             };
             context.selection.anchor = null;
@@ -78,4 +80,27 @@ fn eventCell(context: anytype, mouse_event: HostInput.Mouse.Event) SelectionCell
         .row = row - scrollback_offset,
         .col = context.pixelToTerminalCol(mouse_event.pixel_x),
     };
+}
+
+fn startSelection(term: anytype, row: i32, col: u16) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    try requireOk(c.howl_vt_terminal_start_selection(term.vt, row, col));
+}
+
+fn updateSelection(term: anytype, row: i32, col: u16) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    try requireOk(c.howl_vt_terminal_update_selection(term.vt, row, col));
+}
+
+fn finishSelection(term: anytype) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    try requireOk(c.howl_vt_terminal_finish_selection(term.vt));
+}
+
+fn requireOk(status: i32) !void {
+    if (status == c.HOWL_VT_CALL_OK) return;
+    return error.VtCallFailed;
 }

@@ -1,3 +1,5 @@
+const std = @import("std");
+const c = @import("howl_vt_c");
 const terminal_selection = @import("selection.zig");
 const vt_retained = @import("vt/retained.zig");
 const vt_surface = @import("vt/surface.zig");
@@ -61,7 +63,7 @@ fn updateHoveredLinkCell(context: anytype, mouse_event: HostInput.Mouse.Event) b
     }
 
     const cell = eventCell(context, mouse_event);
-    const uri = vt_retained.copyVisibleHyperlinkAt(&context.term, cell.row, cell.col) catch null;
+    const uri = copyVisibleHyperlinkAt(&context.term, cell.row, cell.col) catch null;
     if (uri == null or uri.?.len == 0) {
         if (clearHoveredLink(context)) {
             context.links.hover_publish_pending = true;
@@ -104,7 +106,7 @@ fn syncLinkCursor(context: anytype, active: bool) bool {
 }
 
 fn openLinkAtCell(context: anytype, cell: HoveredLinkCell) bool {
-    const uri = vt_retained.copyVisibleHyperlinkAt(&context.term, cell.row, cell.col) catch return false;
+    const uri = copyVisibleHyperlinkAt(&context.term, cell.row, cell.col) catch return false;
     const target = uri orelse return false;
     if (target.len == 0) return false;
     return window.openUrl(target);
@@ -131,4 +133,34 @@ fn underlineStyleValue(style: LinkUnderlineStyle) u8 {
         .dotted => 3,
         .dashed => 4,
     };
+}
+
+fn copyVisibleHyperlinkAt(term: anytype, row: u16, col: u16) !?[]const u8 {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return copyVisibleHyperlinkAtLocked(term, row, col);
+}
+
+fn copyVisibleHyperlinkAtLocked(term: anytype, row: u16, col: u16) !?[]const u8 {
+    const meta = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset);
+    const out = term.vt_state.output_scratch[0..];
+    const result = c.howl_vt_terminal_copy_surface_hyperlink(
+        term.vt,
+        term.vt_state.scrollback_offset,
+        meta.snapshot_seq,
+        row,
+        col,
+        out.ptr,
+        out.len,
+    );
+    if (result.status == c.HOWL_VT_CALL_SHORT_BUFFER) return error.HostBufferTooSmall;
+    try requireOk(result.status);
+    std.debug.assert(result.written <= out.len);
+    if (result.written == 0 and result.needed == 0) return null;
+    return out[0..@intCast(result.written)];
+}
+
+fn requireOk(status: i32) !void {
+    if (status == c.HOWL_VT_CALL_OK) return;
+    return error.VtCallFailed;
 }
