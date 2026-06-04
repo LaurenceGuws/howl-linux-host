@@ -40,12 +40,6 @@ fn requireOk(status: i32) !void {
     return error.VtCallFailed;
 }
 
-fn requireResizeOk(status: i32) !void {
-    if (status == callOk()) return;
-    if (status == c.HOWL_VT_CALL_INVALID_ARGUMENT) return error.InvalidDimensions;
-    return error.VtCallFailed;
-}
-
 fn scrollStateLocked(term: anytype) ScrollState {
     const info = surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset);
     return .{
@@ -136,11 +130,6 @@ pub fn copySelection(term: anytype) ![]const u8 {
     return copyBoundedBytes(out, result);
 }
 
-fn clampScrollbackOffset(term: anytype, history_count: u32) void {
-    term.vt_state.scrollback_offset = @min(term.vt_state.scrollback_offset, history_count);
-    std.debug.assert(term.vt_state.scrollback_offset <= history_count);
-}
-
 pub fn setScrollbackOffset(term: anytype, offset: u32) bool {
     const mut = mutableTerm(term);
     mut.mutex.lock();
@@ -174,27 +163,6 @@ pub fn followLiveBottomLocked(term: anytype) bool {
     return true;
 }
 
-pub fn resize(term: anytype, rows: u16, cols: u16) !void {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    try resizeLocked(term, rows, cols);
-}
-
-pub fn resizeLocked(term: anytype, rows: u16, cols: u16) !void {
-    try requireResizeOk(c.howl_vt_terminal_resize(term.vt, rows, cols));
-    clampScrollbackOffset(term, surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count);
-}
-
-pub fn setCellPixelSize(term: anytype, width: u16, height: u16) !void {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    try setCellPixelSizeLocked(term, width, height);
-}
-
-pub fn setCellPixelSizeLocked(term: anytype, width: u16, height: u16) !void {
-    try requireOk(c.howl_vt_terminal_set_cell_pixel_size(term.vt, width, height));
-}
-
 pub fn setFocused(term: anytype, focused: bool) bool {
     if (term.vt_state.focused == focused) return false;
     term.vt_state.focused = focused;
@@ -211,7 +179,8 @@ fn repairScrollback(term: anytype, history_before: u32, history_after: u32, any_
         return;
     }
     if (history_after < history_before) {
-        clampScrollbackOffset(term, history_after);
+        term.vt_state.scrollback_offset = @min(term.vt_state.scrollback_offset, history_after);
+        std.debug.assert(term.vt_state.scrollback_offset <= history_after);
         return;
     }
     _ = any_read;

@@ -1,6 +1,7 @@
 const std = @import("std");
 const EventLoop = @import("../../event_loop.zig");
 const c = @import("howl_render_c");
+const vt_c = @import("howl_vt_c");
 const pty_session = @import("../pty/session.zig");
 const retained = @import("retained.zig");
 const vt_retained = @import("../vt/retained.zig");
@@ -108,9 +109,9 @@ pub fn syncSurfaceLayout(context: anytype, request: SurfaceLayoutRequest) !void 
     if (!sync.changed) return;
     if (sync.grid_changed) {
         try pty_session.resize(&context.term, sync.layout.cols, sync.layout.rows);
-        try vt_retained.resize(&context.term, sync.layout.rows, sync.layout.cols);
+        try resizeTermVt(&context.term, sync.layout.rows, sync.layout.cols);
     }
-    try vt_retained.setCellPixelSize(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
+    try setTermCellPixelSize(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
     commitSurfaceLayout(&context.term, sync.layout);
 }
 
@@ -119,9 +120,9 @@ pub fn syncSurfaceLayoutLocked(context: anytype, request: SurfaceLayoutRequest) 
     if (!sync.changed) return;
     if (sync.grid_changed) {
         try pty_session.resizeLocked(&context.term, sync.layout.cols, sync.layout.rows);
-        try vt_retained.resizeLocked(&context.term, sync.layout.rows, sync.layout.cols);
+        try resizeTermVtLocked(&context.term, sync.layout.rows, sync.layout.cols);
     }
-    try vt_retained.setCellPixelSizeLocked(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
+    try setTermCellPixelSizeLocked(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
     commitSurfaceLayoutLocked(&context.term, sync.layout);
 }
 
@@ -199,4 +200,41 @@ fn commitSurfaceLayout(term: anytype, layout: retained.SurfaceLayout) void {
 
 fn commitSurfaceLayoutLocked(term: anytype, layout: retained.SurfaceLayout) void {
     term.render.syncSurfaceLayout(layout);
+}
+
+pub fn resizeTermVt(term: anytype, rows: u16, cols: u16) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    try resizeTermVtLocked(term, rows, cols);
+}
+
+pub fn resizeTermVtLocked(term: anytype, rows: u16, cols: u16) !void {
+    try requireResizeOk(vt_c.howl_vt_terminal_resize(term.vt, rows, cols));
+    clampScrollbackOffset(term, vt_retained.scrollState(term).scrollback_count);
+}
+
+pub fn setTermCellPixelSize(term: anytype, width: u16, height: u16) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    try setTermCellPixelSizeLocked(term, width, height);
+}
+
+pub fn setTermCellPixelSizeLocked(term: anytype, width: u16, height: u16) !void {
+    try requireOk(vt_c.howl_vt_terminal_set_cell_pixel_size(term.vt, width, height));
+}
+
+fn requireOk(status: i32) !void {
+    if (status == vt_c.HOWL_VT_CALL_OK) return;
+    return error.VtCallFailed;
+}
+
+fn requireResizeOk(status: i32) !void {
+    if (status == vt_c.HOWL_VT_CALL_OK) return;
+    if (status == vt_c.HOWL_VT_CALL_INVALID_ARGUMENT) return error.InvalidDimensions;
+    return error.VtCallFailed;
+}
+
+fn clampScrollbackOffset(term: anytype, history_count: u32) void {
+    term.vt_state.scrollback_offset = @min(term.vt_state.scrollback_offset, history_count);
+    std.debug.assert(term.vt_state.scrollback_offset <= history_count);
 }

@@ -418,7 +418,7 @@ pub const Context = struct {
         self.term.vt_state = .{};
         self.term.mutex = .{};
         self.live = true;
-        try vt_retained.setCellPixelSize(&self.term, term_init.surface_layout.cell_px.width, term_init.surface_layout.cell_px.height);
+        try surface_layout.setTermCellPixelSize(&self.term, term_init.surface_layout.cell_px.width, term_init.surface_layout.cell_px.height);
         self.term.render.syncSurfaceLayout(term_init.surface_layout);
     }
 
