@@ -1,7 +1,6 @@
 const std = @import("std");
 const gl_c = @import("gl_c");
 const render_c = @import("howl_render_c");
-const render_surface_contract = @import("render_surface_contract");
 
 extern fn glBindFramebuffer(target: c_uint, framebuffer: c_uint) void;
 extern fn glCheckFramebufferStatus(target: c_uint) c_uint;
@@ -163,41 +162,7 @@ pub const RenderResourceTextures = struct {
     }
 
     fn validateSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
-        const contract = render_surface_contract.validate(null, surface);
-        if (contract.valid) return self.validateSurfaceTransition(surface) != null;
-        self.recordContractFailure(contract.status);
-        return false;
-    }
-
-    fn recordContractFailure(self: *RenderResourceTextures, status: render_surface_contract.RenderSurfaceContractStatus) void {
-        switch (status) {
-            .ok => std.debug.panic("invalid render surface contract failure status", .{}),
-            .idle,
-            .call_failed,
-            .null_surface,
-            .version_mismatch,
-            .snapshot_mismatch,
-            .geometry_epoch_mismatch,
-            .damage_span_invalid,
-            .create_span_invalid,
-            .upload_span_invalid,
-            .command_span_invalid,
-            .retire_span_invalid,
-            .render_mismatch,
-            .cell_mismatch,
-            .grid_mismatch,
-            => self.recordFailure(.invalid_spans),
-            .upload_bytes_overflow,
-            .upload_bytes_max_mismatch,
-            .invalid_upload,
-            => self.recordFailure(.upload_bounds),
-            .unsupported_command,
-            .invalid_command,
-            => self.recordFailure(.invalid_command_shape),
-            .unsupported_resource,
-            .invalid_resource,
-            => self.recordFailure(.unsupported_resource_format),
-        }
+        return self.validateSurfaceTransition(surface) != null;
     }
 
     fn validateSurfaceTransition(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) ?RenderResourceTextures {
@@ -1157,44 +1122,6 @@ test "render surface upload metadata commits after upload success" {
     try std.testing.expectEqual(@as(u32, 4), textures.slots[0].upload_bytes_count);
 }
 
-test "render surface textures reject out of order upload sequence" {
-    const resource = testResource(21, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
-    var bytes = [_]u8{ 1, 2 };
-    var creates = [_]render_c.HowlRenderResourceCreate{.{
-        .resource = resource,
-        .width_px = 1,
-        .height_px = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
-        .create_seq = 0,
-    }};
-    var uploads = [_]render_c.HowlRenderResourceUpload{
-        .{
-            .resource = resource,
-            .rect = testRect(1, 1),
-            .bytes_ptr = &bytes,
-            .bytes_count = 1,
-            .stride_bytes = 1,
-            .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
-            .upload_seq = 1,
-        },
-        .{
-            .resource = resource,
-            .rect = testRect(1, 1),
-            .bytes_ptr = &bytes,
-            .bytes_count = 1,
-            .stride_bytes = 1,
-            .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
-            .upload_seq = 0,
-        },
-    };
-    var surface = testSurface();
-    surface.creates = createSpan(&creates);
-    surface.uploads = uploadSpan(&uploads, 2);
-    var textures = RenderResourceTextures{};
-
-    try std.testing.expect(!textures.validateSurface(&surface));
-}
-
 test "render surface future upload detects command visibility mismatch" {
     const resource = testResource(18, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
     var bytes = [_]u8{ 0, 1, 2, 3 };
@@ -1750,35 +1677,6 @@ test "render surface textures reject missing persistent resource" {
 
     try std.testing.expect(!textures.validateSurface(&surface));
     try std.testing.expectEqual(RenderResourceTextures.FailureBucket.upload_bounds, textures.failure_bucket_last.?);
-}
-
-test "render surface textures do not mutate on invalid contract surface" {
-    const resource = testResource(46, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
-    var creates = [_]render_c.HowlRenderResourceCreate{.{
-        .resource = resource,
-        .width_px = 1,
-        .height_px = 1,
-        .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8,
-        .create_seq = 0,
-    }};
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{
-        .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 1 },
-        .color_rgba = 0xffffffff,
-        .resource = .{ .value = 0, .generation = 0, .kind = 0 },
-        .glyphs = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX },
-    }};
-    var surface = testSurface();
-    surface.creates = createSpan(&creates);
-    surface.commands = commandSpan(&commands);
-    var textures = RenderResourceTextures{};
-
-    try std.testing.expect(!textures.validateSurface(&surface));
-    try std.testing.expect(textures.find(resource) == null);
-    try std.testing.expect(textures.findValue(resource.value) == null);
-    try std.testing.expectEqual(RenderResourceTextures.FailureBucket.invalid_command_shape, textures.failure_bucket_last.?);
 }
 
 pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) bool {

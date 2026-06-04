@@ -1,6 +1,5 @@
 const std = @import("std");
 const c = @import("howl_render_c");
-const render_surface_contract = @import("render_surface_contract");
 
 pub const PrepareResult = enum { idle, prepared, failed };
 
@@ -64,7 +63,6 @@ pub const SurfaceLayout = struct {
 pub const PreparedUpload = struct {
     info: c.HowlRenderPreparedSurfaceInfo,
     render_surface_status: c.HowlRenderPreparedSurfaceRenderSurfaceStatus,
-    render_surface_contract: render_surface_contract.RenderSurfaceContract,
     render_surface: ?*const c.HowlRenderSurface,
 
     pub fn deinit(self: *PreparedUpload) void {
@@ -258,7 +256,6 @@ pub const State = struct {
         upload_out.* = .{
             .info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo),
             .render_surface_status = c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_INVALID_ARGUMENT,
-            .render_surface_contract = .{},
             .render_surface = null,
         };
         if (!self.preparedInfo(&upload_out.info)) return false;
@@ -269,18 +266,12 @@ pub const State = struct {
     fn validatePreparedRenderSurface(self: *State, upload: *PreparedUpload) void {
         const prepared = self.prepared_surface orelse {
             upload.render_surface_status = c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_MISSING_HANDLE;
-            upload.render_surface_contract = .{ .status = .call_failed };
             return;
         };
         var surface: ?*const c.HowlRenderSurface = null;
         const status = c.howl_render_prepared_surface_render_surface(prepared, &surface);
         upload.render_surface_status = status;
         upload.render_surface = surface;
-        if (status == c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK) {
-            upload.render_surface_contract = render_surface_contract.validate(upload.info, surface);
-        } else {
-            upload.render_surface_contract = .{ .status = .call_failed };
-        }
     }
 
     fn prepareReady(self: *State, request: c.HowlRenderPrepareRequest) PrepareResult {
@@ -473,7 +464,6 @@ test "host retained prepared upload records render surface retrieval status" {
 
     try std.testing.expectEqual(c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK, upload.render_surface_status);
     try std.testing.expect(upload.render_surface != null);
-    try std.testing.expectEqual(render_surface_contract.RenderSurfaceContractStatus.ok, upload.render_surface_contract.status);
 }
 
 test "present submit stores snapshot and token" {

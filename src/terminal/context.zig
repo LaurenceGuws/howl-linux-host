@@ -1466,7 +1466,6 @@ fn fillTestPreparedUpload(upload: *render_retained.PreparedUpload) void {
     upload.* = .{
         .info = testPreparedUploadInfo(),
         .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_INVALID_ARGUMENT,
-        .render_surface_contract = .{},
         .render_surface = null,
     };
 }
@@ -1534,7 +1533,6 @@ const TestSubmitRender = struct {
         upload.* = .{
             .info = self.prepared_info,
             .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
-            .render_surface_contract = .{ .status = .ok, .valid = true, .surface_seq = self.prepared_info.dirty_epoch },
             .render_surface = &self.render_surface,
         };
         return true;
@@ -1608,7 +1606,6 @@ test "context unavailable render surface path is keyed by retrieval status" {
     var upload = render_retained.PreparedUpload{
         .info = testPreparedUploadInfo(),
         .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_MISSING_HANDLE,
-        .render_surface_contract = .{ .status = .ok, .valid = true },
         .render_surface = null,
     };
 
