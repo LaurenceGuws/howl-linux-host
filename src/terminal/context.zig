@@ -203,11 +203,11 @@ pub const Context = struct {
     }
 
     pub fn drainTextInputFastPath(self: *Context, input_events: *HostInput) DrainInputOutcome {
-        return terminal_input.drainTextInputFastPathWith(self, input_events, ContextOps);
+        return terminal_input.drainTextInputFastPath(self, input_events);
     }
 
     pub fn drainPointerAndUiInput(self: *Context, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) DrainInputOutcome {
-        return terminal_input.drainPointerAndUiInputWith(self, input_events, origin_x, origin_y, logical_width, logical_height, ContextOps);
+        return terminal_input.drainPointerAndUiInput(self, input_events, origin_x, origin_y, logical_width, logical_height);
     }
 
     pub fn handleScrollInput(self: *Context, input_events: *HostInput) void {
@@ -631,137 +631,19 @@ pub const Context = struct {
         std.debug.assert(work.submit_pending or work.present_pending);
     }
 
-    fn publishTerminalBytes(self: *Context, bytes: []const u8) bool {
-        _ = terminal_scrollbar.followLiveBottom(&self.term);
-        pty_session.publishInputBytes(&self.term, bytes) catch {
-            return false;
-        };
-        return true;
-    }
-
-    fn publishTerminalKey(self: *Context, key: HostInput.Keys.Event) bool {
-        const terminal_key = term_input.key(key.key) orelse return false;
-        term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch {
-            return false;
-        };
-        return true;
-    }
-
-    fn publishTerminalMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
-        return term_input.publishMouse(&self.term, .{
-            .kind = term_input.mouseKind(mouse_event.kind),
-            .button = term_input.mouseButton(mouse_event.button),
-            .row = pixelToRow(&self.term, mouse_event.pixel_y),
-            .col = pixelToCol(&self.term, mouse_event.pixel_x),
-            .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
-            .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
-            .mods = term_input.mods(mouse_event.mods),
-            .buttons_down = term_input.buttons(mouse_event.buttons_down),
-        }) catch false;
-    }
-
     pub fn terminalOwnsMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
-        return term_input.wouldReportMouse(&self.term, .{
-            .kind = term_input.mouseKind(mouse_event.kind),
-            .button = term_input.mouseButton(mouse_event.button),
-            .row = pixelToRow(&self.term, mouse_event.pixel_y),
-            .col = pixelToCol(&self.term, mouse_event.pixel_x),
-            .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
-            .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
-            .mods = term_input.mods(mouse_event.mods),
-            .buttons_down = term_input.buttons(mouse_event.buttons_down),
-        });
+        return terminal_input.terminalOwnsMouse(self, mouse_event);
     }
 
     pub fn pixelToTerminalCol(self: *const Context, pixel_x: i32) u16 {
-        return pixelToCol(&self.term, pixel_x);
+        return terminal_input.pixelToTerminalCol(self, pixel_x);
     }
 
     pub fn pixelToTerminalRow(self: *const Context, pixel_y: i32) i32 {
-        return pixelToRow(&self.term, pixel_y);
+        return terminal_input.pixelToTerminalRow(self, pixel_y);
     }
 
     const ScrollMouseOutcome = terminal_input.ScrollMouseOutcome;
-
-    const ScrollVisualState = struct {
-        mouse_logical_x: i32,
-        mouse_logical_y: i32,
-        dragging: bool,
-        grab_offset: f32,
-        scrollback_offset: u32,
-
-        fn capture(self: *Context) ScrollVisualState {
-            return .{
-                .mouse_logical_x = self.scrollbar.mouse_logical_x,
-                .mouse_logical_y = self.scrollbar.mouse_logical_y,
-                .dragging = self.scrollbar.dragging,
-                .grab_offset = self.scrollbar.grab_offset,
-                .scrollback_offset = terminal_scrollbar.scrollState(&self.term).scrollback_offset,
-            };
-        }
-    };
-
-    const ContextOps = struct {
-        pub fn resetCursorBlinkActivity(self: *Context, now_ns: u64) bool {
-            return self.resetCursorBlinkActivity(now_ns);
-        }
-
-        pub fn publishTerminalBytes(self: *Context, bytes: []const u8) bool {
-            return self.publishTerminalBytes(bytes);
-        }
-
-        pub fn publishTerminalKey(self: *Context, key: HostInput.Keys.Event) bool {
-            return self.publishTerminalKey(key);
-        }
-
-        pub fn publishTerminalMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
-            return self.publishTerminalMouse(mouse_event);
-        }
-
-        pub fn handleScrollMouse(self: *Context, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) ScrollMouseOutcome {
-            const before = ScrollVisualState.capture(self);
-            const consumed = terminal_scrollbar.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
-            const after = ScrollVisualState.capture(self);
-            return .{ .consumed = consumed, .host_visual_changed = !std.meta.eql(before, after) };
-        }
-
-        pub fn contentRelativeEvent(
-            mouse_event: HostInput.Mouse.Event,
-            origin_x: i32,
-            origin_y: i32,
-            logical_width: c_int,
-            logical_height: c_int,
-            render_px_w: c_int,
-            render_px_h: c_int,
-        ) ?HostInput.Mouse.Event {
-            return terminal_input.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);
-        }
-
-        pub fn clearHoveredLinkOp(self: *Context) bool {
-            return terminal_links.clearHoveredLink(self);
-        }
-
-        pub fn handleWheelFallback(self: *Context, local_mouse: HostInput.Mouse.Event) bool {
-            const before = terminal_scrollbar.scrollState(&self.term).scrollback_offset;
-            const delta: i32 = switch (local_mouse.button) {
-                .wheel_up => 3,
-                .wheel_down => -3,
-                else => 0,
-            };
-            if (delta == 0) return false;
-            terminal_scrollbar.byRows(self, delta);
-            const after = terminal_scrollbar.scrollState(&self.term).scrollback_offset;
-            return before != after;
-        }
-
-        pub fn handleHostSelectionMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
-            return terminal_selection.handleMouse(self, mouse_event);
-        }
-
-        pub fn handleHostLinkMouse(self: *Context, mouse_event: HostInput.Mouse.Event) MouseHandlingOutcome {
-            return terminal_links.handleMouse(self, mouse_event);
-        }
-    };
 
     const TermInit = struct {
         text_session: render_c.HowlRenderTextSessionHandle,
@@ -863,23 +745,6 @@ fn setRenderCursorBlinkVisible(term: *HowlTerm, visible: bool) bool {
     return render_c.howl_render_text_session_set_cursor_blink_visible(term.render.text_session, @intFromBool(visible)) == render_c.HOWL_RENDER_CALL_OK;
 }
 
-fn pixelToCol(term: *const HowlTerm, pixel_x: i32) u16 {
-    const current_layout = term.render.surface_layout;
-    if (current_layout.cols == 0 or current_layout.cell_px.width == 0) return 0;
-    if (pixel_x <= 0) return 0;
-    const x: u32 = @intCast(pixel_x);
-    const col = x / @as(u32, current_layout.cell_px.width);
-    return @min(@as(u16, @intCast(col)), current_layout.cols -| 1);
-}
-
-fn pixelToRow(term: *const HowlTerm, pixel_y: i32) i32 {
-    const current_layout = term.render.surface_layout;
-    if (current_layout.rows == 0 or current_layout.cell_px.height == 0) return 0;
-    if (pixel_y <= 0) return 0;
-    const y: u32 = @intCast(pixel_y);
-    const row = y / @as(u32, current_layout.cell_px.height);
-    return @min(@as(i32, @intCast(row)), @as(i32, current_layout.rows -| 1));
-}
 
 fn assertRenderInit(render_init: RenderInit) void {
     std.debug.assert(render_init.render_px.width > 0);
