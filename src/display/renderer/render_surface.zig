@@ -50,46 +50,29 @@ pub const RenderResourceTextures = struct {
         const State = enum { empty, live, retired };
     };
 
-    const CreatedResources = [render_c.HOWL_RENDER_SURFACE_CREATES_MAX]render_c.HowlRenderResourceId;
-
     pub fn deinit(self: *RenderResourceTextures) void {
         for (&self.slots) |*slot| deleteSlot(slot);
     }
 
-    pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
-        return self.realizeSurfaceLocked(surface);
+    pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
+        self.realizeSurfaceLocked(surface);
     }
 
-    fn realizeSurfaceLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
-        if (!self.validateSurface(surface)) return false;
+    fn realizeSurfaceLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
+        self.validateSurface(surface);
         const creates = spanSlice(
             render_c.HowlRenderResourceCreate,
             surface.creates.ptr,
             surface.creates.count,
         );
-        var created: CreatedResources = undefined;
-        var created_count: u32 = 0;
-        for (creates) |create| {
-            if (!self.createTexture(create)) {
-                self.rollbackCreates(created[0..created_count]);
-                return false;
-            }
-            created[created_count] = create.resource;
-            created_count += 1;
-        }
+        for (creates) |create| self.createTexture(create);
         glErrorOk("create texture upload");
         const uploads = spanSlice(
             render_c.HowlRenderResourceUpload,
             surface.uploads.ptr,
             surface.uploads.count,
         );
-        for (uploads) |upload| {
-            if (!self.uploadTexture(upload)) {
-                self.invalidateUploads(uploads);
-                self.rollbackCreates(created[0..created_count]);
-                return false;
-            }
-        }
+        for (uploads) |upload| self.uploadTexture(upload);
         glErrorOk("resource upload");
         self.commitUploadMetadata(uploads);
         const retires = spanSlice(
@@ -97,14 +80,8 @@ pub const RenderResourceTextures = struct {
             surface.retires.ptr,
             surface.retires.count,
         );
-        for (retires) |retire| {
-            if (!self.retireTexture(retire.resource)) {
-                self.rollbackCreates(created[0..created_count]);
-                return false;
-            }
-        }
+        for (retires) |retire| self.retireTexture(retire.resource);
         glErrorOk("resource retire");
-        return true;
     }
 
     fn glErrorOk(comptime message: []const u8) void {
@@ -113,9 +90,8 @@ pub const RenderResourceTextures = struct {
         panicGlBroken(message, error_code);
     }
 
-    fn validateSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
+    fn validateSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
         _ = self.validateSurfaceTransition(surface);
-        return true;
     }
 
     fn validateSurfaceTransition(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) RenderResourceTextures {
@@ -174,7 +150,7 @@ pub const RenderResourceTextures = struct {
         slot.state = .retired;
     }
 
-    fn createTexture(self: *RenderResourceTextures, create: render_c.HowlRenderResourceCreate) bool {
+    fn createTexture(self: *RenderResourceTextures, create: render_c.HowlRenderResourceCreate) void {
         if (self.find(create.resource) != null) std.debug.panic("trusted render create reuses live resource during upload", .{});
         if (self.findValue(create.resource.value) != null) std.debug.panic("trusted render create reuses resource value during upload", .{});
         const slot = self.findEmpty() orelse std.debug.panic("trusted render create exceeded texture slot capacity during upload", .{});
@@ -207,10 +183,9 @@ pub const RenderResourceTextures = struct {
             gl_c.GL_UNSIGNED_BYTE,
             null,
         );
-        return true;
     }
 
-    fn uploadTexture(self: *RenderResourceTextures, upload: render_c.HowlRenderResourceUpload) bool {
+    fn uploadTexture(self: *RenderResourceTextures, upload: render_c.HowlRenderResourceUpload) void {
         const slot = self.find(upload.resource) orelse std.debug.panic("trusted render upload missing live slot during upload", .{});
         if (slot.texture_id == 0) std.debug.panic("trusted render upload missing GL texture id", .{});
         if (upload.format != slot.format) std.debug.panic("trusted render upload format mismatch during upload", .{});
@@ -235,7 +210,6 @@ pub const RenderResourceTextures = struct {
             gl_c.GL_UNSIGNED_BYTE,
             upload.bytes_ptr,
         );
-        return true;
     }
 
     fn commitUploadMetadata(self: *RenderResourceTextures, uploads: []const render_c.HowlRenderResourceUpload) void {
@@ -247,17 +221,9 @@ pub const RenderResourceTextures = struct {
         }
     }
 
-    fn invalidateUploads(self: *RenderResourceTextures, uploads: []const render_c.HowlRenderResourceUpload) void {
-        for (uploads) |upload| {
-            const slot = self.find(upload.resource) orelse continue;
-            retireSlot(slot);
-        }
-    }
-
-    fn retireTexture(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) bool {
+    fn retireTexture(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) void {
         const slot = self.find(resource) orelse std.debug.panic("trusted render retire missing live slot during upload", .{});
         retireSlot(slot);
-        return true;
     }
 
     fn find(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) ?*Slot {
@@ -287,11 +253,6 @@ pub const RenderResourceTextures = struct {
         return null;
     }
 
-    fn rollbackCreates(self: *RenderResourceTextures, created: []const render_c.HowlRenderResourceId) void {
-        for (created) |resource| {
-            if (self.find(resource)) |slot| deleteSlot(slot);
-        }
-    }
     fn deleteSlot(slot: *Slot) void {
         if (slot.texture_id != 0) {
             var value: c_uint = @intCast(slot.texture_id);
@@ -412,10 +373,10 @@ fn spanCountValid(ptr: anytype, count: u32, count_max: u32, expected_max: u32) b
     return true;
 }
 
-pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) bool {
+pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) void {
     std.debug.assert(width > 0);
     std.debug.assert(height > 0);
-    if (surface.host_surface_id != 0 and surface.width == width and surface.height == height) return true;
+    if (surface.host_surface_id != 0 and surface.width == width and surface.height == height) return;
     if (surface.host_surface_id != 0) deleteTexture(&surface.host_surface_id);
     surface.width = 0;
     surface.height = 0;
@@ -450,7 +411,6 @@ pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
     }
     surface.width = width;
     surface.height = height;
-    return true;
 }
 
 pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurface) bool {
@@ -459,18 +419,26 @@ pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *ren
     const had_matching_surface = host_surface.host_surface_id != 0 and
         host_surface.width == surface.render_px.width and
         host_surface.height == surface.render_px.height;
-    const resources_realized = textures.realizeSurface(surface);
-    const surface_ensured = ensureSurface(host_surface, surface.render_px.width, surface.render_px.height);
-    const surface_uploaded = if (resources_realized and surface_ensured) blk: {
-        if (renderSurfaceSprite(surface)) break :blk uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+    textures.realizeSurface(surface);
+    ensureSurface(host_surface, surface.render_px.width, surface.render_px.height);
+    const surface_uploaded = blk: {
+        if (renderSurfaceSprite(surface)) {
+            uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            break :blk true;
+        }
         if (renderSurfaceSpritePatch(surface)) {
             if (!had_matching_surface) std.debug.panic("trusted render surface patch requires matching host surface", .{});
-            break :blk uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            break :blk true;
         }
-        if (renderSurfaceGlyphs(surface)) break :blk uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+        if (renderSurfaceGlyphs(surface)) {
+            uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            break :blk true;
+        }
         if (renderSurfaceGlyphPatch(surface)) {
             if (!had_matching_surface) std.debug.panic("trusted render surface patch requires matching host surface", .{});
-            break :blk uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            break :blk true;
         }
         if (renderSurfaceFillOnly(surface)) break :blk uploadFillCommands(host_surface.*, surface);
         if (renderSurfaceFillPatch(surface)) {
@@ -478,7 +446,7 @@ pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *ren
             break :blk uploadFillCommands(host_surface.*, surface);
         }
         std.debug.panic("trusted render surface has unsupported shape", .{});
-    } else false;
+    };
     if (!surface_uploaded) {
         host_surface.width = 0;
         host_surface.height = 0;
@@ -509,7 +477,7 @@ fn uploadFillCommands(host_surface: render_c.HowlRenderHostSurface, render_surfa
     return true;
 }
 
-fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
+fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) void {
     std.debug.assert(host_surface.host_surface_id != 0);
     std.debug.assert(host_surface.width == render_surface.render_px.width);
     std.debug.assert(host_surface.height == render_surface.render_px.height);
@@ -607,7 +575,6 @@ fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: 
     }
     const error_code = gl_c.glGetError();
     if (error_code != 0) panicGlBroken("render surface command upload failed", error_code);
-    return true;
 }
 
 pub fn renderSurfaceFillOnly(surface: *const render_c.HowlRenderSurface) bool {
@@ -1066,7 +1033,7 @@ pub const testing = struct {
         return @import("render_surface.zig").spriteUploadCoversCommand(slot, command_rect);
     }
 
-    pub fn validateSurface(textures: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
-        return textures.validateSurface(surface);
+    pub fn validateSurface(textures: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
+        textures.validateSurface(surface);
     }
 };

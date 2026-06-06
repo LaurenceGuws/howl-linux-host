@@ -333,5 +333,5 @@ test "render surface textures accept live-slot persistent upload" {
     var surface = testSurface();
     surface.uploads = uploadSpan(&uploads, bytes.len);
 
-    try std.testing.expect(render_surface_testing.validateSurface(&textures, &surface));
+    render_surface_testing.validateSurface(&textures, &surface);
 }
