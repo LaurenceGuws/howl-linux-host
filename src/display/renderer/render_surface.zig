@@ -339,22 +339,6 @@ fn spriteResourceKind(kind: u32) bool {
         kind == render_c.HOWL_RENDER_RESOURCE_SPRITE_COLOR;
 }
 
-fn findCreate(surface: *const render_c.HowlRenderSurface, resource: render_c.HowlRenderResourceId) ?render_c.HowlRenderResourceCreate {
-    const creates = spanSlice(
-        render_c.HowlRenderResourceCreate,
-        surface.creates.ptr,
-        surface.creates.count,
-    );
-    for (creates) |create| if (sameResource(create.resource, resource)) return create;
-    return null;
-}
-
-fn retireForResource(surface: *const render_c.HowlRenderSurface, resource: render_c.HowlRenderResourceId) ?render_c.HowlRenderResourceRetire {
-    const retires = spanSlice(render_c.HowlRenderResourceRetire, surface.retires.ptr, surface.retires.count);
-    for (retires) |retire| if (sameResource(retire.resource, resource)) return retire;
-    return null;
-}
-
 fn resourceHasFutureUpload(surface: *const render_c.HowlRenderSurface, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
     const uploads = spanSlice(render_c.HowlRenderResourceUpload, surface.uploads.ptr, surface.uploads.count);
     for (uploads) |upload| {
@@ -926,7 +910,7 @@ fn drawFillCommand(surface: render_c.HowlRenderHostSurface, command: render_c.Ho
     gl_c.glDisable(gl_c.GL_TEXTURE_2D);
     const rgba = unpackRenderSurfaceRgba(command.color_rgba);
     gl_c.glColor4ub(rgba[0], rgba[1], rgba[2], rgba[3]);
-    drawQuad(surface, command.rect, null);
+    drawQuad(surface, command.rect);
 }
 
 fn drawSpriteCommand(surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand, slot: RenderResourceTextures.Slot) bool {
@@ -1015,16 +999,15 @@ fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRen
     return true;
 }
 
-fn drawQuad(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSurfaceRect, texture_rect_optional: ?render_c.HowlRenderSurfaceRect) void {
+fn drawQuad(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSurfaceRect) void {
     const left = ndcX(rect.x_px, surface.width);
     const right = ndcX(rect.x_px + rect.width_px, surface.width);
     const top = ndcY(rect.y_px, surface.height);
     const bottom = ndcY(rect.y_px + rect.height_px, surface.height);
-    const textured = texture_rect_optional != null;
     const tex_left: f32 = 0.0;
-    const tex_right: f32 = if (textured) 1.0 else 0.0;
+    const tex_right: f32 = 0.0;
     const tex_top: f32 = 0.0;
-    const tex_bottom: f32 = if (textured) 1.0 else 0.0;
+    const tex_bottom: f32 = 0.0;
 
     gl_c.glBegin(gl_c.GL_QUADS);
     gl_c.glTexCoord2f(tex_left, tex_top);
