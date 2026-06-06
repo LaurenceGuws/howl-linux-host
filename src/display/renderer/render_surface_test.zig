@@ -122,6 +122,18 @@ test "render surface fill patch accepts partial bounded fills" {
     try std.testing.expect(render_surface.renderSurfaceFillPatch(&surface));
 }
 
+test "render surface fill patch accepts bounded clear and fill commands" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+    };
+    var surface = testSurface();
+    surface.render_px = .{ .width = 2, .height = 2 };
+    surface.commands = commandSpan(&commands);
+
+    try std.testing.expect(render_surface.renderSurfaceFillPatch(&surface));
+}
+
 test "render surface fill patch rejects out of bounds fill" {
     var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var surface = testSurface();
@@ -257,6 +269,20 @@ test "render surface glyph patch accepts bounded fill clear and glyph commands" 
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
+    surface.commands = commandSpan(&commands);
+
+    try std.testing.expect(render_surface.renderSurfaceGlyphPatch(&surface));
+}
+
+test "render surface glyph patch accepts bounded sprite and glyph commands" {
+    var glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(45, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 1, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
+    var commands = [_]render_c.HowlRenderSurfaceCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(2, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(46, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } },
+    };
+    var surface = testSurface();
+    surface.render_px = .{ .width = 2, .height = 1 };
     surface.commands = commandSpan(&commands);
 
     try std.testing.expect(render_surface.renderSurfaceGlyphPatch(&surface));

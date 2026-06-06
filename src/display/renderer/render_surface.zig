@@ -488,7 +488,7 @@ pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *ren
 }
 
 fn uploadFillCommands(host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
-    std.debug.assert(renderSurfaceFillOnly(render_surface));
+    std.debug.assert(renderSurfaceFillOnly(render_surface) or renderSurfaceFillPatch(render_surface));
     std.debug.assert(host_surface.host_surface_id != 0);
     std.debug.assert(host_surface.width == render_surface.render_px.width);
     std.debug.assert(host_surface.height == render_surface.render_px.height);
@@ -635,8 +635,8 @@ pub fn renderSurfaceFillPatch(surface: *const render_c.HowlRenderSurface) bool {
         surface.commands.count,
     );
     for (commands) |command| {
-        if (command.kind != render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT) return false;
         if (!renderSurfaceFillCommand(command)) return false;
+        if (!rectHasArea(command.rect)) return false;
         if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
     }
     return true;
@@ -752,6 +752,10 @@ pub fn renderSurfaceGlyphPatch(surface: *const render_c.HowlRenderSurface) bool 
             => {
                 if (!renderSurfaceFillCommand(command)) return false;
                 if (!rectHasArea(command.rect)) return false;
+                if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
+            },
+            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
+                if (!renderSurfaceSpriteCommand(command)) return false;
                 if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
             },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
