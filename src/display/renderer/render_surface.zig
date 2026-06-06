@@ -120,37 +120,27 @@ pub const RenderResourceTextures = struct {
 
     fn validateSurfaceTransition(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) RenderResourceTextures {
         var next = self.*;
-        self.validateCreates(surface, &next);
-        self.validateUploads(surface, &next);
-        self.validateRetires(surface, &next);
-        return next;
-    }
-
-    fn validateCreates(_: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface, next: *RenderResourceTextures) void {
         const creates = spanSlice(
             render_c.HowlRenderResourceCreate,
             surface.creates.ptr,
             surface.creates.count,
         );
         for (creates) |create| next.noteCreate(create);
-    }
 
-    fn validateUploads(_: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface, next: *RenderResourceTextures) void {
         const uploads = spanSlice(
             render_c.HowlRenderResourceUpload,
             surface.uploads.ptr,
             surface.uploads.count,
         );
         for (uploads) |upload| next.noteUpload(upload);
-    }
 
-    fn validateRetires(_: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface, next: *RenderResourceTextures) void {
         const retires = spanSlice(
             render_c.HowlRenderResourceRetire,
             surface.retires.ptr,
             surface.retires.count,
         );
         for (retires) |retire| next.noteRetire(retire.resource);
+        return next;
     }
 
     fn noteCreate(self: *RenderResourceTextures, create: render_c.HowlRenderResourceCreate) void {
