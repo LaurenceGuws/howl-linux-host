@@ -482,12 +482,6 @@ pub const Context = struct {
         idle_submit,
     };
 
-    fn driveRender(self: *Context, work: render_retained.WorkState) DriveResult {
-        self.term.mutex.lockFair();
-        defer self.term.mutex.unlock();
-        return self.driveRenderLocked(work);
-    }
-
     fn driveRenderLocked(self: *Context, work: render_retained.WorkState) DriveResult {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         std.debug.assert(work.bootstrap_surface == bootstrap_surface);
@@ -520,18 +514,6 @@ pub const Context = struct {
 
     fn maybeCommitGridResizeLocked(self: *Context) void {
         surface_layout.maybeCommitGridResizeLocked(self);
-    }
-
-    fn prepare(self: *Context) render_retained.PrepareResult {
-        self.term.mutex.lockFair();
-        defer self.term.mutex.unlock();
-        return self.term.render.prepare();
-    }
-
-    fn takePreparedUpload(self: *Context, upload_out: *render_retained.PreparedUpload) bool {
-        self.term.mutex.lockFair();
-        defer self.term.mutex.unlock();
-        return self.term.render.preparedUpload(upload_out);
     }
 
     fn submitPrepared(self: *Context) SubmitPreparedResult {
@@ -603,12 +585,6 @@ pub const Context = struct {
         snapshot_seq: u64,
     };
 
-    fn submit(self: *Context, execution: *const render_c.HowlRenderSubmitExecution, result: *render_c.HowlRenderSubmitResult) render_retained.SubmitResult {
-        self.term.mutex.lockFair();
-        defer self.term.mutex.unlock();
-        return self.term.render.submit(execution, result);
-    }
-
     fn submitStep(result: render_retained.SubmitResult) TurnStep {
         return switch (result) {
             .rendered => .rendered,
@@ -642,8 +618,6 @@ pub const Context = struct {
     pub fn pixelToTerminalRow(self: *const Context, pixel_y: i32) i32 {
         return terminal_input.pixelToTerminalRow(self, pixel_y);
     }
-
-    const ScrollMouseOutcome = terminal_input.ScrollMouseOutcome;
 
     const TermInit = struct {
         text_session: render_c.HowlRenderTextSessionHandle,
