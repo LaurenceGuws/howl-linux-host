@@ -52,13 +52,6 @@ pub const RenderResourceTextures = struct {
 
     const CreatedResources = [render_c.HOWL_RENDER_SURFACE_CREATES_MAX]render_c.HowlRenderResourceId;
 
-    pub const GlStateSample = struct {
-        texture_binding_2d: i32 = 0,
-        unpack_alignment: i32 = 0,
-        unpack_row_length: i32 = 0,
-        error_code: u32 = 0,
-    };
-
     pub fn deinit(self: *RenderResourceTextures) void {
         for (&self.slots) |*slot| deleteSlot(slot);
     }
@@ -84,7 +77,7 @@ pub const RenderResourceTextures = struct {
             created[created_count] = create.resource;
             created_count += 1;
         }
-        glSampleOk(sampleGlState(), "create texture upload");
+        glErrorOk("create texture upload");
         const uploads = spanSlice(
             render_c.HowlRenderResourceUpload,
             surface.uploads.ptr,
@@ -97,7 +90,7 @@ pub const RenderResourceTextures = struct {
                 return false;
             }
         }
-        glSampleOk(sampleGlState(), "resource upload");
+        glErrorOk("resource upload");
         self.commitUploadMetadata(uploads);
         const retires = spanSlice(
             render_c.HowlRenderResourceRetire,
@@ -110,13 +103,14 @@ pub const RenderResourceTextures = struct {
                 return false;
             }
         }
-        glSampleOk(sampleGlState(), "resource retire");
+        glErrorOk("resource retire");
         return true;
     }
 
-    fn glSampleOk(sample: GlStateSample, comptime message: []const u8) void {
-        if (sample.error_code == 0) return;
-        panicGlBroken(message, sample.error_code);
+    fn glErrorOk(comptime message: []const u8) void {
+        const error_code = gl_c.glGetError();
+        if (error_code == 0) return;
+        panicGlBroken(message, error_code);
     }
 
     fn validateSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) bool {
@@ -426,21 +420,6 @@ fn spanCountValid(ptr: anytype, count: u32, count_max: u32, expected_max: u32) b
     if (count > count_max) return false;
     if (count > 0 and ptr == null) return false;
     return true;
-}
-
-pub fn sampleGlState() RenderResourceTextures.GlStateSample {
-    var texture_binding: c_int = 0;
-    var unpack_alignment: c_int = 0;
-    var unpack_row_length: c_int = 0;
-    gl_c.glGetIntegerv(gl_c.GL_TEXTURE_BINDING_2D, &texture_binding);
-    gl_c.glGetIntegerv(gl_c.GL_UNPACK_ALIGNMENT, &unpack_alignment);
-    gl_c.glGetIntegerv(gl_c.GL_UNPACK_ROW_LENGTH, &unpack_row_length);
-    return .{
-        .texture_binding_2d = texture_binding,
-        .unpack_alignment = unpack_alignment,
-        .unpack_row_length = unpack_row_length,
-        .error_code = gl_c.glGetError(),
-    };
 }
 
 pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) bool {
