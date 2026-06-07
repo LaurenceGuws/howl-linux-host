@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const Options = struct {
+pub const Args = struct {
     command: ?[]const u8 = null,
     shell: ?[]const u8 = null,
     start_path: ?[]const u8 = null,
@@ -9,8 +9,8 @@ pub const Options = struct {
     window_title: ?[:0]const u8 = null,
 };
 
-pub fn parse(args: []const []const u8) !Options {
-    var options = Options{};
+pub fn parse(args: []const []const u8) !Args {
+    var options = Args{};
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];

@@ -10,7 +10,7 @@ const TabSlots = @import("tab_bar/slots.zig").Slots;
 const TerminalContext = @import("terminal/context.zig").Context;
 const Window = @import("window_chrome/window.zig");
 
-pub const Options = cli_args.Options;
+pub const Args = cli_args.Args;
 const feed_record_path_env = "HOWL_PTY_VT_RECORD_PATH";
 const child_term_value: [*:0]const u8 = "xterm-256color";
 
@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
     try start(init.io, options, feed_record_path);
 }
 
-noinline fn start(io: std.Io, options: Options, feed_record_path: ?[]const u8) !void {
+noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !void {
     setCurrentThreadName("howl-main");
     try initVideo();
     defer Window.quit();
@@ -115,14 +115,14 @@ fn initVideo() !void {
     return error.WindowInitFailed;
 }
 
-fn loadConfig(options: Options) !Config.State {
+fn loadConfig(options: Args) !Config.State {
     var conf = try Config.State.load(std.heap.c_allocator);
     errdefer conf.deinit(std.heap.c_allocator);
     try conf.applyProcessOverrides(options.shell, options.start_path, options.command);
     return conf;
 }
 
-fn createWindow(conf: *const Config.State, options: Options) !Window.State {
+fn createWindow(conf: *const Config.State, options: Args) !Window.State {
     const title: [*:0]const u8 = if (options.window_title) |value| value.ptr else conf.window.title.ptr;
     var window = try Window.State.create(title, conf.window.width, conf.window.height, Display.flags(Display.C));
     errdefer window.deinit();
