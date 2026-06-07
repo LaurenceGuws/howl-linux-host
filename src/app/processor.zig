@@ -57,6 +57,7 @@ pub const Processor = struct {
 
     const LoopTabDebug = struct {
         wake_pending: bool,
+        continuation_pending: bool,
         runtime_due_now: bool,
         runtime_wait_ms: ?u32,
         render_work_pending: bool,
@@ -200,7 +201,7 @@ pub const Processor = struct {
         self.frame_pacing.refreshFramePermit(now_ns, self.window.currentRefreshIntervalNs());
         self.frame_pacing.noteRedrawAndRenderWork(false, debug_facts.render_work_pending);
         const pending = loopPendingFromFacts(self.input.hasPendingOwnerWork(), debug_facts);
-        const runtime_admission = takeTerminalInputAdmission(&self.terminal_input_admitted);
+        const runtime_admission = peekTerminalInputAdmission(self.terminal_input_admitted);
         const wait_for_window = self.frame_pacing.shouldWaitForWindow(pending, runtime_admission);
         return .{
             .wait_for_window = wait_for_window,
@@ -228,6 +229,7 @@ pub const Processor = struct {
     fn loopTabDebug(tab: *TerminalContext, now_ns: u64) LoopTabDebug {
         return .{
             .wake_pending = pty_wait_thread.wakePending(tab),
+            .continuation_pending = tab.progressContinuationPending(),
             .runtime_due_now = tab.runtimeObligationDueNow(now_ns),
             .runtime_wait_ms = tab.nextRuntimeObligationWaitMs(now_ns),
             .render_work_pending = tab.wantsRenderTurn(),
@@ -236,6 +238,7 @@ pub const Processor = struct {
 
     fn noteLoopDebugFacts(facts: *LoopDebugFacts, tab: LoopTabDebug, active: bool) void {
         if (tab.wake_pending) facts.pending_wake_count += 1;
+        if (tab.continuation_pending) facts.pending_runtime_obligation_count += 1;
         if (tab.runtime_due_now) facts.pending_runtime_obligation_count += 1;
         facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, tab.runtime_wait_ms);
         if (active) facts.render_work_pending = tab.render_work_pending;
@@ -304,10 +307,13 @@ pub const Processor = struct {
         total.host_visual_changed = total.host_visual_changed or next.host_visual_changed;
     }
 
-    fn takeTerminalInputAdmission(admitted: *bool) bool {
-        const was_admitted = admitted.*;
+    fn peekTerminalInputAdmission(admitted: bool) bool {
+        return admitted;
+    }
+
+    fn clearTerminalInputAdmissionOnDrive(admitted: *bool, drove: bool) void {
+        if (!drove) return;
         admitted.* = false;
-        return was_admitted;
     }
 
     fn applyWindowResize(self: *Self) bool {
@@ -318,19 +324,21 @@ pub const Processor = struct {
     }
 
     fn driveRuntimeProgress(self: *Self, now_ns: u64) TerminalProgress {
-        return driveTerminalProgress(self.tabs.items(), self.active_tab_idx.*, now_ns);
+        const progress = driveTerminalProgress(self.tabs.items(), self.active_tab_idx.*, self.terminal_input_admitted, now_ns);
+        clearTerminalInputAdmissionOnDrive(&self.terminal_input_admitted, progress.drive_performed);
+        return progress;
     }
 
-    fn driveTerminalProgress(tabs: []*TerminalContext, active_tab_idx: TabIndex, now_ns: u64) TerminalProgress {
+    fn driveTerminalProgress(tabs: []*TerminalContext, active_tab_idx: TabIndex, terminal_input_admitted: bool, now_ns: u64) TerminalProgress {
         var should_redraw = false;
         var keep_running = false;
         var drive_performed = false;
         for (tabs, 0..) |tab, i| {
             const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
-            const outcome = driveTabRuntimeTurn(tab, is_active, now_ns);
-            drive_performed = true;
-            should_redraw = should_redraw or outcome.should_redraw;
-            keep_running = keep_running or outcome.keep;
+            const drive = driveTabRuntimeTurn(tab, is_active, now_ns, .{ .input_published = is_active and terminal_input_admitted });
+            if (is_active) drive_performed = drive.drove;
+            should_redraw = should_redraw or drive.outcome.should_redraw;
+            keep_running = keep_running or drive.outcome.keep;
         }
         return .{
             .should_redraw = should_redraw,
@@ -339,8 +347,8 @@ pub const Processor = struct {
         };
     }
 
-    fn driveTabRuntimeTurn(tab: *TerminalContext, active: bool, now_ns: u64) @import("../terminal/pty/pump.zig").Outcome {
-        return tab.driveProgress(active, now_ns);
+    fn driveTabRuntimeTurn(tab: *TerminalContext, active: bool, now_ns: u64, admission: TerminalContext.DriveAdmission) TerminalContext.DriveProgressResult {
+        return tab.driveProgress(active, now_ns, admission);
     }
 
     fn handleActiveTabProblem(self: *Self) !?LoopAction {
@@ -598,3 +606,45 @@ pub const Processor = struct {
         return idx < len;
     }
 };
+
+test "terminal input admission wait policy is non-destructive" {
+    const admitted = true;
+
+    try std.testing.expect(Processor.peekTerminalInputAdmission(admitted));
+    try std.testing.expect(admitted);
+}
+
+test "terminal input admission clears only after drove" {
+    var admitted = true;
+
+    Processor.clearTerminalInputAdmissionOnDrive(&admitted, true);
+
+    try std.testing.expect(!admitted);
+}
+
+test "terminal input admission remains set when no drive occurred" {
+    var admitted = true;
+
+    Processor.clearTerminalInputAdmissionOnDrive(&admitted, false);
+
+    try std.testing.expect(admitted);
+}
+
+test "continuation pending participates in runtime wake admission" {
+    var facts = Processor.LoopDebugFacts{
+        .pending_wake_count = 0,
+        .pending_runtime_obligation_count = 0,
+        .runtime_wait_ms = null,
+        .render_work_pending = false,
+    };
+
+    Processor.noteLoopDebugFacts(&facts, .{
+        .wake_pending = false,
+        .continuation_pending = true,
+        .runtime_due_now = false,
+        .runtime_wait_ms = null,
+        .render_work_pending = false,
+    }, false);
+
+    try std.testing.expect(Processor.loopPendingFromFacts(false, facts).runtime_wake);
+}

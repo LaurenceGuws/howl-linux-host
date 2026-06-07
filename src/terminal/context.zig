@@ -74,6 +74,15 @@ pub const Context = struct {
         present_snapshot_seq: u64,
     };
 
+    pub const DriveAdmission = struct {
+        input_published: bool,
+    };
+
+    pub const DriveProgressResult = struct {
+        drove: bool,
+        outcome: pty_pump.Outcome,
+    };
+
     pub const MouseHandlingOutcome = terminal_input.MouseHandlingOutcome;
 
     term: HowlTerm,
@@ -96,6 +105,7 @@ pub const Context = struct {
     links: terminal_links.Links,
     selection: terminal_selection.Selection,
     cursor_blink: cursor_blink.CursorBlink,
+    progress_continuation_pending: bool,
 
     const InitialRequest = struct {
         conf: *const TerminalConfig,
@@ -155,6 +165,7 @@ pub const Context = struct {
         self.links = .{};
         self.selection = .{};
         self.cursor_blink = .{};
+        self.progress_continuation_pending = false;
     }
 
     pub fn deinit(self: *Context) void {
@@ -339,19 +350,32 @@ pub const Context = struct {
         return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
     }
 
-    pub fn driveProgress(self: *Context, active: bool, now_ns: u64) pty_pump.Outcome {
-        if (!active and !pty_wait_thread.wakePending(self) and !self.runtimeObligationDueNow(now_ns)) {
-            return .{ .keep = false, .should_redraw = false, .alive = pty_session.isAlive(&self.term) };
+    pub fn progressContinuationPending(self: *const Context) bool {
+        return self.progress_continuation_pending;
+    }
+
+    pub fn driveProgress(self: *Context, active: bool, now_ns: u64, admission: DriveAdmission) DriveProgressResult {
+        return driveProgressWith(self, active, now_ns, admission, ContextDriveOps);
+    }
+
+    fn driveProgressWith(self: anytype, active: bool, now_ns: u64, admission: DriveAdmission, comptime Ops: type) DriveProgressResult {
+        if (!self.progress_continuation_pending) {
+            if (!Ops.wakePending(self)) {
+                if (!Ops.runtimeObligationDueNow(self, now_ns)) {
+                    if (!(active and admission.input_published)) {
+                        return .{
+                            .drove = false,
+                            .outcome = .{ .keep = false, .should_redraw = false, .alive = Ops.isAlive(self) },
+                        };
+                    }
+                }
+            }
         }
-        var outcome = pty_pump.driveOnce(&self.term, now_ns);
-        if (active and outcome.should_redraw) {
-            if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
-            _ = vt_surface.publishSource(&self.term, terminal_links.hoverDecoration(self));
-            outcome.should_redraw = self.resetCursorBlinkActivity(EventLoop.nowNs()) or outcome.should_redraw;
-        }
-        self.applyPendingClipboardWrites();
-        pty_wait_thread.ackWake(self);
-        return outcome;
+
+        var outcome = Ops.driveOnce(self, now_ns);
+        Ops.postDrive(self, active, &outcome);
+        self.progress_continuation_pending = outcome.keep;
+        return .{ .drove = true, .outcome = outcome };
     }
 
     pub fn renderTurn(self: *Context) TurnResult {
@@ -441,6 +465,34 @@ pub const Context = struct {
             .clipboard_osc_52;
         applyPendingClipboardWrite(&self.term, policy, WindowClipboardOps);
     }
+
+    const ContextDriveOps = struct {
+        fn wakePending(self: *Context) bool {
+            return pty_wait_thread.wakePending(self);
+        }
+
+        fn runtimeObligationDueNow(self: *Context, now_ns: u64) bool {
+            return self.runtimeObligationDueNow(now_ns);
+        }
+
+        fn isAlive(self: *Context) bool {
+            return pty_session.isAlive(&self.term);
+        }
+
+        fn driveOnce(self: *Context, now_ns: u64) pty_pump.Outcome {
+            return pty_pump.driveOnce(&self.term, now_ns);
+        }
+
+        fn postDrive(self: *Context, active: bool, outcome: *pty_pump.Outcome) void {
+            if (active and outcome.should_redraw) {
+                if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
+                _ = vt_surface.publishSource(&self.term, terminal_links.hoverDecoration(self));
+                outcome.should_redraw = self.resetCursorBlinkActivity(EventLoop.nowNs()) or outcome.should_redraw;
+            }
+            self.applyPendingClipboardWrites();
+            pty_wait_thread.ackWake(self);
+        }
+    };
 
     fn workState(self: *const Context) render_retained.WorkState {
         const mut: *Context = @constCast(self);
@@ -719,7 +771,6 @@ fn setRenderCursorBlinkVisible(term: *HowlTerm, visible: bool) bool {
     return render_c.howl_render_text_session_set_cursor_blink_visible(term.render.text_session, @intFromBool(visible)) == render_c.HOWL_RENDER_CALL_OK;
 }
 
-
 fn assertRenderInit(render_init: RenderInit) void {
     std.debug.assert(render_init.render_px.width > 0);
     std.debug.assert(render_init.render_px.height > 0);
@@ -792,6 +843,10 @@ pub const testing = struct {
 
     pub fn completePresentLockedWith(term: anytype, token: u64, comptime Ops: type) void {
         @import("context.zig").completePresentLockedWith(term, token, Ops);
+    }
+
+    pub fn driveProgressWith(self: anytype, active: bool, now_ns: u64, admission: Context.DriveAdmission, comptime Ops: type) Context.DriveProgressResult {
+        return Context.driveProgressWith(self, active, now_ns, admission, Ops);
     }
 
     pub fn contextSubmitExecution(self: anytype, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {

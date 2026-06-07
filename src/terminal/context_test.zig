@@ -3,6 +3,7 @@ const render_c = @import("howl_render_c");
 
 const context_mod = @import("context.zig");
 const cursor_blink = @import("cursor_blink.zig");
+const pty_pump = @import("pty/pump.zig");
 const terminal_input = @import("input.zig");
 const render_retained = @import("render/retained.zig");
 const surface_layout = @import("render/surface_layout.zig");
@@ -104,11 +105,99 @@ test "cursor activity pushes blink deadline while visible" {
         .links = .{},
         .selection = .{},
         .cursor_blink = .{},
+        .progress_continuation_pending = false,
     };
 
     try std.testing.expect(!context.resetCursorBlinkActivity(1234));
     try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.interval_ns, context.cursor_blink.deadline_ns);
     try std.testing.expect(context.cursor_blink.visible);
+}
+
+const TestDriveContext = struct {
+    progress: struct {
+        wake_pending: bool = false,
+        ack_calls: u8 = 0,
+    } = .{},
+    progress_continuation_pending: bool = false,
+    runtime_due_now: bool = false,
+    alive: bool = true,
+    drive_calls: u8 = 0,
+    active_drive_calls: u8 = 0,
+    outcomes: [4]pty_pump.Outcome = undefined,
+};
+
+const TestDriveOps = struct {
+    pub fn wakePending(self: *TestDriveContext) bool {
+        return self.progress.wake_pending;
+    }
+
+    pub fn runtimeObligationDueNow(self: *TestDriveContext, _: u64) bool {
+        return self.runtime_due_now;
+    }
+
+    pub fn isAlive(self: *TestDriveContext) bool {
+        return self.alive;
+    }
+
+    pub fn driveOnce(self: *TestDriveContext, _: u64) pty_pump.Outcome {
+        const index = self.drive_calls;
+        self.drive_calls += 1;
+        return self.outcomes[index];
+    }
+
+    pub fn postDrive(self: *TestDriveContext, active: bool, _: *pty_pump.Outcome) void {
+        if (active) self.active_drive_calls += 1;
+        self.progress.ack_calls += 1;
+        self.progress.wake_pending = false;
+    }
+};
+
+test "drive progress keeps per-terminal continuation admission until a later non-keep turn" {
+    var context = TestDriveContext{
+        .outcomes = .{
+            .{ .keep = true, .should_redraw = false, .alive = true },
+            .{ .keep = false, .should_redraw = true, .alive = true },
+            undefined,
+            undefined,
+        },
+    };
+
+    const none = context_testing.driveProgressWith(&context, true, 1, .{ .input_published = false }, TestDriveOps);
+    try std.testing.expect(!none.drove);
+    try std.testing.expect(!context.progress_continuation_pending);
+    try std.testing.expectEqual(@as(u8, 0), context.drive_calls);
+
+    const first = context_testing.driveProgressWith(&context, true, 2, .{ .input_published = true }, TestDriveOps);
+    try std.testing.expect(first.drove);
+    try std.testing.expect(first.outcome.keep);
+    try std.testing.expect(context.progress_continuation_pending);
+
+    const second = context_testing.driveProgressWith(&context, true, 3, .{ .input_published = false }, TestDriveOps);
+    try std.testing.expect(second.drove);
+    try std.testing.expect(!second.outcome.keep);
+    try std.testing.expect(!context.progress_continuation_pending);
+    try std.testing.expectEqual(@as(u8, 2), context.drive_calls);
+    try std.testing.expectEqual(@as(u8, 2), context.active_drive_calls);
+    try std.testing.expectEqual(@as(u8, 2), context.progress.ack_calls);
+}
+
+test "inactive tab continuation re-enters from per-terminal continuation admission" {
+    var context = TestDriveContext{
+        .progress_continuation_pending = true,
+        .outcomes = .{
+            .{ .keep = false, .should_redraw = false, .alive = true },
+            undefined,
+            undefined,
+            undefined,
+        },
+    };
+
+    const result = context_testing.driveProgressWith(&context, false, 4, .{ .input_published = false }, TestDriveOps);
+
+    try std.testing.expect(result.drove);
+    try std.testing.expectEqual(@as(u8, 1), context.drive_calls);
+    try std.testing.expectEqual(@as(u8, 0), context.active_drive_calls);
+    try std.testing.expect(!context.progress_continuation_pending);
 }
 
 test "text input fast path publishes text without pointer or UI operations" {
