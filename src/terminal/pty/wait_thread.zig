@@ -10,9 +10,9 @@ pub const WaitThread = struct {
     wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_ack_sem: ?EventLoop.WakeSemaphore = null,
     thread: ?std.Thread = null,
-    wake_event_loop: ?*EventLoop.State = null,
+    wake_event_loop: ?*EventLoop.EventLoop = null,
 
-    pub fn init(self: *WaitThread, wake_event_loop: *EventLoop.State) !void {
+    pub fn init(self: *WaitThread, wake_event_loop: *EventLoop.EventLoop) !void {
         self.wake_pending.store(false, .release);
         self.wake_event_loop = wake_event_loop;
         self.wake_ack_sem = EventLoop.createWakeSemaphore() orelse return error.ProgressSemaphoreUnavailable;
@@ -199,7 +199,7 @@ const FakeCtx = struct {
         stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         wake_ack_sem: ?EventLoop.WakeSemaphore = null,
-        wake_event_loop: ?*EventLoop.State = null,
+        wake_event_loop: ?*EventLoop.EventLoop = null,
     } = .{},
 };
 

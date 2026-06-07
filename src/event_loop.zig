@@ -14,19 +14,19 @@ pub const Signal = enum {
     quit,
 };
 
-pub const State = struct {
+pub const EventLoop = struct {
     quit_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_event_type: u32 = 0,
 
-    pub fn init(self: *State) void {
+    pub fn init(self: *EventLoop) void {
         self.quit_requested.store(false, .release);
     }
 
-    pub fn initWakeEventType(self: *State) void {
+    pub fn initWakeEventType(self: *EventLoop) void {
         self.initWakeEventTypeWith(window_wake);
     }
 
-    fn initWakeEventTypeWith(self: *State, comptime Ops: type) void {
+    fn initWakeEventTypeWith(self: *EventLoop, comptime Ops: type) void {
         if (self.wake_event_type != 0) return;
         const event_base = Ops.registerEvents(1);
         assert(event_base != std.math.maxInt(@TypeOf(event_base)));
@@ -34,34 +34,34 @@ pub const State = struct {
         assert(self.wake_event_type != 0);
     }
 
-    pub fn quitRequested(self: *const State) bool {
+    pub fn quitRequested(self: *const EventLoop) bool {
         return self.quit_requested.load(.acquire);
     }
 
-    pub fn requestQuit(self: *State) void {
+    pub fn requestQuit(self: *EventLoop) void {
         self.requestQuitWith(window_wake);
     }
 
-    fn requestQuitWith(self: *State, comptime Ops: type) void {
+    fn requestQuitWith(self: *EventLoop, comptime Ops: type) void {
         self.quit_requested.store(true, .release);
         self.wakeWith(Ops);
     }
 
-    pub fn wake(self: *State) void {
+    pub fn wake(self: *EventLoop) void {
         self.wakeWith(window_wake);
     }
 
-    fn wakeWith(self: *State, comptime Ops: type) void {
+    fn wakeWith(self: *EventLoop, comptime Ops: type) void {
         var event: sdl_c.SDL_Event = std.mem.zeroes(sdl_c.SDL_Event);
         event.type = self.wakeTypeWith(Ops);
         _ = Ops.pushEvent(&event);
     }
 
-    pub fn pumpInput(self: *State, input: *HostInput, wait: bool, timeout_ms: ?u32) Signal {
+    pub fn pumpInput(self: *EventLoop, input: *HostInput, wait: bool, timeout_ms: ?u32) Signal {
         return self.pumpInputWith(input, wait, timeout_ms, window_wake);
     }
 
-    fn pumpInputWith(self: *State, input: *HostInput, wait: bool, timeout_ms: ?u32, comptime Ops: type) Signal {
+    fn pumpInputWith(self: *EventLoop, input: *HostInput, wait: bool, timeout_ms: ?u32, comptime Ops: type) Signal {
         if (self.quitRequested()) return .quit;
         if (wait) {
             const signal = self.waitAndDrainInputWith(input, timeout_ms, Ops);
@@ -74,7 +74,7 @@ pub const State = struct {
         return .none;
     }
 
-    fn waitAndDrainInputWith(self: *State, input: *HostInput, timeout_ms: ?u32, comptime Ops: type) Signal {
+    fn waitAndDrainInputWith(self: *EventLoop, input: *HostInput, timeout_ms: ?u32, comptime Ops: type) Signal {
         var event: sdl_c.SDL_Event = undefined;
         var processed: usize = 0;
         const received = if (timeout_ms) |timeout|
@@ -88,7 +88,7 @@ pub const State = struct {
         return self.drainPendingInputWith(input, processed, Ops);
     }
 
-    fn drainPendingInputWith(self: *State, input: *HostInput, processed_start: usize, comptime Ops: type) Signal {
+    fn drainPendingInputWith(self: *EventLoop, input: *HostInput, processed_start: usize, comptime Ops: type) Signal {
         var signal: Signal = if (self.quitRequested()) .quit else .none;
         var processed = processed_start;
         var event: sdl_c.SDL_Event = undefined;
@@ -100,7 +100,7 @@ pub const State = struct {
         return signal;
     }
 
-    fn processEvent(self: *State, input: *HostInput, event: *const sdl_c.SDL_Event) Signal {
+    fn processEvent(self: *EventLoop, input: *HostInput, event: *const sdl_c.SDL_Event) Signal {
         if (self.isWakeEventType(event.type)) return .none;
         switch (event.type) {
             sdl_c.SDL_EVENT_QUIT,
@@ -118,11 +118,11 @@ pub const State = struct {
         }
     }
 
-    fn isWakeEventType(self: *const State, event_type: u32) bool {
+    fn isWakeEventType(self: *const EventLoop, event_type: u32) bool {
         return self.wake_event_type != 0 and event_type == self.wake_event_type;
     }
 
-    fn wakeTypeWith(self: *State, comptime Ops: type) u32 {
+    fn wakeTypeWith(self: *EventLoop, comptime Ops: type) u32 {
         self.initWakeEventTypeWith(Ops);
         assert(self.wake_event_type != 0);
         return self.wake_event_type;
@@ -161,7 +161,7 @@ test "wake event is consumed and not classified as input" {
     FakeOps.reset();
     var input: HostInput = undefined;
     input.init();
-    var event_loop: State = .{};
+    var event_loop: EventLoop = .{};
     event_loop.wake_event_type = sdl_c.SDL_EVENT_KEY_DOWN;
     FakeOps.events = &[_]u32{sdl_c.SDL_EVENT_KEY_DOWN};
     try std.testing.expectEqual(Signal.none, event_loop.pumpInputWith(&input, false, null, FakeOps));
@@ -173,7 +173,7 @@ test "quit event sets quit state and returns quit" {
     FakeOps.reset();
     var input: HostInput = undefined;
     input.init();
-    var event_loop: State = .{};
+    var event_loop: EventLoop = .{};
     FakeOps.events = &[_]u32{sdl_c.SDL_EVENT_QUIT};
     try std.testing.expectEqual(Signal.quit, event_loop.pumpInputWith(&input, false, null, FakeOps));
     try std.testing.expect(event_loop.quitRequested());
@@ -183,7 +183,7 @@ test "bounded drain does not exceed SDL event turn limit" {
     FakeOps.reset();
     var input: HostInput = undefined;
     input.init();
-    var event_loop: State = .{};
+    var event_loop: EventLoop = .{};
     FakeOps.event_repeat = sdl_c.SDL_EVENT_KEY_DOWN;
     FakeOps.event_repeat_count = max_sdl_events_per_turn + 1;
     try std.testing.expectEqual(Signal.none, event_loop.pumpInputWith(&input, false, null, FakeOps));
@@ -193,7 +193,7 @@ test "bounded drain does not exceed SDL event turn limit" {
 
 test "requestQuit sets quit and pushes wake through fake ops" {
     FakeOps.reset();
-    var event_loop: State = .{};
+    var event_loop: EventLoop = .{};
     event_loop.requestQuitWith(FakeOps);
     try std.testing.expect(event_loop.quitRequested());
     try std.testing.expectEqual(@as(usize, 1), FakeOps.push_count);

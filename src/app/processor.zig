@@ -27,7 +27,7 @@ pub const Processor = struct {
     tabs: *TabSlots,
     active_tab_idx: *TabIndex,
     input: *Input,
-    event_loop: *EventLoop.State,
+    event_loop: *EventLoop.EventLoop,
     terminal_input_admitted: bool,
     pending_terminal_present: ?Display.PresentToken,
     frame_pacing: FramePacing.FrameTimer,

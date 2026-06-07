@@ -67,7 +67,7 @@ noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !voi
     active_tab_idx.* = 0;
 
     const input = try std.heap.c_allocator.create(Input);
-    const event_loop = try std.heap.c_allocator.create(EventLoop.State);
+    const event_loop = try std.heap.c_allocator.create(EventLoop.EventLoop);
     defer {
         destroyTabs(tabs);
         std.heap.c_allocator.destroy(tabs);
