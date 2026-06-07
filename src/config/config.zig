@@ -10,12 +10,12 @@ const Lua = howl_lua;
 pub const Terminal = term_config.Config;
 pub const TerminalLinkUnderlineStyle = term_config.LinkUnderlineStyle;
 
-pub const State = struct {
+pub const UiConfig = struct {
     term: term_config.Config,
     window: window_config.Window,
     tab_bar: tab_bar_config.Config,
 
-    pub fn load(alloc: std.mem.Allocator) !State {
+    pub fn load(alloc: std.mem.Allocator) !UiConfig {
         var lua = try Lua.State.init();
         errdefer lua.deinit();
         try lua.loadFile(alloc, "assets/default_config/init.lua");
@@ -46,13 +46,13 @@ pub const State = struct {
         };
     }
 
-    pub fn deinit(self: *State, alloc: std.mem.Allocator) void {
+    pub fn deinit(self: *UiConfig, alloc: std.mem.Allocator) void {
         self.term.deinit(alloc);
         self.window.deinit(alloc);
         self.tab_bar.deinit(alloc);
     }
 
-    pub fn applyProcessOverrides(self: *State, shell: ?[]const u8, start_path: ?[]const u8, command: ?[]const u8) !void {
+    pub fn applyProcessOverrides(self: *UiConfig, shell: ?[]const u8, start_path: ?[]const u8, command: ?[]const u8) !void {
         if (shell) |value| try overrideOwned(&self.term.shell, value);
         if (start_path) |value| try overrideOptionalOwned(&self.term.start_path, value);
         if (command) |value| try overrideOptionalOwned(&self.term.command, value);

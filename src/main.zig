@@ -30,7 +30,7 @@ noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !voi
     try initVideo();
     defer window.quit();
 
-    const conf = try std.heap.c_allocator.create(Config.State);
+    const conf = try std.heap.c_allocator.create(Config.UiConfig);
     var conf_loaded = false;
     defer {
         if (conf_loaded) conf.deinit(std.heap.c_allocator);
@@ -115,14 +115,14 @@ fn initVideo() !void {
     return error.WindowInitFailed;
 }
 
-fn loadConfig(options: Args) !Config.State {
-    var conf = try Config.State.load(std.heap.c_allocator);
+fn loadConfig(options: Args) !Config.UiConfig {
+    var conf = try Config.UiConfig.load(std.heap.c_allocator);
     errdefer conf.deinit(std.heap.c_allocator);
     try conf.applyProcessOverrides(options.shell, options.start_path, options.command);
     return conf;
 }
 
-fn createWindow(conf: *const Config.State, options: Args) !window.Window {
+fn createWindow(conf: *const Config.UiConfig, options: Args) !window.Window {
     const title: [*:0]const u8 = if (options.window_title) |value| value.ptr else conf.window.title.ptr;
     var app_window = try window.Window.create(title, conf.window.width, conf.window.height, Display.flags(Display.C));
     errdefer app_window.deinit();

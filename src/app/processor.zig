@@ -18,7 +18,7 @@ const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
 
 pub const Processor = struct {
-    conf: *const Config.State,
+    conf: *const Config.UiConfig,
     feed_record_path: ?[]const u8,
     io: std.Io,
     window: *window.Window,
@@ -478,7 +478,7 @@ pub const Processor = struct {
         return false;
     }
 
-    fn resizeTerminals(conf: *const Config.State, app_window: *window.Window, tabs: []*TerminalContext) void {
+    fn resizeTerminals(conf: *const Config.UiConfig, app_window: *window.Window, tabs: []*TerminalContext) void {
         const px = DisplayLayout.contentPixelSize(app_window, conf.tab_bar.height);
         const logical = DisplayLayout.contentLogicalSize(app_window, conf.tab_bar.height);
         for (tabs) |tab| tab.resize(px.width, px.height, logical.width, logical.height);
