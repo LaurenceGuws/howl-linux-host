@@ -77,7 +77,7 @@ pub const Context = struct {
     pub const MouseHandlingOutcome = terminal_input.MouseHandlingOutcome;
 
     term: HowlTerm,
-    progress: pty_wait_thread.State = .{},
+    progress: pty_wait_thread.WaitThread = .{},
     live: bool,
     term_texture: render_c.HowlRenderHostSurface,
     render_surface_textures: term_texture.RenderResourceTextures,

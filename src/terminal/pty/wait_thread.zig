@@ -5,20 +5,20 @@ const std = @import("std");
 
 const wait_slice_timeout_ms: i32 = 50;
 
-pub const State = struct {
+pub const WaitThread = struct {
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_ack_sem: ?EventLoop.WakeSemaphore = null,
     thread: ?std.Thread = null,
     wake_event_loop: ?*EventLoop.State = null,
 
-    pub fn init(self: *State, wake_event_loop: *EventLoop.State) !void {
+    pub fn init(self: *WaitThread, wake_event_loop: *EventLoop.State) !void {
         self.wake_pending.store(false, .release);
         self.wake_event_loop = wake_event_loop;
         self.wake_ack_sem = EventLoop.createWakeSemaphore() orelse return error.ProgressSemaphoreUnavailable;
     }
 
-    pub fn deinit(self: *State) void {
+    pub fn deinit(self: *WaitThread) void {
         const sem = self.wake_ack_sem orelse return;
         EventLoop.destroyWakeSemaphore(sem);
         self.wake_ack_sem = null;
