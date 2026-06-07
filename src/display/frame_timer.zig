@@ -13,7 +13,7 @@ pub const Submission = struct {
     submitted: bool,
 };
 
-pub const State = struct {
+pub const FrameTimer = struct {
     redraw_requested: bool,
     render_work_pending: bool,
     frame_permit_ready: bool,
@@ -21,7 +21,7 @@ pub const State = struct {
     present_complete_pending: bool,
     present_complete_drain_pending: bool,
 
-    pub fn init() State {
+    pub fn init() FrameTimer {
         return .{
             .redraw_requested = false,
             .render_work_pending = false,
@@ -32,30 +32,30 @@ pub const State = struct {
         };
     }
 
-    pub fn beginTurn(self: *State) void {
+    pub fn beginTurn(self: *FrameTimer) void {
         if (self.present_complete_pending) assert(self.present_in_flight);
         if (self.present_complete_drain_pending) assert(self.present_complete_pending);
     }
 
-    pub fn refreshFramePermit(self: *State, now_ns: u64) void {
+    pub fn refreshFramePermit(self: *FrameTimer, now_ns: u64) void {
         assert(now_ns > 0);
         _ = self;
     }
 
-    pub fn framePermitWaitMs(self: State, now_ns: u64) ?u32 {
+    pub fn framePermitWaitMs(self: FrameTimer, now_ns: u64) ?u32 {
         assert(now_ns > 0);
         _ = self;
         return null;
     }
 
-    pub fn noteRedrawAndRenderWork(self: *State, redraw_requested: bool, render_work_pending: bool) void {
+    pub fn noteRedrawAndRenderWork(self: *FrameTimer, redraw_requested: bool, render_work_pending: bool) void {
         self.redraw_requested = self.redraw_requested or redraw_requested;
         self.render_work_pending = render_work_pending;
         if (self.present_complete_pending) assert(self.present_in_flight);
         if (self.present_complete_drain_pending) assert(self.present_complete_pending);
     }
 
-    pub fn notePresentComplete(self: *State) void {
+    pub fn notePresentComplete(self: *FrameTimer) void {
         if (self.present_complete_pending) assert(self.present_in_flight);
         if (self.present_complete_drain_pending) assert(self.present_complete_pending);
         self.present_complete_pending = false;
@@ -64,7 +64,7 @@ pub const State = struct {
         self.frame_permit_ready = true;
     }
 
-    pub fn shouldWaitForWindow(self: *State, pending: Pending, runtime_admission: bool) bool {
+    pub fn shouldWaitForWindow(self: *FrameTimer, pending: Pending, runtime_admission: bool) bool {
         if (self.present_complete_pending) assert(self.present_in_flight);
         if (self.present_complete_drain_pending) assert(self.present_complete_pending);
         if (pending.owner_work) return false;
@@ -80,7 +80,7 @@ pub const State = struct {
         return true;
     }
 
-    pub fn renderPermission(self: State) bool {
+    pub fn renderPermission(self: FrameTimer) bool {
         if (self.present_complete_pending) assert(self.present_in_flight);
         if (self.present_complete_drain_pending) assert(self.present_complete_pending);
         if (!self.frame_permit_ready) return false;
@@ -89,7 +89,7 @@ pub const State = struct {
         return false;
     }
 
-    pub fn terminalKeepWakePermission(self: State) bool {
+    pub fn terminalKeepWakePermission(self: FrameTimer) bool {
         if (self.present_complete_pending) assert(self.present_in_flight);
         if (self.present_complete_drain_pending) assert(self.present_complete_pending);
         if (self.present_in_flight) return false;
@@ -97,7 +97,7 @@ pub const State = struct {
         return true;
     }
 
-    pub fn presentSubmissionPermission(self: State, reason: PresentReason) bool {
+    pub fn presentSubmissionPermission(self: FrameTimer, reason: PresentReason) bool {
         if (self.present_complete_pending) assert(self.present_in_flight);
         if (self.present_complete_drain_pending) assert(self.present_complete_pending);
         switch (reason) {
@@ -109,11 +109,11 @@ pub const State = struct {
         return true;
     }
 
-    pub fn noteRenderSubmitted(self: *State, submission: Submission) void {
+    pub fn noteRenderSubmitted(self: *FrameTimer, submission: Submission) void {
         self.noteRenderSubmittedAt(submission, 0);
     }
 
-    pub fn noteRenderSubmittedAt(self: *State, submission: Submission, now_ns: u64) void {
+    pub fn noteRenderSubmittedAt(self: *FrameTimer, submission: Submission, now_ns: u64) void {
         switch (submission.reason) {
             .none, .terminal_retire => assert(!submission.submitted),
             .host_damage, .terminal_frame => {},
@@ -138,7 +138,7 @@ test "redraw request is not frame permit" {
         .owner_work = false,
         .runtime_wake = false,
     };
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
     pacing.frame_permit_ready = false;
     pacing.noteRedrawAndRenderWork(true, false);
     try std.testing.expect(pacing.shouldWaitForWindow(pending, false));
@@ -150,7 +150,7 @@ test "runtime wake is not frame permit" {
         .owner_work = false,
         .runtime_wake = true,
     };
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
     pacing.frame_permit_ready = false;
 
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
@@ -162,7 +162,7 @@ test "runtime wake participates in wait admission" {
         .owner_work = false,
         .runtime_wake = true,
     };
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
 }
 
@@ -171,7 +171,7 @@ test "terminal render work is not frame permit" {
         .owner_work = false,
         .runtime_wake = false,
     };
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
     pacing.frame_permit_ready = false;
     pacing.noteRedrawAndRenderWork(false, true);
 
@@ -184,13 +184,13 @@ test "frame work participates in wait admission through frame pacer" {
         .owner_work = false,
         .runtime_wake = false,
     };
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
     pacing.noteRedrawAndRenderWork(false, true);
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
 }
 
 test "render and present submission respect frame permit and in-flight state" {
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
     pacing.frame_permit_ready = false;
     pacing.noteRedrawAndRenderWork(true, false);
     try std.testing.expect(!pacing.renderPermission());
@@ -218,7 +218,7 @@ test "present completion pending admits one nonblocking drain turn" {
         .owner_work = false,
         .runtime_wake = false,
     };
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
 
     pacing.noteRenderSubmitted(.{ .reason = .terminal_frame, .submitted = true });
     try std.testing.expect(pacing.present_in_flight);
@@ -238,7 +238,7 @@ test "submitted present cannot block its completion drain turn" {
         .owner_work = false,
         .runtime_wake = false,
     };
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
 
     pacing.noteRedrawAndRenderWork(true, false);
     try std.testing.expect(pacing.renderPermission());
@@ -256,7 +256,7 @@ test "runtime wake does not spin while present completion is pending" {
         .owner_work = false,
         .runtime_wake = true,
     };
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
 
     pacing.noteRenderSubmitted(.{ .reason = .terminal_frame, .submitted = true });
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
@@ -268,7 +268,7 @@ test "runtime wake waits only for present completion drain" {
         .owner_work = false,
         .runtime_wake = true,
     };
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
 
     pacing.noteRenderSubmittedAt(.{ .reason = .terminal_frame, .submitted = true }, 1_000);
     try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
@@ -278,7 +278,7 @@ test "runtime wake waits only for present completion drain" {
 }
 
 test "terminal keep wake waits while frame permit is blocked" {
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
     pacing.frame_permit_ready = false;
 
     pacing.noteRedrawAndRenderWork(true, true);
@@ -288,7 +288,7 @@ test "terminal keep wake waits while frame permit is blocked" {
 }
 
 test "terminal keep wake waits while present completion is pending" {
-    var pacing = State.init();
+    var pacing = FrameTimer.init();
 
     pacing.noteRenderSubmitted(.{ .reason = .terminal_frame, .submitted = true });
     try std.testing.expect(!pacing.terminalKeepWakePermission());

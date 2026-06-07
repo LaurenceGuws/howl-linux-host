@@ -30,9 +30,9 @@ pub const Processor = struct {
     event_loop: *EventLoop.State,
     terminal_input_admitted: bool,
     pending_terminal_present: ?Display.PresentToken,
-    frame_pacing: FramePacing.State,
+    frame_pacing: FramePacing.FrameTimer,
 
-    pub const FramePacingState = FramePacing.State;
+    pub const FramePacingState = FramePacing.FrameTimer;
 
     const Self = @This();
 
