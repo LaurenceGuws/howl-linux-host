@@ -558,17 +558,13 @@ fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: 
                 if (resourceHasFutureUpload(render_surface, command.resource, @intCast(command_index))) {
                     std.debug.panic("trusted sprite command used before final upload", .{});
                 }
-                if (!drawSpriteCommand(host_surface, command, slot)) {
-                    std.debug.panic("trusted sprite command failed validation", .{});
-                }
+                drawSpriteCommand(host_surface, command, slot);
             },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
                 if (glyphCommandHasFutureUpload(render_surface, command, @intCast(command_index))) {
                     std.debug.panic("trusted glyph command used before final upload", .{});
                 }
-                if (!drawGlyphCommand(textures, host_surface, command)) {
-                    std.debug.panic("trusted glyph command failed validation", .{});
-                }
+                drawGlyphCommand(textures, host_surface, command);
             },
             else => std.debug.panic("trusted render surface has unknown command kind={}", .{command.kind}),
         }
@@ -853,7 +849,7 @@ fn drawFillCommand(surface: render_c.HowlRenderHostSurface, command: render_c.Ho
     drawQuad(surface, command.rect);
 }
 
-fn drawSpriteCommand(surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand, slot: RenderResourceTextures.Slot) bool {
+fn drawSpriteCommand(surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand, slot: RenderResourceTextures.Slot) void {
     std.debug.assert(spriteUploadCoversCommand(slot, command.rect));
     gl_c.glEnable(gl_c.GL_TEXTURE_2D);
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
@@ -872,7 +868,6 @@ fn drawSpriteCommand(surface: render_c.HowlRenderHostSurface, command: render_c.
         .height_px = command.rect.height_px,
     };
     drawTexturedQuad(surface, command.rect, source_rect, slot.width_px, slot.height_px);
-    return true;
 }
 
 fn spriteUploadCoversCommand(slot: RenderResourceTextures.Slot, command_rect: render_c.HowlRenderSurfaceRect) bool {
@@ -907,7 +902,7 @@ fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderSurface, comma
     return false;
 }
 
-fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand) bool {
+fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand) void {
     const glyphs = spanSlice(
         render_c.HowlRenderGlyphRef,
         command.glyphs.ptr,
@@ -936,7 +931,6 @@ fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRen
         drawTexturedQuad(surface, rect, glyph.atlas_rect, slot.width_px, slot.height_px);
     }
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
-    return true;
 }
 
 fn drawQuad(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSurfaceRect) void {
