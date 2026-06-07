@@ -95,7 +95,7 @@ pub const Context = struct {
     scrollbar: terminal_scrollbar.State,
     links: terminal_links.State,
     selection: terminal_selection.State,
-    cursor_blink: cursor_blink.State,
+    cursor_blink: cursor_blink.CursorBlink,
 
     const InitialRequest = struct {
         conf: *const TerminalConfig,
