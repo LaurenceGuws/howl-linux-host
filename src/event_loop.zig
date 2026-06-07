@@ -16,10 +16,12 @@ pub const Signal = enum {
 
 pub const EventLoop = struct {
     quit_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    wake_queued: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_event_type: u32 = 0,
 
     pub fn init(self: *EventLoop) void {
         self.quit_requested.store(false, .release);
+        self.wake_queued.store(false, .release);
     }
 
     pub fn initWakeEventType(self: *EventLoop) void {
@@ -52,9 +54,12 @@ pub const EventLoop = struct {
     }
 
     fn wakeWith(self: *EventLoop, comptime Ops: type) void {
+        const wake_was_queued = self.wake_queued.swap(true, .acq_rel);
+        if (wake_was_queued) return;
+
         var event: sdl_c.SDL_Event = std.mem.zeroes(sdl_c.SDL_Event);
         event.type = self.wakeTypeWith(Ops);
-        _ = Ops.pushEvent(&event);
+        assert(Ops.pushEvent(&event));
     }
 
     pub fn pumpInput(self: *EventLoop, input: *HostInput, wait: bool, timeout_ms: ?u32) Signal {
@@ -101,7 +106,10 @@ pub const EventLoop = struct {
     }
 
     fn processEvent(self: *EventLoop, input: *HostInput, event: *const sdl_c.SDL_Event) Signal {
-        if (self.isWakeEventType(event.type)) return .none;
+        if (self.isWakeEventType(event.type)) {
+            self.wake_queued.store(false, .release);
+            return .none;
+        }
         switch (event.type) {
             sdl_c.SDL_EVENT_QUIT,
             sdl_c.SDL_EVENT_TERMINATING,
@@ -167,6 +175,49 @@ test "wake event is consumed and not classified as input" {
     try std.testing.expectEqual(Signal.none, event_loop.pumpInputWith(&input, false, null, FakeOps));
     try std.testing.expectEqual(@as(usize, 1), FakeOps.poll_count);
     try std.testing.expectEqual(@as(i32, 0), input.scroll_pages);
+}
+
+test "duplicate wake calls collapse to one pushed event" {
+    FakeOps.reset();
+    var event_loop: EventLoop = .{};
+    event_loop.wakeWith(FakeOps);
+    event_loop.wakeWith(FakeOps);
+    try std.testing.expectEqual(@as(usize, 1), FakeOps.push_count);
+    try std.testing.expectEqual(fake_registered_event_type, FakeOps.pushed_event_type.?);
+    try std.testing.expect(event_loop.wake_queued.load(.acquire));
+}
+
+test "synthetic wake consumption re-arms future wake pushes" {
+    FakeOps.reset();
+    var input: HostInput = undefined;
+    input.init();
+    var event_loop: EventLoop = .{};
+
+    event_loop.wakeWith(FakeOps);
+    FakeOps.events = &[_]u32{fake_registered_event_type};
+    try std.testing.expectEqual(Signal.none, event_loop.pumpInputWith(&input, false, null, FakeOps));
+    try std.testing.expect(!event_loop.wake_queued.load(.acquire));
+
+    event_loop.wakeWith(FakeOps);
+    try std.testing.expectEqual(@as(usize, 2), FakeOps.push_count);
+}
+
+test "queued wake plus quit still yields correct quit behavior" {
+    FakeOps.reset();
+    var input: HostInput = undefined;
+    input.init();
+    var event_loop: EventLoop = .{};
+
+    event_loop.wakeWith(FakeOps);
+    event_loop.requestQuitWith(FakeOps);
+
+    try std.testing.expect(event_loop.quitRequested());
+    try std.testing.expectEqual(@as(usize, 1), FakeOps.push_count);
+
+    FakeOps.events = &[_]u32{fake_registered_event_type};
+    try std.testing.expectEqual(Signal.quit, event_loop.waitAndDrainInputWith(&input, null, FakeOps));
+    try std.testing.expect(!event_loop.wake_queued.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), FakeOps.poll_count);
 }
 
 test "quit event sets quit state and returns quit" {
