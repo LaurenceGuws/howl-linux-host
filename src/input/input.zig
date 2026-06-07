@@ -321,19 +321,8 @@ fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
             }
         }
         const code: u8 = @intCast((event.key.key - c.SDLK_A) + 1);
+        if (alt) appendByteEvent(input, 0x1b);
         appendByteEvent(input, code);
-        return;
-    }
-    if (alt and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
-        if (sdlKey(event.key.key)) |key| {
-            if (input.bindings.resolve(key, ctrl, shift, alt)) |action| {
-                appendBindingAction(input, action);
-                return;
-            }
-        }
-        appendByteEvent(input, 0x1b);
-        const ch: u8 = @intCast((event.key.key - c.SDLK_A) + 'a');
-        appendByteEvent(input, ch);
         return;
     }
     if (sdlKey(event.key.key)) |key| {
@@ -341,8 +330,152 @@ fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
             appendBindingAction(input, action);
             return;
         }
+        if (alt) {
+            if (sdlAltTextBytes(event.key.key, event.key.mod)) |bytes| {
+                appendByteEvent(input, 0x1b);
+                appendBytesEvent(input, bytes);
+                return;
+            }
+        }
         appendKeyEvent(input, key, sdlMods(event.key.mod));
     }
+}
+
+fn sdlAltTextBytes(sdl_key: c_uint, sdl_mods: c.SDL_Keymod) ?[]const u8 {
+    const shift = (sdl_mods & c.SDL_KMOD_SHIFT) != 0;
+    const caps = (sdl_mods & c.SDL_KMOD_CAPS) != 0;
+    return switch (sdl_key) {
+        c.SDLK_A...c.SDLK_Z => blk: {
+            const upper = shift != caps;
+            const base: u8 = if (upper) 'A' else 'a';
+            const value: u8 = @intCast((sdl_key - c.SDLK_A) + base);
+            break :blk byteSlice(value);
+        },
+        c.SDLK_0 => byteSlice(if (shift) ')' else '0'),
+        c.SDLK_1 => byteSlice(if (shift) '!' else '1'),
+        c.SDLK_2 => byteSlice(if (shift) '@' else '2'),
+        c.SDLK_3 => byteSlice(if (shift) '#' else '3'),
+        c.SDLK_4 => byteSlice(if (shift) '$' else '4'),
+        c.SDLK_5 => byteSlice(if (shift) '%' else '5'),
+        c.SDLK_6 => byteSlice(if (shift) '^' else '6'),
+        c.SDLK_7 => byteSlice(if (shift) '&' else '7'),
+        c.SDLK_8 => byteSlice(if (shift) '*' else '8'),
+        c.SDLK_9 => byteSlice(if (shift) '(' else '9'),
+        c.SDLK_SPACE => byteSlice(' '),
+        c.SDLK_MINUS => byteSlice(if (shift) '_' else '-'),
+        c.SDLK_EQUALS => byteSlice(if (shift) '+' else '='),
+        c.SDLK_LEFTBRACKET => byteSlice(if (shift) '{' else '['),
+        c.SDLK_RIGHTBRACKET => byteSlice(if (shift) '}' else ']'),
+        c.SDLK_BACKSLASH => byteSlice(if (shift) '|' else '\\'),
+        c.SDLK_SEMICOLON => byteSlice(if (shift) ':' else ';'),
+        c.SDLK_APOSTROPHE => byteSlice(if (shift) '"' else '\''),
+        c.SDLK_GRAVE => byteSlice(if (shift) '~' else '`'),
+        c.SDLK_COMMA => byteSlice(if (shift) '<' else ','),
+        c.SDLK_PERIOD => byteSlice(if (shift) '>' else '.'),
+        c.SDLK_SLASH => byteSlice(if (shift) '?' else '/'),
+        else => null,
+    };
+}
+
+fn byteSlice(value: u8) []const u8 {
+    return switch (value) {
+        ' ' => " ",
+        '!' => "!",
+        '"' => "\"",
+        '#' => "#",
+        '$' => "$",
+        '%' => "%",
+        '&' => "&",
+        '\'' => "'",
+        '(' => "(",
+        ')' => ")",
+        '*' => "*",
+        '+' => "+",
+        ',' => ",",
+        '-' => "-",
+        '.' => ".",
+        '/' => "/",
+        '0' => "0",
+        '1' => "1",
+        '2' => "2",
+        '3' => "3",
+        '4' => "4",
+        '5' => "5",
+        '6' => "6",
+        '7' => "7",
+        '8' => "8",
+        '9' => "9",
+        ':' => ":",
+        ';' => ";",
+        '<' => "<",
+        '=' => "=",
+        '>' => ">",
+        '?' => "?",
+        '@' => "@",
+        'A' => "A",
+        'B' => "B",
+        'C' => "C",
+        'D' => "D",
+        'E' => "E",
+        'F' => "F",
+        'G' => "G",
+        'H' => "H",
+        'I' => "I",
+        'J' => "J",
+        'K' => "K",
+        'L' => "L",
+        'M' => "M",
+        'N' => "N",
+        'O' => "O",
+        'P' => "P",
+        'Q' => "Q",
+        'R' => "R",
+        'S' => "S",
+        'T' => "T",
+        'U' => "U",
+        'V' => "V",
+        'W' => "W",
+        'X' => "X",
+        'Y' => "Y",
+        'Z' => "Z",
+        '[' => "[",
+        '\\' => "\\",
+        ']' => "]",
+        '^' => "^",
+        '_' => "_",
+        '`' => "`",
+        'a' => "a",
+        'b' => "b",
+        'c' => "c",
+        'd' => "d",
+        'e' => "e",
+        'f' => "f",
+        'g' => "g",
+        'h' => "h",
+        'i' => "i",
+        'j' => "j",
+        'k' => "k",
+        'l' => "l",
+        'm' => "m",
+        'n' => "n",
+        'o' => "o",
+        'p' => "p",
+        'q' => "q",
+        'r' => "r",
+        's' => "s",
+        't' => "t",
+        'u' => "u",
+        'v' => "v",
+        'w' => "w",
+        'x' => "x",
+        'y' => "y",
+        'z' => "z",
+        '{' => "{",
+        '|' => "|",
+        '}' => "}",
+        '~' => "~",
+        else => unreachable,
+    };
 }
 
 fn processKeyUp(input: *Input, event: *const c.SDL_Event) void {
@@ -751,6 +884,52 @@ test "byte chunking preserves order" {
         else => return error.UnexpectedEvent,
     };
     try std.testing.expectEqualStrings(bytes, out.items);
+}
+
+test "alt shifted printable key queues escaped text bytes" {
+    var input: Input = undefined;
+    input.init();
+
+    var event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.key = c.SDLK_1;
+    event.key.mod = c.SDL_KMOD_ALT | c.SDL_KMOD_SHIFT;
+
+    processKeyDown(&input, &event);
+
+    const first = input.drainInputEvent() orelse return error.ExpectedEvent;
+    const second = input.drainInputEvent() orelse return error.ExpectedEvent;
+    switch (first) {
+        .bytes => |chunk| try std.testing.expectEqualStrings("\x1b", chunk.slice()),
+        else => return error.UnexpectedEvent,
+    }
+    switch (second) {
+        .bytes => |chunk| try std.testing.expectEqualStrings("!", chunk.slice()),
+        else => return error.UnexpectedEvent,
+    }
+}
+
+test "alt ctrl letter preserves escape prefix" {
+    var input: Input = undefined;
+    input.init();
+
+    var event = std.mem.zeroes(c.SDL_Event);
+    event.type = c.SDL_EVENT_KEY_DOWN;
+    event.key.key = c.SDLK_A;
+    event.key.mod = c.SDL_KMOD_ALT | c.SDL_KMOD_CTRL;
+
+    processKeyDown(&input, &event);
+
+    const first = input.drainInputEvent() orelse return error.ExpectedEvent;
+    const second = input.drainInputEvent() orelse return error.ExpectedEvent;
+    switch (first) {
+        .bytes => |chunk| try std.testing.expectEqualStrings("\x1b", chunk.slice()),
+        else => return error.UnexpectedEvent,
+    }
+    switch (second) {
+        .bytes => |chunk| try std.testing.expectEqual(@as(u8, 1), chunk.slice()[0]),
+        else => return error.UnexpectedEvent,
+    }
 }
 
 test "input event queue preserves FIFO across wraparound" {
