@@ -12,7 +12,7 @@ const AppPresent = @import("present.zig");
 const pty_wait_thread = @import("../terminal/pty/wait_thread.zig");
 const TerminalContext = @import("../terminal/context.zig").Context;
 const FramePacing = @import("../display/frame_timer.zig");
-const Window = @import("../window_chrome/window.zig");
+const window = @import("../window_chrome/window.zig");
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
@@ -21,7 +21,7 @@ pub const Processor = struct {
     conf: *const Config.State,
     feed_record_path: ?[]const u8,
     io: std.Io,
-    window: *Window.State,
+    window: *window.Window,
     display: *Display.State,
     tab_bar: *TabBar,
     tabs: *TabSlots,
@@ -407,8 +407,8 @@ pub const Processor = struct {
         return .{ .tab = tab, .turn = turn, .snapshot = snapshot };
     }
 
-    fn syncActiveWindowTitle(window: *Window.State, tab: *TerminalContext) void {
-        window.setTitle(tab.titleSlice());
+    fn syncActiveWindowTitle(app_window: *window.Window, tab: *TerminalContext) void {
+        app_window.setTitle(tab.titleSlice());
     }
 
     fn renderSnapshot(self: *Self, tab: *TerminalContext) RenderSnapshot {
@@ -478,16 +478,16 @@ pub const Processor = struct {
         return false;
     }
 
-    fn resizeTerminals(conf: *const Config.State, window: *Window.State, tabs: []*TerminalContext) void {
-        const px = DisplayLayout.contentPixelSize(window, conf.tab_bar.height);
-        const logical = DisplayLayout.contentLogicalSize(window, conf.tab_bar.height);
+    fn resizeTerminals(conf: *const Config.State, app_window: *window.Window, tabs: []*TerminalContext) void {
+        const px = DisplayLayout.contentPixelSize(app_window, conf.tab_bar.height);
+        const logical = DisplayLayout.contentLogicalSize(app_window, conf.tab_bar.height);
         for (tabs) |tab| tab.resize(px.width, px.height, logical.width, logical.height);
     }
 
-    fn setWindowFocused(window: *Window.State, tabs: []*TerminalContext, active_tab_idx: TabIndex, focused: bool) void {
+    fn setWindowFocused(app_window: *window.Window, tabs: []*TerminalContext, active_tab_idx: TabIndex, focused: bool) void {
         assert(tabIndexInRange(tabs, active_tab_idx));
-        _ = window.setFocused(focused);
-        syncTerminalFocus(window, tabs, active_tab_idx);
+        _ = app_window.setFocused(focused);
+        syncTerminalFocus(app_window, tabs, active_tab_idx);
     }
 
     fn activeTabProblem(tabs: []*TerminalContext, active_tab_idx: TabIndex) ?ActiveTabProblem {
@@ -525,7 +525,7 @@ pub const Processor = struct {
         }
     }
 
-    fn closeActiveTab(window: *Window.State, tabs: *TabSlots, active_tab_idx: *TabIndex) void {
+    fn closeActiveTab(app_window: *window.Window, tabs: *TabSlots, active_tab_idx: *TabIndex) void {
         const items = tabs.items();
         if (items.len <= 1) return;
         assert(tabIndexInRange(items, active_tab_idx.*));
@@ -536,31 +536,31 @@ pub const Processor = struct {
         const updated = tabs.items();
         if (!tabIndexInRange(updated, active_tab_idx.*)) active_tab_idx.* = @intCast(updated.len - 1);
         assert(tabIndexInRange(updated, active_tab_idx.*));
-        syncTerminalFocus(window, updated, active_tab_idx.*);
-        syncActiveWindowTitle(window, activeContext(updated, active_tab_idx.*));
+        syncTerminalFocus(app_window, updated, active_tab_idx.*);
+        syncActiveWindowTitle(app_window, activeContext(updated, active_tab_idx.*));
     }
 
-    fn selectRelative(window: *Window.State, tabs: []*TerminalContext, active_tab_idx: *TabIndex, delta: i32) void {
+    fn selectRelative(app_window: *window.Window, tabs: []*TerminalContext, active_tab_idx: *TabIndex, delta: i32) void {
         if (tabs.len <= 1) return;
         const len_i: i32 = @intCast(tabs.len);
         var idx: i32 = @intCast(active_tab_idx.*);
         idx = @mod(idx + delta, len_i);
-        selectTab(window, tabs, active_tab_idx, @intCast(idx));
+        selectTab(app_window, tabs, active_tab_idx, @intCast(idx));
     }
 
-    fn selectTab(window: *Window.State, tabs: []*TerminalContext, active_tab_idx: *TabIndex, idx: TabIndex) void {
+    fn selectTab(app_window: *window.Window, tabs: []*TerminalContext, active_tab_idx: *TabIndex, idx: TabIndex) void {
         if (!tabIndexInRange(tabs, idx)) return;
         if (idx == active_tab_idx.*) return;
         active_tab_idx.* = idx;
         assert(tabIndexInRange(tabs, active_tab_idx.*));
-        syncTerminalFocus(window, tabs, active_tab_idx.*);
-        syncActiveWindowTitle(window, activeContext(tabs, active_tab_idx.*));
+        syncTerminalFocus(app_window, tabs, active_tab_idx.*);
+        syncActiveWindowTitle(app_window, activeContext(tabs, active_tab_idx.*));
     }
 
-    fn syncTerminalFocus(window: *Window.State, tabs: []*TerminalContext, active_tab_idx: TabIndex) void {
+    fn syncTerminalFocus(app_window: *window.Window, tabs: []*TerminalContext, active_tab_idx: TabIndex) void {
         assert(tabIndexInRange(tabs, active_tab_idx));
         for (tabs, 0..) |tab, i| {
-            tab.setWindowFocused(window.focused);
+            tab.setWindowFocused(app_window.focused);
             tab.setWidgetFocused(i == active_tab_idx);
         }
     }
@@ -584,7 +584,7 @@ pub const Processor = struct {
     }
 
     fn pasteIntoActiveTab(tab: *TerminalContext) void {
-        const text = Window.getClipboardText(std.heap.c_allocator) catch return;
+        const text = window.getClipboardText(std.heap.c_allocator) catch return;
         defer if (text) |buf| std.heap.c_allocator.free(buf);
         const payload = text orelse return;
         tab.paste(payload);

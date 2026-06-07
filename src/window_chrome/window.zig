@@ -13,7 +13,7 @@ pub const Size = struct {
     height: c_int,
 };
 
-pub const State = struct {
+pub const Window = struct {
     handle: Ptr,
     current_title: [:0]u8,
     px_w: c_int,
@@ -22,13 +22,13 @@ pub const State = struct {
     logical_h: c_int,
     focused: bool,
 
-    pub fn create(title: [*:0]const u8, width: c_int, height: c_int, flags: Flags) !State {
+    pub fn create(title: [*:0]const u8, width: c_int, height: c_int, flags: Flags) !Window {
         const handle = createWindow(title, width, height, flags) orelse return error.WindowCreateFailed;
         errdefer destroyWindow(handle);
         const current_title = try std.heap.c_allocator.dupeZ(u8, std.mem.span(title));
         errdefer std.heap.c_allocator.free(current_title);
 
-        var self = State{
+        var self = Window{
             .handle = handle,
             .current_title = current_title,
             .px_w = 1,
@@ -41,12 +41,12 @@ pub const State = struct {
         return self;
     }
 
-    pub fn deinit(self: *State) void {
+    pub fn deinit(self: *Window) void {
         destroyWindow(self.handle);
         std.heap.c_allocator.free(self.current_title);
     }
 
-    pub fn refreshGeometry(self: *State) bool {
+    pub fn refreshGeometry(self: *Window) bool {
         const size = windowSize(self.handle);
         const logical_size = windowLogicalSize(self.handle);
         const w = @max(size.width, 1);
@@ -61,17 +61,17 @@ pub const State = struct {
         return changed;
     }
 
-    pub fn setFocused(self: *State, focused: bool) bool {
+    pub fn setFocused(self: *Window, focused: bool) bool {
         if (self.focused == focused) return false;
         self.focused = focused;
         return true;
     }
 
-    pub fn setTitle(self: *State, title: []const u8) void {
+    pub fn setTitle(self: *Window, title: []const u8) void {
         _ = self.setTitleWith(title, TitleOps) catch return;
     }
 
-    fn setTitleWith(self: *State, title: []const u8, comptime Ops: type) !bool {
+    fn setTitleWith(self: *Window, title: []const u8, comptime Ops: type) !bool {
         if (std.mem.eql(u8, self.current_title, title)) return false;
         const title_z = try std.heap.c_allocator.dupeZ(u8, title);
         errdefer std.heap.c_allocator.free(title_z);
@@ -178,7 +178,7 @@ test "window title updates only when content changes" {
     };
 
     FakeOps.reset();
-    var state = State{
+    var state = Window{
         .handle = undefined,
         .current_title = try std.heap.c_allocator.dupeZ(u8, "shell"),
         .px_w = 1,

@@ -8,7 +8,7 @@ const Processor = @import("app/processor.zig").Processor;
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("tab_bar/slots.zig").Slots;
 const TerminalContext = @import("terminal/context.zig").Context;
-const Window = @import("window_chrome/window.zig");
+const window = @import("window_chrome/window.zig");
 
 pub const Args = cli_args.Args;
 const feed_record_path_env = "HOWL_PTY_VT_RECORD_PATH";
@@ -28,7 +28,7 @@ pub fn main(init: std.process.Init) !void {
 noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !void {
     setCurrentThreadName("howl-main");
     try initVideo();
-    defer Window.quit();
+    defer window.quit();
 
     const conf = try std.heap.c_allocator.create(Config.State);
     var conf_loaded = false;
@@ -39,13 +39,13 @@ noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !voi
     conf.* = try loadConfig(options);
     conf_loaded = true;
 
-    const window = try std.heap.c_allocator.create(Window.State);
+    const app_window = try std.heap.c_allocator.create(window.Window);
     var window_created = false;
     defer {
-        if (window_created) window.deinit();
-        std.heap.c_allocator.destroy(window);
+        if (window_created) app_window.deinit();
+        std.heap.c_allocator.destroy(app_window);
     }
-    window.* = try createWindow(conf, options);
+    app_window.* = try createWindow(conf, options);
     window_created = true;
 
     const display = try std.heap.c_allocator.create(Display.State);
@@ -54,7 +54,7 @@ noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !voi
         if (display_created) Display.deinit(Display.C, display);
         std.heap.c_allocator.destroy(display);
     }
-    try Display.init(Display.C, display, window.handle);
+    try Display.init(Display.C, display, app_window.handle);
     display_created = true;
 
     const tab_bar = try std.heap.c_allocator.create(TabBar);
@@ -88,7 +88,7 @@ noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !voi
         .conf = conf,
         .feed_record_path = feed_record_path,
         .io = io,
-        .window = window,
+        .window = app_window,
         .display = display,
         .tab_bar = tab_bar,
         .tabs = tabs,
@@ -109,7 +109,7 @@ noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !voi
 }
 
 fn initVideo() !void {
-    if (Window.initVideo()) {
+    if (window.initVideo()) {
         return;
     }
     return error.WindowInitFailed;
@@ -122,11 +122,11 @@ fn loadConfig(options: Args) !Config.State {
     return conf;
 }
 
-fn createWindow(conf: *const Config.State, options: Args) !Window.State {
+fn createWindow(conf: *const Config.State, options: Args) !window.Window {
     const title: [*:0]const u8 = if (options.window_title) |value| value.ptr else conf.window.title.ptr;
-    var window = try Window.State.create(title, conf.window.width, conf.window.height, Display.flags(Display.C));
-    errdefer window.deinit();
-    return window;
+    var app_window = try window.Window.create(title, conf.window.width, conf.window.height, Display.flags(Display.C));
+    errdefer app_window.deinit();
+    return app_window;
 }
 
 fn initInput() !Input {
