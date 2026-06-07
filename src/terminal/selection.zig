@@ -13,7 +13,7 @@ pub const SelectionCell = struct {
     col: u16,
 };
 
-pub const State = struct {
+pub const Selection = struct {
     anchor: ?SelectionCell = null,
     drag_active: bool = false,
 };
