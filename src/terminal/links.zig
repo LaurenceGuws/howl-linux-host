@@ -13,7 +13,7 @@ pub const HoveredLinkCell = struct {
     col: u16,
 };
 
-pub const State = struct {
+pub const Links = struct {
     cursor_active: bool = false,
     hovered_cell: ?HoveredLinkCell = null,
     hover_publish_pending: bool = false,

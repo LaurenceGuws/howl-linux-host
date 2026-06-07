@@ -93,7 +93,7 @@ pub const Context = struct {
     window_focused: bool,
     widget_focused: bool,
     scrollbar: terminal_scrollbar.State,
-    links: terminal_links.State,
+    links: terminal_links.Links,
     selection: terminal_selection.State,
     cursor_blink: cursor_blink.CursorBlink,
 
