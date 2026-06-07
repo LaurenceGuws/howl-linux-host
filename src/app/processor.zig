@@ -197,7 +197,7 @@ pub const Processor = struct {
 
     fn computeLoopAdmission(self: *Self, now_ns: u64, debug_facts: LoopDebugFacts) LoopAdmission {
         assert(now_ns > 0);
-        self.frame_pacing.refreshFramePermit(now_ns);
+        self.frame_pacing.refreshFramePermit(now_ns, self.window.currentRefreshIntervalNs());
         self.frame_pacing.noteRedrawAndRenderWork(false, debug_facts.render_work_pending);
         const pending = loopPendingFromFacts(self.input.hasPendingOwnerWork(), debug_facts);
         const runtime_admission = takeTerminalInputAdmission(&self.terminal_input_admitted);
@@ -448,6 +448,7 @@ pub const Processor = struct {
             .reason = submission.reason,
             .submitted = submission.submitted,
         }, EventLoop.nowNs());
+        AppPresent.drainComplete(self);
         return submission;
     }
 
@@ -470,9 +471,9 @@ pub const Processor = struct {
     }
 
     fn drainPresentComplete(self: *Self) bool {
-        const completion_pending_before = self.frame_pacing.present_complete_pending;
+        const pending_before = self.pending_terminal_present != null;
         AppPresent.drainComplete(self);
-        if (completion_pending_before and !self.frame_pacing.present_complete_pending) {
+        if (pending_before and self.pending_terminal_present == null) {
             return true;
         }
         return false;

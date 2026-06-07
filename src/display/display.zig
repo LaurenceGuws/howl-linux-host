@@ -105,7 +105,7 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) !v
     const ctx = c.SDL_GL_CreateContext(handle) orelse return error.GlContextFailed;
     state.gl_context = ctx;
     _ = c.SDL_GL_MakeCurrent(handle, ctx);
-    _ = c.SDL_GL_SetSwapInterval(1);
+    _ = c.SDL_GL_SetSwapInterval(0);
 }
 
 pub fn deinit(comptime c: type, state: *GenericState(c)) void {

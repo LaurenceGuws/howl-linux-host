@@ -71,6 +71,10 @@ pub const Window = struct {
         _ = self.setTitleWith(title, TitleOps) catch return;
     }
 
+    pub fn currentRefreshIntervalNs(self: *const Window) u64 {
+        return currentRefreshIntervalNsFor(self.handle);
+    }
+
     fn setTitleWith(self: *Window, title: []const u8, comptime Ops: type) !bool {
         if (std.mem.eql(u8, self.current_title, title)) return false;
         const title_z = try std.heap.c_allocator.dupeZ(u8, title);
@@ -81,6 +85,8 @@ pub const Window = struct {
         return true;
     }
 };
+
+const default_refresh_interval_ns: u64 = std.time.ns_per_s / 60;
 
 const TitleOps = struct {
     fn setWindowTitle(handle: Ptr, title: [*:0]const u8) void {
@@ -128,6 +134,23 @@ fn windowLogicalSize(handle: Ptr) Size {
 
 fn hasInputFocus(handle: Ptr) bool {
     return (sdl_c.SDL_GetWindowFlags(handle) & sdl_c.SDL_WINDOW_INPUT_FOCUS) != 0;
+}
+
+fn currentRefreshIntervalNsFor(handle: Ptr) u64 {
+    const display_id = sdl_c.SDL_GetDisplayForWindow(handle);
+    if (display_id == 0) return default_refresh_interval_ns;
+    const mode = sdl_c.SDL_GetCurrentDisplayMode(display_id) orelse return default_refresh_interval_ns;
+    const value = mode.*;
+    if (value.refresh_rate_numerator > 0 and value.refresh_rate_denominator > 0) {
+        const numerator: u64 = @intCast(value.refresh_rate_numerator);
+        const denominator: u64 = @intCast(value.refresh_rate_denominator);
+        if (numerator == 0 or denominator == 0) return default_refresh_interval_ns;
+        return @max(1, std.time.ns_per_s * denominator / numerator);
+    }
+    if (value.refresh_rate > 1.0) {
+        return @max(1, @as(u64, @intFromFloat(@round(@as(f64, @floatFromInt(std.time.ns_per_s)) / value.refresh_rate))));
+    }
+    return default_refresh_interval_ns;
 }
 
 pub fn getClipboardText(allocator: std.mem.Allocator) !?[]u8 {
