@@ -32,6 +32,7 @@ const HostDeps = struct {
 
 const Steps = struct {
     check: *Build.Step,
+    profile: *Build.Step,
     run: *Build.Step,
     test_all: *Build.Step,
     test_unit: *Build.Step,
@@ -48,9 +49,12 @@ pub fn build(b: *Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const deps = resolveHostDeps(b, target, optimize);
 
-    const exe = buildHostExe(b, deps);
+    const exe = buildHostExe(b, deps, "howl_term");
     const host_install = installHarnessArtifact(b, exe);
+    const profile_exe = buildHostExe(b, deps, "howl_term_profile");
+    const profile_install = installHarnessArtifact(b, profile_exe);
     steps.check.dependOn(host_install);
+    steps.profile.dependOn(profile_install);
     wireRunStep(b, steps.run, exe);
 
     wireTestSteps(b, steps, deps, target, optimize);
@@ -59,6 +63,7 @@ pub fn build(b: *Build) void {
 fn createSteps(b: *Build) Steps {
     return .{
         .check = b.step("check", "Build the default host harness without installing it"),
+        .profile = b.step("profile", "Build and install the profiler host harness"),
         .run = b.step("run", "Run host window"),
         .test_all = b.step("test", "Run all tests"),
         .test_unit = b.step("test:unit", "Run unit tests"),
@@ -126,8 +131,8 @@ fn translateCModule(b: *Build, root_source_file: Build.LazyPath, target: Build.R
     return translated.createModule();
 }
 
-fn buildHostExe(b: *Build, deps: HostDeps) *Compile {
-    const name = artifactName(b, "howl_term", deps.optimize);
+fn buildHostExe(b: *Build, deps: HostDeps, base_name: []const u8) *Compile {
+    const name = artifactName(b, base_name, deps.optimize);
     const exe = b.addExecutable(.{
         .name = name,
         .root_module = createHostModule(b, deps, "src/main.zig"),
