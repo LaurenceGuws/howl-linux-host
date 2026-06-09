@@ -18,7 +18,6 @@ const gl_blend_src_alpha = 0x80cb;
 const gl_blend_dst_alpha = 0x80ca;
 const glyph_atlas_width_px = 1024;
 const glyph_atlas_height_px = 1024;
-
 const c_uchar_bool = u8;
 
 pub fn deleteTexture(surface_id: *u64) void {
@@ -917,8 +916,10 @@ fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRen
         };
         std.debug.assert(rectFitsResource(glyph.atlas_rect, slot.width_px, slot.height_px));
         if (bound_texture_id != slot.texture_id) {
+            if (bound_texture_id != 0) gl_c.glEnd();
             bound_texture_id = slot.texture_id;
             gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(bound_texture_id));
+            gl_c.glBegin(gl_c.GL_QUADS);
         }
         const rgba = unpackRenderSurfaceRgba(glyph.color_rgba);
         gl_c.glColor4ub(rgba[0], rgba[1], rgba[2], rgba[3]);
@@ -928,8 +929,9 @@ fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRen
             .width_px = glyph.atlas_rect.width_px,
             .height_px = glyph.atlas_rect.height_px,
         };
-        drawTexturedQuad(surface, rect, glyph.atlas_rect, slot.width_px, slot.height_px);
+        emitTexturedQuadVertices(surface, rect, glyph.atlas_rect, slot.width_px, slot.height_px);
     }
+    if (bound_texture_id != 0) gl_c.glEnd();
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
 }
 
@@ -962,6 +964,18 @@ fn drawTexturedQuad(
     texture_width: u32,
     texture_height: u32,
 ) void {
+    gl_c.glBegin(gl_c.GL_QUADS);
+    emitTexturedQuadVertices(surface, rect, texture_rect, texture_width, texture_height);
+    gl_c.glEnd();
+}
+
+fn emitTexturedQuadVertices(
+    surface: render_c.HowlRenderHostSurface,
+    rect: render_c.HowlRenderSurfaceRect,
+    texture_rect: render_c.HowlRenderSurfaceRect,
+    texture_width: u32,
+    texture_height: u32,
+) void {
     const left = ndcX(rect.x_px, surface.width);
     const right = ndcX(rect.x_px + rect.width_px, surface.width);
     const top = ndcY(rect.y_px, surface.height);
@@ -974,8 +988,6 @@ fn drawTexturedQuad(
         @as(f32, @floatFromInt(@max(texture_height, 1)));
     const tex_bottom = @as(f32, @floatFromInt(texture_rect.y_px + texture_rect.height_px)) /
         @as(f32, @floatFromInt(@max(texture_height, 1)));
-
-    gl_c.glBegin(gl_c.GL_QUADS);
     gl_c.glTexCoord2f(tex_left, tex_top);
     gl_c.glVertex2f(left, top);
     gl_c.glTexCoord2f(tex_right, tex_top);
@@ -984,7 +996,6 @@ fn drawTexturedQuad(
     gl_c.glVertex2f(right, bottom);
     gl_c.glTexCoord2f(tex_left, tex_bottom);
     gl_c.glVertex2f(left, bottom);
-    gl_c.glEnd();
 }
 
 fn ndcX(x: i32, width: u16) f32 {

@@ -72,6 +72,9 @@ pub const Context = struct {
         prepared: bool,
         step: TurnStep,
         present_snapshot_seq: u64,
+        prepare_ns: u64,
+        upload_ns: u64,
+        retained_submit_ns: u64,
     };
 
     pub const DriveAdmission = struct {
@@ -392,6 +395,9 @@ pub const Context = struct {
                 .prepared = false,
                 .step = .surface_idle,
                 .present_snapshot_seq = 0,
+                .prepare_ns = 0,
+                .upload_ns = 0,
+                .retained_submit_ns = 0,
             };
         }
 
@@ -402,6 +408,9 @@ pub const Context = struct {
             .prepared = drive_result.prepared,
             .step = drive_result.step,
             .present_snapshot_seq = drive_result.present_snapshot_seq,
+            .prepare_ns = drive_result.prepare_ns,
+            .upload_ns = drive_result.upload_ns,
+            .retained_submit_ns = drive_result.retained_submit_ns,
         };
     }
 
@@ -525,6 +534,9 @@ pub const Context = struct {
         prepared: bool,
         step: TurnStep,
         present_snapshot_seq: u64,
+        prepare_ns: u64,
+        upload_ns: u64,
+        retained_submit_ns: u64,
     };
 
     const RenderAction = enum {
@@ -538,13 +550,19 @@ pub const Context = struct {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         std.debug.assert(work.bootstrap_surface == bootstrap_surface);
         return switch (renderAction(work, bootstrap_surface)) {
-            .blocked_present => .{ .prepared = false, .step = .blocked_present, .present_snapshot_seq = 0 },
-            .submit_pending => submitDriveResult(false, self.submitPreparedLocked()),
-            .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0 },
-            .prepare_or_idle => switch (self.term.render.prepare()) {
-                .idle => .{ .prepared = false, .step = .idle_prepare, .present_snapshot_seq = 0 },
-                .failed => .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0 },
-                .prepared => submitDriveResult(true, self.submitPreparedLocked()),
+            .blocked_present => .{ .prepared = false, .step = .blocked_present, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .retained_submit_ns = 0 },
+            .submit_pending => submitDriveResult(false, 0, self.submitPreparedLocked()),
+            .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .retained_submit_ns = 0 },
+            .prepare_or_idle => blk: {
+                const prepare_start_ns = EventLoop.nowNs();
+                const prepare_result = self.term.render.prepare();
+                const prepare_end_ns = EventLoop.nowNs();
+                const prepare_ns = prepare_end_ns -| prepare_start_ns;
+                break :blk switch (prepare_result) {
+                    .idle => .{ .prepared = false, .step = .idle_prepare, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .retained_submit_ns = 0 },
+                    .failed => .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .retained_submit_ns = 0 },
+                    .prepared => submitDriveResult(true, prepare_ns, self.submitPreparedLocked()),
+                };
             },
         };
     }
@@ -602,7 +620,7 @@ pub const Context = struct {
     fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
-            return .{ .result = .failed, .snapshot_seq = 0 };
+            return .{ .result = .failed, .snapshot_seq = 0, .upload_ns = 0, .retained_submit_ns = 0 };
         }
         defer upload.deinit();
         const prepared_handle = self.term.render.preparedSurfaceHandle();
@@ -611,30 +629,41 @@ pub const Context = struct {
         std.debug.assert(!self.term.render.presentPending());
 
         self.term.mutex.unlock();
+        const upload_start_ns = EventLoop.nowNs();
         const upload_ok = Backend.upload(self, &upload);
+        const upload_end_ns = EventLoop.nowNs();
         self.term.mutex.lockFair();
 
         const current_handle = self.term.render.preparedSurfaceHandle();
         std.debug.assert(!self.term.render.presentPending());
         if (current_handle != prepared_handle) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .retained_submit_ns = 0 };
         }
         if (!upload_ok) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .retained_submit_ns = 0 };
         }
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
         const execution = Backend.execution(self, &upload);
+        const submit_start_ns = EventLoop.nowNs();
         const result = self.term.render.submit(&execution, &submit_result);
+        const submit_end_ns = EventLoop.nowNs();
         if (result == .rendered) {
             self.term_texture = submit_result.host_surface;
         }
-        return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq };
+        return .{
+            .result = result,
+            .snapshot_seq = upload.info.snapshot_seq,
+            .upload_ns = upload_end_ns -| upload_start_ns,
+            .retained_submit_ns = submit_end_ns -| submit_start_ns,
+        };
     }
 
     const SubmitPreparedResult = struct {
         result: render_retained.SubmitResult,
         snapshot_seq: u64,
+        upload_ns: u64,
+        retained_submit_ns: u64,
     };
 
     fn submitStep(result: render_retained.SubmitResult) TurnStep {
@@ -645,12 +674,15 @@ pub const Context = struct {
         };
     }
 
-    fn submitDriveResult(prepared: bool, submit_result: SubmitPreparedResult) DriveResult {
+    fn submitDriveResult(prepared: bool, prepare_ns: u64, submit_result: SubmitPreparedResult) DriveResult {
         const step = submitStep(submit_result.result);
         return .{
             .prepared = prepared,
             .step = step,
             .present_snapshot_seq = if (step == .rendered) submit_result.snapshot_seq else 0,
+            .prepare_ns = prepare_ns,
+            .upload_ns = submit_result.upload_ns,
+            .retained_submit_ns = submit_result.retained_submit_ns,
         };
     }
 

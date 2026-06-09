@@ -1,5 +1,6 @@
 const std = @import("std");
 const cli_args = @import("cli/args.zig");
+const ProcessAccounting = @import("app/process_accounting.zig");
 const Config = @import("config/config.zig");
 const Display = @import("display/display.zig");
 const EventLoop = @import("event_loop.zig");
@@ -98,6 +99,8 @@ noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !voi
         .terminal_input_admitted = false,
         .pending_terminal_present = null,
         .frame_pacing = Processor.FramePacingState.init(),
+        .process_accounting = ProcessAccounting.State.init(io, options.debug_process_accounting, options.debug_log_every_ms, EventLoop.nowNs()),
+        .loop_turn_count = 0,
     };
     try processor.openTab();
     processor.configureInputPolicies();
