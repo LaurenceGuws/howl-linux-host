@@ -143,6 +143,27 @@ test "render surface fill patch rejects out of bounds fill" {
     try std.testing.expect(!render_surface.renderSurfaceFillPatch(&surface));
 }
 
+test "render surface fill upload rows per chunk stays bounded by tile bytes" {
+    try std.testing.expectEqual(@as(u16, 8), render_surface_testing.fillUploadRowsPerChunk(8192, 64));
+    try std.testing.expectEqual(@as(u16, 3), render_surface_testing.fillUploadRowsPerChunk(8192, 3));
+    try std.testing.expectEqual(@as(u16, 9), render_surface_testing.fillUploadRowsPerChunk(4, 9));
+}
+
+test "render surface fill upload tile repeats the same rgba row" {
+    var tile = [_]u8{0} ** 24;
+    render_surface_testing.stageFillUploadTile(tile[0..], 2, 3, .{ 0x11, 0x22, 0x33, 0x44 });
+
+    try std.testing.expectEqualSlices(
+        u8,
+        &[_]u8{
+            0x11, 0x22, 0x33, 0x44, 0x11, 0x22, 0x33, 0x44,
+            0x11, 0x22, 0x33, 0x44, 0x11, 0x22, 0x33, 0x44,
+            0x11, 0x22, 0x33, 0x44, 0x11, 0x22, 0x33, 0x44,
+        },
+        tile[0..],
+    );
+}
+
 test "render surface fill only rejects mixed resource commands" {
     var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(9, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var surface = testSurface();

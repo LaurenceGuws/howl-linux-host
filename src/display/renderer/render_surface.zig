@@ -860,37 +860,66 @@ fn uploadFillCommand(command: render_c.HowlRenderSurfaceCommand) bool {
     std.debug.assert(width != 0);
     std.debug.assert(height != 0);
     if (!fillCommandFitsHostRow(command)) std.debug.panic("trusted fill command exceeds host row buffer: width={}", .{width});
-    var row: [row_pixels_max * 4]u8 = undefined;
+    var tile: [fill_upload_tile_bytes_max]u8 = undefined;
     const rgba = unpackRenderSurfaceRgba(command.color_rgba);
-    var x: usize = 0;
-    while (x < width) : (x += 1) {
-        const offset = x * 4;
-        row[offset + 0] = rgba[0];
-        row[offset + 1] = rgba[1];
-        row[offset + 2] = rgba[2];
-        row[offset + 3] = rgba[3];
-    }
-    var y: u16 = 0;
-    while (y < height) : (y += 1) {
+    const rows_per_chunk = fillUploadRowsPerChunk(width, height);
+    const row_bytes = fillUploadRowBytes(width);
+    stageFillUploadTile(tile[0 .. row_bytes * @as(usize, rows_per_chunk)], width, rows_per_chunk, rgba);
+    var uploaded_rows: u16 = 0;
+    while (uploaded_rows < height) {
+        const chunk_rows: u16 = @min(rows_per_chunk, height - uploaded_rows);
+        const chunk_bytes = row_bytes * @as(usize, chunk_rows);
         gl_c.glTexSubImage2D(
             gl_c.GL_TEXTURE_2D,
             0,
             command.rect.x_px,
-            command.rect.y_px + y,
+            command.rect.y_px + uploaded_rows,
             width,
-            1,
+            chunk_rows,
             gl_c.GL_RGBA,
             gl_c.GL_UNSIGNED_BYTE,
-            row[0..(@as(usize, width) * 4)].ptr,
+            tile[0..chunk_bytes].ptr,
         );
+        uploaded_rows += chunk_rows;
     }
     return gl_c.glGetError() == 0;
 }
 
 const row_pixels_max = 8192;
+const fill_upload_tile_bytes_max = 256 * 1024;
 
 fn fillCommandFitsHostRow(command: render_c.HowlRenderSurfaceCommand) bool {
     return command.rect.width_px <= row_pixels_max;
+}
+
+fn fillUploadRowBytes(width: u16) usize {
+    return @as(usize, width) * 4;
+}
+
+fn fillUploadRowsPerChunk(width: u16, height: u16) u16 {
+    const row_bytes = fillUploadRowBytes(width);
+    std.debug.assert(row_bytes != 0);
+    const rows_per_chunk = @max(fill_upload_tile_bytes_max / row_bytes, 1);
+    return @intCast(@min(rows_per_chunk, height));
+}
+
+fn stageFillUploadTile(tile: []u8, width: u16, rows: u16, rgba: [4]u8) void {
+    const row_bytes = fillUploadRowBytes(width);
+    const tile_bytes = row_bytes * @as(usize, rows);
+    std.debug.assert(tile_bytes <= tile.len);
+    var x: usize = 0;
+    while (x < width) : (x += 1) {
+        const offset = x * 4;
+        tile[offset + 0] = rgba[0];
+        tile[offset + 1] = rgba[1];
+        tile[offset + 2] = rgba[2];
+        tile[offset + 3] = rgba[3];
+    }
+    var row_index: usize = 1;
+    while (row_index < rows) : (row_index += 1) {
+        const offset = row_index * row_bytes;
+        @memcpy(tile[offset .. offset + row_bytes], tile[0..row_bytes]);
+    }
 }
 
 fn drawFillCommand(surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand) void {
@@ -1090,6 +1119,14 @@ pub const testing = struct {
 
     pub fn ndcY(y: i32, height: u16) f32 {
         return @import("render_surface.zig").ndcY(y, height);
+    }
+
+    pub fn fillUploadRowsPerChunk(width: u16, height: u16) u16 {
+        return @import("render_surface.zig").fillUploadRowsPerChunk(width, height);
+    }
+
+    pub fn stageFillUploadTile(tile: []u8, width: u16, rows: u16, rgba: [4]u8) void {
+        return @import("render_surface.zig").stageFillUploadTile(tile, width, rows, rgba);
     }
 
     pub fn resourceHasFutureUpload(surface: *const render_c.HowlRenderSurface, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
