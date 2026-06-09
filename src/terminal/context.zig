@@ -81,8 +81,14 @@ pub const Context = struct {
         upload_glyph_run_count: u64,
         upload_glyph_count: u64,
         upload_fill_ns: u64,
+        upload_fill_dispatch_ns: u64,
+        upload_fill_draw_ns: u64,
         upload_sprite_ns: u64,
+        upload_sprite_dispatch_ns: u64,
+        upload_sprite_draw_ns: u64,
         upload_glyph_ns: u64,
+        upload_glyph_dispatch_ns: u64,
+        upload_glyph_draw_ns: u64,
         retained_submit_ns: u64,
     };
 
@@ -413,8 +419,14 @@ pub const Context = struct {
                 .upload_glyph_run_count = 0,
                 .upload_glyph_count = 0,
                 .upload_fill_ns = 0,
+                .upload_fill_dispatch_ns = 0,
+                .upload_fill_draw_ns = 0,
                 .upload_sprite_ns = 0,
+                .upload_sprite_dispatch_ns = 0,
+                .upload_sprite_draw_ns = 0,
                 .upload_glyph_ns = 0,
+                .upload_glyph_dispatch_ns = 0,
+                .upload_glyph_draw_ns = 0,
                 .retained_submit_ns = 0,
             };
         }
@@ -435,8 +447,14 @@ pub const Context = struct {
             .upload_glyph_run_count = drive_result.upload_glyph_run_count,
             .upload_glyph_count = drive_result.upload_glyph_count,
             .upload_fill_ns = drive_result.upload_fill_ns,
+            .upload_fill_dispatch_ns = drive_result.upload_fill_dispatch_ns,
+            .upload_fill_draw_ns = drive_result.upload_fill_draw_ns,
             .upload_sprite_ns = drive_result.upload_sprite_ns,
+            .upload_sprite_dispatch_ns = drive_result.upload_sprite_dispatch_ns,
+            .upload_sprite_draw_ns = drive_result.upload_sprite_draw_ns,
             .upload_glyph_ns = drive_result.upload_glyph_ns,
+            .upload_glyph_dispatch_ns = drive_result.upload_glyph_dispatch_ns,
+            .upload_glyph_draw_ns = drive_result.upload_glyph_draw_ns,
             .retained_submit_ns = drive_result.retained_submit_ns,
         };
     }
@@ -570,8 +588,14 @@ pub const Context = struct {
         upload_glyph_run_count: u64,
         upload_glyph_count: u64,
         upload_fill_ns: u64,
+        upload_fill_dispatch_ns: u64,
+        upload_fill_draw_ns: u64,
         upload_sprite_ns: u64,
+        upload_sprite_dispatch_ns: u64,
+        upload_sprite_draw_ns: u64,
         upload_glyph_ns: u64,
+        upload_glyph_dispatch_ns: u64,
+        upload_glyph_draw_ns: u64,
         retained_submit_ns: u64,
     };
 
@@ -586,17 +610,17 @@ pub const Context = struct {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         std.debug.assert(work.bootstrap_surface == bootstrap_surface);
         return switch (renderAction(work, bootstrap_surface)) {
-            .blocked_present => .{ .prepared = false, .step = .blocked_present, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_sprite_ns = 0, .upload_glyph_ns = 0, .retained_submit_ns = 0 },
+            .blocked_present => .{ .prepared = false, .step = .blocked_present, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 },
             .submit_pending => submitDriveResult(false, 0, self.submitPreparedLocked()),
-            .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_sprite_ns = 0, .upload_glyph_ns = 0, .retained_submit_ns = 0 },
+            .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 },
             .prepare_or_idle => blk: {
                 const prepare_start_ns = EventLoop.nowNs();
                 const prepare_result = self.term.render.prepare();
                 const prepare_end_ns = EventLoop.nowNs();
                 const prepare_ns = prepare_end_ns -| prepare_start_ns;
                 break :blk switch (prepare_result) {
-                    .idle => .{ .prepared = false, .step = .idle_prepare, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_sprite_ns = 0, .upload_glyph_ns = 0, .retained_submit_ns = 0 },
-                    .failed => .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_sprite_ns = 0, .upload_glyph_ns = 0, .retained_submit_ns = 0 },
+                    .idle => .{ .prepared = false, .step = .idle_prepare, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 },
+                    .failed => .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 },
                     .prepared => submitDriveResult(true, prepare_ns, self.submitPreparedLocked()),
                 };
             },
@@ -656,7 +680,7 @@ pub const Context = struct {
     fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
-            return .{ .result = .failed, .snapshot_seq = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_sprite_ns = 0, .upload_glyph_ns = 0, .retained_submit_ns = 0 };
+            return .{ .result = .failed, .snapshot_seq = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 };
         }
         defer upload.deinit();
         const prepared_handle = self.term.render.preparedSurfaceHandle();
@@ -674,10 +698,10 @@ pub const Context = struct {
         const current_handle = self.term.render.preparedSurfaceHandle();
         std.debug.assert(!self.term.render.presentPending());
         if (current_handle != prepared_handle) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .upload_count = upload_stats.count, .upload_bytes = upload_stats.bytes, .upload_fill_count = upload_stats.fill_count, .upload_sprite_count = upload_stats.sprite_count, .upload_glyph_run_count = upload_stats.glyph_run_count, .upload_glyph_count = upload_stats.glyph_count, .upload_fill_ns = upload_stats.fill_ns, .upload_sprite_ns = upload_stats.sprite_ns, .upload_glyph_ns = upload_stats.glyph_ns, .retained_submit_ns = 0 };
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .upload_count = upload_stats.count, .upload_bytes = upload_stats.bytes, .upload_fill_count = upload_stats.fill_count, .upload_sprite_count = upload_stats.sprite_count, .upload_glyph_run_count = upload_stats.glyph_run_count, .upload_glyph_count = upload_stats.glyph_count, .upload_fill_ns = upload_stats.fill_ns, .upload_fill_dispatch_ns = upload_stats.fill_dispatch_ns, .upload_fill_draw_ns = upload_stats.fill_draw_ns, .upload_sprite_ns = upload_stats.sprite_ns, .upload_sprite_dispatch_ns = upload_stats.sprite_dispatch_ns, .upload_sprite_draw_ns = upload_stats.sprite_draw_ns, .upload_glyph_ns = upload_stats.glyph_ns, .upload_glyph_dispatch_ns = upload_stats.glyph_dispatch_ns, .upload_glyph_draw_ns = upload_stats.glyph_draw_ns, .retained_submit_ns = 0 };
         }
         if (!upload_ok) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .upload_count = upload_stats.count, .upload_bytes = upload_stats.bytes, .upload_fill_count = upload_stats.fill_count, .upload_sprite_count = upload_stats.sprite_count, .upload_glyph_run_count = upload_stats.glyph_run_count, .upload_glyph_count = upload_stats.glyph_count, .upload_fill_ns = upload_stats.fill_ns, .upload_sprite_ns = upload_stats.sprite_ns, .upload_glyph_ns = upload_stats.glyph_ns, .retained_submit_ns = 0 };
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .upload_count = upload_stats.count, .upload_bytes = upload_stats.bytes, .upload_fill_count = upload_stats.fill_count, .upload_sprite_count = upload_stats.sprite_count, .upload_glyph_run_count = upload_stats.glyph_run_count, .upload_glyph_count = upload_stats.glyph_count, .upload_fill_ns = upload_stats.fill_ns, .upload_fill_dispatch_ns = upload_stats.fill_dispatch_ns, .upload_fill_draw_ns = upload_stats.fill_draw_ns, .upload_sprite_ns = upload_stats.sprite_ns, .upload_sprite_dispatch_ns = upload_stats.sprite_dispatch_ns, .upload_sprite_draw_ns = upload_stats.sprite_draw_ns, .upload_glyph_ns = upload_stats.glyph_ns, .upload_glyph_dispatch_ns = upload_stats.glyph_dispatch_ns, .upload_glyph_draw_ns = upload_stats.glyph_draw_ns, .retained_submit_ns = 0 };
         }
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
@@ -699,8 +723,14 @@ pub const Context = struct {
             .upload_glyph_run_count = upload_stats.glyph_run_count,
             .upload_glyph_count = upload_stats.glyph_count,
             .upload_fill_ns = upload_stats.fill_ns,
+            .upload_fill_dispatch_ns = upload_stats.fill_dispatch_ns,
+            .upload_fill_draw_ns = upload_stats.fill_draw_ns,
             .upload_sprite_ns = upload_stats.sprite_ns,
+            .upload_sprite_dispatch_ns = upload_stats.sprite_dispatch_ns,
+            .upload_sprite_draw_ns = upload_stats.sprite_draw_ns,
             .upload_glyph_ns = upload_stats.glyph_ns,
+            .upload_glyph_dispatch_ns = upload_stats.glyph_dispatch_ns,
+            .upload_glyph_draw_ns = upload_stats.glyph_draw_ns,
             .retained_submit_ns = submit_end_ns -| submit_start_ns,
         };
     }
@@ -716,8 +746,14 @@ pub const Context = struct {
         upload_glyph_run_count: u64,
         upload_glyph_count: u64,
         upload_fill_ns: u64,
+        upload_fill_dispatch_ns: u64,
+        upload_fill_draw_ns: u64,
         upload_sprite_ns: u64,
+        upload_sprite_dispatch_ns: u64,
+        upload_sprite_draw_ns: u64,
         upload_glyph_ns: u64,
+        upload_glyph_dispatch_ns: u64,
+        upload_glyph_draw_ns: u64,
         retained_submit_ns: u64,
     };
 
@@ -744,8 +780,14 @@ pub const Context = struct {
             .upload_glyph_run_count = submit_result.upload_glyph_run_count,
             .upload_glyph_count = submit_result.upload_glyph_count,
             .upload_fill_ns = submit_result.upload_fill_ns,
+            .upload_fill_dispatch_ns = submit_result.upload_fill_dispatch_ns,
+            .upload_fill_draw_ns = submit_result.upload_fill_draw_ns,
             .upload_sprite_ns = submit_result.upload_sprite_ns,
+            .upload_sprite_dispatch_ns = submit_result.upload_sprite_dispatch_ns,
+            .upload_sprite_draw_ns = submit_result.upload_sprite_draw_ns,
             .upload_glyph_ns = submit_result.upload_glyph_ns,
+            .upload_glyph_dispatch_ns = submit_result.upload_glyph_dispatch_ns,
+            .upload_glyph_draw_ns = submit_result.upload_glyph_draw_ns,
             .retained_submit_ns = submit_result.retained_submit_ns,
         };
     }

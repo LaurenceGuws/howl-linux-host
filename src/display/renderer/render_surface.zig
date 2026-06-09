@@ -279,8 +279,14 @@ pub const UploadStats = struct {
     glyph_run_count: u64 = 0,
     glyph_count: u64 = 0,
     fill_ns: u64 = 0,
+    fill_dispatch_ns: u64 = 0,
+    fill_draw_ns: u64 = 0,
     sprite_ns: u64 = 0,
+    sprite_dispatch_ns: u64 = 0,
+    sprite_draw_ns: u64 = 0,
     glyph_ns: u64 = 0,
+    glyph_dispatch_ns: u64 = 0,
+    glyph_draw_ns: u64 = 0,
 
     fn note(self: *UploadStats, upload: render_c.HowlRenderResourceUpload) void {
         self.count += 1;
@@ -564,15 +570,19 @@ fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: 
         render_surface.commands.count,
     );
     for (commands, 0..) |command, command_index| {
+        const command_start_ns = monotonicNs();
         switch (command.kind) {
             render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             => {
-                const start_ns = monotonicNs();
+                const draw_start_ns = monotonicNs();
                 drawFillCommand(host_surface, command);
+                const command_end_ns = monotonicNs();
                 if (upload_stats) |stats| {
                     stats.fill_count += 1;
-                    stats.fill_ns += monotonicNs() -| start_ns;
+                    stats.fill_ns += command_end_ns -| command_start_ns;
+                    stats.fill_dispatch_ns += draw_start_ns -| command_start_ns;
+                    stats.fill_draw_ns += command_end_ns -| draw_start_ns;
                 }
             },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
@@ -582,23 +592,29 @@ fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: 
                 if (resourceHasFutureUpload(render_surface, command.resource, @intCast(command_index))) {
                     std.debug.panic("trusted sprite command used before final upload", .{});
                 }
-                const start_ns = monotonicNs();
+                const draw_start_ns = monotonicNs();
                 drawSpriteCommand(host_surface, command, slot);
+                const command_end_ns = monotonicNs();
                 if (upload_stats) |stats| {
                     stats.sprite_count += 1;
-                    stats.sprite_ns += monotonicNs() -| start_ns;
+                    stats.sprite_ns += command_end_ns -| command_start_ns;
+                    stats.sprite_dispatch_ns += draw_start_ns -| command_start_ns;
+                    stats.sprite_draw_ns += command_end_ns -| draw_start_ns;
                 }
             },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
                 if (glyphCommandHasFutureUpload(render_surface, command, @intCast(command_index))) {
                     std.debug.panic("trusted glyph command used before final upload", .{});
                 }
-                const start_ns = monotonicNs();
+                const draw_start_ns = monotonicNs();
                 drawGlyphCommand(textures, host_surface, command);
+                const command_end_ns = monotonicNs();
                 if (upload_stats) |stats| {
                     stats.glyph_run_count += 1;
                     stats.glyph_count += command.glyphs.count;
-                    stats.glyph_ns += monotonicNs() -| start_ns;
+                    stats.glyph_ns += command_end_ns -| command_start_ns;
+                    stats.glyph_dispatch_ns += draw_start_ns -| command_start_ns;
+                    stats.glyph_draw_ns += command_end_ns -| draw_start_ns;
                 }
             },
             else => std.debug.panic("trusted render surface has unknown command kind={}", .{command.kind}),

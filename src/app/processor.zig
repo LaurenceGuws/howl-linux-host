@@ -223,8 +223,14 @@ pub const Processor = struct {
                 .upload_glyph_run_count = frame.turn.upload_glyph_run_count,
                 .upload_glyph_count = frame.turn.upload_glyph_count,
                 .upload_fill_ns = frame.turn.upload_fill_ns,
+                .upload_fill_dispatch_ns = frame.turn.upload_fill_dispatch_ns,
+                .upload_fill_draw_ns = frame.turn.upload_fill_draw_ns,
                 .upload_sprite_ns = frame.turn.upload_sprite_ns,
+                .upload_sprite_dispatch_ns = frame.turn.upload_sprite_dispatch_ns,
+                .upload_sprite_draw_ns = frame.turn.upload_sprite_draw_ns,
                 .upload_glyph_ns = frame.turn.upload_glyph_ns,
+                .upload_glyph_dispatch_ns = frame.turn.upload_glyph_dispatch_ns,
+                .upload_glyph_draw_ns = frame.turn.upload_glyph_draw_ns,
                 .retained_submit_ns = frame.turn.retained_submit_ns,
             });
             const present_plan = derivePresentPlan(frame, intent);
