@@ -74,6 +74,8 @@ pub const Context = struct {
         present_snapshot_seq: u64,
         prepare_ns: u64,
         upload_ns: u64,
+        upload_count: u64,
+        upload_bytes: u64,
         retained_submit_ns: u64,
     };
 
@@ -397,6 +399,8 @@ pub const Context = struct {
                 .present_snapshot_seq = 0,
                 .prepare_ns = 0,
                 .upload_ns = 0,
+                .upload_count = 0,
+                .upload_bytes = 0,
                 .retained_submit_ns = 0,
             };
         }
@@ -410,6 +414,8 @@ pub const Context = struct {
             .present_snapshot_seq = drive_result.present_snapshot_seq,
             .prepare_ns = drive_result.prepare_ns,
             .upload_ns = drive_result.upload_ns,
+            .upload_count = drive_result.upload_count,
+            .upload_bytes = drive_result.upload_bytes,
             .retained_submit_ns = drive_result.retained_submit_ns,
         };
     }
@@ -536,6 +542,8 @@ pub const Context = struct {
         present_snapshot_seq: u64,
         prepare_ns: u64,
         upload_ns: u64,
+        upload_count: u64,
+        upload_bytes: u64,
         retained_submit_ns: u64,
     };
 
@@ -550,17 +558,17 @@ pub const Context = struct {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         std.debug.assert(work.bootstrap_surface == bootstrap_surface);
         return switch (renderAction(work, bootstrap_surface)) {
-            .blocked_present => .{ .prepared = false, .step = .blocked_present, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .retained_submit_ns = 0 },
+            .blocked_present => .{ .prepared = false, .step = .blocked_present, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .retained_submit_ns = 0 },
             .submit_pending => submitDriveResult(false, 0, self.submitPreparedLocked()),
-            .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .retained_submit_ns = 0 },
+            .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .retained_submit_ns = 0 },
             .prepare_or_idle => blk: {
                 const prepare_start_ns = EventLoop.nowNs();
                 const prepare_result = self.term.render.prepare();
                 const prepare_end_ns = EventLoop.nowNs();
                 const prepare_ns = prepare_end_ns -| prepare_start_ns;
                 break :blk switch (prepare_result) {
-                    .idle => .{ .prepared = false, .step = .idle_prepare, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .retained_submit_ns = 0 },
-                    .failed => .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .retained_submit_ns = 0 },
+                    .idle => .{ .prepared = false, .step = .idle_prepare, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .retained_submit_ns = 0 },
+                    .failed => .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .retained_submit_ns = 0 },
                     .prepared => submitDriveResult(true, prepare_ns, self.submitPreparedLocked()),
                 };
             },
@@ -597,13 +605,13 @@ pub const Context = struct {
     }
 
     const ContextSubmitBackend = struct {
-        fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload) bool {
+        fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
             const render_surface = prepared_upload.render_surface orelse {
                 if (prepared_upload.render_surface_status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW) return false;
                 std.debug.panic("trusted render surface retrieval failed: status={}", .{prepared_upload.render_surface_status});
                 return false;
             };
-            return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, render_surface);
+            return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, render_surface, upload_stats);
         }
 
         fn execution(self: anytype, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
@@ -620,7 +628,7 @@ pub const Context = struct {
     fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
-            return .{ .result = .failed, .snapshot_seq = 0, .upload_ns = 0, .retained_submit_ns = 0 };
+            return .{ .result = .failed, .snapshot_seq = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .retained_submit_ns = 0 };
         }
         defer upload.deinit();
         const prepared_handle = self.term.render.preparedSurfaceHandle();
@@ -630,17 +638,18 @@ pub const Context = struct {
 
         self.term.mutex.unlock();
         const upload_start_ns = EventLoop.nowNs();
-        const upload_ok = Backend.upload(self, &upload);
+        var upload_stats = term_texture.UploadStats{};
+        const upload_ok = Backend.upload(self, &upload, &upload_stats);
         const upload_end_ns = EventLoop.nowNs();
         self.term.mutex.lockFair();
 
         const current_handle = self.term.render.preparedSurfaceHandle();
         std.debug.assert(!self.term.render.presentPending());
         if (current_handle != prepared_handle) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .retained_submit_ns = 0 };
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .upload_count = upload_stats.count, .upload_bytes = upload_stats.bytes, .retained_submit_ns = 0 };
         }
         if (!upload_ok) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .retained_submit_ns = 0 };
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .upload_count = upload_stats.count, .upload_bytes = upload_stats.bytes, .retained_submit_ns = 0 };
         }
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
@@ -655,6 +664,8 @@ pub const Context = struct {
             .result = result,
             .snapshot_seq = upload.info.snapshot_seq,
             .upload_ns = upload_end_ns -| upload_start_ns,
+            .upload_count = upload_stats.count,
+            .upload_bytes = upload_stats.bytes,
             .retained_submit_ns = submit_end_ns -| submit_start_ns,
         };
     }
@@ -663,6 +674,8 @@ pub const Context = struct {
         result: render_retained.SubmitResult,
         snapshot_seq: u64,
         upload_ns: u64,
+        upload_count: u64,
+        upload_bytes: u64,
         retained_submit_ns: u64,
     };
 
@@ -682,6 +695,8 @@ pub const Context = struct {
             .present_snapshot_seq = if (step == .rendered) submit_result.snapshot_seq else 0,
             .prepare_ns = prepare_ns,
             .upload_ns = submit_result.upload_ns,
+            .upload_count = submit_result.upload_count,
+            .upload_bytes = submit_result.upload_bytes,
             .retained_submit_ns = submit_result.retained_submit_ns,
         };
     }

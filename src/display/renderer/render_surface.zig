@@ -53,11 +53,11 @@ pub const RenderResourceTextures = struct {
         for (&self.slots) |*slot| deleteSlot(slot);
     }
 
-    pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
-        self.realizeSurfaceLocked(surface);
+    pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface, upload_stats: ?*UploadStats) void {
+        self.realizeSurfaceLocked(surface, upload_stats);
     }
 
-    fn realizeSurfaceLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
+    fn realizeSurfaceLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface, upload_stats: ?*UploadStats) void {
         self.validateSurface(surface);
         const creates = spanSlice(
             render_c.HowlRenderResourceCreate,
@@ -71,7 +71,7 @@ pub const RenderResourceTextures = struct {
             surface.uploads.ptr,
             surface.uploads.count,
         );
-        for (uploads) |upload| self.uploadTexture(upload);
+        for (uploads) |upload| self.uploadTexture(upload, upload_stats);
         glErrorOk("resource upload");
         self.commitUploadMetadata(uploads);
         const retires = spanSlice(
@@ -184,7 +184,7 @@ pub const RenderResourceTextures = struct {
         );
     }
 
-    fn uploadTexture(self: *RenderResourceTextures, upload: render_c.HowlRenderResourceUpload) void {
+    fn uploadTexture(self: *RenderResourceTextures, upload: render_c.HowlRenderResourceUpload, upload_stats: ?*UploadStats) void {
         const slot = self.find(upload.resource) orelse std.debug.panic("trusted render upload missing live slot during upload", .{});
         if (slot.texture_id == 0) std.debug.panic("trusted render upload missing GL texture id", .{});
         if (upload.format != slot.format) std.debug.panic("trusted render upload format mismatch during upload", .{});
@@ -209,6 +209,7 @@ pub const RenderResourceTextures = struct {
             gl_c.GL_UNSIGNED_BYTE,
             upload.bytes_ptr,
         );
+        if (upload_stats) |stats| stats.note(upload);
     }
 
     fn commitUploadMetadata(self: *RenderResourceTextures, uploads: []const render_c.HowlRenderResourceUpload) void {
@@ -267,6 +268,16 @@ pub const RenderResourceTextures = struct {
         }
         slot.texture_id = 0;
         slot.state = .retired;
+    }
+};
+
+pub const UploadStats = struct {
+    count: u64 = 0,
+    bytes: u64 = 0,
+
+    fn note(self: *UploadStats, upload: render_c.HowlRenderResourceUpload) void {
+        self.count += 1;
+        self.bytes += upload.bytes_count;
     }
 };
 
@@ -412,13 +423,13 @@ pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
     surface.height = height;
 }
 
-pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurface) bool {
+pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurface, upload_stats: ?*UploadStats) bool {
     std.debug.assert(surface.render_px.width > 0);
     std.debug.assert(surface.render_px.height > 0);
     const had_matching_surface = host_surface.host_surface_id != 0 and
         host_surface.width == surface.render_px.width and
         host_surface.height == surface.render_px.height;
-    textures.realizeSurface(surface);
+    textures.realizeSurface(surface, upload_stats);
     ensureSurface(host_surface, surface.render_px.width, surface.render_px.height);
     const surface_uploaded = blk: {
         if (renderSurfaceSprite(surface)) {

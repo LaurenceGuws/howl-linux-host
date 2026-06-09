@@ -53,6 +53,8 @@ pub const RenderTiming = struct {
     turn_ns: u64,
     prepare_ns: u64,
     upload_ns: u64,
+    upload_count: u64,
+    upload_bytes: u64,
     retained_submit_ns: u64,
 };
 
@@ -92,6 +94,10 @@ pub const Counters = struct {
     render_prepare_ns_max: u64 = 0,
     render_upload_ns_total: u64 = 0,
     render_upload_ns_max: u64 = 0,
+    render_upload_count_total: u64 = 0,
+    render_upload_count_max: u64 = 0,
+    render_upload_bytes_total: u64 = 0,
+    render_upload_bytes_max: u64 = 0,
     render_retained_submit_ns_total: u64 = 0,
     render_retained_submit_ns_max: u64 = 0,
     present_timed_count: u64 = 0,
@@ -202,6 +208,10 @@ pub const State = struct {
         self.counters.render_prepare_ns_max = @max(self.counters.render_prepare_ns_max, timing.prepare_ns);
         self.counters.render_upload_ns_total += timing.upload_ns;
         self.counters.render_upload_ns_max = @max(self.counters.render_upload_ns_max, timing.upload_ns);
+        self.counters.render_upload_count_total += timing.upload_count;
+        self.counters.render_upload_count_max = @max(self.counters.render_upload_count_max, timing.upload_count);
+        self.counters.render_upload_bytes_total += timing.upload_bytes;
+        self.counters.render_upload_bytes_max = @max(self.counters.render_upload_bytes_max, timing.upload_bytes);
         self.counters.render_retained_submit_ns_total += timing.retained_submit_ns;
         self.counters.render_retained_submit_ns_max = @max(self.counters.render_retained_submit_ns_max, timing.retained_submit_ns);
     }
@@ -396,7 +406,7 @@ fn logSample(sample: Sample, turn_count: u64, intent: RuntimeIntent, counters: C
         },
     );
     std.debug.print(
-        "howl-debug timing render_turn_avg_us={} render_turn_max_us={} render_prepare_avg_us={} render_prepare_max_us={} render_upload_avg_us={} render_upload_max_us={} render_retained_submit_avg_us={} render_retained_submit_max_us={} present_submit_avg_us={} present_submit_max_us={}\n",
+        "howl-debug timing render_turn_avg_us={} render_turn_max_us={} render_prepare_avg_us={} render_prepare_max_us={} render_upload_avg_us={} render_upload_max_us={} render_upload_count_avg={} render_upload_count_max={} render_upload_bytes_avg={} render_upload_bytes_max={} render_retained_submit_avg_us={} render_retained_submit_max_us={} present_submit_avg_us={} present_submit_max_us={}\n",
         .{
             avgMicros(counters.render_turn_ns_total, counters.render_timed_count),
             counters.render_turn_ns_max / std.time.ns_per_us,
@@ -404,6 +414,10 @@ fn logSample(sample: Sample, turn_count: u64, intent: RuntimeIntent, counters: C
             counters.render_prepare_ns_max / std.time.ns_per_us,
             avgMicros(counters.render_upload_ns_total, counters.render_timed_count),
             counters.render_upload_ns_max / std.time.ns_per_us,
+            avgCount(counters.render_upload_count_total, counters.render_timed_count),
+            counters.render_upload_count_max,
+            avgCount(counters.render_upload_bytes_total, counters.render_timed_count),
+            counters.render_upload_bytes_max,
             avgMicros(counters.render_retained_submit_ns_total, counters.render_timed_count),
             counters.render_retained_submit_ns_max / std.time.ns_per_us,
             avgMicros(counters.present_submit_ns_total, counters.present_timed_count),
@@ -438,6 +452,11 @@ fn cpuMilli(delta_ticks: u64, interval_ns: u64, clock_ticks_per_second: u64) u64
 fn avgMicros(total_ns: u64, count: u64) u64 {
     if (count == 0) return 0;
     return (total_ns / count) / std.time.ns_per_us;
+}
+
+fn avgCount(total: u64, count: u64) u64 {
+    if (count == 0) return 0;
+    return total / count;
 }
 
 fn clockTicksPerSecond() u64 {
@@ -498,6 +517,8 @@ test "measurement counters accumulate wait render present and SDL facts" {
         .turn_ns = 7 * std.time.ns_per_ms,
         .prepare_ns = 4 * std.time.ns_per_ms,
         .upload_ns = 5 * std.time.ns_per_ms,
+        .upload_count = 3,
+        .upload_bytes = 4096,
         .retained_submit_ns = 2 * std.time.ns_per_ms,
     });
     state.countPresentSubmission(.{ .reason = .terminal_frame, .submitted = true });
@@ -518,6 +539,8 @@ test "measurement counters accumulate wait render present and SDL facts" {
     try std.testing.expectEqual(7 * std.time.ns_per_ms, state.counters.render_turn_ns_total);
     try std.testing.expectEqual(4 * std.time.ns_per_ms, state.counters.render_prepare_ns_total);
     try std.testing.expectEqual(5 * std.time.ns_per_ms, state.counters.render_upload_ns_total);
+    try std.testing.expectEqual(@as(u64, 3), state.counters.render_upload_count_total);
+    try std.testing.expectEqual(@as(u64, 4096), state.counters.render_upload_bytes_total);
     try std.testing.expectEqual(2 * std.time.ns_per_ms, state.counters.render_retained_submit_ns_total);
     try std.testing.expectEqual(@as(u64, 1), state.counters.present_submitted);
     try std.testing.expectEqual(@as(u64, 1), state.counters.present_timed_count);

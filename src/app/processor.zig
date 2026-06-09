@@ -216,6 +216,8 @@ pub const Processor = struct {
                 .turn_ns = render_end_ns -| render_start_ns,
                 .prepare_ns = frame.turn.prepare_ns,
                 .upload_ns = frame.turn.upload_ns,
+                .upload_count = frame.turn.upload_count,
+                .upload_bytes = frame.turn.upload_bytes,
                 .retained_submit_ns = frame.turn.retained_submit_ns,
             });
             const present_plan = derivePresentPlan(frame, intent);

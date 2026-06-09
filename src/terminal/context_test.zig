@@ -4,6 +4,7 @@ const render_c = @import("howl_render_c");
 const context_mod = @import("context.zig");
 const cursor_blink = @import("cursor_blink.zig");
 const pty_pump = @import("pty/pump.zig");
+const term_texture = @import("../display/renderer/render_surface.zig");
 const terminal_input = @import("input.zig");
 const render_retained = @import("render/retained.zig");
 const surface_layout = @import("render/surface_layout.zig");
@@ -696,8 +697,9 @@ const TestSubmitContext = struct {
 const TestUnlockedBackend = struct {
     var saw_unlocked = false;
 
-    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) bool {
+    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
         _ = prepared_upload;
+        _ = upload_stats;
         saw_unlocked = self.term.mutex.tryLockUnfair();
         if (saw_unlocked) self.term.mutex.unlock();
         return true;
@@ -710,7 +712,8 @@ const TestUnlockedBackend = struct {
 };
 
 const TestLockedBackend = struct {
-    pub fn upload(_: *TestSubmitContext, _: *const render_retained.PreparedUpload) bool {
+    pub fn upload(_: *TestSubmitContext, _: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
+        _ = upload_stats;
         return true;
     }
 
@@ -722,7 +725,8 @@ const TestLockedBackend = struct {
 const TestFailBackend = struct {
     var saw_unlocked = false;
 
-    pub fn upload(self: *TestSubmitContext, _: *const render_retained.PreparedUpload) bool {
+    pub fn upload(self: *TestSubmitContext, _: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
+        _ = upload_stats;
         saw_unlocked = self.term.mutex.tryLockUnfair();
         if (saw_unlocked) self.term.mutex.unlock();
         return false;
@@ -736,7 +740,8 @@ const TestFailBackend = struct {
 const TestMutatingBackend = struct {
     var saw_unlocked = false;
 
-    pub fn upload(self: *TestSubmitContext, _: *const render_retained.PreparedUpload) bool {
+    pub fn upload(self: *TestSubmitContext, _: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
+        _ = upload_stats;
         saw_unlocked = self.term.mutex.tryLockUnfair();
         if (saw_unlocked) self.term.mutex.unlock();
         self.term.render.handle = @ptrFromInt(0x20);
@@ -750,7 +755,7 @@ const TestMutatingBackend = struct {
 };
 
 const TestResizeBackend = struct {
-    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) bool {
+    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
         std.debug.assert(prepared_upload.info.damage_kind == render_c.HOWL_RENDER_DAMAGE_FULL);
         const render_surface = prepared_upload.render_surface orelse return false;
         std.debug.assert(render_surface.token.snapshot_seq == prepared_upload.info.snapshot_seq);
@@ -765,6 +770,8 @@ const TestResizeBackend = struct {
         self.host_upload_render_px = prepared_upload.info.render_px;
         self.host_upload_surface_px = render_surface.render_px;
         self.record(.host_upload);
+        upload_stats.count = 1;
+        upload_stats.bytes = 256;
         self.term_texture = .{
             .host_surface_id = 2,
             .width = prepared_upload.info.render_px.width,
@@ -779,7 +786,7 @@ const TestResizeBackend = struct {
 };
 
 const TestResizeFailBackend = struct {
-    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) bool {
+    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
         std.debug.assert(prepared_upload.info.damage_kind == render_c.HOWL_RENDER_DAMAGE_FULL);
         const render_surface = prepared_upload.render_surface orelse return false;
         std.debug.assert(render_surface.token.snapshot_seq == prepared_upload.info.snapshot_seq);
@@ -794,6 +801,8 @@ const TestResizeFailBackend = struct {
         self.host_upload_render_px = prepared_upload.info.render_px;
         self.host_upload_surface_px = render_surface.render_px;
         self.record(.host_upload);
+        upload_stats.count = 1;
+        upload_stats.bytes = 256;
         self.term_texture.width = 0;
         self.term_texture.height = 0;
         return false;
