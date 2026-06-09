@@ -218,6 +218,13 @@ pub const Processor = struct {
                 .upload_ns = frame.turn.upload_ns,
                 .upload_count = frame.turn.upload_count,
                 .upload_bytes = frame.turn.upload_bytes,
+                .upload_fill_count = frame.turn.upload_fill_count,
+                .upload_sprite_count = frame.turn.upload_sprite_count,
+                .upload_glyph_run_count = frame.turn.upload_glyph_run_count,
+                .upload_glyph_count = frame.turn.upload_glyph_count,
+                .upload_fill_ns = frame.turn.upload_fill_ns,
+                .upload_sprite_ns = frame.turn.upload_sprite_ns,
+                .upload_glyph_ns = frame.turn.upload_glyph_ns,
                 .retained_submit_ns = frame.turn.retained_submit_ns,
             });
             const present_plan = derivePresentPlan(frame, intent);

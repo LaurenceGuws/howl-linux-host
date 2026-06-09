@@ -55,6 +55,13 @@ pub const RenderTiming = struct {
     upload_ns: u64,
     upload_count: u64,
     upload_bytes: u64,
+    upload_fill_count: u64,
+    upload_sprite_count: u64,
+    upload_glyph_run_count: u64,
+    upload_glyph_count: u64,
+    upload_fill_ns: u64,
+    upload_sprite_ns: u64,
+    upload_glyph_ns: u64,
     retained_submit_ns: u64,
 };
 
@@ -98,6 +105,20 @@ pub const Counters = struct {
     render_upload_count_max: u64 = 0,
     render_upload_bytes_total: u64 = 0,
     render_upload_bytes_max: u64 = 0,
+    render_upload_fill_count_total: u64 = 0,
+    render_upload_fill_count_max: u64 = 0,
+    render_upload_sprite_count_total: u64 = 0,
+    render_upload_sprite_count_max: u64 = 0,
+    render_upload_glyph_run_count_total: u64 = 0,
+    render_upload_glyph_run_count_max: u64 = 0,
+    render_upload_glyph_count_total: u64 = 0,
+    render_upload_glyph_count_max: u64 = 0,
+    render_upload_fill_ns_total: u64 = 0,
+    render_upload_fill_ns_max: u64 = 0,
+    render_upload_sprite_ns_total: u64 = 0,
+    render_upload_sprite_ns_max: u64 = 0,
+    render_upload_glyph_ns_total: u64 = 0,
+    render_upload_glyph_ns_max: u64 = 0,
     render_retained_submit_ns_total: u64 = 0,
     render_retained_submit_ns_max: u64 = 0,
     present_timed_count: u64 = 0,
@@ -212,6 +233,20 @@ pub const State = struct {
         self.counters.render_upload_count_max = @max(self.counters.render_upload_count_max, timing.upload_count);
         self.counters.render_upload_bytes_total += timing.upload_bytes;
         self.counters.render_upload_bytes_max = @max(self.counters.render_upload_bytes_max, timing.upload_bytes);
+        self.counters.render_upload_fill_count_total += timing.upload_fill_count;
+        self.counters.render_upload_fill_count_max = @max(self.counters.render_upload_fill_count_max, timing.upload_fill_count);
+        self.counters.render_upload_sprite_count_total += timing.upload_sprite_count;
+        self.counters.render_upload_sprite_count_max = @max(self.counters.render_upload_sprite_count_max, timing.upload_sprite_count);
+        self.counters.render_upload_glyph_run_count_total += timing.upload_glyph_run_count;
+        self.counters.render_upload_glyph_run_count_max = @max(self.counters.render_upload_glyph_run_count_max, timing.upload_glyph_run_count);
+        self.counters.render_upload_glyph_count_total += timing.upload_glyph_count;
+        self.counters.render_upload_glyph_count_max = @max(self.counters.render_upload_glyph_count_max, timing.upload_glyph_count);
+        self.counters.render_upload_fill_ns_total += timing.upload_fill_ns;
+        self.counters.render_upload_fill_ns_max = @max(self.counters.render_upload_fill_ns_max, timing.upload_fill_ns);
+        self.counters.render_upload_sprite_ns_total += timing.upload_sprite_ns;
+        self.counters.render_upload_sprite_ns_max = @max(self.counters.render_upload_sprite_ns_max, timing.upload_sprite_ns);
+        self.counters.render_upload_glyph_ns_total += timing.upload_glyph_ns;
+        self.counters.render_upload_glyph_ns_max = @max(self.counters.render_upload_glyph_ns_max, timing.upload_glyph_ns);
         self.counters.render_retained_submit_ns_total += timing.retained_submit_ns;
         self.counters.render_retained_submit_ns_max = @max(self.counters.render_retained_submit_ns_max, timing.retained_submit_ns);
     }
@@ -406,7 +441,7 @@ fn logSample(sample: Sample, turn_count: u64, intent: RuntimeIntent, counters: C
         },
     );
     std.debug.print(
-        "howl-debug timing render_turn_avg_us={} render_turn_max_us={} render_prepare_avg_us={} render_prepare_max_us={} render_upload_avg_us={} render_upload_max_us={} render_upload_count_avg={} render_upload_count_max={} render_upload_bytes_avg={} render_upload_bytes_max={} render_retained_submit_avg_us={} render_retained_submit_max_us={} present_submit_avg_us={} present_submit_max_us={}\n",
+        "howl-debug timing render_turn_avg_us={} render_turn_max_us={} render_prepare_avg_us={} render_prepare_max_us={} render_upload_avg_us={} render_upload_max_us={} render_upload_count_avg={} render_upload_count_max={} render_upload_bytes_avg={} render_upload_bytes_max={} render_upload_fill_count_avg={} render_upload_fill_count_max={} render_upload_sprite_count_avg={} render_upload_sprite_count_max={} render_upload_glyph_run_count_avg={} render_upload_glyph_run_count_max={} render_upload_glyph_count_avg={} render_upload_glyph_count_max={} render_upload_fill_avg_us={} render_upload_fill_max_us={} render_upload_sprite_avg_us={} render_upload_sprite_max_us={} render_upload_glyph_avg_us={} render_upload_glyph_max_us={} render_retained_submit_avg_us={} render_retained_submit_max_us={} present_submit_avg_us={} present_submit_max_us={}\n",
         .{
             avgMicros(counters.render_turn_ns_total, counters.render_timed_count),
             counters.render_turn_ns_max / std.time.ns_per_us,
@@ -418,6 +453,20 @@ fn logSample(sample: Sample, turn_count: u64, intent: RuntimeIntent, counters: C
             counters.render_upload_count_max,
             avgCount(counters.render_upload_bytes_total, counters.render_timed_count),
             counters.render_upload_bytes_max,
+            avgCount(counters.render_upload_fill_count_total, counters.render_timed_count),
+            counters.render_upload_fill_count_max,
+            avgCount(counters.render_upload_sprite_count_total, counters.render_timed_count),
+            counters.render_upload_sprite_count_max,
+            avgCount(counters.render_upload_glyph_run_count_total, counters.render_timed_count),
+            counters.render_upload_glyph_run_count_max,
+            avgCount(counters.render_upload_glyph_count_total, counters.render_timed_count),
+            counters.render_upload_glyph_count_max,
+            avgMicros(counters.render_upload_fill_ns_total, counters.render_timed_count),
+            counters.render_upload_fill_ns_max / std.time.ns_per_us,
+            avgMicros(counters.render_upload_sprite_ns_total, counters.render_timed_count),
+            counters.render_upload_sprite_ns_max / std.time.ns_per_us,
+            avgMicros(counters.render_upload_glyph_ns_total, counters.render_timed_count),
+            counters.render_upload_glyph_ns_max / std.time.ns_per_us,
             avgMicros(counters.render_retained_submit_ns_total, counters.render_timed_count),
             counters.render_retained_submit_ns_max / std.time.ns_per_us,
             avgMicros(counters.present_submit_ns_total, counters.present_timed_count),
@@ -519,6 +568,13 @@ test "measurement counters accumulate wait render present and SDL facts" {
         .upload_ns = 5 * std.time.ns_per_ms,
         .upload_count = 3,
         .upload_bytes = 4096,
+        .upload_fill_count = 1,
+        .upload_sprite_count = 2,
+        .upload_glyph_run_count = 3,
+        .upload_glyph_count = 12,
+        .upload_fill_ns = 1 * std.time.ns_per_ms,
+        .upload_sprite_ns = 2 * std.time.ns_per_ms,
+        .upload_glyph_ns = 3 * std.time.ns_per_ms,
         .retained_submit_ns = 2 * std.time.ns_per_ms,
     });
     state.countPresentSubmission(.{ .reason = .terminal_frame, .submitted = true });
@@ -541,6 +597,13 @@ test "measurement counters accumulate wait render present and SDL facts" {
     try std.testing.expectEqual(5 * std.time.ns_per_ms, state.counters.render_upload_ns_total);
     try std.testing.expectEqual(@as(u64, 3), state.counters.render_upload_count_total);
     try std.testing.expectEqual(@as(u64, 4096), state.counters.render_upload_bytes_total);
+    try std.testing.expectEqual(@as(u64, 1), state.counters.render_upload_fill_count_total);
+    try std.testing.expectEqual(@as(u64, 2), state.counters.render_upload_sprite_count_total);
+    try std.testing.expectEqual(@as(u64, 3), state.counters.render_upload_glyph_run_count_total);
+    try std.testing.expectEqual(@as(u64, 12), state.counters.render_upload_glyph_count_total);
+    try std.testing.expectEqual(1 * std.time.ns_per_ms, state.counters.render_upload_fill_ns_total);
+    try std.testing.expectEqual(2 * std.time.ns_per_ms, state.counters.render_upload_sprite_ns_total);
+    try std.testing.expectEqual(3 * std.time.ns_per_ms, state.counters.render_upload_glyph_ns_total);
     try std.testing.expectEqual(2 * std.time.ns_per_ms, state.counters.render_retained_submit_ns_total);
     try std.testing.expectEqual(@as(u64, 1), state.counters.present_submitted);
     try std.testing.expectEqual(@as(u64, 1), state.counters.present_timed_count);

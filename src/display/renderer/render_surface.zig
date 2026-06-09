@@ -274,6 +274,13 @@ pub const RenderResourceTextures = struct {
 pub const UploadStats = struct {
     count: u64 = 0,
     bytes: u64 = 0,
+    fill_count: u64 = 0,
+    sprite_count: u64 = 0,
+    glyph_run_count: u64 = 0,
+    glyph_count: u64 = 0,
+    fill_ns: u64 = 0,
+    sprite_ns: u64 = 0,
+    glyph_ns: u64 = 0,
 
     fn note(self: *UploadStats, upload: render_c.HowlRenderResourceUpload) void {
         self.count += 1;
@@ -433,21 +440,21 @@ pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *ren
     ensureSurface(host_surface, surface.render_px.width, surface.render_px.height);
     const surface_uploaded = blk: {
         if (renderSurfaceSprite(surface)) {
-            uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
             break :blk true;
         }
         if (renderSurfaceSpritePatch(surface)) {
             if (!had_matching_surface) std.debug.panic("trusted render surface patch requires matching host surface", .{});
-            uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
             break :blk true;
         }
         if (renderSurfaceGlyphs(surface)) {
-            uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
             break :blk true;
         }
         if (renderSurfaceGlyphPatch(surface)) {
             if (!had_matching_surface) std.debug.panic("trusted render surface patch requires matching host surface", .{});
-            uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
             break :blk true;
         }
         if (renderSurfaceFillOnly(surface)) break :blk uploadFillCommands(host_surface.*, surface);
@@ -487,7 +494,7 @@ fn uploadFillCommands(host_surface: render_c.HowlRenderHostSurface, render_surfa
     return true;
 }
 
-fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) void {
+fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface, upload_stats: ?*UploadStats) void {
     std.debug.assert(host_surface.host_surface_id != 0);
     std.debug.assert(host_surface.width == render_surface.render_px.width);
     std.debug.assert(host_surface.height == render_surface.render_px.height);
@@ -560,7 +567,14 @@ fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: 
         switch (command.kind) {
             render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
-            => drawFillCommand(host_surface, command),
+            => {
+                const start_ns = monotonicNs();
+                drawFillCommand(host_surface, command);
+                if (upload_stats) |stats| {
+                    stats.fill_count += 1;
+                    stats.fill_ns += monotonicNs() -| start_ns;
+                }
+            },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
                 const slot = textures.textureSlotFor(command.resource) orelse {
                     std.debug.panic("trusted sprite command missing texture slot", .{});
@@ -568,13 +582,24 @@ fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: 
                 if (resourceHasFutureUpload(render_surface, command.resource, @intCast(command_index))) {
                     std.debug.panic("trusted sprite command used before final upload", .{});
                 }
+                const start_ns = monotonicNs();
                 drawSpriteCommand(host_surface, command, slot);
+                if (upload_stats) |stats| {
+                    stats.sprite_count += 1;
+                    stats.sprite_ns += monotonicNs() -| start_ns;
+                }
             },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
                 if (glyphCommandHasFutureUpload(render_surface, command, @intCast(command_index))) {
                     std.debug.panic("trusted glyph command used before final upload", .{});
                 }
+                const start_ns = monotonicNs();
                 drawGlyphCommand(textures, host_surface, command);
+                if (upload_stats) |stats| {
+                    stats.glyph_run_count += 1;
+                    stats.glyph_count += command.glyphs.count;
+                    stats.glyph_ns += monotonicNs() -| start_ns;
+                }
             },
             else => std.debug.panic("trusted render surface has unknown command kind={}", .{command.kind}),
         }
@@ -957,6 +982,11 @@ fn drawQuad(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSu
     const tex_bottom: f32 = 0.0;
 
     gl_c.glBegin(gl_c.GL_QUADS);
+    emitQuadVerticesWithTex(left, right, top, bottom, tex_left, tex_right, tex_top, tex_bottom);
+    gl_c.glEnd();
+}
+
+fn emitQuadVerticesWithTex(left: f32, right: f32, top: f32, bottom: f32, tex_left: f32, tex_right: f32, tex_top: f32, tex_bottom: f32) void {
     gl_c.glTexCoord2f(tex_left, tex_top);
     gl_c.glVertex2f(left, top);
     gl_c.glTexCoord2f(tex_right, tex_top);
@@ -965,7 +995,6 @@ fn drawQuad(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSu
     gl_c.glVertex2f(right, bottom);
     gl_c.glTexCoord2f(tex_left, tex_bottom);
     gl_c.glVertex2f(left, bottom);
-    gl_c.glEnd();
 }
 
 fn drawTexturedQuad(
@@ -1007,6 +1036,12 @@ fn emitTexturedQuadVertices(
     gl_c.glVertex2f(right, bottom);
     gl_c.glTexCoord2f(tex_left, tex_bottom);
     gl_c.glVertex2f(left, bottom);
+}
+
+fn monotonicNs() u64 {
+    var ts: std.posix.timespec = undefined;
+    if (std.posix.errno(std.posix.system.clock_gettime(.MONOTONIC, &ts)) != .SUCCESS) return 0;
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
 fn ndcX(x: i32, width: u16) f32 {
