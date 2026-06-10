@@ -1,5 +1,4 @@
 const std = @import("std");
-const feed_record = @import("pty/feed_record.zig");
 const EventLoop = @import("../event_loop.zig");
 const window = @import("../window_chrome/window.zig");
 const Layout = @import("../display/layout.zig");
@@ -137,10 +136,8 @@ pub const Context = struct {
 
     pub noinline fn init(
         self: *Context,
-        io: std.Io,
         input: *HostInput,
         event_loop: *EventLoop.EventLoop,
-        feed_record_path: ?[]const u8,
         conf: *const TerminalConfig,
         render_width: c_int,
         render_height: c_int,
@@ -158,7 +155,7 @@ pub const Context = struct {
         });
         errdefer self.deinit();
         try self.initTerm();
-        try self.startRuntime(io, feed_record_path);
+        try self.startRuntime();
     }
 
     noinline fn initial(self: *Context, request: InitialRequest) void {
@@ -200,7 +197,6 @@ pub const Context = struct {
         self.progress.thread = null;
         if (self.live) {
             pty_session.stop(&self.term);
-            feed_record.deinit(&self.term);
             self.term.render.deinit();
             self.term.vt_state.deinit(self.term.allocator);
             deinitVt(self.term.vt);
@@ -500,9 +496,8 @@ pub const Context = struct {
         self.term.render.syncSurfaceLayout(term_init.surface_layout);
     }
 
-    fn startRuntime(self: *Context, io: std.Io, feed_record_path: ?[]const u8) !void {
+    fn startRuntime(self: *Context) !void {
         terminal_term.resetTitleFromLaunch(&self.term);
-        _ = try feed_record.start(&self.term, io, feed_record_path);
         try pty_session.start(&self.term);
         if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
         self.refreshTitle();

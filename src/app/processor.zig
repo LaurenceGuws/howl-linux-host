@@ -20,7 +20,6 @@ const max_tabs: TabIndex = TabBar.max_tabs;
 
 pub const Processor = struct {
     conf: *const Config.UiConfig,
-    feed_record_path: ?[]const u8,
     io: std.Io,
     window: *window.Window,
     display: *Display.State,
@@ -143,7 +142,7 @@ pub const Processor = struct {
 
         const px = DisplayLayout.contentPixelSize(self.window, self.conf.tab_bar.height);
         const logical = DisplayLayout.contentLogicalSize(self.window, self.conf.tab_bar.height);
-        try slot.tab.init(self.io, self.input, self.event_loop, self.feed_record_path, &self.conf.term, px.width, px.height, logical.width, logical.height);
+        try slot.tab.init(self.input, self.event_loop, &self.conf.term, px.width, px.height, logical.width, logical.height);
         errdefer slot.tab.deinit();
         self.input.requestRedraw();
 

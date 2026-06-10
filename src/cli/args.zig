@@ -4,7 +4,6 @@ pub const Args = struct {
     command: ?[]const u8 = null,
     shell: ?[]const u8 = null,
     start_path: ?[]const u8 = null,
-    pty_vt_record_path: ?[]const u8 = null,
     duration_ms: ?u64 = null,
     debug_process_accounting: bool = false,
     debug_log_every_ms: ?u32 = null,
@@ -41,10 +40,6 @@ pub fn parse(args: []const []const u8) !Args {
             if (i >= args.len) return error.InvalidArgs;
             options.debug_log_every_ms = try std.fmt.parseInt(u32, args[i], 10);
             if (options.debug_log_every_ms.? == 0) return error.InvalidArgs;
-        } else if (std.mem.eql(u8, arg, "--pty-vt-record-path")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            options.pty_vt_record_path = args[i];
         } else {
             return error.InvalidArgs;
         }
@@ -71,17 +66,24 @@ test "parse rejects zero debug log interval" {
     }));
 }
 
-test "parse accepts pty vt record path" {
-    const options = try parse(&.{
+test "parse rejects pty vt record path" {
+    try std.testing.expectError(error.InvalidArgs, parse(&.{
         "howl_term",
         "--pty-vt-record-path",
         "artifacts/replay/test.hex",
-        "--duration-ms",
-        "100",
+    }));
+}
+
+test "parse keeps command and debug switches after record seam deletion" {
+    const options = try parse(&.{
+        "howl_term",
         "--command",
         "true",
+        "--debug-process-accounting",
+        "--debug-log-every-ms",
+        "250",
     });
-    try std.testing.expectEqualStrings("artifacts/replay/test.hex", options.pty_vt_record_path.?);
-    try std.testing.expectEqual(@as(u64, 100), options.duration_ms.?);
     try std.testing.expectEqualStrings("true", options.command.?);
+    try std.testing.expect(options.debug_process_accounting);
+    try std.testing.expectEqual(@as(u32, 250), options.debug_log_every_ms.?);
 }

@@ -12,7 +12,6 @@ const TerminalContext = @import("terminal/context.zig").Context;
 const window = @import("window_chrome/window.zig");
 
 pub const Args = cli_args.Args;
-const feed_record_path_env = "HOWL_PTY_VT_RECORD_PATH";
 const child_term_value: [*:0]const u8 = "xterm-256color";
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
@@ -22,11 +21,10 @@ pub fn main(init: std.process.Init) !void {
         error.HelpRequested => return,
         else => |e| return e,
     };
-    const feed_record_path = options.pty_vt_record_path orelse if (init.minimal.environ.getPosix(feed_record_path_env)) |value| value[0..value.len] else null;
-    try start(init.io, options, feed_record_path);
+    try start(init.io, options);
 }
 
-noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !void {
+noinline fn start(io: std.Io, options: Args) !void {
     setCurrentThreadName("howl-main");
     try initVideo();
     defer window.quit();
@@ -87,7 +85,6 @@ noinline fn start(io: std.Io, options: Args, feed_record_path: ?[]const u8) !voi
 
     var processor = Processor{
         .conf = conf,
-        .feed_record_path = feed_record_path,
         .io = io,
         .window = app_window,
         .display = display,
