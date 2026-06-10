@@ -2,111 +2,52 @@
 
 Owner: `howl-linux-host`
 
-Purpose: host stress, automation, and trace commands.
+Purpose: host command/log verification only.
 
 ## Rules
 
-- Use `../utils/tools/benchmark_terminals.py` before adding ad hoc host profiling code.
-- Run host stress in `ReleaseFast`, not debug.
+- Performance work is paused until the host accountability reset sprint lands.
+- This file is host-only guidance.
+- The host owns command launch, launch-policy overrides, and host logging/accounting.
 - Prove lower-module behavior in `howl-pty`, `howl-vt`, or `howl-render` first.
-- Use this file for host-side proof only.
+- Do not treat benchmark workloads or replay fixtures as live host-owned workflow.
 
-## Large Scrollback Payload
+## Host Command Launch
 
-Use `bat` to exercise long highlighted lines, SGR churn, wrapping, scrollback, and sustained PTY throughput:
-
-```sh
-bat --paging=never --style=full --color=always /path/to/huge.log
-```
-
-Good payloads are multi-megabyte logs with long lines, JSON, stack traces, and timestamps.
-
-## Hostile Rain Generator
-
-Plain `zig build` and `zig build check` only compile the default host harness. They do not install any binaries.
-
-Stage the dev-only host harness under `zig-out/harness/` with `install`, and stage stress binaries with their explicit build mirrors:
+Use `--command` to prove that the host accepts and launches a program:
 
 ```sh
 zig build install -Doptimize=ReleaseFast
-zig build stress:rain:build -Doptimize=ReleaseFast
-zig build stress:rain:visual:build -Doptimize=ReleaseFast
+zig-out/harness/howl_term_release_fast --duration-ms 4000 --command 'printf "howl host command proof\n"; sleep 1'
 ```
 
-The host stress roots live under `src/stress/`, not `src/fuzz/`.
-
-For one-off manual execution without staging `zig-out/harness/`, use `zig build run -Doptimize=ReleaseFast -- <host args>`.
-
-Run one stress workload:
+Use `--working-directory` when you need to prove launch cwd policy:
 
 ```sh
-../utils/tools/zig-out/harness/ascii_rain_stress_release_fast --cols 320 --rows 120 --frames 100000 --mixed
+zig-out/harness/howl_term_release_fast --working-directory /tmp --duration-ms 4000 --command 'pwd; sleep 1'
 ```
 
-Pure ASCII mode isolates parser, cursor movement, SGR, erases, wrapping, and scroll behavior:
+## Host Logging And Accounting
+
+Use host-side logging/accounting only when proving host runtime behavior:
 
 ```sh
-../utils/tools/zig-out/harness/ascii_rain_stress_release_fast --cols 320 --rows 120 --frames 100000 --ascii
+HOWL_DEBUG_PROCESS_ACCOUNTING=1 zig-out/harness/howl_term_release_fast --duration-ms 4000 --command 'printf "accounting proof\n"; sleep 1'
 ```
 
-For cross-terminal comparisons, keep stdout deterministic and send metrics to stderr:
+Or use the CLI debug interval:
 
 ```sh
-../utils/tools/zig-out/harness/ascii_rain_stress_release_fast --cols 320 --rows 120 --frames 100000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.log
-../utils/tools/zig-out/harness/ascii_rain_stress_release_fast --cols 320 --rows 120 --frames 100000 --seed 0xC0FFEE --mixed --metrics --metrics-every 100 --flush-every 1 2>mixed.metrics.log
+zig-out/harness/howl_term_release_fast --debug-log-every-ms 1000 --duration-ms 4000 --command 'printf "debug log proof\n"; sleep 1'
 ```
 
-The CLI metrics report generator-side throughput and backpressure (`fps`, `p50_us`, `p95_us`, `p99_us`, `max_us`).
+## Host-Only Verification
 
-For resize stress, hold the configured zoom stress binding while the generator is running. The default binding is `ctrl+shift+equal` or `ctrl+shift+kp_add`, and it toggles between very small and very large font sizes.
-
-## Scripted Terminal Baselines
-
-Use CLI overrides for deterministic automation:
+Build and run the host directly:
 
 ```sh
-zig-out/harness/howl_term_release_fast --duration-ms 12000 --command '../utils/tools/zig-out/harness/ascii_rain_stress_release_fast --cols 320 --rows 120 --frames 100000000 --duration-ms 10000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.ndjson'
+zig build install -Doptimize=ReleaseFast
+zig build run -Doptimize=ReleaseFast -- --duration-ms 2000 --command 'printf "run proof\n"'
 ```
 
-For `howl-linux-host` render/present telemetry, set `HOWL_TRACE_PATH`:
-
-```sh
-HOWL_TRACE_PATH=howl.trace.ndjson zig-out/harness/howl_term_release_fast --duration-ms 12000 --command '../utils/tools/zig-out/harness/ascii_rain_stress_release_fast --cols 320 --rows 120 --frames 100000000 --duration-ms 10000 --seed 0xC0FFEE --ascii --metrics --metrics-every 100 --flush-every 1 2>ascii.metrics.ndjson'
-```
-
-Use the Python launcher to run the same payload against Howl, kitty, and ghostty for a fixed duration:
-
-```sh
-../utils/tools/benchmark_terminals.py --build --duration 10 --mode ascii --terminals howl kitty ghostty
-../utils/tools/benchmark_terminals.py --duration 10 --mode mixed --terminals howl kitty ghostty
-```
-
-`--build` stages the host harness with `zig build install -Doptimize=ReleaseFast` and stages the ASCII rain stress binary with `zig build stress:rain:build -Doptimize=ReleaseFast`.
-
-The launcher writes one run directory under `artifacts/stress/` with generator metrics, process logs, and `summary.json`.
-
-Enable Howl telemetry only for diagnostic runs because tracing writes structured events to disk and changes the timing profile:
-
-```sh
-../utils/tools/benchmark_terminals.py --duration 10 --mode ascii --terminals howl --trace-howl
-```
-
-## PTY To VT Chunk Capture
-
-Capture the exact `PTY -> VT` chunk boundaries that the honest host seam feeds into `howl-vt`.
-
-The parent directory must already exist.
-
-```sh
-mkdir -p artifacts/replay
-zig-out/harness/howl_term_release_fast --pty-vt-record-path artifacts/replay/capture-1.hex --duration-ms 4000 --command 'your command here'
-zig-out/harness/howl_term_release_fast --pty-vt-record-path artifacts/replay/capture-2.hex --duration-ms 10000 --command 'another command here'
-```
-
-`howl-vt` benchmark replay scans every `*.hex` capture under `artifacts/replay/` and derives the
-workload name from the fixture basename.
-
-Fixture format:
-
-- first line: `howl-pty-vt-hex-v1`
-- each later non-empty line: one `PTY -> VT` chunk encoded as lowercase hex
+This file does not define benchmark-client generation, cross-terminal comparison, or replay-fixture capture. Those are outside the live host boundary while the accountability reset sprint is active.
