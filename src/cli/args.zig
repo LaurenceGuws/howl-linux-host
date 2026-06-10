@@ -4,10 +4,6 @@ pub const Args = struct {
     command: ?[]const u8 = null,
     shell: ?[]const u8 = null,
     start_path: ?[]const u8 = null,
-    duration_ms: ?u64 = null,
-    debug_process_accounting: bool = false,
-    debug_log_every_ms: ?u32 = null,
-    window_title: ?[:0]const u8 = null,
 };
 
 pub fn parse(args: []const []const u8) !Args {
@@ -29,17 +25,6 @@ pub fn parse(args: []const []const u8) !Args {
             i += 1;
             if (i >= args.len) return error.InvalidArgs;
             options.start_path = args[i];
-        } else if (std.mem.eql(u8, arg, "--duration-ms")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            options.duration_ms = try std.fmt.parseInt(u64, args[i], 10);
-        } else if (std.mem.eql(u8, arg, "--debug-process-accounting")) {
-            options.debug_process_accounting = true;
-        } else if (std.mem.eql(u8, arg, "--debug-log-every-ms")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArgs;
-            options.debug_log_every_ms = try std.fmt.parseInt(u32, args[i], 10);
-            if (options.debug_log_every_ms.? == 0) return error.InvalidArgs;
         } else {
             return error.InvalidArgs;
         }
@@ -47,22 +32,26 @@ pub fn parse(args: []const []const u8) !Args {
     return options;
 }
 
-test "parse accepts debug accounting switches" {
-    const options = try parse(&.{
+test "parse rejects removed host duration seam" {
+    try std.testing.expectError(error.InvalidArgs, parse(&.{
         "howl_term",
-        "--debug-process-accounting",
-        "--debug-log-every-ms",
-        "250",
-    });
-    try std.testing.expect(options.debug_process_accounting);
-    try std.testing.expectEqual(@as(u32, 250), options.debug_log_every_ms.?);
+        "--duration-ms",
+        "1000",
+    }));
 }
 
-test "parse rejects zero debug log interval" {
+test "parse rejects removed host debug accounting seam" {
+    try std.testing.expectError(error.InvalidArgs, parse(&.{
+        "howl_term",
+        "--debug-process-accounting",
+    }));
+}
+
+test "parse rejects removed host debug log seam" {
     try std.testing.expectError(error.InvalidArgs, parse(&.{
         "howl_term",
         "--debug-log-every-ms",
-        "0",
+        "250",
     }));
 }
 
@@ -74,16 +63,11 @@ test "parse rejects pty vt record path" {
     }));
 }
 
-test "parse keeps command and debug switches after record seam deletion" {
+test "parse keeps command after host seam deletion" {
     const options = try parse(&.{
         "howl_term",
         "--command",
         "true",
-        "--debug-process-accounting",
-        "--debug-log-every-ms",
-        "250",
     });
     try std.testing.expectEqualStrings("true", options.command.?);
-    try std.testing.expect(options.debug_process_accounting);
-    try std.testing.expectEqual(@as(u32, 250), options.debug_log_every_ms.?);
 }

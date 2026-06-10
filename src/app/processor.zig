@@ -9,7 +9,6 @@ const Input = @import("../input/input.zig").Input;
 const TabBar = @import("../tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("../tab_bar/slots.zig").Slots;
 const AppPresent = @import("present.zig");
-const ProcessAccounting = @import("process_accounting.zig");
 const pty_wait_thread = @import("../terminal/pty/wait_thread.zig");
 const TerminalContext = @import("../terminal/context.zig").Context;
 const FramePacing = @import("../display/frame_timer.zig");
@@ -31,8 +30,6 @@ pub const Processor = struct {
     terminal_input_admitted: bool,
     pending_terminal_present: ?Display.PresentToken,
     frame_pacing: FramePacing.FrameTimer,
-    process_accounting: ProcessAccounting.State,
-    loop_turn_count: u64,
 
     pub const FramePacingState = FramePacing.FrameTimer;
 
@@ -157,8 +154,6 @@ pub const Processor = struct {
     }
 
     fn runLoopTurn(self: *Self) !LoopAction {
-        self.loop_turn_count += 1;
-        self.process_accounting.countLoopTurn();
         if (quitRequested(self)) |action| return action;
 
         self.frame_pacing.beginTurn();
@@ -172,11 +167,6 @@ pub const Processor = struct {
         if (host_mutations_opt) |host_mutations| {
             const present_completed = drainPresentComplete(self);
             const terminal_progress = driveRuntimeProgress(self, now_ns);
-            self.process_accounting.countTerminalProgress(
-                terminal_progress.keep_running,
-                terminal_progress.should_redraw,
-                terminal_progress.drive_performed,
-            );
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
 
@@ -192,51 +182,15 @@ pub const Processor = struct {
                 if (self.frame_pacing.terminalKeepWakePermission()) self.event_loop.wake();
             }
             if (present_completed) {
-                maybeLogLoopTurn(self, EventLoop.nowNs(), debug_facts, intent);
                 return .continue_running;
             }
             if (!self.frame_pacing.renderPermission()) {
-                maybeLogLoopTurn(self, EventLoop.nowNs(), debug_facts, intent);
                 return .continue_running;
             }
 
-            const render_start_ns = EventLoop.nowNs();
             const frame = render(self);
-            const render_end_ns = EventLoop.nowNs();
-            self.process_accounting.countRenderStep(switch (frame.turn.step) {
-                .surface_idle => .surface_idle,
-                .idle_prepare => .idle_prepare,
-                .idle_submit => .idle_submit,
-                .blocked_present => .blocked_present,
-                .rendered => .rendered,
-                .failed => .failed,
-            });
-            self.process_accounting.countRenderTiming(.{
-                .turn_ns = render_end_ns -| render_start_ns,
-                .prepare_ns = frame.turn.prepare_ns,
-                .upload_ns = frame.turn.upload_ns,
-                .upload_count = frame.turn.upload_count,
-                .upload_bytes = frame.turn.upload_bytes,
-                .upload_fill_count = frame.turn.upload_fill_count,
-                .upload_sprite_count = frame.turn.upload_sprite_count,
-                .upload_glyph_run_count = frame.turn.upload_glyph_run_count,
-                .upload_glyph_count = frame.turn.upload_glyph_count,
-                .upload_fill_ns = frame.turn.upload_fill_ns,
-                .upload_fill_dispatch_ns = frame.turn.upload_fill_dispatch_ns,
-                .upload_fill_draw_ns = frame.turn.upload_fill_draw_ns,
-                .upload_sprite_ns = frame.turn.upload_sprite_ns,
-                .upload_sprite_dispatch_ns = frame.turn.upload_sprite_dispatch_ns,
-                .upload_sprite_draw_ns = frame.turn.upload_sprite_draw_ns,
-                .upload_glyph_ns = frame.turn.upload_glyph_ns,
-                .upload_glyph_dispatch_ns = frame.turn.upload_glyph_dispatch_ns,
-                .upload_glyph_draw_ns = frame.turn.upload_glyph_draw_ns,
-                .retained_submit_ns = frame.turn.retained_submit_ns,
-            });
             const present_plan = derivePresentPlan(frame, intent);
-            const present_start_ns = EventLoop.nowNs();
             _ = submitPresent(self, frame, present_plan);
-            self.process_accounting.countPresentTiming(EventLoop.nowNs() -| present_start_ns);
-            maybeLogLoopTurn(self, EventLoop.nowNs(), debug_facts, intent);
             if (quitRequested(self)) |action| return action;
             if (try handleActiveTabProblem(self)) |action| return action;
             return .continue_running;
@@ -253,16 +207,6 @@ pub const Processor = struct {
         const pending = loopPendingFromFacts(owner_work, debug_facts);
         const runtime_admission = peekTerminalInputAdmission(self.terminal_input_admitted);
         const wait_for_window = self.frame_pacing.shouldWaitForWindow(pending, runtime_admission);
-        self.process_accounting.countWaitAdmission(.{
-            .wait = wait_for_window,
-            .owner_work = owner_work,
-            .runtime_admission = runtime_admission,
-            .runtime_wake = pending.runtime_wake,
-            .present_complete_pending = self.pending_terminal_present != null,
-            .render_permission = self.frame_pacing.renderPermission(),
-            .redraw_requested = owner_work,
-            .render_work_pending = debug_facts.render_work_pending,
-        });
         return .{
             .wait_for_window = wait_for_window,
             .wait_ms = loopWaitMs(self, now_ns, debug_facts.runtime_wait_ms, self.frame_pacing.framePermitWaitMs(now_ns)),
@@ -317,7 +261,6 @@ pub const Processor = struct {
     }
 
     fn pumpWindowEvents(self: *Self, admission: LoopAdmission) LoopAction {
-        self.process_accounting.countSdlPump(admission.wait_for_window);
         const signal = self.event_loop.pumpInput(self.input, admission.wait_for_window, admission.wait_ms);
         return switch (signal) {
             .none => .continue_running,
@@ -513,15 +456,6 @@ pub const Processor = struct {
         else
             PresentSubmission{ .reason = .none, .submitted = false, .token = null };
         recordPresentSubmission(self, frame, submission);
-        self.process_accounting.countPresentSubmission(.{
-            .reason = switch (submission.reason) {
-                .none => .none,
-                .host_damage => .host_damage,
-                .terminal_frame => .terminal_frame,
-                .terminal_retire => .terminal_retire,
-            },
-            .submitted = submission.submitted,
-        });
         self.frame_pacing.noteRenderSubmittedAt(.{
             .reason = submission.reason,
             .submitted = submission.submitted,
@@ -551,21 +485,7 @@ pub const Processor = struct {
     fn drainPresentComplete(self: *Self) bool {
         const pending_before = self.pending_terminal_present != null;
         AppPresent.drainComplete(self);
-        if (pending_before and self.pending_terminal_present == null) {
-            self.process_accounting.countPresentCompleteDrained();
-            return true;
-        }
-        return false;
-    }
-
-    fn maybeLogLoopTurn(self: *Self, now_ns: u64, debug_facts: LoopDebugFacts, intent: RedrawRenderIntent) void {
-        self.process_accounting.maybeLog(now_ns, self.loop_turn_count, .{
-            .pending_wake_count = debug_facts.pending_wake_count,
-            .pending_runtime_obligation_count = debug_facts.pending_runtime_obligation_count,
-            .render_work_pending_count = if (debug_facts.render_work_pending) 1 else 0,
-            .host_redraw = intent.host_redraw,
-            .terminal_redraw = intent.terminal_redraw,
-        });
+        return pending_before and self.pending_terminal_present == null;
     }
 
     fn resizeTerminals(conf: *const Config.UiConfig, app_window: *window.Window, tabs: []*TerminalContext) void {

@@ -1,6 +1,5 @@
 const std = @import("std");
 const cli_args = @import("cli/args.zig");
-const ProcessAccounting = @import("app/process_accounting.zig");
 const Config = @import("config/config.zig");
 const Display = @import("display/display.zig");
 const EventLoop = @import("event_loop.zig");
@@ -44,7 +43,7 @@ noinline fn start(io: std.Io, options: Args) !void {
         if (window_created) app_window.deinit();
         std.heap.c_allocator.destroy(app_window);
     }
-    app_window.* = try createWindow(conf, options);
+    app_window.* = try createWindow(conf);
     window_created = true;
 
     const display = try std.heap.c_allocator.create(Display.State);
@@ -96,14 +95,9 @@ noinline fn start(io: std.Io, options: Args) !void {
         .terminal_input_admitted = false,
         .pending_terminal_present = null,
         .frame_pacing = Processor.FramePacingState.init(),
-        .process_accounting = ProcessAccounting.State.init(io, options.debug_process_accounting, options.debug_log_every_ms, EventLoop.nowNs()),
-        .loop_turn_count = 0,
     };
     try processor.openTab();
     processor.configureInputPolicies();
-
-    const duration_timer = EventLoop.startQuitTimer(options.duration_ms);
-    defer EventLoop.stopQuitTimer(duration_timer);
 
     try processor.run();
 }
@@ -122,9 +116,8 @@ fn loadConfig(options: Args) !Config.UiConfig {
     return conf;
 }
 
-fn createWindow(conf: *const Config.UiConfig, options: Args) !window.Window {
-    const title: [*:0]const u8 = if (options.window_title) |value| value.ptr else conf.window.title.ptr;
-    var app_window = try window.Window.create(title, conf.window.width, conf.window.height, Display.flags(Display.C));
+fn createWindow(conf: *const Config.UiConfig) !window.Window {
+    var app_window = try window.Window.create(conf.window.title.ptr, conf.window.width, conf.window.height, Display.flags(Display.C));
     errdefer app_window.deinit();
     return app_window;
 }
