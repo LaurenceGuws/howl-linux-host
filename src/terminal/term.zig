@@ -30,8 +30,6 @@ pub const LifecycleState = enum(u8) {
 pub const PtyState = struct {
     launch: PtyLaunch,
     lifecycle: LifecycleState = .stopped,
-    feed_record_file: ?std.Io.File = null,
-    feed_record_io: ?std.Io = null,
 };
 
 pub const VtState = struct {
