@@ -6,6 +6,18 @@ const terminal_term = @import("../term.zig");
 const damage_none: u8 = @intCast(render_c.HOWL_RENDER_DAMAGE_NONE);
 const damage_partial: u8 = @intCast(render_c.HOWL_RENDER_DAMAGE_PARTIAL);
 
+comptime {
+    assertSameAbi(vt_c.HowlVtSurfaceResult, render_c.HowlVtSurfaceResult);
+    assertSameAbi(vt_c.HowlVtSurface, render_c.HowlVtSurface);
+    assertSameAbi(vt_c.HowlVtSurfaceCell, render_c.HowlVtSurfaceCell);
+    assertSameAbi(vt_c.HowlVtSurfaceCellAttrs, render_c.HowlVtSurfaceCellAttrs);
+    assertSameAbi(vt_c.HowlVtSurfaceCellFlags, render_c.HowlVtSurfaceCellFlags);
+    assertSameAbi(vt_c.HowlVtColor, render_c.HowlVtColor);
+    assertSameAbi(vt_c.HowlVtRenderColorState, render_c.HowlVtRenderColorState);
+    assertSameAbi(vt_c.HowlVtCursor, render_c.HowlVtCursor);
+    assertSameAbi(vt_c.HowlVtSelection, render_c.HowlVtSelection);
+}
+
 pub const HyperlinkHover = struct {
     row: u16,
     col: u16,
@@ -126,9 +138,15 @@ const RealOps = struct {
     }
 
     fn publishVtSurface(handle: render_c.HowlRenderTextSessionHandle, visible: vt_c.HowlVtSurfaceResult) render_c.HowlRenderVtSurfacePublishResult {
-        return render_c.howl_render_text_session_publish_vt_surface(handle, &visible);
+        const render_visible: *const render_c.HowlVtSurfaceResult = @ptrCast(&visible);
+        return render_c.howl_render_text_session_publish_vt_surface(handle, render_visible);
     }
 };
+
+fn assertSameAbi(comptime Left: type, comptime Right: type) void {
+    std.debug.assert(@sizeOf(Left) == @sizeOf(Right));
+    std.debug.assert(@alignOf(Left) == @alignOf(Right));
+}
 
 pub fn ackPublishedSourceLocked(term: *terminal_term.Term, snapshot_seq: u64) void {
     ackPublishedSourceLockedWith(term, snapshot_seq, PublishAckOps);
