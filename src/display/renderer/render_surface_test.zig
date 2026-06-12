@@ -134,6 +134,20 @@ test "render surface fill patch accepts bounded clear and fill commands" {
     try std.testing.expect(render_surface.renderSurfaceFillPatch(&surface));
 }
 
+test "render surface classification names fill and fill patch shapes" {
+    var fill_commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var fill_surface = testSurface();
+    fill_surface.commands = commandSpan(&fill_commands);
+
+    var patch_commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var patch_surface = testSurface();
+    patch_surface.render_px = .{ .width = 2, .height = 2 };
+    patch_surface.commands = commandSpan(&patch_commands);
+
+    try std.testing.expectEqual(render_surface_testing.SurfaceClass.fill, render_surface_testing.classifyRenderSurface(&fill_surface).?);
+    try std.testing.expectEqual(render_surface_testing.SurfaceClass.fill_patch, render_surface_testing.classifyRenderSurface(&patch_surface).?);
+}
+
 test "render surface fill patch rejects out of bounds fill" {
     var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var surface = testSurface();
@@ -189,6 +203,22 @@ test "render surface sprite patch accepts bounded sprite commands without clear"
     surface.commands = commandSpan(&commands);
 
     try std.testing.expect(render_surface.renderSurfaceSpritePatch(&surface));
+}
+
+test "render surface classification names sprite and sprite patch shapes" {
+    var sprite_commands = [_]render_c.HowlRenderSurfaceCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(30, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+    };
+    var sprite_surface = testSurface();
+    sprite_surface.commands = commandSpan(&sprite_commands);
+
+    var patch_commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(31, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var patch_surface = testSurface();
+    patch_surface.commands = commandSpan(&patch_commands);
+
+    try std.testing.expectEqual(render_surface_testing.SurfaceClass.sprite, render_surface_testing.classifyRenderSurface(&sprite_surface).?);
+    try std.testing.expectEqual(render_surface_testing.SurfaceClass.sprite_patch, render_surface_testing.classifyRenderSurface(&patch_surface).?);
 }
 
 test "render surface sprite patch rejects glyph commands" {
@@ -293,6 +323,33 @@ test "render surface glyph patch accepts bounded fill clear and glyph commands" 
     surface.commands = commandSpan(&commands);
 
     try std.testing.expect(render_surface.renderSurfaceGlyphPatch(&surface));
+}
+
+test "render surface classification names glyph and glyph patch shapes" {
+    var full_glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(32, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 0, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
+    var glyph_commands = [_]render_c.HowlRenderSurfaceCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &full_glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } },
+    };
+    var glyph_surface = testSurface();
+    glyph_surface.commands = commandSpan(&glyph_commands);
+
+    var patch_glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(33, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 1, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
+    var patch_commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &patch_glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } }};
+    var patch_surface = testSurface();
+    patch_surface.render_px = .{ .width = 2, .height = 1 };
+    patch_surface.commands = commandSpan(&patch_commands);
+
+    try std.testing.expectEqual(render_surface_testing.SurfaceClass.glyph, render_surface_testing.classifyRenderSurface(&glyph_surface).?);
+    try std.testing.expectEqual(render_surface_testing.SurfaceClass.glyph_patch, render_surface_testing.classifyRenderSurface(&patch_surface).?);
+}
+
+test "render surface classification rejects unsupported shapes" {
+    var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = std.math.maxInt(u8), .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var surface = testSurface();
+    surface.commands = commandSpan(&commands);
+
+    try std.testing.expectEqual(@as(?render_surface_testing.SurfaceClass, null), render_surface_testing.classifyRenderSurface(&surface));
 }
 
 test "render surface glyph patch accepts bounded sprite and glyph commands" {

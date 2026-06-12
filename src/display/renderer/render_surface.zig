@@ -294,6 +294,28 @@ pub const UploadStats = struct {
     }
 };
 
+const RenderSurfaceClass = enum {
+    fill,
+    fill_patch,
+    sprite,
+    sprite_patch,
+    glyph,
+    glyph_patch,
+
+    fn patch(self: RenderSurfaceClass) bool {
+        return switch (self) {
+            .fill_patch,
+            .sprite_patch,
+            .glyph_patch,
+            => true,
+            .fill,
+            .sprite,
+            .glyph,
+            => false,
+        };
+    }
+};
+
 fn rectHasArea(rect: render_c.HowlRenderSurfaceRect) bool {
     return rect.width_px > 0 and rect.height_px > 0;
 }
@@ -444,31 +466,20 @@ pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *ren
         host_surface.height == surface.render_px.height;
     textures.realizeSurface(surface, upload_stats);
     ensureSurface(host_surface, surface.render_px.width, surface.render_px.height);
-    const surface_uploaded = blk: {
-        if (renderSurfaceSprite(surface)) {
+    const class = classifyRenderSurface(surface) orelse std.debug.panic("trusted render surface has unsupported shape", .{});
+    assertRenderSurfacePatchHostSurface(class, had_matching_surface);
+    const surface_uploaded = switch (class) {
+        .fill,
+        .fill_patch,
+        => uploadFillCommands(host_surface.*, surface),
+        .sprite,
+        .sprite_patch,
+        .glyph,
+        .glyph_patch,
+        => blk: {
             uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
             break :blk true;
-        }
-        if (renderSurfaceSpritePatch(surface)) {
-            if (!had_matching_surface) std.debug.panic("trusted render surface patch requires matching host surface", .{});
-            uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
-            break :blk true;
-        }
-        if (renderSurfaceGlyphs(surface)) {
-            uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
-            break :blk true;
-        }
-        if (renderSurfaceGlyphPatch(surface)) {
-            if (!had_matching_surface) std.debug.panic("trusted render surface patch requires matching host surface", .{});
-            uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
-            break :blk true;
-        }
-        if (renderSurfaceFillOnly(surface)) break :blk uploadFillCommands(host_surface.*, surface);
-        if (renderSurfaceFillPatch(surface)) {
-            if (!had_matching_surface) std.debug.panic("trusted render surface patch requires matching host surface", .{});
-            break :blk uploadFillCommands(host_surface.*, surface);
-        }
-        std.debug.panic("trusted render surface has unsupported shape", .{});
+        },
     };
     if (!surface_uploaded) {
         host_surface.width = 0;
@@ -476,6 +487,22 @@ pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *ren
         return false;
     }
     return true;
+}
+
+fn classifyRenderSurface(surface: *const render_c.HowlRenderSurface) ?RenderSurfaceClass {
+    if (renderSurfaceSprite(surface)) return .sprite;
+    if (renderSurfaceSpritePatch(surface)) return .sprite_patch;
+    if (renderSurfaceGlyphs(surface)) return .glyph;
+    if (renderSurfaceGlyphPatch(surface)) return .glyph_patch;
+    if (renderSurfaceFillOnly(surface)) return .fill;
+    if (renderSurfaceFillPatch(surface)) return .fill_patch;
+    return null;
+}
+
+fn assertRenderSurfacePatchHostSurface(class: RenderSurfaceClass, had_matching_surface: bool) void {
+    if (!class.patch()) return;
+    std.debug.assert(had_matching_surface);
+    if (!had_matching_surface) std.debug.panic("trusted render surface patch requires matching host surface", .{});
 }
 
 fn uploadFillCommands(host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
@@ -1108,6 +1135,11 @@ fn unpackRenderSurfaceRgba(color_rgba: u32) [4]u8 {
 
 pub const testing = struct {
     pub const TextureSlot = RenderResourceTextures.Slot;
+    pub const SurfaceClass = RenderSurfaceClass;
+
+    pub fn classifyRenderSurface(surface: *const render_c.HowlRenderSurface) ?SurfaceClass {
+        return @import("render_surface.zig").classifyRenderSurface(surface);
+    }
 
     pub fn commitUploadMetadata(textures: *RenderResourceTextures, uploads: []const render_c.HowlRenderResourceUpload) void {
         textures.commitUploadMetadata(uploads);
