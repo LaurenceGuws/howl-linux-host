@@ -380,7 +380,7 @@ fn rectsOverlap(a: render_c.HowlRenderSurfaceRect, b: render_c.HowlRenderSurface
     return a.x_px < b_right and a_right > b.x_px and a.y_px < b_bottom and a_bottom > b.y_px;
 }
 
-fn destinationOverlaps(render_px: anytype, x_px: i32, y_px: i32, rect: render_c.HowlRenderSurfaceRect) bool {
+fn destinationOverlaps(render_px: render_c.HowlRenderPixelSize, x_px: i32, y_px: i32, rect: render_c.HowlRenderSurfaceRect) bool {
     const right = std.math.add(i32, x_px, rect.width_px) catch return false;
     const bottom = std.math.add(i32, y_px, rect.height_px) catch return false;
     if (right <= 0) return false;
