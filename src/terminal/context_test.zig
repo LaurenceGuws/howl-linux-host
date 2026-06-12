@@ -509,7 +509,7 @@ test "submit path runs once no host present is in flight" {
     try std.testing.expectEqual(context_testing.RenderAction.submit_pending, context_testing.renderAction(work, false));
 }
 
-fn testPreparedHandle() render_c.HowlRenderPreparedSurfaceHandle {
+fn testRdrSfcHandle() render_c.HowlRenderRdrSfcHandle {
     return @ptrFromInt(0x10);
 }
 
@@ -552,7 +552,7 @@ const TestSubmitRender = struct {
     submit_observed_locked: bool = false,
     last_execution: render_c.HowlRenderSubmitExecution = std.mem.zeroes(render_c.HowlRenderSubmitExecution),
     mutex: ?*terminal_term.Mutex = null,
-    handle: render_c.HowlRenderPreparedSurfaceHandle = testPreparedHandle(),
+    rdr_sfc_handle: render_c.HowlRenderRdrSfcHandle = testRdrSfcHandle(),
     geometry_epoch: u64 = 1,
     present_in_flight: ?struct { snapshot_seq: u64, token: u64 } = null,
     render_px: render_c.HowlRenderPixelSize = .{ .width = 2, .height = 1 },
@@ -597,8 +597,8 @@ const TestSubmitRender = struct {
         return true;
     }
 
-    pub fn preparedSurfaceHandle(self: *@This()) render_c.HowlRenderPreparedSurfaceHandle {
-        return self.handle;
+    pub fn rdrSfcHandle(self: *@This()) render_c.HowlRenderRdrSfcHandle {
+        return self.rdr_sfc_handle;
     }
 
     pub fn presentPending(self: *@This()) bool {
@@ -744,7 +744,7 @@ const TestMutatingBackend = struct {
         _ = upload_stats;
         saw_unlocked = self.term.mutex.tryLockUnfair();
         if (saw_unlocked) self.term.mutex.unlock();
-        self.term.render.handle = @ptrFromInt(0x20);
+        self.term.render.rdr_sfc_handle = @ptrFromInt(0x20);
         return true;
     }
 

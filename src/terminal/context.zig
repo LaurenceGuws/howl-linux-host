@@ -678,8 +678,8 @@ pub const Context = struct {
             return .{ .result = .failed, .snapshot_seq = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 };
         }
         defer upload.deinit();
-        const prepared_handle = self.term.render.preparedSurfaceHandle();
-        std.debug.assert(prepared_handle != null);
+        const rdr_sfc_handle = self.term.render.rdrSfcHandle();
+        std.debug.assert(rdr_sfc_handle != null);
         std.debug.assert(upload.info.snapshot_seq != 0);
         std.debug.assert(!self.term.render.presentPending());
 
@@ -690,9 +690,9 @@ pub const Context = struct {
         const upload_end_ns = EventLoop.nowNs();
         self.term.mutex.lockFair();
 
-        const current_handle = self.term.render.preparedSurfaceHandle();
+        const current_handle = self.term.render.rdrSfcHandle();
         std.debug.assert(!self.term.render.presentPending());
-        if (current_handle != prepared_handle) {
+        if (current_handle != rdr_sfc_handle) {
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .upload_count = upload_stats.count, .upload_bytes = upload_stats.bytes, .upload_fill_count = upload_stats.fill_count, .upload_sprite_count = upload_stats.sprite_count, .upload_glyph_run_count = upload_stats.glyph_run_count, .upload_glyph_count = upload_stats.glyph_count, .upload_fill_ns = upload_stats.fill_ns, .upload_fill_dispatch_ns = upload_stats.fill_dispatch_ns, .upload_fill_draw_ns = upload_stats.fill_draw_ns, .upload_sprite_ns = upload_stats.sprite_ns, .upload_sprite_dispatch_ns = upload_stats.sprite_dispatch_ns, .upload_sprite_draw_ns = upload_stats.sprite_draw_ns, .upload_glyph_ns = upload_stats.glyph_ns, .upload_glyph_dispatch_ns = upload_stats.glyph_dispatch_ns, .upload_glyph_draw_ns = upload_stats.glyph_draw_ns, .retained_submit_ns = 0 };
         }
         if (!upload_ok) {
