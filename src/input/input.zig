@@ -5,6 +5,13 @@ const sdl_c = @import("sdl_c");
 
 const c = sdl_c;
 const max_input_events = 256;
+const ascii_byte_slices = makeAsciiByteSlices();
+
+fn makeAsciiByteSlices() [128][1]u8 {
+    var table: [128][1]u8 = undefined;
+    for (&table, 0..) |*entry, value| entry.* = .{@intCast(value)};
+    return table;
+}
 
 fn FixedRing(comptime T: type, comptime capacity: comptime_int) type {
     comptime {
@@ -349,133 +356,37 @@ fn sdlAltTextBytes(sdl_key: c_uint, sdl_mods: c.SDL_Keymod) ?[]const u8 {
             const upper = shift != caps;
             const base: u8 = if (upper) 'A' else 'a';
             const value: u8 = @intCast((sdl_key - c.SDLK_A) + base);
-            break :blk byteSlice(value);
+            break :blk asciiByteSlice(value);
         },
-        c.SDLK_0 => byteSlice(if (shift) ')' else '0'),
-        c.SDLK_1 => byteSlice(if (shift) '!' else '1'),
-        c.SDLK_2 => byteSlice(if (shift) '@' else '2'),
-        c.SDLK_3 => byteSlice(if (shift) '#' else '3'),
-        c.SDLK_4 => byteSlice(if (shift) '$' else '4'),
-        c.SDLK_5 => byteSlice(if (shift) '%' else '5'),
-        c.SDLK_6 => byteSlice(if (shift) '^' else '6'),
-        c.SDLK_7 => byteSlice(if (shift) '&' else '7'),
-        c.SDLK_8 => byteSlice(if (shift) '*' else '8'),
-        c.SDLK_9 => byteSlice(if (shift) '(' else '9'),
-        c.SDLK_SPACE => byteSlice(' '),
-        c.SDLK_MINUS => byteSlice(if (shift) '_' else '-'),
-        c.SDLK_EQUALS => byteSlice(if (shift) '+' else '='),
-        c.SDLK_LEFTBRACKET => byteSlice(if (shift) '{' else '['),
-        c.SDLK_RIGHTBRACKET => byteSlice(if (shift) '}' else ']'),
-        c.SDLK_BACKSLASH => byteSlice(if (shift) '|' else '\\'),
-        c.SDLK_SEMICOLON => byteSlice(if (shift) ':' else ';'),
-        c.SDLK_APOSTROPHE => byteSlice(if (shift) '"' else '\''),
-        c.SDLK_GRAVE => byteSlice(if (shift) '~' else '`'),
-        c.SDLK_COMMA => byteSlice(if (shift) '<' else ','),
-        c.SDLK_PERIOD => byteSlice(if (shift) '>' else '.'),
-        c.SDLK_SLASH => byteSlice(if (shift) '?' else '/'),
+        c.SDLK_0 => asciiByteSlice(if (shift) ')' else '0'),
+        c.SDLK_1 => asciiByteSlice(if (shift) '!' else '1'),
+        c.SDLK_2 => asciiByteSlice(if (shift) '@' else '2'),
+        c.SDLK_3 => asciiByteSlice(if (shift) '#' else '3'),
+        c.SDLK_4 => asciiByteSlice(if (shift) '$' else '4'),
+        c.SDLK_5 => asciiByteSlice(if (shift) '%' else '5'),
+        c.SDLK_6 => asciiByteSlice(if (shift) '^' else '6'),
+        c.SDLK_7 => asciiByteSlice(if (shift) '&' else '7'),
+        c.SDLK_8 => asciiByteSlice(if (shift) '*' else '8'),
+        c.SDLK_9 => asciiByteSlice(if (shift) '(' else '9'),
+        c.SDLK_SPACE => asciiByteSlice(' '),
+        c.SDLK_MINUS => asciiByteSlice(if (shift) '_' else '-'),
+        c.SDLK_EQUALS => asciiByteSlice(if (shift) '+' else '='),
+        c.SDLK_LEFTBRACKET => asciiByteSlice(if (shift) '{' else '['),
+        c.SDLK_RIGHTBRACKET => asciiByteSlice(if (shift) '}' else ']'),
+        c.SDLK_BACKSLASH => asciiByteSlice(if (shift) '|' else '\\'),
+        c.SDLK_SEMICOLON => asciiByteSlice(if (shift) ':' else ';'),
+        c.SDLK_APOSTROPHE => asciiByteSlice(if (shift) '"' else '\''),
+        c.SDLK_GRAVE => asciiByteSlice(if (shift) '~' else '`'),
+        c.SDLK_COMMA => asciiByteSlice(if (shift) '<' else ','),
+        c.SDLK_PERIOD => asciiByteSlice(if (shift) '>' else '.'),
+        c.SDLK_SLASH => asciiByteSlice(if (shift) '?' else '/'),
         else => null,
     };
 }
 
-fn byteSlice(value: u8) []const u8 {
-    return switch (value) {
-        ' ' => " ",
-        '!' => "!",
-        '"' => "\"",
-        '#' => "#",
-        '$' => "$",
-        '%' => "%",
-        '&' => "&",
-        '\'' => "'",
-        '(' => "(",
-        ')' => ")",
-        '*' => "*",
-        '+' => "+",
-        ',' => ",",
-        '-' => "-",
-        '.' => ".",
-        '/' => "/",
-        '0' => "0",
-        '1' => "1",
-        '2' => "2",
-        '3' => "3",
-        '4' => "4",
-        '5' => "5",
-        '6' => "6",
-        '7' => "7",
-        '8' => "8",
-        '9' => "9",
-        ':' => ":",
-        ';' => ";",
-        '<' => "<",
-        '=' => "=",
-        '>' => ">",
-        '?' => "?",
-        '@' => "@",
-        'A' => "A",
-        'B' => "B",
-        'C' => "C",
-        'D' => "D",
-        'E' => "E",
-        'F' => "F",
-        'G' => "G",
-        'H' => "H",
-        'I' => "I",
-        'J' => "J",
-        'K' => "K",
-        'L' => "L",
-        'M' => "M",
-        'N' => "N",
-        'O' => "O",
-        'P' => "P",
-        'Q' => "Q",
-        'R' => "R",
-        'S' => "S",
-        'T' => "T",
-        'U' => "U",
-        'V' => "V",
-        'W' => "W",
-        'X' => "X",
-        'Y' => "Y",
-        'Z' => "Z",
-        '[' => "[",
-        '\\' => "\\",
-        ']' => "]",
-        '^' => "^",
-        '_' => "_",
-        '`' => "`",
-        'a' => "a",
-        'b' => "b",
-        'c' => "c",
-        'd' => "d",
-        'e' => "e",
-        'f' => "f",
-        'g' => "g",
-        'h' => "h",
-        'i' => "i",
-        'j' => "j",
-        'k' => "k",
-        'l' => "l",
-        'm' => "m",
-        'n' => "n",
-        'o' => "o",
-        'p' => "p",
-        'q' => "q",
-        'r' => "r",
-        's' => "s",
-        't' => "t",
-        'u' => "u",
-        'v' => "v",
-        'w' => "w",
-        'x' => "x",
-        'y' => "y",
-        'z' => "z",
-        '{' => "{",
-        '|' => "|",
-        '}' => "}",
-        '~' => "~",
-        else => unreachable,
-    };
+fn asciiByteSlice(value: u8) []const u8 {
+    std.debug.assert(value < ascii_byte_slices.len);
+    return ascii_byte_slices[value][0..];
 }
 
 fn processKeyUp(input: *Input, event: *const c.SDL_Event) void {
@@ -930,6 +841,58 @@ test "alt ctrl letter preserves escape prefix" {
         .bytes => |chunk| try std.testing.expectEqual(@as(u8, 1), chunk.slice()[0]),
         else => return error.UnexpectedEvent,
     }
+}
+
+fn expectAltText(sdl_key: c_uint, mods: c.SDL_Keymod, expected: u8) !void {
+    const bytes = sdlAltTextBytes(sdl_key, mods) orelse return error.ExpectedAltText;
+    try std.testing.expectEqual(@as(usize, 1), bytes.len);
+    try std.testing.expectEqual(expected, bytes[0]);
+    try std.testing.expectEqual(@intFromPtr(ascii_byte_slices[expected][0..].ptr), @intFromPtr(bytes.ptr));
+}
+
+fn expectNoAltText(sdl_key: c_uint, mods: c.SDL_Keymod) !void {
+    try std.testing.expectEqual(@as(?[]const u8, null), sdlAltTextBytes(sdl_key, mods));
+}
+
+test "sdl alt text table covers all letter mappings" {
+    var offset: u8 = 0;
+    while (offset < 26) : (offset += 1) {
+        const key: c_uint = c.SDLK_A + offset;
+        try expectAltText(key, 0, 'a' + offset);
+        try expectAltText(key, c.SDL_KMOD_SHIFT, 'A' + offset);
+        try expectAltText(key, c.SDL_KMOD_CAPS, 'A' + offset);
+        try expectAltText(key, c.SDL_KMOD_SHIFT | c.SDL_KMOD_CAPS, 'a' + offset);
+    }
+}
+
+test "sdl alt text table covers all digit mappings" {
+    const shifted = ")!@#$%^&*(";
+    var offset: u8 = 0;
+    while (offset < 10) : (offset += 1) {
+        const key: c_uint = c.SDLK_0 + offset;
+        try expectAltText(key, 0, '0' + offset);
+        try expectAltText(key, c.SDL_KMOD_SHIFT, shifted[offset]);
+    }
+}
+
+test "sdl alt text table covers all punctuation mappings" {
+    const punctuation_keys = [_]c_uint{ c.SDLK_MINUS, c.SDLK_EQUALS, c.SDLK_LEFTBRACKET, c.SDLK_RIGHTBRACKET, c.SDLK_BACKSLASH, c.SDLK_SEMICOLON, c.SDLK_APOSTROPHE, c.SDLK_GRAVE, c.SDLK_COMMA, c.SDLK_PERIOD, c.SDLK_SLASH };
+    const unshifted = "-=[]\\;'`,./";
+    const shifted = "_+{}|:\"~<>?";
+    comptime std.debug.assert(punctuation_keys.len == unshifted.len);
+    comptime std.debug.assert(punctuation_keys.len == shifted.len);
+
+    for (punctuation_keys, 0..) |key, index| {
+        try expectAltText(key, 0, unshifted[index]);
+        try expectAltText(key, c.SDL_KMOD_SHIFT, shifted[index]);
+    }
+    try expectAltText(c.SDLK_SPACE, 0, ' ');
+    try expectAltText(c.SDLK_SPACE, c.SDL_KMOD_SHIFT, ' ');
+}
+
+test "sdl alt text rejects unsupported keys" {
+    try expectNoAltText(c.SDLK_RETURN, 0);
+    try expectNoAltText(c.SDLK_ESCAPE, c.SDL_KMOD_SHIFT);
 }
 
 test "input event queue preserves FIFO across wraparound" {
