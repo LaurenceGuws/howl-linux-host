@@ -1,22 +1,6 @@
 const std = @import("std");
-const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 const terminal_term = @import("../term.zig");
-
-const damage_none: u8 = @intCast(render_c.HOWL_RENDER_DAMAGE_NONE);
-const damage_partial: u8 = @intCast(render_c.HOWL_RENDER_DAMAGE_PARTIAL);
-
-comptime {
-    assertSameAbi(vt_c.HowlVtSurfaceResult, render_c.HowlVtSurfaceResult);
-    assertSameAbi(vt_c.HowlVtSurface, render_c.HowlVtSurface);
-    assertSameAbi(vt_c.HowlVtSurfaceCell, render_c.HowlVtSurfaceCell);
-    assertSameAbi(vt_c.HowlVtSurfaceCellAttrs, render_c.HowlVtSurfaceCellAttrs);
-    assertSameAbi(vt_c.HowlVtSurfaceCellFlags, render_c.HowlVtSurfaceCellFlags);
-    assertSameAbi(vt_c.HowlVtColor, render_c.HowlVtColor);
-    assertSameAbi(vt_c.HowlVtRenderColorState, render_c.HowlVtRenderColorState);
-    assertSameAbi(vt_c.HowlVtCursor, render_c.HowlVtCursor);
-    assertSameAbi(vt_c.HowlVtSelection, render_c.HowlVtSelection);
-}
 
 pub const HyperlinkHover = struct {
     row: u16,
@@ -40,7 +24,7 @@ pub const VisibleInfo = struct {
 pub const VisibleCopy = struct {
     surface: vt_c.HowlVtSurfaceResult,
 
-    fn deinit(self: *VisibleCopy, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *VisibleCopy, allocator: std.mem.Allocator) void {
         _ = allocator;
         self.* = undefined;
     }
@@ -59,69 +43,32 @@ const PublishAckOps = struct {
     }
 };
 
-fn localPublishFailure(snapshot_seq: u64) render_c.HowlRenderVtSurfacePublishResult {
-    return .{
-        .status = render_c.HOWL_RENDER_CALL_FAILED,
-        .published = 0,
-        .queued = 0,
-        .damage_kind = damage_none,
-        .reserved0 = 0,
-        .snapshot_seq = snapshot_seq,
-        .geometry_epoch = 0,
-    };
-}
-
-pub fn publishSource(term: *terminal_term.Term, hover: ?HyperlinkHover) render_c.HowlRenderVtSurfacePublishResult {
+pub fn captureVisible(term: *terminal_term.Term, hover: ?HyperlinkHover) !VisibleCopy {
     term.mutex.lockFair();
     defer term.mutex.unlock();
-    return publishSourceLockedWith(term, hover, RealOps);
+    return captureVisibleLockedWith(term, hover, RealOps);
 }
 
-pub fn publishSourceLocked(term: *terminal_term.Term, hover: ?HyperlinkHover) render_c.HowlRenderVtSurfacePublishResult {
-    return publishSourceLockedWith(term, hover, RealOps);
+pub fn captureVisibleLocked(term: *terminal_term.Term, hover: ?HyperlinkHover) !VisibleCopy {
+    return captureVisibleLockedWith(term, hover, RealOps);
 }
 
-fn publishSourceLockedWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) render_c.HowlRenderVtSurfacePublishResult {
+fn captureVisibleLockedWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) !VisibleCopy {
     const meta = Ops.visibleMeta(term.vt, term.vt_state.scrollback_offset);
-    const scratch = Ops.publishScratch(term.allocator, &term.vt_state, meta.cols, meta.rows) catch return localPublishFailure(meta.snapshot_seq);
+    const scratch = try Ops.publishScratch(term.allocator, &term.vt_state, meta.cols, meta.rows);
 
-    var visible = Ops.acquireVisible(
+    const visible = try Ops.acquireVisible(
         term.vt,
         term.vt_state.scrollback_offset,
         meta,
         scratch,
-    ) catch return localPublishFailure(meta.snapshot_seq);
-    defer visible.deinit(term.allocator);
+    );
     if (hover) |value| applyHyperlinkHover(scratch, visible.surface.source.rows, visible.surface.source.cols, value);
     std.debug.assert(term.vt_state.scrollback_offset <= visible.surface.history_count);
     std.debug.assert(visible.surface.source.scroll_row <= visible.surface.history_count + visible.surface.source.rows);
     term.vt_state.cursor_visible = visible.surface.source.cursor.visible != 0;
     term.vt_state.cursor_blink = visible.surface.source.cursor.blink != 0;
-
-    const typed_response = Ops.publishVtSurface(term.render.text_session, visible.surface);
-    if (typed_response.status != render_c.HOWL_RENDER_CALL_OK) {
-        std.debug.panic(
-            "render publish rejected: status={d} published={d} queued={d} damage={d} " ++
-                "snapshot_seq={d} geometry_epoch={d} visible_snapshot={d} alt={} " ++
-                "rows={d} cols={d} history={d} scroll_row={d}",
-            .{
-                typed_response.status,
-                typed_response.published,
-                typed_response.queued,
-                typed_response.damage_kind,
-                typed_response.snapshot_seq,
-                typed_response.geometry_epoch,
-                visible.surface.snapshot_seq,
-                visible.surface.source.is_alternate_screen != 0,
-                visible.surface.source.rows,
-                visible.surface.source.cols,
-                visible.surface.history_count,
-                visible.surface.source.scroll_row,
-            },
-        );
-    }
-    recordPublishedSnapshot(visible, typed_response);
-    return typed_response;
+    return visible;
 }
 
 const RealOps = struct {
@@ -137,16 +84,7 @@ const RealOps = struct {
         return vtAcquireVisibleIntoScratch(handle, scrollback_offset, meta, scratch);
     }
 
-    fn publishVtSurface(handle: render_c.HowlRenderTextSessionHandle, visible: vt_c.HowlVtSurfaceResult) render_c.HowlRenderVtSurfacePublishResult {
-        const render_visible: *const render_c.HowlVtSurfaceResult = @ptrCast(&visible);
-        return render_c.howl_render_text_session_publish_vt_surface(handle, render_visible);
-    }
 };
-
-fn assertSameAbi(comptime Left: type, comptime Right: type) void {
-    std.debug.assert(@sizeOf(Left) == @sizeOf(Right));
-    std.debug.assert(@alignOf(Left) == @alignOf(Right));
-}
 
 pub fn ackPublishedSourceLocked(term: *terminal_term.Term, snapshot_seq: u64) void {
     ackPublishedSourceLockedWith(term, snapshot_seq, PublishAckOps);
@@ -291,40 +229,8 @@ fn markDirtyRange(slot: PublishScratch, cols: u16, first: usize, last: usize) vo
     }
 }
 
-fn recordPublishedSnapshot(visible: VisibleCopy, typed_response: render_c.HowlRenderVtSurfacePublishResult) void {
-    if (typed_response.published != 0) {
-        std.debug.assert(typed_response.queued != 0);
-        std.debug.assert(typed_response.damage_kind != damage_none);
-    } else {
-        std.debug.assert(typed_response.damage_kind == damage_none);
-    }
-    std.debug.assert(typed_response.snapshot_seq == visible.surface.snapshot_seq);
-}
-
 fn zeroVisibleCopy(snapshot_seq: u64) VisibleCopy {
     return .{ .surface = .{ .status = vt_c.HOWL_VT_CALL_OK, .history_count = 0, .scrollback_offset = 0, .snapshot_seq = snapshot_seq, .dirty_generation = snapshot_seq, .source = std.mem.zeroes(vt_c.HowlVtSurface) } };
-}
-
-test "publish forwards vt snapshot sequence" {
-    recordPublishedSnapshot(zeroVisibleCopy(9), .{
-        .status = render_c.HOWL_RENDER_CALL_OK,
-        .published = 1,
-        .queued = 1,
-        .damage_kind = damage_partial,
-        .reserved0 = 0,
-        .snapshot_seq = 9,
-        .geometry_epoch = 1,
-    });
-
-    recordPublishedSnapshot(zeroVisibleCopy(11), .{
-        .status = render_c.HOWL_RENDER_CALL_FAILED,
-        .published = 0,
-        .queued = 0,
-        .damage_kind = damage_none,
-        .reserved0 = 0,
-        .snapshot_seq = 11,
-        .geometry_epoch = 1,
-    });
 }
 
 test "hover decoration underlines the hovered hyperlink span" {
@@ -403,7 +309,7 @@ test "zero snapshot sequence means no ack call" {
     try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
 }
 
-test "publish acquisition failure does not reserve or reject render slot" {
+test "visible acquisition failure does not touch render" {
     const FakeTerm = struct {
         allocator: std.mem.Allocator = std.testing.allocator,
         vt: vt_c.HowlVtHandle = @ptrFromInt(1),
@@ -412,9 +318,6 @@ test "publish acquisition failure does not reserve or reject render slot" {
             cursor_visible: bool = false,
             cursor_blink: bool = false,
         } = .{},
-        render: struct {
-            text_session: render_c.HowlRenderTextSessionHandle = @ptrFromInt(2),
-        } = .{},
         mutex: struct {
             fn lock(_: *@This()) void {}
             fn unlock(_: *@This()) void {}
@@ -422,7 +325,6 @@ test "publish acquisition failure does not reserve or reject render slot" {
     };
 
     const FakeOps = struct {
-        var publish_calls: u8 = 0;
         var scratch_calls: u8 = 0;
 
         fn visibleMeta(_: vt_c.HowlVtHandle, _: u32) VisibleMeta {
@@ -438,16 +340,9 @@ test "publish acquisition failure does not reserve or reject render slot" {
             return error.AcquisitionFailed;
         }
 
-        fn publishVtSurface(_: render_c.HowlRenderTextSessionHandle, _: vt_c.HowlVtSurfaceResult) render_c.HowlRenderVtSurfacePublishResult {
-            publish_calls += 1;
-            return .{ .status = render_c.HOWL_RENDER_CALL_OK, .published = 1, .queued = 1, .damage_kind = damage_partial, .reserved0 = 0, .snapshot_seq = 12, .geometry_epoch = 1 };
-        }
     };
 
     var term = FakeTerm{};
-    const result = publishSourceLockedWith(&term, null, FakeOps);
-    try std.testing.expectEqual(render_c.HOWL_RENDER_CALL_FAILED, result.status);
+    try std.testing.expectError(error.AcquisitionFailed, captureVisibleLockedWith(&term, null, FakeOps));
     try std.testing.expectEqual(@as(u8, 1), FakeOps.scratch_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.publish_calls);
-    try std.testing.expectEqual(@as(u64, 12), result.snapshot_seq);
 }

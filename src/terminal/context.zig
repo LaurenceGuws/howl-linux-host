@@ -396,37 +396,7 @@ pub const Context = struct {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
-        const publish_work = self.term.render.workState(bootstrap_surface);
-        self.maybePublishSource(bootstrap_surface, publish_work);
         const work_before = self.term.render.workState(bootstrap_surface);
-        if (!work_before.needsRenderSurface()) {
-            return .{
-                .work_before = work_before,
-                .work_after = work_before,
-                .prepared = false,
-                .step = .surface_idle,
-                .present_snapshot_seq = 0,
-                .prepare_ns = 0,
-                .upload_ns = 0,
-                .upload_count = 0,
-                .upload_bytes = 0,
-                .upload_fill_count = 0,
-                .upload_sprite_count = 0,
-                .upload_glyph_run_count = 0,
-                .upload_glyph_count = 0,
-                .upload_fill_ns = 0,
-                .upload_fill_dispatch_ns = 0,
-                .upload_fill_draw_ns = 0,
-                .upload_sprite_ns = 0,
-                .upload_sprite_dispatch_ns = 0,
-                .upload_sprite_draw_ns = 0,
-                .upload_glyph_ns = 0,
-                .upload_glyph_dispatch_ns = 0,
-                .upload_glyph_draw_ns = 0,
-                .retained_submit_ns = 0,
-            };
-        }
-
         const drive_result = self.driveRenderLocked(work_before);
         return .{
             .work_before = work_before,
@@ -535,7 +505,6 @@ pub const Context = struct {
         fn postDrive(self: *Context, active: bool, outcome: *pty_pump.Outcome) void {
             if (active and outcome.should_redraw) {
                 if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
-                _ = vt_surface.publishSource(&self.term, terminal_links.hoverDecoration(self));
                 outcome.should_redraw = self.resetCursorBlinkActivity(EventLoop.nowNs()) or outcome.should_redraw;
             }
             self.applyPendingClipboardWrites();
@@ -609,8 +578,16 @@ pub const Context = struct {
             .submit_pending => submitDriveResult(false, 0, self.submitPreparedLocked()),
             .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 },
             .prepare_or_idle => blk: {
+                self.maybeCommitGridResizeLocked();
+                var visible = vt_surface.captureVisibleLocked(&self.term, terminal_links.hoverDecoration(self)) catch {
+                    self.links.hover_publish_pending = false;
+                    break :blk .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 };
+                };
+                defer visible.deinit(self.term.allocator);
+                self.links.hover_publish_pending = false;
                 const prepare_start_ns = EventLoop.nowNs();
-                const prepare_result = self.term.render.prepare();
+                const render_visible: *const render_c.HowlVtSurfaceResult = @ptrCast(&visible.surface);
+                const prepare_result = self.term.render.prepare(render_visible);
                 const prepare_end_ns = EventLoop.nowNs();
                 const prepare_ns = prepare_end_ns -| prepare_start_ns;
                 break :blk switch (prepare_result) {
@@ -625,16 +602,8 @@ pub const Context = struct {
     fn renderAction(work: render_retained.WorkState, bootstrap_surface: bool) RenderAction {
         if (work.present_pending) return .blocked_present;
         if (work.submit_pending) return .submit_pending;
-        if (!(work.source_pending or work.prepare_pending or bootstrap_surface)) return .idle_submit;
+        if (!(work.source_pending or work.prepare_pending or bootstrap_surface)) return .prepare_or_idle;
         return .prepare_or_idle;
-    }
-
-    fn maybePublishSource(self: *Context, bootstrap_surface: bool, work: render_retained.WorkState) void {
-        self.maybeCommitGridResizeLocked();
-        if (bootstrap_surface or !work.needsRenderSurface() or self.links.hover_publish_pending) {
-            _ = vt_surface.publishSourceLocked(&self.term, terminal_links.hoverDecoration(self));
-            self.links.hover_publish_pending = false;
-        }
     }
 
     fn maybeCommitGridResizeLocked(self: *Context) void {

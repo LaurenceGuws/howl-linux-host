@@ -145,9 +145,9 @@ pub const State = struct {
         self.rdr_sfc_handle = null;
     }
 
-    pub fn prepare(self: *State) PrepareResult {
+    pub fn prepare(self: *State, vt_surface: *const c.HowlVtSurfaceResult) PrepareResult {
         var request = std.mem.zeroes(c.HowlRenderPrepareRequest);
-        switch (c.howl_render_text_session_take_prepare_request(self.text_session, &request)) {
+        switch (c.howl_render_text_session_take_prepare_request(self.text_session, vt_surface, &request)) {
             c.HOWL_RENDER_PREPARE_IDLE => {
                 self.releaseRdrSfcHandle();
                 return .idle;
@@ -290,7 +290,8 @@ fn testState() State {
     return State.init(handle, testSurfaceLayout());
 }
 
-fn publishTestSource(handle: c.HowlRenderTextSessionHandle, layout: SurfaceLayout, snapshot_seq: u64) !void {
+fn prepareTestSource(state: *State, snapshot_seq: u64) !void {
+    const layout = state.surface_layout;
     const cell_count = @as(usize, layout.cols) * @as(usize, layout.rows);
     var cells = try std.testing.allocator.alloc(c.HowlVtSurfaceCell, cell_count);
     defer std.testing.allocator.free(cells);
@@ -341,8 +342,7 @@ fn publishTestSource(handle: c.HowlRenderTextSessionHandle, layout: SurfaceLayou
             .selection = .{ .active = 0, .selecting = 0, .reserved0 = 0, .start = .{ .row = 0, .col = 0, .reserved0 = 0 }, .end = .{ .row = 0, .col = 0, .reserved0 = 0 } },
         },
     };
-    const publish = c.howl_render_text_session_publish_vt_surface(handle, &surface);
-    try std.testing.expectEqual(c.HOWL_RENDER_CALL_OK, publish.status);
+    try std.testing.expectEqual(PrepareResult.prepared, state.prepare(&surface));
 }
 
 fn derivedTestSurfaceLayout(handle: c.HowlRenderTextSessionHandle) !SurfaceLayout {
@@ -408,8 +408,7 @@ test "host retained prepared upload records render surface retrieval status" {
     defer state.deinit();
     const layout = try derivedTestSurfaceLayout(state.text_session);
     state.syncSurfaceLayout(layout);
-    try publishTestSource(state.text_session, state.surface_layout, 1);
-    try std.testing.expectEqual(PrepareResult.prepared, state.prepare());
+    try prepareTestSource(&state, 1);
 
     var upload = std.mem.zeroes(PreparedUpload);
     try std.testing.expect(state.preparedUpload(&upload));
