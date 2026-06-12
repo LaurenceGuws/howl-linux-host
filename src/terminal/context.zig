@@ -574,14 +574,14 @@ pub const Context = struct {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         std.debug.assert(work.bootstrap_surface == bootstrap_surface);
         return switch (renderAction(work, bootstrap_surface)) {
-            .blocked_present => .{ .prepared = false, .step = .blocked_present, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 },
+            .blocked_present => idleDrive(.blocked_present),
             .submit_pending => submitDriveResult(false, 0, self.submitPreparedLocked()),
-            .idle_submit => .{ .prepared = false, .step = .idle_submit, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 },
+            .idle_submit => idleDrive(.idle_submit),
             .prepare_or_idle => blk: {
                 self.maybeCommitGridResizeLocked();
                 var visible = vt_surface.captureVisibleLocked(&self.term, terminal_links.hoverDecoration(self)) catch {
                     self.links.hover_publish_pending = false;
-                    break :blk .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0, .prepare_ns = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 };
+                    break :blk failedDrive(0);
                 };
                 defer visible.deinit(self.term.allocator);
                 self.links.hover_publish_pending = false;
@@ -591,8 +591,8 @@ pub const Context = struct {
                 const prepare_end_ns = EventLoop.nowNs();
                 const prepare_ns = prepare_end_ns -| prepare_start_ns;
                 break :blk switch (prepare_result) {
-                    .idle => .{ .prepared = false, .step = .idle_prepare, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 },
-                    .failed => .{ .prepared = false, .step = .failed, .present_snapshot_seq = 0, .prepare_ns = prepare_ns, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 },
+                    .idle => idlePrepareDrive(prepare_ns),
+                    .failed => failedDrive(prepare_ns),
                     .prepared => submitDriveResult(true, prepare_ns, self.submitPreparedLocked()),
                 };
             },
@@ -644,7 +644,7 @@ pub const Context = struct {
     fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
-            return .{ .result = .failed, .snapshot_seq = 0, .upload_ns = 0, .upload_count = 0, .upload_bytes = 0, .upload_fill_count = 0, .upload_sprite_count = 0, .upload_glyph_run_count = 0, .upload_glyph_count = 0, .upload_fill_ns = 0, .upload_fill_dispatch_ns = 0, .upload_fill_draw_ns = 0, .upload_sprite_ns = 0, .upload_sprite_dispatch_ns = 0, .upload_sprite_draw_ns = 0, .upload_glyph_ns = 0, .upload_glyph_dispatch_ns = 0, .upload_glyph_draw_ns = 0, .retained_submit_ns = 0 };
+            return missingPreparedUploadSubmit();
         }
         defer upload.deinit();
         const rdr_sfc_handle = self.term.render.rdrSfcHandle();
@@ -662,10 +662,10 @@ pub const Context = struct {
         const current_handle = self.term.render.rdrSfcHandle();
         std.debug.assert(!self.term.render.presentPending());
         if (current_handle != rdr_sfc_handle) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .upload_count = upload_stats.count, .upload_bytes = upload_stats.bytes, .upload_fill_count = upload_stats.fill_count, .upload_sprite_count = upload_stats.sprite_count, .upload_glyph_run_count = upload_stats.glyph_run_count, .upload_glyph_count = upload_stats.glyph_count, .upload_fill_ns = upload_stats.fill_ns, .upload_fill_dispatch_ns = upload_stats.fill_dispatch_ns, .upload_fill_draw_ns = upload_stats.fill_draw_ns, .upload_sprite_ns = upload_stats.sprite_ns, .upload_sprite_dispatch_ns = upload_stats.sprite_dispatch_ns, .upload_sprite_draw_ns = upload_stats.sprite_draw_ns, .upload_glyph_ns = upload_stats.glyph_ns, .upload_glyph_dispatch_ns = upload_stats.glyph_dispatch_ns, .upload_glyph_draw_ns = upload_stats.glyph_draw_ns, .retained_submit_ns = 0 };
+            return stalePreparedUploadSubmit(upload.info.snapshot_seq, upload_end_ns -| upload_start_ns, upload_stats);
         }
         if (!upload_ok) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq, .upload_ns = upload_end_ns -| upload_start_ns, .upload_count = upload_stats.count, .upload_bytes = upload_stats.bytes, .upload_fill_count = upload_stats.fill_count, .upload_sprite_count = upload_stats.sprite_count, .upload_glyph_run_count = upload_stats.glyph_run_count, .upload_glyph_count = upload_stats.glyph_count, .upload_fill_ns = upload_stats.fill_ns, .upload_fill_dispatch_ns = upload_stats.fill_dispatch_ns, .upload_fill_draw_ns = upload_stats.fill_draw_ns, .upload_sprite_ns = upload_stats.sprite_ns, .upload_sprite_dispatch_ns = upload_stats.sprite_dispatch_ns, .upload_sprite_draw_ns = upload_stats.sprite_draw_ns, .upload_glyph_ns = upload_stats.glyph_ns, .upload_glyph_dispatch_ns = upload_stats.glyph_dispatch_ns, .upload_glyph_draw_ns = upload_stats.glyph_draw_ns, .retained_submit_ns = 0 };
+            return failedUploadSubmit(upload.info.snapshot_seq, upload_end_ns -| upload_start_ns, upload_stats);
         }
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
@@ -676,27 +676,7 @@ pub const Context = struct {
         if (result == .rendered) {
             self.term_texture = submit_result.host_surface;
         }
-        return .{
-            .result = result,
-            .snapshot_seq = upload.info.snapshot_seq,
-            .upload_ns = upload_end_ns -| upload_start_ns,
-            .upload_count = upload_stats.count,
-            .upload_bytes = upload_stats.bytes,
-            .upload_fill_count = upload_stats.fill_count,
-            .upload_sprite_count = upload_stats.sprite_count,
-            .upload_glyph_run_count = upload_stats.glyph_run_count,
-            .upload_glyph_count = upload_stats.glyph_count,
-            .upload_fill_ns = upload_stats.fill_ns,
-            .upload_fill_dispatch_ns = upload_stats.fill_dispatch_ns,
-            .upload_fill_draw_ns = upload_stats.fill_draw_ns,
-            .upload_sprite_ns = upload_stats.sprite_ns,
-            .upload_sprite_dispatch_ns = upload_stats.sprite_dispatch_ns,
-            .upload_sprite_draw_ns = upload_stats.sprite_draw_ns,
-            .upload_glyph_ns = upload_stats.glyph_ns,
-            .upload_glyph_dispatch_ns = upload_stats.glyph_dispatch_ns,
-            .upload_glyph_draw_ns = upload_stats.glyph_draw_ns,
-            .retained_submit_ns = submit_end_ns -| submit_start_ns,
-        };
+        return submittedPreparedUpload(result, upload.info.snapshot_seq, upload_end_ns -| upload_start_ns, upload_stats, submit_end_ns -| submit_start_ns);
     }
 
     const SubmitPreparedResult = struct {
@@ -720,6 +700,81 @@ pub const Context = struct {
         upload_glyph_draw_ns: u64,
         retained_submit_ns: u64,
     };
+
+    fn idleDrive(step: TurnStep) DriveResult {
+        std.debug.assert(step == .blocked_present or step == .idle_submit);
+        return timedIdleDrive(step, 0);
+    }
+
+    fn idlePrepareDrive(prepare_ns: u64) DriveResult {
+        return timedIdleDrive(.idle_prepare, prepare_ns);
+    }
+
+    fn failedDrive(prepare_ns: u64) DriveResult {
+        return timedIdleDrive(.failed, prepare_ns);
+    }
+
+    fn timedIdleDrive(step: TurnStep, prepare_ns: u64) DriveResult {
+        return .{
+            .prepared = false,
+            .step = step,
+            .present_snapshot_seq = 0,
+            .prepare_ns = prepare_ns,
+            .upload_ns = 0,
+            .upload_count = 0,
+            .upload_bytes = 0,
+            .upload_fill_count = 0,
+            .upload_sprite_count = 0,
+            .upload_glyph_run_count = 0,
+            .upload_glyph_count = 0,
+            .upload_fill_ns = 0,
+            .upload_fill_dispatch_ns = 0,
+            .upload_fill_draw_ns = 0,
+            .upload_sprite_ns = 0,
+            .upload_sprite_dispatch_ns = 0,
+            .upload_sprite_draw_ns = 0,
+            .upload_glyph_ns = 0,
+            .upload_glyph_dispatch_ns = 0,
+            .upload_glyph_draw_ns = 0,
+            .retained_submit_ns = 0,
+        };
+    }
+
+    fn missingPreparedUploadSubmit() SubmitPreparedResult {
+        return submittedPreparedUpload(.failed, 0, 0, .{}, 0);
+    }
+
+    fn failedUploadSubmit(snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats) SubmitPreparedResult {
+        return submittedPreparedUpload(.failed, snapshot_seq, upload_ns, upload_stats, 0);
+    }
+
+    fn stalePreparedUploadSubmit(snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats) SubmitPreparedResult {
+        return submittedPreparedUpload(.failed, snapshot_seq, upload_ns, upload_stats, 0);
+    }
+
+    fn submittedPreparedUpload(result: render_retained.SubmitResult, snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats, retained_submit_ns: u64) SubmitPreparedResult {
+        return .{
+            .result = result,
+            .snapshot_seq = snapshot_seq,
+            .upload_ns = upload_ns,
+            .upload_count = upload_stats.count,
+            .upload_bytes = upload_stats.bytes,
+            .upload_fill_count = upload_stats.fill_count,
+            .upload_sprite_count = upload_stats.sprite_count,
+            .upload_glyph_run_count = upload_stats.glyph_run_count,
+            .upload_glyph_count = upload_stats.glyph_count,
+            .upload_fill_ns = upload_stats.fill_ns,
+            .upload_fill_dispatch_ns = upload_stats.fill_dispatch_ns,
+            .upload_fill_draw_ns = upload_stats.fill_draw_ns,
+            .upload_sprite_ns = upload_stats.sprite_ns,
+            .upload_sprite_dispatch_ns = upload_stats.sprite_dispatch_ns,
+            .upload_sprite_draw_ns = upload_stats.sprite_draw_ns,
+            .upload_glyph_ns = upload_stats.glyph_ns,
+            .upload_glyph_dispatch_ns = upload_stats.glyph_dispatch_ns,
+            .upload_glyph_draw_ns = upload_stats.glyph_draw_ns,
+            .retained_submit_ns = retained_submit_ns,
+        };
+    }
 
     fn submitStep(result: render_retained.SubmitResult) TurnStep {
         return switch (result) {
@@ -961,5 +1016,17 @@ pub const testing = struct {
 
     pub fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
         return Context.submitPreparedLockedWith(self, Backend);
+    }
+
+    pub fn idleDrive(step: Context.TurnStep) Context.DriveResult {
+        return Context.idleDrive(step);
+    }
+
+    pub fn failedUploadSubmit(snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats) SubmitPreparedResult {
+        return Context.failedUploadSubmit(snapshot_seq, upload_ns, upload_stats);
+    }
+
+    pub fn stalePreparedUploadSubmit(snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats) SubmitPreparedResult {
+        return Context.stalePreparedUploadSubmit(snapshot_seq, upload_ns, upload_stats);
     }
 };

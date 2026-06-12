@@ -509,6 +509,85 @@ test "submit path runs once no host present is in flight" {
     try std.testing.expectEqual(context_testing.RenderAction.submit_pending, context_testing.renderAction(work, false));
 }
 
+test "idle render action constructor returns zero telemetry" {
+    const result = context_testing.idleDrive(.idle_submit);
+
+    try std.testing.expect(!result.prepared);
+    try std.testing.expectEqual(Context.TurnStep.idle_submit, result.step);
+    try std.testing.expectEqual(@as(u64, 0), result.present_snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 0), result.prepare_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_count);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_bytes);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_fill_count);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_sprite_count);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_glyph_run_count);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_glyph_count);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_fill_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_fill_dispatch_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_fill_draw_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_sprite_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_sprite_dispatch_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_sprite_draw_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_glyph_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_glyph_dispatch_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.upload_glyph_draw_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.retained_submit_ns);
+}
+
+test "failed upload constructor preserves upload telemetry and skips submit timing" {
+    const stats = term_texture.UploadStats{
+        .count = 3,
+        .bytes = 4096,
+        .fill_count = 2,
+        .sprite_count = 1,
+        .glyph_run_count = 5,
+        .glyph_count = 21,
+        .fill_ns = 7,
+        .fill_dispatch_ns = 8,
+        .fill_draw_ns = 9,
+        .sprite_ns = 10,
+        .sprite_dispatch_ns = 11,
+        .sprite_draw_ns = 12,
+        .glyph_ns = 13,
+        .glyph_dispatch_ns = 14,
+        .glyph_draw_ns = 15,
+    };
+    const result = context_testing.failedUploadSubmit(77, 99, stats);
+
+    try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
+    try std.testing.expectEqual(@as(u64, 77), result.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 99), result.upload_ns);
+    try std.testing.expectEqual(stats.count, result.upload_count);
+    try std.testing.expectEqual(stats.bytes, result.upload_bytes);
+    try std.testing.expectEqual(stats.fill_count, result.upload_fill_count);
+    try std.testing.expectEqual(stats.sprite_count, result.upload_sprite_count);
+    try std.testing.expectEqual(stats.glyph_run_count, result.upload_glyph_run_count);
+    try std.testing.expectEqual(stats.glyph_count, result.upload_glyph_count);
+    try std.testing.expectEqual(stats.fill_ns, result.upload_fill_ns);
+    try std.testing.expectEqual(stats.fill_dispatch_ns, result.upload_fill_dispatch_ns);
+    try std.testing.expectEqual(stats.fill_draw_ns, result.upload_fill_draw_ns);
+    try std.testing.expectEqual(stats.sprite_ns, result.upload_sprite_ns);
+    try std.testing.expectEqual(stats.sprite_dispatch_ns, result.upload_sprite_dispatch_ns);
+    try std.testing.expectEqual(stats.sprite_draw_ns, result.upload_sprite_draw_ns);
+    try std.testing.expectEqual(stats.glyph_ns, result.upload_glyph_ns);
+    try std.testing.expectEqual(stats.glyph_dispatch_ns, result.upload_glyph_dispatch_ns);
+    try std.testing.expectEqual(stats.glyph_draw_ns, result.upload_glyph_draw_ns);
+    try std.testing.expectEqual(@as(u64, 0), result.retained_submit_ns);
+}
+
+test "stale handle constructor preserves failed upload phase timing" {
+    const stats = term_texture.UploadStats{ .count = 1, .bytes = 32 };
+    const result = context_testing.stalePreparedUploadSubmit(88, 123, stats);
+
+    try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
+    try std.testing.expectEqual(@as(u64, 88), result.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 123), result.upload_ns);
+    try std.testing.expectEqual(@as(u64, 1), result.upload_count);
+    try std.testing.expectEqual(@as(u64, 32), result.upload_bytes);
+    try std.testing.expectEqual(@as(u64, 0), result.retained_submit_ns);
+}
+
 fn testRdrSfcHandle() render_c.HowlRenderRdrSfcHandle {
     return @ptrFromInt(0x10);
 }
