@@ -291,43 +291,57 @@ fn testState() State {
 }
 
 fn publishTestSource(handle: c.HowlRenderTextSessionHandle, layout: SurfaceLayout, snapshot_seq: u64) !void {
-    var slot = std.mem.zeroes(c.HowlRenderVtSurfaceSlot);
-    try std.testing.expectEqual(c.HOWL_RENDER_CALL_OK, c.howl_render_text_session_reserve_vt_surface_slot(handle, layout.cols, layout.rows, &slot));
     const cell_count = @as(usize, layout.cols) * @as(usize, layout.rows);
-    try std.testing.expect(slot.cells.len >= cell_count);
+    var cells = try std.testing.allocator.alloc(c.HowlVtSurfaceCell, cell_count);
+    defer std.testing.allocator.free(cells);
     var cell_index: usize = 0;
     while (cell_index < cell_count) : (cell_index += 1) {
-        slot.cells.ptr[cell_index] = .{
+        cells[cell_index] = .{
             .codepoint = 'a',
             .flags = .{ .continuation = 0 },
             .fg_color = .{ .kind = 0, .value = 0 },
             .bg_color = .{ .kind = 0, .value = 0 },
             .underline_color = .{ .kind = 0, .value = 0 },
             .underline_style = 0,
-            .attrs = std.mem.zeroes(c.HowlRenderSourceCellAttrs),
+            .attrs = std.mem.zeroes(c.HowlVtSurfaceCellAttrs),
             .link_id = 0,
         };
     }
-    try std.testing.expect(slot.dirty_rows.len >= layout.rows);
-    try std.testing.expect(slot.dirty_cols_start.len >= layout.rows);
-    try std.testing.expect(slot.dirty_cols_end.len >= layout.rows);
+    var dirty_rows = try std.testing.allocator.alloc(u8, layout.rows);
+    defer std.testing.allocator.free(dirty_rows);
+    var dirty_cols_start = try std.testing.allocator.alloc(u16, layout.rows);
+    defer std.testing.allocator.free(dirty_cols_start);
+    var dirty_cols_end = try std.testing.allocator.alloc(u16, layout.rows);
+    defer std.testing.allocator.free(dirty_cols_end);
     var row: usize = 0;
     while (row < layout.rows) : (row += 1) {
-        slot.dirty_rows.ptr[row] = 1;
-        slot.dirty_cols_start.ptr[row] = 0;
-        slot.dirty_cols_end.ptr[row] = layout.cols - 1;
+        dirty_rows[row] = 1;
+        dirty_cols_start[row] = 0;
+        dirty_cols_end[row] = layout.cols - 1;
     }
-    const publish = c.howl_render_text_session_commit_vt_surface(handle, .{
+    var surface = c.HowlVtSurfaceResult{
+        .status = c.HOWL_VT_CALL_OK,
         .history_count = 0,
-        .scroll_row = 0,
+        .scrollback_offset = 0,
         .snapshot_seq = snapshot_seq,
-        .is_alternate_screen = 0,
-        .reserved0 = 0,
-        .reserved1 = 0,
-        .cursor = .{ .row = 0, .col = 0, .visible = 1, .shape = 0, .blink = 0, .reserved0 = 0 },
-        .colors = std.mem.zeroes(c.HowlRenderSourceColors),
-        .selection = .{ .active = 0, .selecting = 0, .reserved0 = 0, .start = .{ .row = 0, .col = 0, .reserved0 = 0 }, .end = .{ .row = 0, .col = 0, .reserved0 = 0 } },
-    });
+        .dirty_generation = snapshot_seq,
+        .source = .{
+            .surface_cells = .{ .ptr = cells.ptr, .len = cells.len },
+            .cols = layout.cols,
+            .rows = layout.rows,
+            .scroll_row = 0,
+            .is_alternate_screen = 0,
+            .reserved0 = 0,
+            .reserved1 = 0,
+            .dirty_rows = .{ .ptr = dirty_rows.ptr, .len = dirty_rows.len },
+            .dirty_cols_start = .{ .ptr = dirty_cols_start.ptr, .len = dirty_cols_start.len },
+            .dirty_cols_end = .{ .ptr = dirty_cols_end.ptr, .len = dirty_cols_end.len },
+            .cursor = .{ .row = 0, .col = 0, .visible = 1, .shape = 0, .blink = 0 },
+            .colors = std.mem.zeroes(c.HowlVtRenderColorState),
+            .selection = .{ .active = 0, .selecting = 0, .reserved0 = 0, .start = .{ .row = 0, .col = 0, .reserved0 = 0 }, .end = .{ .row = 0, .col = 0, .reserved0 = 0 } },
+        },
+    };
+    const publish = c.howl_render_text_session_publish_vt_surface(handle, &surface);
     try std.testing.expectEqual(c.HOWL_RENDER_CALL_OK, publish.status);
 }
 

@@ -27,7 +27,6 @@ const HostDeps = struct {
     vendor_include: Build.LazyPath,
     sdl_lib: *Compile,
     stb_image: Build.LazyPath,
-
 };
 
 const Steps = struct {
@@ -111,7 +110,7 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .howl_vt_include = howl_vt_include,
         .howl_pty_c = translateCModule(b, b.path("src/howl_pty_c.h"), target, optimize, &.{howl_pty_include}),
         .howl_vt_c = translateCModule(b, b.path("src/howl_vt_c.h"), target, optimize, &.{howl_vt_include}),
-        .howl_render_c = translateCModule(b, b.path("src/howl_render_c.h"), target, optimize, &.{howl_render_include}),
+        .howl_render_c = translateCModule(b, b.path("src/howl_render_c.h"), target, optimize, &.{ howl_render_include, howl_vt_include }),
         .sdl_c = translateCModule(b, b.path("src/sdl_c.h"), target, optimize, &.{sdl_include}),
         .gl_c = translateCModule(b, b.path("src/display/renderer/gl_c.h"), target, optimize, &.{sdl_include}),
         .sdl_include = sdl_include,

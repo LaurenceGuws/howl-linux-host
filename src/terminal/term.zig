@@ -39,6 +39,9 @@ pub const VtState = struct {
     output_scratch: [vt_output_max_bytes]u8 = undefined,
     input_scratch: [vt_input_max_bytes]u8 = undefined,
     surface_cells_scratch: []vt_c.HowlVtSurfaceCell = &.{},
+    surface_dirty_rows_scratch: []u8 = &.{},
+    surface_dirty_cols_start_scratch: []u16 = &.{},
+    surface_dirty_cols_end_scratch: []u16 = &.{},
     scrollback_offset: u32 = 0,
     focused: bool = true,
     cursor_visible: bool = true,
@@ -47,6 +50,12 @@ pub const VtState = struct {
     pub fn deinit(self: *VtState, allocator: std.mem.Allocator) void {
         if (self.surface_cells_scratch.len > 0) allocator.free(self.surface_cells_scratch);
         self.surface_cells_scratch = &.{};
+        if (self.surface_dirty_rows_scratch.len > 0) allocator.free(self.surface_dirty_rows_scratch);
+        self.surface_dirty_rows_scratch = &.{};
+        if (self.surface_dirty_cols_start_scratch.len > 0) allocator.free(self.surface_dirty_cols_start_scratch);
+        self.surface_dirty_cols_start_scratch = &.{};
+        if (self.surface_dirty_cols_end_scratch.len > 0) allocator.free(self.surface_dirty_cols_end_scratch);
+        self.surface_dirty_cols_end_scratch = &.{};
     }
 
     pub fn ensureSurfaceCellScratch(self: *VtState, allocator: std.mem.Allocator, cols: u16, rows: u16) ![]vt_c.HowlVtSurfaceCell {
@@ -61,6 +70,33 @@ pub const VtState = struct {
         if (self.surface_cells_scratch.len > 0) allocator.free(self.surface_cells_scratch);
         self.surface_cells_scratch = next;
         return self.surface_cells_scratch[0..cell_count];
+    }
+
+    pub fn ensureSurfaceDirtyRowsScratch(self: *VtState, allocator: std.mem.Allocator, rows: u16) ![]u8 {
+        std.debug.assert(rows > 0);
+        if (self.surface_dirty_rows_scratch.len >= rows) return self.surface_dirty_rows_scratch[0..rows];
+        const next = try allocator.alloc(u8, rows);
+        if (self.surface_dirty_rows_scratch.len > 0) allocator.free(self.surface_dirty_rows_scratch);
+        self.surface_dirty_rows_scratch = next;
+        return self.surface_dirty_rows_scratch[0..rows];
+    }
+
+    pub fn ensureSurfaceDirtyColsStartScratch(self: *VtState, allocator: std.mem.Allocator, rows: u16) ![]u16 {
+        std.debug.assert(rows > 0);
+        if (self.surface_dirty_cols_start_scratch.len >= rows) return self.surface_dirty_cols_start_scratch[0..rows];
+        const next = try allocator.alloc(u16, rows);
+        if (self.surface_dirty_cols_start_scratch.len > 0) allocator.free(self.surface_dirty_cols_start_scratch);
+        self.surface_dirty_cols_start_scratch = next;
+        return self.surface_dirty_cols_start_scratch[0..rows];
+    }
+
+    pub fn ensureSurfaceDirtyColsEndScratch(self: *VtState, allocator: std.mem.Allocator, rows: u16) ![]u16 {
+        std.debug.assert(rows > 0);
+        if (self.surface_dirty_cols_end_scratch.len >= rows) return self.surface_dirty_cols_end_scratch[0..rows];
+        const next = try allocator.alloc(u16, rows);
+        if (self.surface_dirty_cols_end_scratch.len > 0) allocator.free(self.surface_dirty_cols_end_scratch);
+        self.surface_dirty_cols_end_scratch = next;
+        return self.surface_dirty_cols_end_scratch[0..rows];
     }
 };
 
