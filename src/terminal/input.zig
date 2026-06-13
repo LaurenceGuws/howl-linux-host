@@ -1,5 +1,5 @@
 const std = @import("std");
-const EventLoop = @import("../event_loop.zig");
+const EventLoop = @import("../polling/event_loop.zig");
 const Layout = @import("../display/layout.zig");
 const HostInput = @import("../input/input.zig").Input;
 const terminal_links = @import("links.zig");

@@ -235,7 +235,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     const cli_args_tests = b.addTest(.{
         .name = "test-cli-args",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cli/args.zig"),
+            .root_source_file = b.path("src/cli.zig"),
             .target = target,
             .optimize = optimize,
         }),

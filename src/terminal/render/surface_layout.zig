@@ -1,5 +1,5 @@
 const std = @import("std");
-const EventLoop = @import("../../event_loop.zig");
+const EventLoop = @import("../../polling/event_loop.zig");
 const c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 const pty_session = @import("../pty/session.zig");

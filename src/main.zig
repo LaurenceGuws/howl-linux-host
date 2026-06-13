@@ -1,22 +1,22 @@
 const std = @import("std");
-const cli_args = @import("cli/args.zig");
+const cli = @import("cli.zig");
 const Config = @import("config/config.zig");
 const Display = @import("display/display.zig");
-const EventLoop = @import("event_loop.zig");
+const EventLoop = @import("polling/event_loop.zig");
 const Input = @import("input/input.zig").Input;
-const Processor = @import("app/processor.zig").Processor;
+const Processor = @import("event.zig").Processor;
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("tab_bar/slots.zig").Slots;
 const TerminalContext = @import("terminal/context.zig").Context;
 const window = @import("window_chrome/window.zig");
 
-pub const Args = cli_args.Args;
+pub const Args = cli.Args;
 const child_term_value: [*:0]const u8 = "xterm-256color";
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 pub fn main(init: std.process.Init) !void {
-    const options = cli_args.parse(try init.minimal.args.toSlice(init.arena.allocator())) catch |err| switch (err) {
+    const options = cli.parse(try init.minimal.args.toSlice(init.arena.allocator())) catch |err| switch (err) {
         error.HelpRequested => return,
         else => |e| return e,
     };

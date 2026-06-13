@@ -1,5 +1,5 @@
 const std = @import("std");
-const EventLoop = @import("../event_loop.zig");
+const EventLoop = @import("../polling/event_loop.zig");
 const window = @import("../window_chrome/window.zig");
 const Layout = @import("../display/layout.zig");
 const term_texture = @import("../display/renderer/render_surface.zig");
