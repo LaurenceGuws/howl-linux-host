@@ -4,19 +4,15 @@ const render_c = @import("howl_render_c");
 const render_surface_commands = @import("render_surface_commands.zig");
 const render_surface_resources = @import("render_surface_resources.zig");
 
-pub fn deleteTexture(surface_id: *u64) void {
-    if (surface_id.* == 0) return;
-    var value: c_uint = @intCast(surface_id.*);
-    gl_c.glDeleteTextures(1, &value);
-    surface_id.* = 0;
-}
-
-fn panicGlBroken(comptime message: []const u8, code: c_uint) noreturn {
-    std.debug.panic("GL backend invariant failed: {s}: error={}", .{ message, code });
-}
-
 pub const RenderResourceTextures = render_surface_resources.RenderResourceTextures;
 pub const RenderSurfaceClass = render_surface_commands.RenderSurfaceClass;
+pub const classifyRenderSurface = render_surface_commands.classifyRenderSurface;
+pub const renderSurfaceFillOnly = render_surface_commands.renderSurfaceFillOnly;
+pub const renderSurfaceFillPatch = render_surface_commands.renderSurfaceFillPatch;
+pub const renderSurfaceSprite = render_surface_commands.renderSurfaceSprite;
+pub const renderSurfaceSpritePatch = render_surface_commands.renderSurfaceSpritePatch;
+pub const renderSurfaceGlyphs = render_surface_commands.renderSurfaceGlyphs;
+pub const renderSurfaceGlyphPatch = render_surface_commands.renderSurfaceGlyphPatch;
 
 pub const UploadStats = struct {
     count: u64 = 0,
@@ -40,6 +36,44 @@ pub const UploadStats = struct {
         self.bytes += upload.bytes_count;
     }
 };
+
+pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurface, upload_stats: ?*UploadStats) bool {
+    std.debug.assert(surface.render_px.width > 0);
+    std.debug.assert(surface.render_px.height > 0);
+    const had_matching_surface = host_surface.host_surface_id != 0 and
+        host_surface.width == surface.render_px.width and
+        host_surface.height == surface.render_px.height;
+    textures.realizeSurface(surface, upload_stats);
+    ensureSurface(host_surface, surface.render_px.width, surface.render_px.height);
+    const class = render_surface_commands.classifyRenderSurface(surface) orelse std.debug.panic("trusted render surface has unsupported shape", .{});
+    render_surface_commands.assertRenderSurfacePatchHostSurface(class, had_matching_surface);
+    const surface_uploaded = switch (class) {
+        .fill,
+        .fill_patch,
+        => render_surface_commands.uploadFillCommands(host_surface.*, surface),
+        .sprite,
+        .sprite_patch,
+        .glyph,
+        .glyph_patch,
+        => blk: {
+            render_surface_commands.uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
+            break :blk true;
+        },
+    };
+    if (!surface_uploaded) {
+        host_surface.width = 0;
+        host_surface.height = 0;
+        return false;
+    }
+    return true;
+}
+
+pub fn deleteTexture(surface_id: *u64) void {
+    if (surface_id.* == 0) return;
+    var value: c_uint = @intCast(surface_id.*);
+    gl_c.glDeleteTextures(1, &value);
+    surface_id.* = 0;
+}
 
 pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) void {
     std.debug.assert(width > 0);
@@ -81,63 +115,8 @@ pub fn ensureSurface(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
     surface.height = height;
 }
 
-pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurface, upload_stats: ?*UploadStats) bool {
-    std.debug.assert(surface.render_px.width > 0);
-    std.debug.assert(surface.render_px.height > 0);
-    const had_matching_surface = host_surface.host_surface_id != 0 and
-        host_surface.width == surface.render_px.width and
-        host_surface.height == surface.render_px.height;
-    textures.realizeSurface(surface, upload_stats);
-    ensureSurface(host_surface, surface.render_px.width, surface.render_px.height);
-    const class = render_surface_commands.classifyRenderSurface(surface) orelse std.debug.panic("trusted render surface has unsupported shape", .{});
-    render_surface_commands.assertRenderSurfacePatchHostSurface(class, had_matching_surface);
-    const surface_uploaded = switch (class) {
-        .fill,
-        .fill_patch,
-        => render_surface_commands.uploadFillCommands(host_surface.*, surface),
-        .sprite,
-        .sprite_patch,
-        .glyph,
-        .glyph_patch,
-        => blk: {
-            render_surface_commands.uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
-            break :blk true;
-        },
-    };
-    if (!surface_uploaded) {
-        host_surface.width = 0;
-        host_surface.height = 0;
-        return false;
-    }
-    return true;
-}
-
-pub fn classifyRenderSurface(surface: *const render_c.HowlRenderSurface) ?RenderSurfaceClass {
-    return render_surface_commands.classifyRenderSurface(surface);
-}
-
-pub fn renderSurfaceFillOnly(surface: *const render_c.HowlRenderSurface) bool {
-    return render_surface_commands.renderSurfaceFillOnly(surface);
-}
-
-pub fn renderSurfaceFillPatch(surface: *const render_c.HowlRenderSurface) bool {
-    return render_surface_commands.renderSurfaceFillPatch(surface);
-}
-
-pub fn renderSurfaceSprite(surface: *const render_c.HowlRenderSurface) bool {
-    return render_surface_commands.renderSurfaceSprite(surface);
-}
-
-pub fn renderSurfaceSpritePatch(surface: *const render_c.HowlRenderSurface) bool {
-    return render_surface_commands.renderSurfaceSpritePatch(surface);
-}
-
-pub fn renderSurfaceGlyphs(surface: *const render_c.HowlRenderSurface) bool {
-    return render_surface_commands.renderSurfaceGlyphs(surface);
-}
-
-pub fn renderSurfaceGlyphPatch(surface: *const render_c.HowlRenderSurface) bool {
-    return render_surface_commands.renderSurfaceGlyphPatch(surface);
+fn panicGlBroken(comptime message: []const u8, code: c_uint) noreturn {
+    std.debug.panic("GL backend invariant failed: {s}: error={}", .{ message, code });
 }
 
 pub const testing = struct {
