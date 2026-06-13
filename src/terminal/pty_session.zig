@@ -1,6 +1,6 @@
 const std = @import("std");
 const c = @import("howl_pty_c");
-const terminal_term = @import("../term.zig");
+const terminal_term = @import("term.zig");
 
 const default_pending_capacity: u32 = 4096;
 

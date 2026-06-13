@@ -1,6 +1,6 @@
-const pty_session = @import("session.zig");
-const terminal_term = @import("../term.zig");
-const EventLoop = @import("../../polling/event_loop.zig");
+const pty_session = @import("pty_session.zig");
+const terminal_term = @import("term.zig");
+const EventLoop = @import("../event_loop.zig");
 const std = @import("std");
 
 const wait_slice_timeout_ms: i32 = 50;

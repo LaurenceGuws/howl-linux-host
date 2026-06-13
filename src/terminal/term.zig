@@ -1,7 +1,7 @@
 const std = @import("std");
 const pty_c = @import("howl_pty_c");
 const vt_c = @import("howl_vt_c");
-const render_retained = @import("render/retained.zig");
+const render_retained = @import("render_retained.zig");
 
 pub const vt_title_max_bytes = @as(usize, vt_c.HOWL_VT_TITLE_MAX_BYTES);
 pub const vt_output_max_bytes = @as(usize, vt_c.HOWL_VT_PENDING_OUTPUT_MAX_BYTES);

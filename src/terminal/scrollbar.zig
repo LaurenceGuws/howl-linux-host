@@ -1,9 +1,9 @@
 const std = @import("std");
-const EventLoop = @import("../polling/event_loop.zig");
+const EventLoop = @import("../event_loop.zig");
 const Layout = @import("../display/layout.zig");
 const HostInput = @import("../input/input.zig").Input;
 const terminal_term = @import("term.zig");
-const vt_surface = @import("vt/surface.zig");
+const vt_surface = @import("vt_surface.zig");
 
 const min_width_logical: c_int = 3;
 const max_width_logical: c_int = 11;

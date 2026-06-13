@@ -1,8 +1,8 @@
-const Input = @import("../../input/input.zig").Input;
-const pty_session = @import("../pty/session.zig");
+const Input = @import("../input/input.zig").Input;
+const pty_session = @import("pty_session.zig");
 const std = @import("std");
 const c = @import("howl_vt_c");
-const terminal_term = @import("../term.zig");
+const terminal_term = @import("term.zig");
 
 const Term = terminal_term.Term;
 const TermInput = struct {

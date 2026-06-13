@@ -1,5 +1,5 @@
 const std = @import("std");
-const HostInput = @import("../input/input.zig").Input;
+const HostInput = @import("input/input.zig").Input;
 const window_wake = @import("window_wake.zig");
 const sdl_c = @import("sdl_c");
 

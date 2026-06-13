@@ -1,6 +1,6 @@
 const std = @import("std");
 const vt_c = @import("howl_vt_c");
-const terminal_term = @import("../term.zig");
+const terminal_term = @import("term.zig");
 
 pub const HyperlinkHover = struct {
     row: u16,

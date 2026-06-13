@@ -1,5 +1,5 @@
 const std = @import("std");
-const terminal_config = @import("../../config/terminal.zig");
+const terminal_config = @import("../config/terminal.zig");
 const render_c = @import("howl_render_c");
 
 const Allocator = std.mem.Allocator;

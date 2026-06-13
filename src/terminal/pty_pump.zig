@@ -1,8 +1,8 @@
-const pty_session = @import("session.zig");
+const pty_session = @import("pty_session.zig");
 const vt_c = @import("howl_vt_c");
-const terminal_term = @import("../term.zig");
-const vt_retained = @import("../vt/retained.zig");
-const vt_surface = @import("../vt/surface.zig");
+const terminal_term = @import("term.zig");
+const vt_retained = @import("vt_retained.zig");
+const vt_surface = @import("vt_surface.zig");
 const std = @import("std");
 
 const transport_mode: pty_session.TransportPumpMode = .normal;

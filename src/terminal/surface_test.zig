@@ -3,11 +3,11 @@ const render_c = @import("howl_render_c");
 
 const surface_mod = @import("surface.zig");
 const cursor_blink = @import("cursor_blink.zig");
-const pty_pump = @import("pty/pump.zig");
+const pty_pump = @import("pty_pump.zig");
 const term_texture = @import("../display/render_surface.zig");
 const terminal_input = @import("input.zig");
-const render_retained = @import("render/retained.zig");
-const surface_layout = @import("render/surface_layout.zig");
+const render_retained = @import("render_retained.zig");
+const surface_layout = @import("render_surface_layout.zig");
 const terminal_scrollbar = @import("scrollbar.zig");
 const terminal_term = @import("term.zig");
 

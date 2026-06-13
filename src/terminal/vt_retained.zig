@@ -1,6 +1,6 @@
 const std = @import("std");
 const c = @import("howl_vt_c");
-const terminal_term = @import("../term.zig");
+const terminal_term = @import("term.zig");
 
 pub const RuntimeObligation = struct {
     pending_now: bool,

@@ -1,13 +1,13 @@
 const std = @import("std");
-const EventLoop = @import("../polling/event_loop.zig");
+const EventLoop = @import("../event_loop.zig");
 const Layout = @import("../display/layout.zig");
 const HostInput = @import("../input/input.zig").Input;
 const terminal_links = @import("links.zig");
 const terminal_selection = @import("selection.zig");
 const terminal_scrollbar = @import("scrollbar.zig");
 const terminal_term = @import("term.zig");
-const term_input = @import("vt/input.zig");
-const pty_session = @import("pty/session.zig");
+const term_input = @import("vt_input.zig");
+const pty_session = @import("pty_session.zig");
 
 const Self = @This();
 const HowlTerm = terminal_term.Term;

@@ -1,12 +1,12 @@
 const std = @import("std");
-const EventLoop = @import("../../polling/event_loop.zig");
+const EventLoop = @import("../event_loop.zig");
 const c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
-const pty_session = @import("../pty/session.zig");
-const retained = @import("retained.zig");
-const vt_surface = @import("../vt/surface.zig");
-const vt_retained = @import("../vt/retained.zig");
-const terminal_scrollbar = @import("../scrollbar.zig");
+const pty_session = @import("pty_session.zig");
+const retained = @import("render_retained.zig");
+const vt_surface = @import("vt_surface.zig");
+const vt_retained = @import("vt_retained.zig");
+const terminal_scrollbar = @import("scrollbar.zig");
 
 pub const SurfaceLayoutRequest = struct {
     render_px: c.HowlRenderPixelSize,
