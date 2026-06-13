@@ -7,7 +7,6 @@ const Input = @import("input/input.zig").Input;
 const Processor = @import("event.zig").Processor;
 const TabBar = @import("display/tab_bar.zig").TabBar;
 const TabSlots = @import("terminal/tab_slots.zig").Slots;
-const TerminalContext = @import("terminal/context.zig").Context;
 const window = @import("display/window.zig");
 
 pub const Args = cli.Args;

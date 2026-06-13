@@ -49,7 +49,9 @@ const VtInitOptions = struct {
     } = .{ .shape = .block, .blink = true },
 };
 
-pub const Context = struct {
+pub const Surface = struct {
+    const Context = @This();
+
     pub const DrainInputOutcome = terminal_input.DrainInputOutcome;
 
     pub const OverlaySnapshot = struct {
@@ -991,42 +993,42 @@ fn applyPendingClipboardWrite(term: anytype, policy: ClipboardOsc52Policy, compt
 }
 
 pub const testing = struct {
-    pub const RenderAction = Context.RenderAction;
-    pub const SubmitPreparedResult = Context.SubmitPreparedResult;
+    pub const RenderAction = Surface.RenderAction;
+    pub const SubmitPreparedResult = Surface.SubmitPreparedResult;
 
     pub fn applyPendingClipboardWrite(term: anytype, policy: ClipboardOsc52Policy, comptime Ops: type) void {
-        @import("context.zig").applyPendingClipboardWrite(term, policy, Ops);
+        @import("surface.zig").applyPendingClipboardWrite(term, policy, Ops);
     }
 
     pub fn completePresentLockedWith(term: anytype, token: u64, comptime Ops: type) void {
-        @import("context.zig").completePresentLockedWith(term, token, Ops);
+        @import("surface.zig").completePresentLockedWith(term, token, Ops);
     }
 
-    pub fn driveProgressWith(self: anytype, active: bool, now_ns: u64, admission: Context.DriveAdmission, comptime Ops: type) Context.DriveProgressResult {
-        return Context.driveProgressWith(self, active, now_ns, admission, Ops);
+    pub fn driveProgressWith(self: anytype, active: bool, now_ns: u64, admission: Surface.DriveAdmission, comptime Ops: type) Surface.DriveProgressResult {
+        return Surface.driveProgressWith(self, active, now_ns, admission, Ops);
     }
 
     pub fn contextSubmitExecution(self: anytype, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
-        return Context.ContextSubmitBackend.execution(self, prepared_upload);
+        return Surface.ContextSubmitBackend.execution(self, prepared_upload);
     }
 
     pub fn renderAction(work: render_retained.WorkState, bootstrap_surface: bool) RenderAction {
-        return Context.renderAction(work, bootstrap_surface);
+        return Surface.renderAction(work, bootstrap_surface);
     }
 
     pub fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
-        return Context.submitPreparedLockedWith(self, Backend);
+        return Surface.submitPreparedLockedWith(self, Backend);
     }
 
-    pub fn idleDrive(step: Context.TurnStep) Context.DriveResult {
-        return Context.idleDrive(step);
+    pub fn idleDrive(step: Surface.TurnStep) Surface.DriveResult {
+        return Surface.idleDrive(step);
     }
 
     pub fn failedUploadSubmit(snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats) SubmitPreparedResult {
-        return Context.failedUploadSubmit(snapshot_seq, upload_ns, upload_stats);
+        return Surface.failedUploadSubmit(snapshot_seq, upload_ns, upload_stats);
     }
 
     pub fn stalePreparedUploadSubmit(snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats) SubmitPreparedResult {
-        return Context.stalePreparedUploadSubmit(snapshot_seq, upload_ns, upload_stats);
+        return Surface.stalePreparedUploadSubmit(snapshot_seq, upload_ns, upload_stats);
     }
 };

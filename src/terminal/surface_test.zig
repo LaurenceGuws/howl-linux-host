@@ -1,7 +1,7 @@
 const std = @import("std");
 const render_c = @import("howl_render_c");
 
-const context_mod = @import("context.zig");
+const surface_mod = @import("surface.zig");
 const cursor_blink = @import("cursor_blink.zig");
 const pty_pump = @import("pty/pump.zig");
 const term_texture = @import("../display/render_surface.zig");
@@ -11,10 +11,10 @@ const surface_layout = @import("render/surface_layout.zig");
 const terminal_scrollbar = @import("scrollbar.zig");
 const terminal_term = @import("term.zig");
 
-const Context = context_mod.Context;
+const Surface = surface_mod.Surface;
 const HostInput = @import("../input/input.zig").Input;
 const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
-const context_testing = context_mod.testing;
+const surface_testing = surface_mod.testing;
 
 test "surface layout request ignores logical size" {
     var state = surface_layout.State{
@@ -68,24 +68,24 @@ test "pending VT clipboard write follows OSC 52 policy" {
     var term = FakeTerm{};
 
     FakeOps.reset("Howl");
-    context_testing.applyPendingClipboardWrite(&term, .allow, FakeOps);
+    surface_testing.applyPendingClipboardWrite(&term, .allow, FakeOps);
     try std.testing.expectEqual(@as(usize, 1), FakeOps.drain_calls);
     try std.testing.expectEqual(@as(usize, 1), FakeOps.set_calls);
     try std.testing.expectEqualStrings("Howl", FakeOps.last_text);
 
     FakeOps.reset("Howl");
-    context_testing.applyPendingClipboardWrite(&term, .deny, FakeOps);
+    surface_testing.applyPendingClipboardWrite(&term, .deny, FakeOps);
     try std.testing.expectEqual(@as(usize, 1), FakeOps.drain_calls);
     try std.testing.expectEqual(@as(usize, 0), FakeOps.set_calls);
 
     FakeOps.reset(null);
-    context_testing.applyPendingClipboardWrite(&term, .allow, FakeOps);
+    surface_testing.applyPendingClipboardWrite(&term, .allow, FakeOps);
     try std.testing.expectEqual(@as(usize, 1), FakeOps.drain_calls);
     try std.testing.expectEqual(@as(usize, 0), FakeOps.set_calls);
 }
 
 test "cursor activity pushes blink deadline while visible" {
-    var context = Context{
+    var context = Surface{
         .term = undefined,
         .progress = .{},
         .live = false,
@@ -163,17 +163,17 @@ test "drive progress keeps per-terminal continuation admission until a later non
         },
     };
 
-    const none = context_testing.driveProgressWith(&context, true, 1, .{ .input_published = false }, TestDriveOps);
+    const none = surface_testing.driveProgressWith(&context, true, 1, .{ .input_published = false }, TestDriveOps);
     try std.testing.expect(!none.drove);
     try std.testing.expect(!context.progress_continuation_pending);
     try std.testing.expectEqual(@as(u8, 0), context.drive_calls);
 
-    const first = context_testing.driveProgressWith(&context, true, 2, .{ .input_published = true }, TestDriveOps);
+    const first = surface_testing.driveProgressWith(&context, true, 2, .{ .input_published = true }, TestDriveOps);
     try std.testing.expect(first.drove);
     try std.testing.expect(first.outcome.keep);
     try std.testing.expect(context.progress_continuation_pending);
 
-    const second = context_testing.driveProgressWith(&context, true, 3, .{ .input_published = false }, TestDriveOps);
+    const second = surface_testing.driveProgressWith(&context, true, 3, .{ .input_published = false }, TestDriveOps);
     try std.testing.expect(second.drove);
     try std.testing.expect(!second.outcome.keep);
     try std.testing.expect(!context.progress_continuation_pending);
@@ -193,7 +193,7 @@ test "inactive tab continuation re-enters from per-terminal continuation admissi
         },
     };
 
-    const result = context_testing.driveProgressWith(&context, false, 4, .{ .input_published = false }, TestDriveOps);
+    const result = surface_testing.driveProgressWith(&context, false, 4, .{ .input_published = false }, TestDriveOps);
 
     try std.testing.expect(result.drove);
     try std.testing.expectEqual(@as(u8, 1), context.drive_calls);
@@ -269,12 +269,12 @@ test "text input fast path publishes text without pointer or UI operations" {
             return self.wheel_changed;
         }
 
-        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
+        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
             selection_calls += 1;
             return .{ .consumed = false, .host_visual_changed = false };
         }
 
-        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
+        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
             hover_calls += 1;
             return .{ .consumed = false, .host_visual_changed = false };
         }
@@ -381,11 +381,11 @@ test "text fast path compacts mixed input before pointer UI drain" {
             unreachable;
         }
 
-        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
+        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
             unreachable;
         }
 
-        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
+        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
             unreachable;
         }
     };
@@ -462,11 +462,11 @@ test "pointer UI drain keeps PTY publication separate from host visual mutation"
             return self.wheel_changed;
         }
 
-        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
+        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
             return .{ .consumed = false, .host_visual_changed = false };
         }
 
-        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Context.MouseHandlingOutcome {
+        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
             return .{ .consumed = false, .host_visual_changed = false };
         }
     };
@@ -494,7 +494,7 @@ test "present pending blocks submit path until host present ack" {
         .bootstrap_surface = false,
     };
 
-    try std.testing.expectEqual(context_testing.RenderAction.blocked_present, context_testing.renderAction(work, false));
+    try std.testing.expectEqual(surface_testing.RenderAction.blocked_present, surface_testing.renderAction(work, false));
 }
 
 test "submit path runs once no host present is in flight" {
@@ -506,14 +506,14 @@ test "submit path runs once no host present is in flight" {
         .bootstrap_surface = false,
     };
 
-    try std.testing.expectEqual(context_testing.RenderAction.submit_pending, context_testing.renderAction(work, false));
+    try std.testing.expectEqual(surface_testing.RenderAction.submit_pending, surface_testing.renderAction(work, false));
 }
 
 test "idle render action constructor returns zero telemetry" {
-    const result = context_testing.idleDrive(.idle_submit);
+    const result = surface_testing.idleDrive(.idle_submit);
 
     try std.testing.expect(!result.prepared);
-    try std.testing.expectEqual(Context.TurnStep.idle_submit, result.step);
+    try std.testing.expectEqual(Surface.TurnStep.idle_submit, result.step);
     try std.testing.expectEqual(@as(u64, 0), result.present_snapshot_seq);
     try std.testing.expectEqual(@as(u64, 0), result.prepare_ns);
     try std.testing.expectEqual(@as(u64, 0), result.upload_ns);
@@ -553,7 +553,7 @@ test "failed upload constructor preserves upload telemetry and skips submit timi
         .glyph_dispatch_ns = 14,
         .glyph_draw_ns = 15,
     };
-    const result = context_testing.failedUploadSubmit(77, 99, stats);
+    const result = surface_testing.failedUploadSubmit(77, 99, stats);
 
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
     try std.testing.expectEqual(@as(u64, 77), result.snapshot_seq);
@@ -578,7 +578,7 @@ test "failed upload constructor preserves upload telemetry and skips submit timi
 
 test "stale handle constructor preserves failed upload phase timing" {
     const stats = term_texture.UploadStats{ .count = 1, .bytes = 32 };
-    const result = context_testing.stalePreparedUploadSubmit(88, 123, stats);
+    const result = surface_testing.stalePreparedUploadSubmit(88, 123, stats);
 
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
     try std.testing.expectEqual(@as(u64, 88), result.snapshot_seq);
@@ -797,7 +797,7 @@ const TestLockedBackend = struct {
     }
 
     pub fn execution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
-        return context_testing.contextSubmitExecution(self, prepared_upload);
+        return surface_testing.contextSubmitExecution(self, prepared_upload);
     }
 };
 
@@ -860,7 +860,7 @@ const TestResizeBackend = struct {
     }
 
     pub fn execution(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
-        return context_testing.contextSubmitExecution(self, prepared_upload);
+        return surface_testing.contextSubmitExecution(self, prepared_upload);
     }
 };
 
@@ -916,7 +916,7 @@ const TestPresentOwner = struct {
             return;
         }
         context.record(.matching_present_complete);
-        context_testing.completePresentLockedWith(&context.term, token, TestPresentAckOps);
+        surface_testing.completePresentLockedWith(&context.term, token, TestPresentAckOps);
         self.pending_terminal_present = null;
     }
 };
@@ -942,7 +942,7 @@ test "submit backend upload observes terminal mutex unlocked" {
     context.term.mutex.lockFair();
     defer context.term.mutex.unlock();
 
-    const result = context_testing.submitPreparedLockedWith(&context, TestUnlockedBackend);
+    const result = surface_testing.submitPreparedLockedWith(&context, TestUnlockedBackend);
 
     try std.testing.expect(TestUnlockedBackend.saw_unlocked);
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
@@ -955,7 +955,7 @@ test "render submit runs under terminal mutex after backend upload" {
     context.term.mutex.lockFair();
     defer context.term.mutex.unlock();
 
-    const result = context_testing.submitPreparedLockedWith(&context, TestLockedBackend);
+    const result = surface_testing.submitPreparedLockedWith(&context, TestLockedBackend);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
     try std.testing.expect(context.term.render.submit_observed_locked);
@@ -966,7 +966,7 @@ test "context submit backend reports prepared upload count after upload succeeds
     context.term.mutex.lockFair();
     defer context.term.mutex.unlock();
 
-    const result = context_testing.submitPreparedLockedWith(&context, TestLockedBackend);
+    const result = surface_testing.submitPreparedLockedWith(&context, TestLockedBackend);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
     try std.testing.expectEqual(context.term_texture.host_surface_id, context.term.render.last_execution.host_surface.host_surface_id);
@@ -980,7 +980,7 @@ test "host upload failure returns failed submit without render submit" {
     context.term.mutex.lockFair();
     defer context.term.mutex.unlock();
 
-    const result = context_testing.submitPreparedLockedWith(&context, TestFailBackend);
+    const result = surface_testing.submitPreparedLockedWith(&context, TestFailBackend);
 
     try std.testing.expect(TestFailBackend.saw_unlocked);
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
@@ -994,7 +994,7 @@ test "prepared handle mutation after upload does not submit" {
     context.term.mutex.lockFair();
     defer context.term.mutex.unlock();
 
-    const result = context_testing.submitPreparedLockedWith(&context, TestMutatingBackend);
+    const result = surface_testing.submitPreparedLockedWith(&context, TestMutatingBackend);
 
     try std.testing.expect(TestMutatingBackend.saw_unlocked);
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
@@ -1029,7 +1029,7 @@ test "resize success path submits full surface and acks matching present token" 
     try std.testing.expectEqual(info.render_px.height, surface.render_px.height);
 
     context.term.mutex.lockFair();
-    const submit = context_testing.submitPreparedLockedWith(&context, TestResizeBackend);
+    const submit = surface_testing.submitPreparedLockedWith(&context, TestResizeBackend);
     context.term.mutex.unlock();
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, submit.result);
@@ -1058,7 +1058,7 @@ test "resize success path submits full surface and acks matching present token" 
         .present_pending = context.term.render.presentPending(),
         .bootstrap_surface = false,
     };
-    try std.testing.expectEqual(context_testing.RenderAction.blocked_present, context_testing.renderAction(blocked_work, false));
+    try std.testing.expectEqual(surface_testing.RenderAction.blocked_present, surface_testing.renderAction(blocked_work, false));
 
     present.drainComplete(&context, token + 1);
     try std.testing.expectEqual(@as(u8, 0), TestPresentAckOps.ack_calls);
@@ -1109,7 +1109,7 @@ test "resize upload failure zeros host dimensions and retry submits same full fr
     try std.testing.expectEqual(info.geometry_epoch, surface.token.geometry_epoch);
 
     context.term.mutex.lockFair();
-    const failed_submit = context_testing.submitPreparedLockedWith(&context, TestResizeFailBackend);
+    const failed_submit = surface_testing.submitPreparedLockedWith(&context, TestResizeFailBackend);
     context.term.mutex.unlock();
 
     try std.testing.expectEqual(render_retained.SubmitResult.failed, failed_submit.result);
@@ -1125,7 +1125,7 @@ test "resize upload failure zeros host dimensions and retry submits same full fr
     try std.testing.expectEqual(@as(u16, 0), context.term_texture.height);
 
     context.term.mutex.lockFair();
-    const retried_submit = context_testing.submitPreparedLockedWith(&context, TestResizeBackend);
+    const retried_submit = surface_testing.submitPreparedLockedWith(&context, TestResizeBackend);
     context.term.mutex.unlock();
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, retried_submit.result);
@@ -1145,7 +1145,7 @@ test "resize while present pending waits for matching ack before resized submit"
     var present = TestPresentOwner{};
 
     context.term.mutex.lockFair();
-    const prior_submit = context_testing.submitPreparedLockedWith(&context, TestResizeBackend);
+    const prior_submit = surface_testing.submitPreparedLockedWith(&context, TestResizeBackend);
     context.term.mutex.unlock();
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, prior_submit.result);
@@ -1173,7 +1173,7 @@ test "resize while present pending waits for matching ack before resized submit"
         .present_pending = context.term.render.presentPending(),
         .bootstrap_surface = false,
     };
-    try std.testing.expectEqual(context_testing.RenderAction.blocked_present, context_testing.renderAction(blocked_work, false));
+    try std.testing.expectEqual(surface_testing.RenderAction.blocked_present, surface_testing.renderAction(blocked_work, false));
     try std.testing.expectEqual(@as(u8, 1), context.term.render.submit_calls);
     try std.testing.expectEqual(@as(u8, 1), context.host_upload_calls);
 
@@ -1181,7 +1181,7 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expectEqual(@as(u8, 0), TestPresentAckOps.ack_calls);
     try std.testing.expectEqual(@as(?u64, prior_token), present.pending_terminal_present);
     try std.testing.expect(context.term.render.presentPending());
-    try std.testing.expectEqual(context_testing.RenderAction.blocked_present, context_testing.renderAction(blocked_work, false));
+    try std.testing.expectEqual(surface_testing.RenderAction.blocked_present, surface_testing.renderAction(blocked_work, false));
     try std.testing.expectEqual(@as(u8, 1), context.term.render.submit_calls);
 
     present.drainComplete(&context, prior_token);
@@ -1197,10 +1197,10 @@ test "resize while present pending waits for matching ack before resized submit"
         .present_pending = context.term.render.presentPending(),
         .bootstrap_surface = false,
     };
-    try std.testing.expectEqual(context_testing.RenderAction.submit_pending, context_testing.renderAction(unblocked_work, false));
+    try std.testing.expectEqual(surface_testing.RenderAction.submit_pending, surface_testing.renderAction(unblocked_work, false));
 
     context.term.mutex.lockFair();
-    const resized_submit = context_testing.submitPreparedLockedWith(&context, TestResizeBackend);
+    const resized_submit = surface_testing.submitPreparedLockedWith(&context, TestResizeBackend);
     context.term.mutex.unlock();
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, resized_submit.result);
@@ -1244,12 +1244,12 @@ test "complete present acks matching host-owned token once and clears" {
     FakeOps.reset();
     var term = FakeTerm{};
 
-    context_testing.completePresentLockedWith(&term, 170, FakeOps);
+    surface_testing.completePresentLockedWith(&term, 170, FakeOps);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
     try std.testing.expectEqual(@as(u64, 17), FakeOps.last_snapshot_seq);
     try std.testing.expect(term.render.present_in_flight == null);
 
-    context_testing.completePresentLockedWith(&term, 170, FakeOps);
+    surface_testing.completePresentLockedWith(&term, 170, FakeOps);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
     try std.testing.expectEqual(@as(u64, 17), FakeOps.last_snapshot_seq);
 }
@@ -1286,12 +1286,12 @@ test "mismatched complete present does not ack or clear" {
     FakeOps.reset();
     var term = FakeTerm{};
 
-    context_testing.completePresentLockedWith(&term, 191, FakeOps);
+    surface_testing.completePresentLockedWith(&term, 191, FakeOps);
     try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
     try std.testing.expectEqual(@as(u64, 0), FakeOps.last_snapshot_seq);
     try std.testing.expect(term.render.present_in_flight != null);
 
-    context_testing.completePresentLockedWith(&term, 190, FakeOps);
+    surface_testing.completePresentLockedWith(&term, 190, FakeOps);
     try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
     try std.testing.expectEqual(@as(u64, 19), FakeOps.last_snapshot_seq);
     try std.testing.expect(term.render.present_in_flight == null);

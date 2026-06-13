@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const DisplayLayout = @import("layout.zig");
-const TerminalContext = @import("../terminal/context.zig").Context;
+const TerminalSurface = @import("../terminal/surface.zig").Surface;
 const FramePacing = @import("frame_timer.zig");
 
 pub const Reason = FramePacing.PresentReason;
@@ -27,7 +27,7 @@ pub const Submission = struct {
     token: ?PresentToken,
 };
 
-pub fn deriveReason(host_redraw: bool, step: TerminalContext.TurnStep) Reason {
+pub fn deriveReason(host_redraw: bool, step: TerminalSurface.TurnStep) Reason {
     return switch (step) {
         .rendered => .terminal_frame,
         .blocked_present => .terminal_retire,
@@ -53,7 +53,7 @@ pub fn submitWith(display: anytype, tab: anytype, snapshot: Snapshot, reason: Re
     }
 }
 
-pub fn recordSubmissionFor(app: anytype, tab: anytype, step: TerminalContext.TurnStep, present_snapshot_seq: u64, submission: Submission) void {
+pub fn recordSubmissionFor(app: anytype, tab: anytype, step: TerminalSurface.TurnStep, present_snapshot_seq: u64, submission: Submission) void {
     switch (submission.reason) {
         .none => assert(!submission.submitted),
         .host_damage => assert(submission.submitted),
@@ -98,7 +98,7 @@ fn completeTerminal(tabs: anytype, token: PresentToken) void {
 test "derivePresentReason matrix names host and terminal present cadence" {
     const cases = [_]struct {
         host_redraw: bool,
-        step: TerminalContext.TurnStep,
+        step: TerminalSurface.TurnStep,
         reason: Reason,
     }{
         .{ .host_redraw = false, .step = .surface_idle, .reason = .none },

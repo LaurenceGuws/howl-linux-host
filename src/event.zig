@@ -10,7 +10,7 @@ const TabBar = @import("display/tab_bar.zig").TabBar;
 const TabSlots = @import("terminal/tab_slots.zig").Slots;
 const AppPresent = @import("display/present.zig");
 const pty_wait_thread = @import("terminal/pty/wait_thread.zig");
-const TerminalContext = @import("terminal/context.zig").Context;
+const TerminalSurface = @import("terminal/surface.zig").Surface;
 const FramePacing = @import("display/frame_timer.zig");
 const window = @import("display/window.zig");
 
@@ -74,7 +74,7 @@ pub const Processor = struct {
     };
 
     const HostMutations = struct {
-        input_outcome: TerminalContext.DrainInputOutcome,
+        input_outcome: TerminalSurface.DrainInputOutcome,
     };
 
     const RedrawRenderIntent = struct {
@@ -96,8 +96,8 @@ pub const Processor = struct {
     };
 
     const RenderFrame = struct {
-        tab: *TerminalContext,
-        turn: TerminalContext.TurnResult,
+        tab: *TerminalSurface,
+        turn: TerminalSurface.TurnResult,
         snapshot: RenderSnapshot,
     };
 
@@ -111,7 +111,7 @@ pub const Processor = struct {
     };
 
     pub fn configureInputPolicies(self: *Self) void {
-        const tab = activeContext(self.tabs.items(), self.active_tab_idx.*);
+        const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
         self.input.setHostMousePolicy(.{
             .listen_always = self.conf.window.mouse.listen_always,
             .link_hover = tab.wantsLinkHover(),
@@ -150,7 +150,7 @@ pub const Processor = struct {
         self.active_tab_idx.* = @intCast(updated.len - 1);
         assert(tabIndexInRange(updated, self.active_tab_idx.*));
         syncTerminalFocus(self.window, updated, self.active_tab_idx.*);
-        syncActiveWindowTitle(self.window, activeContext(updated, self.active_tab_idx.*));
+        syncActiveWindowTitle(self.window, activeSurface(updated, self.active_tab_idx.*));
     }
 
     fn runLoopTurn(self: *Self) !LoopAction {
@@ -230,7 +230,7 @@ pub const Processor = struct {
         return facts;
     }
 
-    fn loopTabDebug(tab: *TerminalContext, now_ns: u64) LoopTabDebug {
+    fn loopTabDebug(tab: *TerminalSurface, now_ns: u64) LoopTabDebug {
         return .{
             .wake_pending = pty_wait_thread.wakePending(tab),
             .continuation_pending = tab.progressContinuationPending(),
@@ -290,8 +290,8 @@ pub const Processor = struct {
         }
     }
 
-    fn forwardTerminalInput(self: *Self) TerminalContext.DrainInputOutcome {
-        const tab = activeContext(self.tabs.items(), self.active_tab_idx.*);
+    fn forwardTerminalInput(self: *Self) TerminalSurface.DrainInputOutcome {
+        const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
         const content_logical = DisplayLayout.contentLogicalSize(self.window, self.conf.tab_bar.height);
         const origin_y = DisplayLayout.tabBarHeightLogical(self.window, self.conf.tab_bar.height);
         const outcome = forwardTerminalInputFlow(tab, self.input, 0, origin_y, content_logical.width, content_logical.height);
@@ -299,14 +299,14 @@ pub const Processor = struct {
         return outcome;
     }
 
-    fn forwardTerminalInputFlow(tab: *TerminalContext, input: *Input, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) TerminalContext.DrainInputOutcome {
+    fn forwardTerminalInputFlow(tab: *TerminalSurface, input: *Input, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) TerminalSurface.DrainInputOutcome {
         var outcome = tab.drainTextInputFastPath(input);
         mergeDrainInputOutcome(&outcome, tab.drainPointerAndUiInput(input, origin_x, origin_y, logical_width, logical_height));
         tab.handleScrollInput(input);
         return outcome;
     }
 
-    fn mergeDrainInputOutcome(total: *TerminalContext.DrainInputOutcome, next: TerminalContext.DrainInputOutcome) void {
+    fn mergeDrainInputOutcome(total: *TerminalSurface.DrainInputOutcome, next: TerminalSurface.DrainInputOutcome) void {
         total.published_to_pty = total.published_to_pty or next.published_to_pty;
         total.host_visual_changed = total.host_visual_changed or next.host_visual_changed;
     }
@@ -333,7 +333,7 @@ pub const Processor = struct {
         return progress;
     }
 
-    fn driveTerminalProgress(tabs: []*TerminalContext, active_tab_idx: TabIndex, terminal_input_admitted: bool, now_ns: u64) TerminalProgress {
+    fn driveTerminalProgress(tabs: []*TerminalSurface, active_tab_idx: TabIndex, terminal_input_admitted: bool, now_ns: u64) TerminalProgress {
         var should_redraw = false;
         var keep_running = false;
         var drive_performed = false;
@@ -351,7 +351,7 @@ pub const Processor = struct {
         };
     }
 
-    fn driveTabRuntimeTurn(tab: *TerminalContext, active: bool, now_ns: u64, admission: TerminalContext.DriveAdmission) TerminalContext.DriveProgressResult {
+    fn driveTabRuntimeTurn(tab: *TerminalSurface, active: bool, now_ns: u64, admission: TerminalSurface.DriveAdmission) TerminalSurface.DriveProgressResult {
         return tab.driveProgress(active, now_ns, admission);
     }
 
@@ -384,12 +384,12 @@ pub const Processor = struct {
     }
 
     fn syncActiveBlinkCadence(self: *Self, now_ns: u64) bool {
-        const tab = activeContext(self.tabs.items(), self.active_tab_idx.*);
+        const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
         return tab.syncCursorBlinkCadence(now_ns);
     }
 
     fn activeBlinkWaitMs(self: *Self, now_ns: u64) ?u32 {
-        const tab = activeContext(self.tabs.items(), self.active_tab_idx.*);
+        const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
         return tab.nextCursorBlinkWaitMs(now_ns);
     }
 
@@ -419,11 +419,11 @@ pub const Processor = struct {
         return .{ .tab = tab, .turn = turn, .snapshot = snapshot };
     }
 
-    fn syncActiveWindowTitle(app_window: *window.Window, tab: *TerminalContext) void {
+    fn syncActiveWindowTitle(app_window: *window.Window, tab: *TerminalSurface) void {
         app_window.setTitle(tab.titleSlice());
     }
 
-    fn renderSnapshot(self: *Self, tab: *TerminalContext) RenderSnapshot {
+    fn renderSnapshot(self: *Self, tab: *TerminalSurface) RenderSnapshot {
         const texture_rect = DisplayLayout.contentRect(self.window, self.conf.tab_bar.height);
         const overlay = tab.overlaySnapshot(texture_rect);
         var title_buf: [TabBar.max_tabs][]const u8 = undefined;
@@ -445,7 +445,7 @@ pub const Processor = struct {
         };
     }
 
-    fn derivePresentReason(host_redraw: bool, step: TerminalContext.TurnStep) PresentReason {
+    fn derivePresentReason(host_redraw: bool, step: TerminalSurface.TurnStep) PresentReason {
         return AppPresent.deriveReason(host_redraw, step);
     }
 
@@ -464,7 +464,7 @@ pub const Processor = struct {
         return submission;
     }
 
-    fn submitPresentWith(display: *Display.State, tab: *TerminalContext, snapshot: RenderSnapshot, reason: PresentReason) PresentSubmission {
+    fn submitPresentWith(display: *Display.State, tab: *TerminalSurface, snapshot: RenderSnapshot, reason: PresentReason) PresentSubmission {
         return AppPresent.submitWith(display, tab, .{
             .texture_rect = snapshot.texture_rect,
             .scrollbar = snapshot.scrollbar,
@@ -478,7 +478,7 @@ pub const Processor = struct {
         recordPresentSubmissionFor(self, frame.tab, frame.turn.step, frame.turn.present_snapshot_seq, submission);
     }
 
-    fn recordPresentSubmissionFor(self: *Self, tab: *TerminalContext, step: TerminalContext.TurnStep, present_snapshot_seq: u64, submission: PresentSubmission) void {
+    fn recordPresentSubmissionFor(self: *Self, tab: *TerminalSurface, step: TerminalSurface.TurnStep, present_snapshot_seq: u64, submission: PresentSubmission) void {
         AppPresent.recordSubmissionFor(self, tab, step, present_snapshot_seq, submission);
     }
 
@@ -488,21 +488,21 @@ pub const Processor = struct {
         return pending_before and self.pending_terminal_present == null;
     }
 
-    fn resizeTerminals(conf: *const Config.UiConfig, app_window: *window.Window, tabs: []*TerminalContext) void {
+    fn resizeTerminals(conf: *const Config.UiConfig, app_window: *window.Window, tabs: []*TerminalSurface) void {
         const px = DisplayLayout.contentPixelSize(app_window, conf.tab_bar.height);
         const logical = DisplayLayout.contentLogicalSize(app_window, conf.tab_bar.height);
         for (tabs) |tab| tab.resize(px.width, px.height, logical.width, logical.height);
     }
 
-    fn setWindowFocused(app_window: *window.Window, tabs: []*TerminalContext, active_tab_idx: TabIndex, focused: bool) void {
+    fn setWindowFocused(app_window: *window.Window, tabs: []*TerminalSurface, active_tab_idx: TabIndex, focused: bool) void {
         assert(tabIndexInRange(tabs, active_tab_idx));
         _ = app_window.setFocused(focused);
         syncTerminalFocus(app_window, tabs, active_tab_idx);
     }
 
-    fn activeTabProblem(tabs: []*TerminalContext, active_tab_idx: TabIndex) ?ActiveTabProblem {
+    fn activeTabProblem(tabs: []*TerminalSurface, active_tab_idx: TabIndex) ?ActiveTabProblem {
         if (tabs.len == 0) return .exited;
-        const tab = activeContext(tabs, active_tab_idx);
+        const tab = activeSurface(tabs, active_tab_idx);
         return switch (tab.sessionOutcome()) {
             .active => null,
             .exited => .exited,
@@ -510,23 +510,23 @@ pub const Processor = struct {
         };
     }
 
-    fn activeTab(tabs: []*TerminalContext, active_tab_idx: TabIndex) *TerminalContext {
+    fn activeTab(tabs: []*TerminalSurface, active_tab_idx: TabIndex) *TerminalSurface {
         assert(tabs.len > 0);
         assert(tabIndexInRange(tabs, active_tab_idx));
         return tabs[@intCast(active_tab_idx)];
     }
 
-    fn activeContext(tabs: []*TerminalContext, active_tab_idx: TabIndex) *TerminalContext {
+    fn activeSurface(tabs: []*TerminalSurface, active_tab_idx: TabIndex) *TerminalSurface {
         return activeTab(tabs, active_tab_idx);
     }
 
     fn handleBindingAction(self: *Self, action: Input.Bindings.Action) !void {
         switch (action) {
-            .zoom_in => _ = activeContext(self.tabs.items(), self.active_tab_idx.*).adjustFontSize(1),
-            .zoom_out => _ = activeContext(self.tabs.items(), self.active_tab_idx.*).adjustFontSize(-1),
-            .zoom_reset => _ = activeContext(self.tabs.items(), self.active_tab_idx.*).resetFontSize(),
-            .zoom_stress_toggle => _ = activeContext(self.tabs.items(), self.active_tab_idx.*).toggleStressFontSize(),
-            .terminal_paste => pasteIntoActiveTab(activeContext(self.tabs.items(), self.active_tab_idx.*)),
+            .zoom_in => _ = activeSurface(self.tabs.items(), self.active_tab_idx.*).adjustFontSize(1),
+            .zoom_out => _ = activeSurface(self.tabs.items(), self.active_tab_idx.*).adjustFontSize(-1),
+            .zoom_reset => _ = activeSurface(self.tabs.items(), self.active_tab_idx.*).resetFontSize(),
+            .zoom_stress_toggle => _ = activeSurface(self.tabs.items(), self.active_tab_idx.*).toggleStressFontSize(),
+            .terminal_paste => pasteIntoActiveTab(activeSurface(self.tabs.items(), self.active_tab_idx.*)),
             .terminal_new_tab => try self.openTab(),
             .terminal_close_tab => closeActiveTab(self.window, self.tabs, self.active_tab_idx),
             .terminal_next_tab => selectRelative(self.window, self.tabs.items(), self.active_tab_idx, 1),
@@ -547,10 +547,10 @@ pub const Processor = struct {
         if (!tabIndexInRange(updated, active_tab_idx.*)) active_tab_idx.* = @intCast(updated.len - 1);
         assert(tabIndexInRange(updated, active_tab_idx.*));
         syncTerminalFocus(app_window, updated, active_tab_idx.*);
-        syncActiveWindowTitle(app_window, activeContext(updated, active_tab_idx.*));
+        syncActiveWindowTitle(app_window, activeSurface(updated, active_tab_idx.*));
     }
 
-    fn selectRelative(app_window: *window.Window, tabs: []*TerminalContext, active_tab_idx: *TabIndex, delta: i32) void {
+    fn selectRelative(app_window: *window.Window, tabs: []*TerminalSurface, active_tab_idx: *TabIndex, delta: i32) void {
         if (tabs.len <= 1) return;
         const len_i: i32 = @intCast(tabs.len);
         var idx: i32 = @intCast(active_tab_idx.*);
@@ -558,16 +558,16 @@ pub const Processor = struct {
         selectTab(app_window, tabs, active_tab_idx, @intCast(idx));
     }
 
-    fn selectTab(app_window: *window.Window, tabs: []*TerminalContext, active_tab_idx: *TabIndex, idx: TabIndex) void {
+    fn selectTab(app_window: *window.Window, tabs: []*TerminalSurface, active_tab_idx: *TabIndex, idx: TabIndex) void {
         if (!tabIndexInRange(tabs, idx)) return;
         if (idx == active_tab_idx.*) return;
         active_tab_idx.* = idx;
         assert(tabIndexInRange(tabs, active_tab_idx.*));
         syncTerminalFocus(app_window, tabs, active_tab_idx.*);
-        syncActiveWindowTitle(app_window, activeContext(tabs, active_tab_idx.*));
+        syncActiveWindowTitle(app_window, activeSurface(tabs, active_tab_idx.*));
     }
 
-    fn syncTerminalFocus(app_window: *window.Window, tabs: []*TerminalContext, active_tab_idx: TabIndex) void {
+    fn syncTerminalFocus(app_window: *window.Window, tabs: []*TerminalSurface, active_tab_idx: TabIndex) void {
         assert(tabIndexInRange(tabs, active_tab_idx));
         for (tabs, 0..) |tab, i| {
             tab.setWindowFocused(app_window.focused);
@@ -575,13 +575,13 @@ pub const Processor = struct {
         }
     }
 
-    fn tabTitles(tabs: []*TerminalContext, buf: [][]const u8) []const []const u8 {
+    fn tabTitles(tabs: []*TerminalSurface, buf: [][]const u8) []const []const u8 {
         assert(buf.len >= tabs.len);
         for (tabs, 0..) |tab, i| buf[i] = tab.titleSlice();
         return buf[0..tabs.len];
     }
 
-    fn tabBarRevision(tabs: []*TerminalContext, active_tab_idx: TabIndex) u64 {
+    fn tabBarRevision(tabs: []*TerminalSurface, active_tab_idx: TabIndex) u64 {
         assert(tabIndexInRange(tabs, active_tab_idx));
         var revision: u64 = @as(u64, tabs.len) << 32;
         revision ^= @as(u64, active_tab_idx) << 16;
@@ -593,14 +593,14 @@ pub const Processor = struct {
         return revision;
     }
 
-    fn pasteIntoActiveTab(tab: *TerminalContext) void {
+    fn pasteIntoActiveTab(tab: *TerminalSurface) void {
         const text = window.getClipboardText(std.heap.c_allocator) catch return;
         defer if (text) |buf| std.heap.c_allocator.free(buf);
         const payload = text orelse return;
         tab.paste(payload);
     }
 
-    fn tabIndexInRange(tabs: []*TerminalContext, idx: TabIndex) bool {
+    fn tabIndexInRange(tabs: []*TerminalSurface, idx: TabIndex) bool {
         return tabIndexInRangeLen(tabs.len, idx);
     }
     fn tabIndexInRangeLen(len: usize, idx: TabIndex) bool {
