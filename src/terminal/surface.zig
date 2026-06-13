@@ -73,24 +73,6 @@ pub const Surface = struct {
         prepared: bool,
         step: TurnStep,
         present_snapshot_seq: u64,
-        prepare_ns: u64,
-        upload_ns: u64,
-        upload_count: u64,
-        upload_bytes: u64,
-        upload_fill_count: u64,
-        upload_sprite_count: u64,
-        upload_glyph_run_count: u64,
-        upload_glyph_count: u64,
-        upload_fill_ns: u64,
-        upload_fill_dispatch_ns: u64,
-        upload_fill_draw_ns: u64,
-        upload_sprite_ns: u64,
-        upload_sprite_dispatch_ns: u64,
-        upload_sprite_draw_ns: u64,
-        upload_glyph_ns: u64,
-        upload_glyph_dispatch_ns: u64,
-        upload_glyph_draw_ns: u64,
-        retained_submit_ns: u64,
     };
 
     pub const DriveAdmission = struct {
@@ -406,24 +388,6 @@ pub const Surface = struct {
             .prepared = drive_result.prepared,
             .step = drive_result.step,
             .present_snapshot_seq = drive_result.present_snapshot_seq,
-            .prepare_ns = drive_result.prepare_ns,
-            .upload_ns = drive_result.upload_ns,
-            .upload_count = drive_result.upload_count,
-            .upload_bytes = drive_result.upload_bytes,
-            .upload_fill_count = drive_result.upload_fill_count,
-            .upload_sprite_count = drive_result.upload_sprite_count,
-            .upload_glyph_run_count = drive_result.upload_glyph_run_count,
-            .upload_glyph_count = drive_result.upload_glyph_count,
-            .upload_fill_ns = drive_result.upload_fill_ns,
-            .upload_fill_dispatch_ns = drive_result.upload_fill_dispatch_ns,
-            .upload_fill_draw_ns = drive_result.upload_fill_draw_ns,
-            .upload_sprite_ns = drive_result.upload_sprite_ns,
-            .upload_sprite_dispatch_ns = drive_result.upload_sprite_dispatch_ns,
-            .upload_sprite_draw_ns = drive_result.upload_sprite_draw_ns,
-            .upload_glyph_ns = drive_result.upload_glyph_ns,
-            .upload_glyph_dispatch_ns = drive_result.upload_glyph_dispatch_ns,
-            .upload_glyph_draw_ns = drive_result.upload_glyph_draw_ns,
-            .retained_submit_ns = drive_result.retained_submit_ns,
         };
     }
 
@@ -545,24 +509,6 @@ pub const Surface = struct {
         prepared: bool,
         step: TurnStep,
         present_snapshot_seq: u64,
-        prepare_ns: u64,
-        upload_ns: u64,
-        upload_count: u64,
-        upload_bytes: u64,
-        upload_fill_count: u64,
-        upload_sprite_count: u64,
-        upload_glyph_run_count: u64,
-        upload_glyph_count: u64,
-        upload_fill_ns: u64,
-        upload_fill_dispatch_ns: u64,
-        upload_fill_draw_ns: u64,
-        upload_sprite_ns: u64,
-        upload_sprite_dispatch_ns: u64,
-        upload_sprite_draw_ns: u64,
-        upload_glyph_ns: u64,
-        upload_glyph_dispatch_ns: u64,
-        upload_glyph_draw_ns: u64,
-        retained_submit_ns: u64,
     };
 
     const RenderAction = enum {
@@ -577,25 +523,22 @@ pub const Surface = struct {
         std.debug.assert(work.bootstrap_surface == bootstrap_surface);
         return switch (renderAction(work, bootstrap_surface)) {
             .blocked_present => idleDrive(.blocked_present),
-            .submit_pending => submitDriveResult(false, 0, self.submitPreparedLocked()),
+            .submit_pending => submitDriveResult(false, self.submitPreparedLocked()),
             .idle_submit => idleDrive(.idle_submit),
             .prepare_or_idle => blk: {
                 self.maybeCommitGridResizeLocked();
                 var visible = vt_surface.captureVisibleLocked(&self.term, terminal_links.hoverDecoration(self)) catch {
                     self.links.hover_publish_pending = false;
-                    break :blk failedDrive(0);
+                    break :blk idleDrive(.failed);
                 };
                 defer visible.deinit(self.term.allocator);
                 self.links.hover_publish_pending = false;
-                const prepare_start_ns = EventLoop.nowNs();
                 const render_visible: *const render_c.HowlVtSurfaceResult = @ptrCast(&visible.surface);
                 const prepare_result = self.term.render.prepare(render_visible);
-                const prepare_end_ns = EventLoop.nowNs();
-                const prepare_ns = prepare_end_ns -| prepare_start_ns;
                 break :blk switch (prepare_result) {
-                    .idle => idlePrepareDrive(prepare_ns),
-                    .failed => failedDrive(prepare_ns),
-                    .prepared => submitDriveResult(true, prepare_ns, self.submitPreparedLocked()),
+                    .idle => idleDrive(.idle_prepare),
+                    .failed => idleDrive(.failed),
+                    .prepared => submitDriveResult(true, self.submitPreparedLocked()),
                 };
             },
         };
@@ -623,13 +566,13 @@ pub const Surface = struct {
     }
 
     const ContextSubmitBackend = struct {
-        fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
+        fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload) bool {
             const render_surface = prepared_upload.render_surface orelse {
                 if (prepared_upload.render_surface_status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW) return false;
                 std.debug.panic("trusted render surface retrieval failed: status={}", .{prepared_upload.render_surface_status});
                 return false;
             };
-            return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, render_surface, upload_stats);
+            return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, render_surface);
         }
 
         fn execution(self: anytype, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
@@ -655,126 +598,57 @@ pub const Surface = struct {
         std.debug.assert(!self.term.render.presentPending());
 
         self.term.mutex.unlock();
-        const upload_start_ns = EventLoop.nowNs();
-        var upload_stats = term_texture.UploadStats{};
-        const upload_ok = Backend.upload(self, &upload, &upload_stats);
-        const upload_end_ns = EventLoop.nowNs();
+        const upload_ok = Backend.upload(self, &upload);
         self.term.mutex.lockFair();
 
         const current_handle = self.term.render.rdrSfcHandle();
         std.debug.assert(!self.term.render.presentPending());
         if (current_handle != rdr_sfc_handle) {
-            return stalePreparedUploadSubmit(upload.info.snapshot_seq, upload_end_ns -| upload_start_ns, upload_stats);
+            return stalePreparedUploadSubmit(upload.info.snapshot_seq);
         }
         if (!upload_ok) {
-            return failedUploadSubmit(upload.info.snapshot_seq, upload_end_ns -| upload_start_ns, upload_stats);
+            return failedUploadSubmit(upload.info.snapshot_seq);
         }
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
         const execution = Backend.execution(self, &upload);
-        const submit_start_ns = EventLoop.nowNs();
         const result = self.term.render.submit(&execution, &submit_result);
-        const submit_end_ns = EventLoop.nowNs();
         if (result == .rendered) {
             self.term_texture = submit_result.host_surface;
         }
-        return submittedPreparedUpload(result, upload.info.snapshot_seq, upload_end_ns -| upload_start_ns, upload_stats, submit_end_ns -| submit_start_ns);
+        return submittedPreparedUpload(result, upload.info.snapshot_seq);
     }
 
     const SubmitPreparedResult = struct {
         result: render_retained.SubmitResult,
         snapshot_seq: u64,
-        upload_ns: u64,
-        upload_count: u64,
-        upload_bytes: u64,
-        upload_fill_count: u64,
-        upload_sprite_count: u64,
-        upload_glyph_run_count: u64,
-        upload_glyph_count: u64,
-        upload_fill_ns: u64,
-        upload_fill_dispatch_ns: u64,
-        upload_fill_draw_ns: u64,
-        upload_sprite_ns: u64,
-        upload_sprite_dispatch_ns: u64,
-        upload_sprite_draw_ns: u64,
-        upload_glyph_ns: u64,
-        upload_glyph_dispatch_ns: u64,
-        upload_glyph_draw_ns: u64,
-        retained_submit_ns: u64,
     };
 
     fn idleDrive(step: TurnStep) DriveResult {
-        std.debug.assert(step == .blocked_present or step == .idle_submit);
-        return timedIdleDrive(step, 0);
-    }
-
-    fn idlePrepareDrive(prepare_ns: u64) DriveResult {
-        return timedIdleDrive(.idle_prepare, prepare_ns);
-    }
-
-    fn failedDrive(prepare_ns: u64) DriveResult {
-        return timedIdleDrive(.failed, prepare_ns);
-    }
-
-    fn timedIdleDrive(step: TurnStep, prepare_ns: u64) DriveResult {
+        std.debug.assert(step == .blocked_present or step == .idle_submit or step == .idle_prepare or step == .failed);
         return .{
             .prepared = false,
             .step = step,
             .present_snapshot_seq = 0,
-            .prepare_ns = prepare_ns,
-            .upload_ns = 0,
-            .upload_count = 0,
-            .upload_bytes = 0,
-            .upload_fill_count = 0,
-            .upload_sprite_count = 0,
-            .upload_glyph_run_count = 0,
-            .upload_glyph_count = 0,
-            .upload_fill_ns = 0,
-            .upload_fill_dispatch_ns = 0,
-            .upload_fill_draw_ns = 0,
-            .upload_sprite_ns = 0,
-            .upload_sprite_dispatch_ns = 0,
-            .upload_sprite_draw_ns = 0,
-            .upload_glyph_ns = 0,
-            .upload_glyph_dispatch_ns = 0,
-            .upload_glyph_draw_ns = 0,
-            .retained_submit_ns = 0,
         };
     }
 
     fn missingPreparedUploadSubmit() SubmitPreparedResult {
-        return submittedPreparedUpload(.failed, 0, 0, .{}, 0);
+        return submittedPreparedUpload(.failed, 0);
     }
 
-    fn failedUploadSubmit(snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats) SubmitPreparedResult {
-        return submittedPreparedUpload(.failed, snapshot_seq, upload_ns, upload_stats, 0);
+    fn failedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
+        return submittedPreparedUpload(.failed, snapshot_seq);
     }
 
-    fn stalePreparedUploadSubmit(snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats) SubmitPreparedResult {
-        return submittedPreparedUpload(.failed, snapshot_seq, upload_ns, upload_stats, 0);
+    fn stalePreparedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
+        return submittedPreparedUpload(.failed, snapshot_seq);
     }
 
-    fn submittedPreparedUpload(result: render_retained.SubmitResult, snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats, retained_submit_ns: u64) SubmitPreparedResult {
+    fn submittedPreparedUpload(result: render_retained.SubmitResult, snapshot_seq: u64) SubmitPreparedResult {
         return .{
             .result = result,
             .snapshot_seq = snapshot_seq,
-            .upload_ns = upload_ns,
-            .upload_count = upload_stats.count,
-            .upload_bytes = upload_stats.bytes,
-            .upload_fill_count = upload_stats.fill_count,
-            .upload_sprite_count = upload_stats.sprite_count,
-            .upload_glyph_run_count = upload_stats.glyph_run_count,
-            .upload_glyph_count = upload_stats.glyph_count,
-            .upload_fill_ns = upload_stats.fill_ns,
-            .upload_fill_dispatch_ns = upload_stats.fill_dispatch_ns,
-            .upload_fill_draw_ns = upload_stats.fill_draw_ns,
-            .upload_sprite_ns = upload_stats.sprite_ns,
-            .upload_sprite_dispatch_ns = upload_stats.sprite_dispatch_ns,
-            .upload_sprite_draw_ns = upload_stats.sprite_draw_ns,
-            .upload_glyph_ns = upload_stats.glyph_ns,
-            .upload_glyph_dispatch_ns = upload_stats.glyph_dispatch_ns,
-            .upload_glyph_draw_ns = upload_stats.glyph_draw_ns,
-            .retained_submit_ns = retained_submit_ns,
         };
     }
 
@@ -786,30 +660,12 @@ pub const Surface = struct {
         };
     }
 
-    fn submitDriveResult(prepared: bool, prepare_ns: u64, submit_result: SubmitPreparedResult) DriveResult {
+    fn submitDriveResult(prepared: bool, submit_result: SubmitPreparedResult) DriveResult {
         const step = submitStep(submit_result.result);
         return .{
             .prepared = prepared,
             .step = step,
             .present_snapshot_seq = if (step == .rendered) submit_result.snapshot_seq else 0,
-            .prepare_ns = prepare_ns,
-            .upload_ns = submit_result.upload_ns,
-            .upload_count = submit_result.upload_count,
-            .upload_bytes = submit_result.upload_bytes,
-            .upload_fill_count = submit_result.upload_fill_count,
-            .upload_sprite_count = submit_result.upload_sprite_count,
-            .upload_glyph_run_count = submit_result.upload_glyph_run_count,
-            .upload_glyph_count = submit_result.upload_glyph_count,
-            .upload_fill_ns = submit_result.upload_fill_ns,
-            .upload_fill_dispatch_ns = submit_result.upload_fill_dispatch_ns,
-            .upload_fill_draw_ns = submit_result.upload_fill_draw_ns,
-            .upload_sprite_ns = submit_result.upload_sprite_ns,
-            .upload_sprite_dispatch_ns = submit_result.upload_sprite_dispatch_ns,
-            .upload_sprite_draw_ns = submit_result.upload_sprite_draw_ns,
-            .upload_glyph_ns = submit_result.upload_glyph_ns,
-            .upload_glyph_dispatch_ns = submit_result.upload_glyph_dispatch_ns,
-            .upload_glyph_draw_ns = submit_result.upload_glyph_draw_ns,
-            .retained_submit_ns = submit_result.retained_submit_ns,
         };
     }
 
@@ -1024,11 +880,11 @@ pub const testing = struct {
         return Surface.idleDrive(step);
     }
 
-    pub fn failedUploadSubmit(snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats) SubmitPreparedResult {
-        return Surface.failedUploadSubmit(snapshot_seq, upload_ns, upload_stats);
+    pub fn failedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
+        return Surface.failedUploadSubmit(snapshot_seq);
     }
 
-    pub fn stalePreparedUploadSubmit(snapshot_seq: u64, upload_ns: u64, upload_stats: term_texture.UploadStats) SubmitPreparedResult {
-        return Surface.stalePreparedUploadSubmit(snapshot_seq, upload_ns, upload_stats);
+    pub fn stalePreparedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
+        return Surface.stalePreparedUploadSubmit(snapshot_seq);
     }
 };

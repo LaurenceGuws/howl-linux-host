@@ -4,7 +4,6 @@ const render_c = @import("howl_render_c");
 const surface_mod = @import("surface.zig");
 const cursor_blink = @import("cursor_blink.zig");
 const pty_pump = @import("pty_pump.zig");
-const term_texture = @import("../display/render_surface.zig");
 const terminal_input = @import("input.zig");
 const render_retained = @import("render_retained.zig");
 const surface_layout = @import("render_surface_layout.zig");
@@ -509,83 +508,26 @@ test "submit path runs once no host present is in flight" {
     try std.testing.expectEqual(surface_testing.RenderAction.submit_pending, surface_testing.renderAction(work, false));
 }
 
-test "idle render action constructor returns zero telemetry" {
+test "idle render action constructor reports decision facts" {
     const result = surface_testing.idleDrive(.idle_submit);
 
     try std.testing.expect(!result.prepared);
     try std.testing.expectEqual(Surface.TurnStep.idle_submit, result.step);
     try std.testing.expectEqual(@as(u64, 0), result.present_snapshot_seq);
-    try std.testing.expectEqual(@as(u64, 0), result.prepare_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_count);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_bytes);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_fill_count);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_sprite_count);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_glyph_run_count);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_glyph_count);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_fill_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_fill_dispatch_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_fill_draw_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_sprite_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_sprite_dispatch_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_sprite_draw_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_glyph_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_glyph_dispatch_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.upload_glyph_draw_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.retained_submit_ns);
 }
 
-test "failed upload constructor preserves upload telemetry and skips submit timing" {
-    const stats = term_texture.UploadStats{
-        .count = 3,
-        .bytes = 4096,
-        .fill_count = 2,
-        .sprite_count = 1,
-        .glyph_run_count = 5,
-        .glyph_count = 21,
-        .fill_ns = 7,
-        .fill_dispatch_ns = 8,
-        .fill_draw_ns = 9,
-        .sprite_ns = 10,
-        .sprite_dispatch_ns = 11,
-        .sprite_draw_ns = 12,
-        .glyph_ns = 13,
-        .glyph_dispatch_ns = 14,
-        .glyph_draw_ns = 15,
-    };
-    const result = surface_testing.failedUploadSubmit(77, 99, stats);
+test "failed upload constructor reports failed snapshot" {
+    const result = surface_testing.failedUploadSubmit(77);
 
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
     try std.testing.expectEqual(@as(u64, 77), result.snapshot_seq);
-    try std.testing.expectEqual(@as(u64, 99), result.upload_ns);
-    try std.testing.expectEqual(stats.count, result.upload_count);
-    try std.testing.expectEqual(stats.bytes, result.upload_bytes);
-    try std.testing.expectEqual(stats.fill_count, result.upload_fill_count);
-    try std.testing.expectEqual(stats.sprite_count, result.upload_sprite_count);
-    try std.testing.expectEqual(stats.glyph_run_count, result.upload_glyph_run_count);
-    try std.testing.expectEqual(stats.glyph_count, result.upload_glyph_count);
-    try std.testing.expectEqual(stats.fill_ns, result.upload_fill_ns);
-    try std.testing.expectEqual(stats.fill_dispatch_ns, result.upload_fill_dispatch_ns);
-    try std.testing.expectEqual(stats.fill_draw_ns, result.upload_fill_draw_ns);
-    try std.testing.expectEqual(stats.sprite_ns, result.upload_sprite_ns);
-    try std.testing.expectEqual(stats.sprite_dispatch_ns, result.upload_sprite_dispatch_ns);
-    try std.testing.expectEqual(stats.sprite_draw_ns, result.upload_sprite_draw_ns);
-    try std.testing.expectEqual(stats.glyph_ns, result.upload_glyph_ns);
-    try std.testing.expectEqual(stats.glyph_dispatch_ns, result.upload_glyph_dispatch_ns);
-    try std.testing.expectEqual(stats.glyph_draw_ns, result.upload_glyph_draw_ns);
-    try std.testing.expectEqual(@as(u64, 0), result.retained_submit_ns);
 }
 
-test "stale handle constructor preserves failed upload phase timing" {
-    const stats = term_texture.UploadStats{ .count = 1, .bytes = 32 };
-    const result = surface_testing.stalePreparedUploadSubmit(88, 123, stats);
+test "stale handle constructor reports failed snapshot" {
+    const result = surface_testing.stalePreparedUploadSubmit(88);
 
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
     try std.testing.expectEqual(@as(u64, 88), result.snapshot_seq);
-    try std.testing.expectEqual(@as(u64, 123), result.upload_ns);
-    try std.testing.expectEqual(@as(u64, 1), result.upload_count);
-    try std.testing.expectEqual(@as(u64, 32), result.upload_bytes);
-    try std.testing.expectEqual(@as(u64, 0), result.retained_submit_ns);
 }
 
 fn testRdrSfcHandle() render_c.HowlRenderRdrSfcHandle {
@@ -776,9 +718,8 @@ const TestSubmitContext = struct {
 const TestUnlockedBackend = struct {
     var saw_unlocked = false;
 
-    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
+    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) bool {
         _ = prepared_upload;
-        _ = upload_stats;
         saw_unlocked = self.term.mutex.tryLockUnfair();
         if (saw_unlocked) self.term.mutex.unlock();
         return true;
@@ -791,8 +732,7 @@ const TestUnlockedBackend = struct {
 };
 
 const TestLockedBackend = struct {
-    pub fn upload(_: *TestSubmitContext, _: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
-        _ = upload_stats;
+    pub fn upload(_: *TestSubmitContext, _: *const render_retained.PreparedUpload) bool {
         return true;
     }
 
@@ -804,8 +744,7 @@ const TestLockedBackend = struct {
 const TestFailBackend = struct {
     var saw_unlocked = false;
 
-    pub fn upload(self: *TestSubmitContext, _: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
-        _ = upload_stats;
+    pub fn upload(self: *TestSubmitContext, _: *const render_retained.PreparedUpload) bool {
         saw_unlocked = self.term.mutex.tryLockUnfair();
         if (saw_unlocked) self.term.mutex.unlock();
         return false;
@@ -819,8 +758,7 @@ const TestFailBackend = struct {
 const TestMutatingBackend = struct {
     var saw_unlocked = false;
 
-    pub fn upload(self: *TestSubmitContext, _: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
-        _ = upload_stats;
+    pub fn upload(self: *TestSubmitContext, _: *const render_retained.PreparedUpload) bool {
         saw_unlocked = self.term.mutex.tryLockUnfair();
         if (saw_unlocked) self.term.mutex.unlock();
         self.term.render.rdr_sfc_handle = @ptrFromInt(0x20);
@@ -834,7 +772,7 @@ const TestMutatingBackend = struct {
 };
 
 const TestResizeBackend = struct {
-    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
+    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) bool {
         std.debug.assert(prepared_upload.info.damage_kind == render_c.HOWL_RENDER_DAMAGE_FULL);
         const render_surface = prepared_upload.render_surface orelse return false;
         std.debug.assert(render_surface.token.snapshot_seq == prepared_upload.info.snapshot_seq);
@@ -849,8 +787,6 @@ const TestResizeBackend = struct {
         self.host_upload_render_px = prepared_upload.info.render_px;
         self.host_upload_surface_px = render_surface.render_px;
         self.record(.host_upload);
-        upload_stats.count = 1;
-        upload_stats.bytes = 256;
         self.term_texture = .{
             .host_surface_id = 2,
             .width = prepared_upload.info.render_px.width,
@@ -865,7 +801,7 @@ const TestResizeBackend = struct {
 };
 
 const TestResizeFailBackend = struct {
-    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload, upload_stats: *term_texture.UploadStats) bool {
+    pub fn upload(self: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) bool {
         std.debug.assert(prepared_upload.info.damage_kind == render_c.HOWL_RENDER_DAMAGE_FULL);
         const render_surface = prepared_upload.render_surface orelse return false;
         std.debug.assert(render_surface.token.snapshot_seq == prepared_upload.info.snapshot_seq);
@@ -880,8 +816,6 @@ const TestResizeFailBackend = struct {
         self.host_upload_render_px = prepared_upload.info.render_px;
         self.host_upload_surface_px = render_surface.render_px;
         self.record(.host_upload);
-        upload_stats.count = 1;
-        upload_stats.bytes = 256;
         self.term_texture.width = 0;
         self.term_texture.height = 0;
         return false;

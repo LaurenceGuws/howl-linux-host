@@ -14,36 +14,13 @@ pub const renderSurfaceSpritePatch = render_surface_commands.renderSurfaceSprite
 pub const renderSurfaceGlyphs = render_surface_commands.renderSurfaceGlyphs;
 pub const renderSurfaceGlyphPatch = render_surface_commands.renderSurfaceGlyphPatch;
 
-pub const UploadStats = struct {
-    count: u64 = 0,
-    bytes: u64 = 0,
-    fill_count: u64 = 0,
-    sprite_count: u64 = 0,
-    glyph_run_count: u64 = 0,
-    glyph_count: u64 = 0,
-    fill_ns: u64 = 0,
-    fill_dispatch_ns: u64 = 0,
-    fill_draw_ns: u64 = 0,
-    sprite_ns: u64 = 0,
-    sprite_dispatch_ns: u64 = 0,
-    sprite_draw_ns: u64 = 0,
-    glyph_ns: u64 = 0,
-    glyph_dispatch_ns: u64 = 0,
-    glyph_draw_ns: u64 = 0,
-
-    fn note(self: *UploadStats, upload: render_c.HowlRenderResourceUpload) void {
-        self.count += 1;
-        self.bytes += upload.bytes_count;
-    }
-};
-
-pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurface, upload_stats: ?*UploadStats) bool {
+pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurface) bool {
     std.debug.assert(surface.render_px.width > 0);
     std.debug.assert(surface.render_px.height > 0);
     const had_matching_surface = host_surface.host_surface_id != 0 and
         host_surface.width == surface.render_px.width and
         host_surface.height == surface.render_px.height;
-    textures.realizeSurface(surface, upload_stats);
+    textures.realizeSurface(surface);
     ensureSurface(host_surface, surface.render_px.width, surface.render_px.height);
     const class = render_surface_commands.classifyRenderSurface(surface) orelse std.debug.panic("trusted render surface has unsupported shape", .{});
     render_surface_commands.assertRenderSurfacePatchHostSurface(class, had_matching_surface);
@@ -56,7 +33,7 @@ pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *ren
         .glyph,
         .glyph_patch,
         => blk: {
-            render_surface_commands.uploadRenderSurfaceCommands(textures, host_surface.*, surface, upload_stats);
+            render_surface_commands.uploadRenderSurfaceCommands(textures, host_surface.*, surface);
             break :blk true;
         },
     };

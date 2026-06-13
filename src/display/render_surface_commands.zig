@@ -129,7 +129,7 @@ pub fn uploadFillCommands(host_surface: render_c.HowlRenderHostSurface, render_s
     return true;
 }
 
-pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface, upload_stats: anytype) void {
+pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) void {
     std.debug.assert(host_surface.host_surface_id != 0);
     std.debug.assert(host_surface.width == render_surface.render_px.width);
     std.debug.assert(host_surface.height == render_surface.render_px.height);
@@ -174,50 +174,24 @@ pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surfa
 
     const commands = spanSlice(render_c.HowlRenderSurfaceCommand, render_surface.commands.ptr, render_surface.commands.count);
     for (commands, 0..) |command, command_index| {
-        const command_start_ns = monotonicNs();
         switch (command.kind) {
             render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
             render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
             => {
-                const draw_start_ns = monotonicNs();
                 drawFillCommand(host_surface, command);
-                const command_end_ns = monotonicNs();
-                if (upload_stats) |stats| {
-                    stats.fill_count += 1;
-                    stats.fill_ns += command_end_ns -| command_start_ns;
-                    stats.fill_dispatch_ns += draw_start_ns -| command_start_ns;
-                    stats.fill_draw_ns += command_end_ns -| draw_start_ns;
-                }
             },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
                 const slot = textures.textureSlotFor(command.resource) orelse std.debug.panic("trusted sprite command missing texture slot", .{});
                 if (resourceHasFutureUpload(render_surface, command.resource, @intCast(command_index))) {
                     std.debug.panic("trusted sprite command used before final upload", .{});
                 }
-                const draw_start_ns = monotonicNs();
                 drawSpriteCommand(host_surface, command, slot);
-                const command_end_ns = monotonicNs();
-                if (upload_stats) |stats| {
-                    stats.sprite_count += 1;
-                    stats.sprite_ns += command_end_ns -| command_start_ns;
-                    stats.sprite_dispatch_ns += draw_start_ns -| command_start_ns;
-                    stats.sprite_draw_ns += command_end_ns -| draw_start_ns;
-                }
             },
             render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
                 if (glyphCommandHasFutureUpload(render_surface, command, @intCast(command_index))) {
                     std.debug.panic("trusted glyph command used before final upload", .{});
                 }
-                const draw_start_ns = monotonicNs();
                 drawGlyphCommand(textures, host_surface, command);
-                const command_end_ns = monotonicNs();
-                if (upload_stats) |stats| {
-                    stats.glyph_run_count += 1;
-                    stats.glyph_count += command.glyphs.count;
-                    stats.glyph_ns += command_end_ns -| command_start_ns;
-                    stats.glyph_dispatch_ns += draw_start_ns -| command_start_ns;
-                    stats.glyph_draw_ns += command_end_ns -| draw_start_ns;
-                }
             },
             else => std.debug.panic("trusted render surface has unknown command kind={}", .{command.kind}),
         }
@@ -586,12 +560,6 @@ fn emitTexturedQuadVertices(surface: render_c.HowlRenderHostSurface, rect: rende
     gl_c.glVertex2f(right, bottom);
     gl_c.glTexCoord2f(tex_left, tex_bottom);
     gl_c.glVertex2f(left, bottom);
-}
-
-fn monotonicNs() u64 {
-    var ts: std.posix.timespec = undefined;
-    if (std.posix.errno(std.posix.system.clock_gettime(.MONOTONIC, &ts)) != .SUCCESS) return 0;
-    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
 fn ndcX(x: i32, width: u16) f32 {

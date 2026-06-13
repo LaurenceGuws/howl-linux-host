@@ -26,11 +26,11 @@ pub const RenderResourceTextures = struct {
         for (&self.slots) |*slot| deleteSlot(slot);
     }
 
-    pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface, upload_stats: anytype) void {
-        self.realizeSurfaceLocked(surface, upload_stats);
+    pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
+        self.realizeSurfaceLocked(surface);
     }
 
-    fn realizeSurfaceLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface, upload_stats: anytype) void {
+    fn realizeSurfaceLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
         self.validateSurface(surface);
         const creates = spanSlice(
             render_c.HowlRenderResourceCreate,
@@ -44,7 +44,7 @@ pub const RenderResourceTextures = struct {
             surface.uploads.ptr,
             surface.uploads.count,
         );
-        for (uploads) |upload| self.uploadTexture(upload, upload_stats);
+        for (uploads) |upload| self.uploadTexture(upload);
         glErrorOk("resource upload");
         self.commitUploadMetadata(uploads);
         const retires = spanSlice(
@@ -157,7 +157,7 @@ pub const RenderResourceTextures = struct {
         );
     }
 
-    fn uploadTexture(self: *RenderResourceTextures, upload: render_c.HowlRenderResourceUpload, upload_stats: anytype) void {
+    fn uploadTexture(self: *RenderResourceTextures, upload: render_c.HowlRenderResourceUpload) void {
         const slot = self.find(upload.resource) orelse std.debug.panic("trusted render upload missing live slot during upload", .{});
         if (slot.texture_id == 0) std.debug.panic("trusted render upload missing GL texture id", .{});
         if (upload.format != slot.format) std.debug.panic("trusted render upload format mismatch during upload", .{});
@@ -182,7 +182,6 @@ pub const RenderResourceTextures = struct {
             gl_c.GL_UNSIGNED_BYTE,
             upload.bytes_ptr,
         );
-        if (upload_stats) |stats| stats.note(upload);
     }
 
     fn commitUploadMetadata(self: *RenderResourceTextures, uploads: []const render_c.HowlRenderResourceUpload) void {
