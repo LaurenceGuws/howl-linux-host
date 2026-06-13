@@ -1,6 +1,6 @@
-const Font = @import("../../config/tab_bar.zig");
-const Layout = @import("../layout.zig");
-const TabIndex = @import("../../tab_bar/tab_bar.zig").TabBar.TabIndex;
+const Font = @import("../config/tab_bar.zig");
+const Layout = @import("layout.zig");
+const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 
 pub fn tabBar(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: Layout.Frame) void {
     const bar_h = @max(frame_value.term_texture_rect.y, 0);

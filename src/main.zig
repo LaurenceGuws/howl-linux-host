@@ -5,10 +5,10 @@ const Display = @import("display/display.zig");
 const EventLoop = @import("polling/event_loop.zig");
 const Input = @import("input/input.zig").Input;
 const Processor = @import("event.zig").Processor;
-const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
-const TabSlots = @import("tab_bar/slots.zig").Slots;
+const TabBar = @import("display/tab_bar.zig").TabBar;
+const TabSlots = @import("terminal/tab_slots.zig").Slots;
 const TerminalContext = @import("terminal/context.zig").Context;
-const window = @import("window_chrome/window.zig");
+const window = @import("display/window.zig");
 
 pub const Args = cli.Args;
 const child_term_value: [*:0]const u8 = "xterm-256color";

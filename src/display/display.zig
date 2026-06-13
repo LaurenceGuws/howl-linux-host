@@ -1,6 +1,6 @@
 const gl_c = @import("gl_c");
 const Layout = @import("layout.zig");
-const Rects = @import("renderer/rects.zig");
+const Rects = @import("rects.zig");
 const sdl_c = @import("sdl_c");
 const std = @import("std");
 

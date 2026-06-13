@@ -1,8 +1,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const TabBar = @import("tab_bar.zig").TabBar;
-const TerminalContext = @import("../terminal/context.zig").Context;
+const TabBar = @import("../display/tab_bar.zig").TabBar;
+const TerminalContext = @import("context.zig").Context;
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;

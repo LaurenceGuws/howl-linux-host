@@ -1,9 +1,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const DisplayLayout = @import("../display/layout.zig");
+const DisplayLayout = @import("layout.zig");
 const TerminalContext = @import("../terminal/context.zig").Context;
-const FramePacing = @import("../display/frame_timer.zig");
+const FramePacing = @import("frame_timer.zig");
 
 pub const Reason = FramePacing.PresentReason;
 pub const PresentToken = u64;

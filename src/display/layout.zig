@@ -1,4 +1,4 @@
-const TabIndex = @import("../tab_bar/tab_bar.zig").TabBar.TabIndex;
+const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 
 pub const Rect = struct {
     x: c_int,

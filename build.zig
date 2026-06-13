@@ -115,7 +115,7 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .gl_c = translateCModule(b, b.path("src/display/renderer/gl_c.h"), target, optimize, &.{sdl_include}),
         .sdl_include = sdl_include,
         .sdl_lib = sdl_dep.artifact("SDL3"),
-        .stb_image = b.path("src/window_chrome/stb_image.c"),
+        .stb_image = b.path("src/display/stb_image.c"),
         .vendor_include = b.path("vendor"),
     };
 }
@@ -259,7 +259,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     const tab_bar_tests = b.addTest(.{
         .name = "test-tab-bar",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tab_bar/tab_bar.zig"),
+            .root_source_file = b.path("src/display/tab_bar.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -347,7 +347,7 @@ fn retainedRenderTestModule(b: *Build, deps: HostDeps) *Module {
 
 fn renderSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
     const module = b.createModule(.{
-        .root_source_file = b.path("src/display/renderer/render_surface.zig"),
+        .root_source_file = b.path("src/display/render_surface.zig"),
         .target = deps.target,
         .optimize = deps.optimize,
     });

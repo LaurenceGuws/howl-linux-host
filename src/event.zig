@@ -6,13 +6,13 @@ const Display = @import("display/display.zig");
 const DisplayLayout = @import("display/layout.zig");
 const EventLoop = @import("polling/event_loop.zig");
 const Input = @import("input/input.zig").Input;
-const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
-const TabSlots = @import("tab_bar/slots.zig").Slots;
-const AppPresent = @import("app/present.zig");
+const TabBar = @import("display/tab_bar.zig").TabBar;
+const TabSlots = @import("terminal/tab_slots.zig").Slots;
+const AppPresent = @import("display/present.zig");
 const pty_wait_thread = @import("terminal/pty/wait_thread.zig");
 const TerminalContext = @import("terminal/context.zig").Context;
 const FramePacing = @import("display/frame_timer.zig");
-const window = @import("window_chrome/window.zig");
+const window = @import("display/window.zig");
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
