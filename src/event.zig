@@ -44,8 +44,6 @@ pub const Processor = struct {
         quit,
     };
 
-    const LoopPending = FramePacing.Pending;
-
     const LoopRuntimeFacts = struct {
         tabs: [max_tabs]TerminalSurface.RuntimeFacts,
         tab_count: usize,
@@ -65,6 +63,31 @@ pub const Processor = struct {
         should_redraw: bool,
         keep_running: bool,
         drive_performed: bool = false,
+    };
+
+    const LoopWaitAdmission = struct {
+        owner_work: bool,
+        runtime_wake: bool,
+        runtime_admission: bool,
+        cursor_wait_ms: ?u32,
+        runtime_wait_ms: ?u32,
+        frame_wait_ms: ?u32,
+
+        fn frameAdmission(self: LoopWaitAdmission) FramePacing.WaitAdmission {
+            return .{
+                .owner_work = self.owner_work,
+                .runtime_wake = self.runtime_wake,
+                .runtime_admission = self.runtime_admission,
+            };
+        }
+
+        fn waitForWindow(self: LoopWaitAdmission, frame_pacing: *FramePacing.FrameTimer) bool {
+            return frame_pacing.shouldWaitForWindow(self.frameAdmission());
+        }
+
+        fn waitMs(self: LoopWaitAdmission) ?u32 {
+            return waitMsMerge3(self.cursor_wait_ms, self.runtime_wait_ms, self.frame_wait_ms);
+        }
     };
 
     const LoopAdmission = struct {
@@ -201,13 +224,21 @@ pub const Processor = struct {
         assert(now_ns > 0);
         self.frame_pacing.refreshFramePermit(now_ns, self.window.currentRefreshIntervalNs());
         self.frame_pacing.noteRedrawAndRenderWork(false, runtime_facts.render_work_pending);
-        const owner_work = self.input.hasPendingOwnerWork();
-        const pending = loopPendingFromFacts(owner_work, runtime_facts);
-        const runtime_admission = runtime_facts.runtime_admitted;
-        const wait_for_window = self.frame_pacing.shouldWaitForWindow(pending, runtime_admission);
+        const admission_facts = loopWaitAdmission(self, now_ns, runtime_facts);
         return .{
-            .wait_for_window = wait_for_window,
-            .wait_ms = loopWaitMs(runtime_facts.active_cursor, runtime_facts.runtime_wait_ms, self.frame_pacing.framePermitWaitMs(now_ns)),
+            .wait_for_window = admission_facts.waitForWindow(&self.frame_pacing),
+            .wait_ms = admission_facts.waitMs(),
+        };
+    }
+
+    fn loopWaitAdmission(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWaitAdmission {
+        return .{
+            .owner_work = self.input.hasPendingOwnerWork(),
+            .runtime_wake = runtime_facts.runtime_wake_pending,
+            .runtime_admission = runtime_facts.runtime_admitted,
+            .cursor_wait_ms = if (runtime_facts.active_cursor) |facts| facts.waitMs() else null,
+            .runtime_wait_ms = runtime_facts.runtime_wait_ms,
+            .frame_wait_ms = self.frame_pacing.framePermitWaitMs(now_ns),
         };
     }
 
@@ -241,13 +272,6 @@ pub const Processor = struct {
             facts.active_cursor = cursor;
             facts.render_work_pending = runtime.render_work_pending;
         }
-    }
-
-    fn loopPendingFromFacts(owner_work: bool, runtime_facts: LoopRuntimeFacts) LoopPending {
-        return .{
-            .owner_work = owner_work,
-            .runtime_wake = runtime_facts.runtime_wake_pending,
-        };
     }
 
     fn quitRequested(self: *const Self) ?LoopAction {
@@ -375,13 +399,9 @@ pub const Processor = struct {
         };
     }
 
-    fn loopWaitMs(cursor: ?TerminalSurface.CursorFacts, runtime_wait_ms: ?u32, frame_pacer_wait_ms: ?u32) ?u32 {
-        return loopWaitMsWith(if (cursor) |facts| facts.waitMs() else null, runtime_wait_ms, frame_pacer_wait_ms);
-    }
-
-    fn loopWaitMsWith(blink_wait_ms: ?u32, runtime_wait_ms: ?u32, frame_pacer_wait_ms: ?u32) ?u32 {
-        var wait_ms = minOptionalWaitMs(blink_wait_ms, runtime_wait_ms);
-        wait_ms = minOptionalWaitMs(wait_ms, frame_pacer_wait_ms);
+    fn waitMsMerge3(first: ?u32, second: ?u32, third: ?u32) ?u32 {
+        var wait_ms = minOptionalWaitMs(first, second);
+        wait_ms = minOptionalWaitMs(wait_ms, third);
         return wait_ms;
     }
 
@@ -592,6 +612,63 @@ test "active runtime admission follows explicit surface facts" {
     try std.testing.expect(facts.runtime_admitted);
 }
 
+test "owner work prevents waiting" {
+    var admission = Processor.LoopWaitAdmission{
+        .owner_work = true,
+        .runtime_wake = false,
+        .runtime_admission = false,
+        .cursor_wait_ms = null,
+        .runtime_wait_ms = null,
+        .frame_wait_ms = 20,
+    };
+    var frame = FramePacing.FrameTimer.init();
+    frame.frame_permit_ready = false;
+
+    try std.testing.expect(!admission.waitForWindow(&frame));
+}
+
+test "runtime wake prevents waiting without granting render" {
+    var admission = Processor.LoopWaitAdmission{
+        .owner_work = false,
+        .runtime_wake = true,
+        .runtime_admission = false,
+        .cursor_wait_ms = null,
+        .runtime_wait_ms = null,
+        .frame_wait_ms = 20,
+    };
+    var frame = FramePacing.FrameTimer.init();
+    frame.frame_permit_ready = false;
+
+    try std.testing.expect(!admission.waitForWindow(&frame));
+    try std.testing.expect(!frame.renderPermission());
+}
+
+test "frame wait participates only through frame owner" {
+    const admission = Processor.LoopWaitAdmission{
+        .owner_work = false,
+        .runtime_wake = false,
+        .runtime_admission = false,
+        .cursor_wait_ms = null,
+        .runtime_wait_ms = null,
+        .frame_wait_ms = 33,
+    };
+
+    try std.testing.expectEqual(@as(?u32, 33), admission.waitMs());
+}
+
+test "cursor wait participates in minimum wait" {
+    const admission = Processor.LoopWaitAdmission{
+        .owner_work = false,
+        .runtime_wake = false,
+        .runtime_admission = false,
+        .cursor_wait_ms = 7,
+        .runtime_wait_ms = 19,
+        .frame_wait_ms = 33,
+    };
+
+    try std.testing.expectEqual(@as(?u32, 7), admission.waitMs());
+}
+
 test "terminal input admission clears only after drove" {
     var admitted = true;
 
@@ -628,7 +705,7 @@ test "continuation pending participates in runtime wake admission" {
         .render_work_pending = false,
     }, false, null);
 
-    try std.testing.expect(Processor.loopPendingFromFacts(false, facts).runtime_wake);
+    try std.testing.expect(facts.runtime_wake_pending);
 }
 
 test "active cursor wait participates through explicit surface facts" {

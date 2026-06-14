@@ -1,9 +1,10 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-pub const Pending = struct {
+pub const WaitAdmission = struct {
     owner_work: bool,
     runtime_wake: bool,
+    runtime_admission: bool,
 };
 
 pub const PresentReason = enum { none, host_damage, terminal_frame, terminal_retire };
@@ -82,11 +83,11 @@ pub const FrameTimer = struct {
         self.next_frame_deadline_ns = 0;
     }
 
-    pub fn shouldWaitForWindow(self: *FrameTimer, pending: Pending, runtime_admission: bool) bool {
-        if (pending.owner_work) return false;
-        if (runtime_admission) return false;
+    pub fn shouldWaitForWindow(self: *FrameTimer, admission: WaitAdmission) bool {
+        if (admission.owner_work) return false;
+        if (admission.runtime_admission) return false;
         if (!self.frame_permit_ready) return true;
-        if (pending.runtime_wake) return false;
+        if (admission.runtime_wake) return false;
         if (self.renderPermission()) return false;
         return true;
     }
@@ -157,59 +158,87 @@ pub const FrameTimer = struct {
 };
 
 test "redraw request is not frame permit" {
-    const pending = Pending{
+    const admission = WaitAdmission{
         .owner_work = false,
         .runtime_wake = false,
+        .runtime_admission = false,
     };
     var pacing = FrameTimer.init();
     pacing.frame_permit_ready = false;
     pacing.noteRedrawAndRenderWork(true, false);
-    try std.testing.expect(pacing.shouldWaitForWindow(pending, false));
+    try std.testing.expect(pacing.shouldWaitForWindow(admission));
     try std.testing.expect(!pacing.renderPermission());
 }
 
 test "runtime wake is not frame permit" {
-    const pending = Pending{
+    const admission = WaitAdmission{
         .owner_work = false,
         .runtime_wake = true,
+        .runtime_admission = false,
     };
     var pacing = FrameTimer.init();
     pacing.frame_permit_ready = false;
 
-    try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
+    try std.testing.expect(!pacing.shouldWaitForWindow(admission));
     try std.testing.expect(!pacing.renderPermission());
 }
 
 test "runtime wake participates in wait admission" {
-    const pending = Pending{
+    const admission = WaitAdmission{
         .owner_work = false,
         .runtime_wake = true,
+        .runtime_admission = false,
     };
     var pacing = FrameTimer.init();
-    try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
+    try std.testing.expect(!pacing.shouldWaitForWindow(admission));
 }
 
 test "terminal render work is not frame permit" {
-    const pending = Pending{
+    const admission = WaitAdmission{
         .owner_work = false,
         .runtime_wake = false,
+        .runtime_admission = false,
     };
     var pacing = FrameTimer.init();
     pacing.frame_permit_ready = false;
     pacing.noteRedrawAndRenderWork(false, true);
 
-    try std.testing.expect(pacing.shouldWaitForWindow(pending, false));
+    try std.testing.expect(pacing.shouldWaitForWindow(admission));
     try std.testing.expect(!pacing.renderPermission());
 }
 
 test "frame work participates in wait admission through frame pacer" {
-    const pending = Pending{
+    const admission = WaitAdmission{
         .owner_work = false,
         .runtime_wake = false,
+        .runtime_admission = false,
     };
     var pacing = FrameTimer.init();
     pacing.noteRedrawAndRenderWork(false, true);
-    try std.testing.expect(!pacing.shouldWaitForWindow(pending, false));
+    try std.testing.expect(!pacing.shouldWaitForWindow(admission));
+}
+
+test "owner work prevents waiting" {
+    const admission = WaitAdmission{
+        .owner_work = true,
+        .runtime_wake = false,
+        .runtime_admission = false,
+    };
+    var pacing = FrameTimer.init();
+    pacing.frame_permit_ready = false;
+    try std.testing.expect(!pacing.shouldWaitForWindow(admission));
+}
+
+test "runtime admission prevents waiting without granting render" {
+    const admission = WaitAdmission{
+        .owner_work = false,
+        .runtime_wake = false,
+        .runtime_admission = true,
+    };
+    var pacing = FrameTimer.init();
+    pacing.frame_permit_ready = false;
+    try std.testing.expect(!pacing.shouldWaitForWindow(admission));
+    try std.testing.expect(!pacing.renderPermission());
 }
 
 test "render and present submission respect frame permit and in-flight state" {
