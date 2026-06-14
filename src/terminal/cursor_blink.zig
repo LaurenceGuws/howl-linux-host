@@ -7,6 +7,13 @@ pub const CursorBlink = struct {
     visible: bool = true,
     deadline_ns: u64 = 0,
 
+    pub const CadenceFacts = struct {
+        visible: bool,
+        deadline_ns: u64,
+        dirty: bool,
+        wait_ms: ?u32,
+    };
+
     pub fn resetActivity(self: *CursorBlink, now_ns: u64) bool {
         self.deadline_ns = nextDeadline(now_ns);
         if (self.visible) return false;
@@ -17,9 +24,17 @@ pub const CursorBlink = struct {
     pub fn waitMs(self: CursorBlink, should_animate: bool, now_ns: u64) ?u32 {
         if (!should_animate) return null;
         const target_deadline_ns = if (self.deadline_ns == 0) nextDeadline(now_ns) else self.deadline_ns;
-        const remaining_ns = target_deadline_ns -| now_ns;
-        const remaining_ms = @max(@as(u64, 1), remaining_ns / std.time.ns_per_ms);
-        return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
+        return waitMsFromDeadline(target_deadline_ns, now_ns);
+    }
+
+    pub fn cadenceFacts(self: CursorBlink, should_animate: bool, now_ns: u64) CadenceFacts {
+        const plan_result = self.plan(should_animate, now_ns);
+        return .{
+            .visible = plan_result.visible,
+            .deadline_ns = plan_result.deadline_ns,
+            .dirty = plan_result.changed,
+            .wait_ms = waitMsFromDeadline(plan_result.deadline_ns, now_ns),
+        };
     }
 
     pub fn plan(self: CursorBlink, should_animate: bool, now_ns: u64) Plan {
@@ -41,6 +56,11 @@ pub const CursorBlink = struct {
         self.deadline_ns = plan_result.deadline_ns;
         self.visible = plan_result.visible;
     }
+
+    pub fn applyCadenceFacts(self: *CursorBlink, facts: CadenceFacts) void {
+        self.deadline_ns = facts.deadline_ns;
+        self.visible = facts.visible;
+    }
 };
 
 pub const Plan = struct {
@@ -53,10 +73,45 @@ fn nextDeadline(now_ns: u64) u64 {
     return now_ns + interval_ns;
 }
 
+fn waitMsFromDeadline(deadline_ns: u64, now_ns: u64) ?u32 {
+    if (deadline_ns == 0) return null;
+    const remaining_ns = deadline_ns -| now_ns;
+    const remaining_ms = @max(@as(u64, 1), remaining_ns / std.time.ns_per_ms);
+    return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
+}
+
 test "cursor activity pushes blink deadline while visible" {
     var state = CursorBlink{};
 
     try std.testing.expect(!state.resetActivity(1234));
     try std.testing.expectEqual(@as(u64, 1234) + interval_ns, state.deadline_ns);
     try std.testing.expect(state.visible);
+}
+
+test "disabled animation forces visible" {
+    var state = CursorBlink{ .visible = false, .deadline_ns = 1234 + interval_ns };
+    const facts = state.cadenceFacts(false, 1234);
+
+    try std.testing.expect(facts.dirty);
+    try std.testing.expect(facts.visible);
+    try std.testing.expectEqual(@as(u64, 0), facts.deadline_ns);
+    try std.testing.expectEqual(@as(?u32, null), facts.wait_ms);
+}
+
+test "deadline initialization does not flicker" {
+    var state = CursorBlink{};
+    const facts = state.cadenceFacts(true, 1234);
+
+    try std.testing.expect(!facts.dirty);
+    try std.testing.expect(facts.visible);
+    try std.testing.expectEqual(@as(u64, 1234) + interval_ns, facts.deadline_ns);
+    try std.testing.expectEqual(@as(?u32, @intCast(interval_ms)), facts.wait_ms);
+}
+
+test "activity reset restores visible and refreshes deadline" {
+    var state = CursorBlink{ .visible = false, .deadline_ns = 10 };
+
+    try std.testing.expect(state.resetActivity(1234));
+    try std.testing.expect(state.visible);
+    try std.testing.expectEqual(@as(u64, 1234) + interval_ns, state.deadline_ns);
 }

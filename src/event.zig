@@ -51,6 +51,7 @@ pub const Processor = struct {
         tab_count: usize,
         runtime_admitted: bool,
         runtime_wake_pending: bool,
+        active_cursor: ?TerminalSurface.CursorFacts,
         runtime_wait_ms: ?u32,
         render_work_pending: bool,
 
@@ -166,6 +167,7 @@ pub const Processor = struct {
             _ = drainPresentComplete(self);
             const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
             const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
+            const cursor_redraw = activeSurface(self.tabs.items(), self.active_tab_idx.*).consumeCursorFacts(drive_runtime_facts.active_cursor orelse unreachable);
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
 
@@ -173,7 +175,7 @@ pub const Processor = struct {
                 self.input.drainRedrawRequested(),
                 host_mutations.input_outcome.host_visual_changed,
                 terminal_progress,
-                syncActiveBlinkCadence(self, EventLoop.nowNs()),
+                cursor_redraw,
                 drive_runtime_facts.render_work_pending,
             );
             self.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
@@ -205,7 +207,7 @@ pub const Processor = struct {
         const wait_for_window = self.frame_pacing.shouldWaitForWindow(pending, runtime_admission);
         return .{
             .wait_for_window = wait_for_window,
-            .wait_ms = loopWaitMs(self, now_ns, runtime_facts.runtime_wait_ms, self.frame_pacing.framePermitWaitMs(now_ns)),
+            .wait_ms = loopWaitMs(runtime_facts.active_cursor, runtime_facts.runtime_wait_ms, self.frame_pacing.framePermitWaitMs(now_ns)),
         };
     }
 
@@ -218,6 +220,7 @@ pub const Processor = struct {
             .tab_count = tabs.len,
             .runtime_admitted = false,
             .runtime_wake_pending = false,
+            .active_cursor = null,
             .runtime_wait_ms = null,
             .render_work_pending = false,
         };
@@ -225,17 +228,18 @@ pub const Processor = struct {
             const active = @as(TabIndex, @intCast(i)) == self.active_tab_idx.*;
             const tab_facts = tab.runtimeFacts(active, now_ns, .{ .input_published = terminal_input_admitted });
             facts.tabs[i] = tab_facts;
-            noteLoopRuntimeFacts(&facts, tab_facts, active);
+            noteLoopRuntimeFacts(&facts, tab_facts, active, if (active) tab.cursorFacts(now_ns) else null);
         }
         return facts;
     }
 
-    fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, tab: TerminalSurface.RuntimeFacts, active: bool) void {
-        facts.runtime_wake_pending = facts.runtime_wake_pending or tab.runtimeWakePending();
-        facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, tab.runtime_wait_ms);
+    fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, runtime: TerminalSurface.RuntimeFacts, active: bool, cursor: ?TerminalSurface.CursorFacts) void {
+        facts.runtime_wake_pending = facts.runtime_wake_pending or runtime.runtimeWakePending();
+        facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, runtime.runtime_wait_ms);
         if (active) {
-            facts.runtime_admitted = tab.input_published;
-            facts.render_work_pending = tab.render_work_pending;
+            facts.runtime_admitted = runtime.input_published;
+            facts.active_cursor = cursor;
+            facts.render_work_pending = runtime.render_work_pending;
         }
     }
 
@@ -371,18 +375,8 @@ pub const Processor = struct {
         };
     }
 
-    fn syncActiveBlinkCadence(self: *Self, now_ns: u64) bool {
-        const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
-        return tab.syncCursorBlinkCadence(now_ns);
-    }
-
-    fn activeBlinkWaitMs(self: *Self, now_ns: u64) ?u32 {
-        const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
-        return tab.nextCursorBlinkWaitMs(now_ns);
-    }
-
-    fn loopWaitMs(self: *Self, now_ns: u64, runtime_wait_ms: ?u32, frame_pacer_wait_ms: ?u32) ?u32 {
-        return loopWaitMsWith(activeBlinkWaitMs(self, now_ns), runtime_wait_ms, frame_pacer_wait_ms);
+    fn loopWaitMs(cursor: ?TerminalSurface.CursorFacts, runtime_wait_ms: ?u32, frame_pacer_wait_ms: ?u32) ?u32 {
+        return loopWaitMsWith(if (cursor) |facts| facts.waitMs() else null, runtime_wait_ms, frame_pacer_wait_ms);
     }
 
     fn loopWaitMsWith(blink_wait_ms: ?u32, runtime_wait_ms: ?u32, frame_pacer_wait_ms: ?u32) ?u32 {
@@ -581,6 +575,7 @@ test "active runtime admission follows explicit surface facts" {
         .tab_count = 0,
         .runtime_admitted = false,
         .runtime_wake_pending = false,
+        .active_cursor = null,
         .runtime_wait_ms = null,
         .render_work_pending = false,
     };
@@ -592,7 +587,7 @@ test "active runtime admission follows explicit surface facts" {
         .input_published = true,
         .runtime_wait_ms = null,
         .render_work_pending = false,
-    }, true);
+    }, true, null);
 
     try std.testing.expect(facts.runtime_admitted);
 }
@@ -619,6 +614,7 @@ test "continuation pending participates in runtime wake admission" {
         .tab_count = 0,
         .runtime_admitted = false,
         .runtime_wake_pending = false,
+        .active_cursor = null,
         .runtime_wait_ms = null,
         .render_work_pending = false,
     };
@@ -630,7 +626,30 @@ test "continuation pending participates in runtime wake admission" {
         .input_published = false,
         .runtime_wait_ms = null,
         .render_work_pending = false,
-    }, false);
+    }, false, null);
 
     try std.testing.expect(Processor.loopPendingFromFacts(false, facts).runtime_wake);
+}
+
+test "active cursor wait participates through explicit surface facts" {
+    var facts = Processor.LoopRuntimeFacts{
+        .tabs = undefined,
+        .tab_count = 0,
+        .runtime_admitted = false,
+        .runtime_wake_pending = false,
+        .active_cursor = null,
+        .runtime_wait_ms = null,
+        .render_work_pending = false,
+    };
+
+    Processor.noteLoopRuntimeFacts(&facts, .{
+        .wake_pending = false,
+        .continuation_pending = false,
+        .runtime_due_now = false,
+        .input_published = false,
+        .runtime_wait_ms = null,
+        .render_work_pending = false,
+    }, true, .{ .cadence = .{ .visible = true, .deadline_ns = 1234, .dirty = false, .wait_ms = 17 } });
+
+    try std.testing.expectEqual(@as(?u32, 17), facts.active_cursor.?.waitMs());
 }

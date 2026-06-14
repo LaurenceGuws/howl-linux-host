@@ -43,6 +43,7 @@ const TestingHooks = struct {
     apply_pending_clipboard_writes: ?*const fn (*Surface) void = null,
     ack_wake: ?*const fn (*Surface) void = null,
     wants_render_turn: ?*const fn (*Surface) bool = null,
+    apply_render_cursor_blink_visible: ?*const fn (*Surface, bool) bool = null,
     upload_render_surface: ?*const fn (*Surface, *const render_c.HowlRenderSurface) bool = null,
     before_render_submit: ?*const fn (*Surface) void = null,
     observe_submit_execution: ?*const fn (*Surface, *const render_c.HowlRenderSubmitExecution) void = null,
@@ -109,6 +110,18 @@ pub const Surface = struct {
 
         pub fn driveAdmitted(self: RuntimeFacts, active: bool) bool {
             return self.continuation_pending or self.wake_pending or self.runtime_due_now or (active and self.input_published);
+        }
+    };
+
+    pub const CursorFacts = struct {
+        cadence: cursor_blink.CursorBlink.CadenceFacts,
+
+        pub fn redraw(self: CursorFacts) bool {
+            return self.cadence.dirty;
+        }
+
+        pub fn waitMs(self: CursorFacts) ?u32 {
+            return self.cadence.wait_ms;
         }
     };
 
@@ -352,21 +365,23 @@ pub const Surface = struct {
         return self.workState().needsRenderSurface();
     }
 
-    pub fn syncCursorBlinkCadence(self: *Context, now_ns: u64) bool {
-        const plan = self.cursor_blink.plan(self.cursorBlinkShouldAnimate(), now_ns);
-        if (!plan.changed) return false;
-        if (!self.setCursorBlinkVisible(plan.visible)) return false;
-        self.cursor_blink.applyPlan(plan);
-        return true;
+    pub fn cursorFacts(self: *Context, now_ns: u64) CursorFacts {
+        return .{ .cadence = self.cursor_blink.cadenceFacts(self.cursorBlinkShouldAnimate(), now_ns) };
+    }
+
+    pub fn consumeCursorFacts(self: *Context, facts: CursorFacts) bool {
+        if (facts.cadence.visible != self.cursor_blink.visible) {
+            if (!self.applyRenderCursorBlinkVisible(facts.cadence.visible)) {
+                return false;
+            }
+        }
+        self.cursor_blink.applyCadenceFacts(facts.cadence);
+        return facts.redraw();
     }
 
     pub fn resetCursorBlinkActivity(self: *Context, now_ns: u64) bool {
         if (!self.cursor_blink.resetActivity(now_ns)) return false;
         return self.applyRenderCursorBlinkVisible(true);
-    }
-
-    pub fn nextCursorBlinkWaitMs(self: *Context, now_ns: u64) ?u32 {
-        return self.cursor_blink.waitMs(self.cursorBlinkShouldAnimate(), now_ns);
     }
 
     pub fn runtimeObligationDueNow(self: *Context, now_ns: u64) bool {
@@ -523,6 +538,7 @@ pub const Surface = struct {
     }
 
     fn applyRenderCursorBlinkVisible(self: *Context, visible: bool) bool {
+        if (testing_hooks.apply_render_cursor_blink_visible) |hook| return hook(self, visible);
         return setRenderCursorBlinkVisible(&self.term, visible);
     }
 
@@ -1098,6 +1114,11 @@ test "runtime due drives without new input" {
 }
 
 test "cursor activity reset uses the passed now_ns" {
+    const TestState = struct {
+        var apply_calls: u8 = 0;
+        var last_visible: bool = false;
+    };
+
     testing.installHooks(.{
         .wake_pending = struct {
             fn hook(_: *Surface) bool {
@@ -1125,6 +1146,13 @@ test "cursor activity reset uses the passed now_ns" {
         .ack_wake = struct {
             fn hook(_: *Surface) void {}
         }.hook,
+        .apply_render_cursor_blink_visible = struct {
+            fn hook(_: *Surface, visible: bool) bool {
+                TestState.apply_calls += 1;
+                TestState.last_visible = visible;
+                return true;
+            }
+        }.hook,
         .wants_render_turn = struct {
             fn hook(_: *Surface) bool {
                 return false;
@@ -1135,21 +1163,113 @@ test "cursor activity reset uses the passed now_ns" {
 
     var surface = testSurfaceBase();
     const now_ns: u64 = 1234;
+    surface.cursor_blink.visible = false;
+    surface.cursor_blink.deadline_ns = 17;
     const facts = surface.runtimeFacts(true, now_ns, .{ .input_published = true });
     const result = surface.driveProgressWithFacts(true, now_ns, facts);
 
     try std.testing.expect(result.drove);
+    try std.testing.expect(surface.cursor_blink.visible);
     try std.testing.expectEqual(now_ns + cursor_blink.interval_ns, surface.cursor_blink.deadline_ns);
+    try std.testing.expectEqual(@as(u8, 1), TestState.apply_calls);
+    try std.testing.expect(TestState.last_visible);
 }
+
+test "surface activity reset restores visible and refreshes deadline" {
+    const TestState = struct {
+        var apply_calls: u8 = 0;
+        var last_visible: bool = false;
+    };
+
+    testing.installHooks(.{
+        .apply_render_cursor_blink_visible = struct {
+            fn hook(_: *Surface, visible: bool) bool {
+                TestState.apply_calls += 1;
+                TestState.last_visible = visible;
+                return true;
+            }
+        }.hook,
+    });
+    defer testing.resetHooks();
+
+    var surface = testSurfaceBase();
+    surface.cursor_blink.visible = false;
+    surface.cursor_blink.deadline_ns = 17;
+
+    try std.testing.expect(surface.resetCursorBlinkActivity(1234));
+    try std.testing.expect(surface.cursor_blink.visible);
+    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.interval_ns, surface.cursor_blink.deadline_ns);
+    try std.testing.expectEqual(@as(u8, 1), TestState.apply_calls);
+    try std.testing.expect(TestState.last_visible);
+}
+
+test "focus loss disables animation and restores visible" {
+    const TestState = struct {
+        var apply_calls: u8 = 0;
+        var last_visible: bool = false;
+    };
+
+    testing.installHooks(.{
+        .apply_render_cursor_blink_visible = struct {
+            fn hook(_: *Surface, visible: bool) bool {
+                TestState.apply_calls += 1;
+                TestState.last_visible = visible;
+                return true;
+            }
+        }.hook,
+    });
+    defer testing.resetHooks();
+
+    var surface = testSurfaceBase();
+    surface.term.vt_state.cursor_visible = true;
+    surface.term.vt_state.cursor_blink = true;
+    surface.cursor_blink.visible = false;
+    surface.cursor_blink.deadline_ns = 777;
+    surface.window_focused = false;
+
+    const facts = surface.cursorFacts(1234);
+    const redraw = surface.consumeCursorFacts(facts);
+
+    try std.testing.expect(redraw);
+    try std.testing.expectEqual(@as(?u32, null), facts.waitMs());
+    try std.testing.expect(surface.cursor_blink.visible);
+    try std.testing.expectEqual(@as(u64, 0), surface.cursor_blink.deadline_ns);
+    try std.testing.expectEqual(@as(u8, 1), TestState.apply_calls);
+    try std.testing.expect(TestState.last_visible);
+}
+
+const test_terminal_conf: TerminalConfig = .{
+    .shell = &.{},
+    .start_path = null,
+    .command = null,
+    .font_size = 1,
+    .fonts = .{ .primary = null, .mono = &.{}, .symbols = &.{}, .emoji = &.{} },
+    .cursor_style = .block,
+    .cursor_blink = true,
+    .clipboard_osc_52 = .deny,
+    .link_open = .disabled,
+    .link_hover = .off,
+    .link_underline = .straight,
+    .mouse_bypass_mod = .{},
+    .bindings = .{ .bindings = &.{} },
+};
 
 fn testSurfaceBase() Surface {
     return .{
-        .term = undefined,
+        .term = .{
+            .allocator = undefined,
+            .pty = .{ .launch = .{ .shell = "", .command = null, .start_path = null } },
+            .session = null,
+            .vt = null,
+            .render = undefined,
+            .vt_state = .{},
+            .mutex = .{},
+        },
         .progress = .{},
         .live = false,
         .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
         .render_surface_textures = .{},
-        .conf = undefined,
+        .conf = &test_terminal_conf,
         .input = undefined,
         .event_loop = undefined,
         .title_buf = undefined,
