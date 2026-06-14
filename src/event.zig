@@ -102,6 +102,7 @@ pub const Processor = struct {
     const RedrawRenderIntent = struct {
         host_redraw: bool,
         terminal_redraw: bool,
+        terminal_frame: bool,
         render_work_pending: bool,
 
         fn needsRender(self: RedrawRenderIntent) bool {
@@ -395,6 +396,7 @@ pub const Processor = struct {
         return .{
             .host_redraw = host_redraw_requested or host_visual_changed,
             .terminal_redraw = terminal_progress.should_redraw or blink_redraw,
+            .terminal_frame = terminal_progress.should_redraw,
             .render_work_pending = render_work_pending,
         };
     }
@@ -442,13 +444,17 @@ pub const Processor = struct {
 
     fn derivePresentPlan(frame: RenderFrame, intent: RedrawRenderIntent) PresentPlan {
         return .{
-            .reason = derivePresentReason(intent.host_redraw, frame.turn.step),
+            .reason = derivePresentReason(intent.host_redraw, intent.terminal_frame, frame.turn.step),
             .needs_render_turn = intent.needsRender(),
         };
     }
 
-    fn derivePresentReason(host_redraw: bool, step: TerminalSurface.TurnStep) PresentReason {
-        return AppPresent.deriveReason(host_redraw, step);
+    fn derivePresentReason(host_redraw: bool, terminal_frame: bool, step: TerminalSurface.TurnStep) PresentReason {
+        return AppPresent.deriveReason(.{
+            .host_redraw = host_redraw,
+            .terminal_frame = terminal_frame,
+            .step = step,
+        });
     }
 
     fn submitPresent(self: *Self, frame: RenderFrame, plan: PresentPlan) PresentSubmission {
@@ -589,6 +595,33 @@ pub const Processor = struct {
     }
 };
 
+pub const testing = struct {
+    pub const PresentPlanningInput = struct {
+        host_redraw_requested: bool,
+        host_visual_changed: bool,
+        runtime_redraw: bool,
+        cursor_redraw: bool,
+        render_work_pending: bool,
+        step: @import("terminal/surface.zig").Surface.TurnStep,
+    };
+
+    pub fn derivePresentReasonThroughControlSpine(input: PresentPlanningInput) @import("display/present.zig").Reason {
+        const progress = Processor.TerminalProgress{
+            .should_redraw = input.runtime_redraw,
+            .keep_running = false,
+            .drive_performed = false,
+        };
+        const intent = Processor.deriveRedrawRenderIntent(
+            input.host_redraw_requested,
+            input.host_visual_changed,
+            progress,
+            input.cursor_redraw,
+            input.render_work_pending,
+        );
+        return Processor.derivePresentReason(intent.host_redraw, intent.terminal_frame, input.step);
+    }
+};
+
 test "active runtime admission follows explicit surface facts" {
     var facts = Processor.LoopRuntimeFacts{
         .tabs = undefined,
@@ -637,7 +670,7 @@ test "runtime wake prevents waiting without granting render" {
         .frame_wait_ms = 20,
     };
     var frame = FramePacing.FrameTimer.init();
-    frame.frame_permit_ready = false;
+    frame.frame_permit_ready = true;
 
     try std.testing.expect(!admission.waitForWindow(&frame));
     try std.testing.expect(!frame.renderPermission());

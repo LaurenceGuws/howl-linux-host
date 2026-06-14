@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const HostInput = @import("input/input.zig").Input;
 const window_wake = @import("window_wake.zig");
 const sdl_c = @import("sdl_c");
@@ -60,6 +61,7 @@ pub const EventLoop = struct {
         var event: sdl_c.SDL_Event = std.mem.zeroes(sdl_c.SDL_Event);
         event.type = self.wakeTypeWith(Ops);
         assert(Ops.pushEvent(&event));
+        logWakePush(event.type);
     }
 
     pub fn pumpInput(self: *EventLoop, input: *HostInput, wait: bool, timeout_ms: ?u32) Signal {
@@ -110,6 +112,7 @@ pub const EventLoop = struct {
             self.wake_queued.store(false, .release);
             return .none;
         }
+        logKeyDownEvent(event.type);
         switch (event.type) {
             sdl_c.SDL_EVENT_QUIT,
             sdl_c.SDL_EVENT_TERMINATING,
@@ -136,6 +139,17 @@ pub const EventLoop = struct {
         return self.wake_event_type;
     }
 };
+
+fn logKeyDownEvent(event_type: u32) void {
+    if (builtin.is_test) return;
+    if (event_type != sdl_c.SDL_EVENT_KEY_DOWN) return;
+    std.log.warn("debug key_down_event_ns={}", .{nowNs()});
+}
+
+fn logWakePush(event_type: u32) void {
+    if (builtin.is_test) return;
+    std.log.warn("debug wake_push_ns={} event_type={}", .{ nowNs(), event_type });
+}
 
 pub fn nowNs() u64 {
     return window_wake.nowNs();

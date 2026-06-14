@@ -1,10 +1,12 @@
 const std = @import("std");
 const render_c = @import("howl_render_c");
 
+const event_mod = @import("../event.zig");
 const surface_mod = @import("surface.zig");
 const cursor_blink = @import("cursor_blink.zig");
 const pty_pump = @import("pty_pump.zig");
 const terminal_input = @import("input.zig");
+const AppPresent = @import("../display/present.zig");
 const render_retained = @import("render_retained.zig");
 const surface_layout = @import("render_surface_layout.zig");
 const terminal_scrollbar = @import("scrollbar.zig");
@@ -1326,6 +1328,30 @@ test "cursor visibility change while present pending submits latest snapshot aft
     try std.testing.expectEqual(@as(u64, 52), latest_submit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
+}
+
+test "autonomous cursor-only rendered snapshot plans terminal frame through event present seam" {
+    const processor_testing = event_mod.testing;
+
+    const keydown_reason = processor_testing.derivePresentReasonThroughControlSpine(.{
+        .host_redraw_requested = false,
+        .host_visual_changed = false,
+        .runtime_redraw = true,
+        .cursor_redraw = false,
+        .render_work_pending = false,
+        .step = .rendered,
+    });
+    try std.testing.expectEqual(AppPresent.Reason.terminal_frame, keydown_reason);
+
+    const autonomous_reason = processor_testing.derivePresentReasonThroughControlSpine(.{
+        .host_redraw_requested = false,
+        .host_visual_changed = false,
+        .runtime_redraw = false,
+        .cursor_redraw = true,
+        .render_work_pending = false,
+        .step = .rendered,
+    });
+    try std.testing.expectEqual(AppPresent.Reason.host_damage, autonomous_reason);
 }
 
 test "complete present acks matching host-owned token once and clears" {

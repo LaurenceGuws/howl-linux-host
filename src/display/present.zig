@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 
 const DisplayLayout = @import("layout.zig");
@@ -20,6 +21,12 @@ pub const Snapshot = struct {
 pub const Plan = struct {
     reason: Reason,
     needs_render_turn: bool,
+};
+
+pub const ReasonInput = struct {
+    host_redraw: bool,
+    terminal_frame: bool,
+    step: TerminalSurface.TurnStep,
 };
 
 pub const Outcome = struct {
@@ -57,11 +64,11 @@ pub fn Lifecycle(comptime AppPtr: type) type {
     };
 }
 
-pub fn deriveReason(host_redraw: bool, step: TerminalSurface.TurnStep) Reason {
-    return switch (step) {
-        .rendered => .terminal_frame,
+pub fn deriveReason(input: ReasonInput) Reason {
+    return switch (input.step) {
+        .rendered => if (input.terminal_frame) .terminal_frame else .host_damage,
         .blocked_present => .terminal_retire,
-        .surface_idle, .idle_prepare, .idle_submit, .failed => if (host_redraw) .host_damage else .none,
+        .surface_idle, .idle_prepare, .idle_submit, .failed => if (input.host_redraw) .host_damage else .none,
     };
 }
 
@@ -78,6 +85,7 @@ pub fn submitWith(display: anytype, tab: anytype, snapshot: Snapshot, reason: Re
                 .tab_bar_revision = snapshot.tab_bar_revision,
                 .tab_labels = snapshot.labels,
             });
+            logPresentSubmit(reason, token);
             return .{ .reason = reason, .submitted = true, .token = token };
         },
     }
@@ -127,9 +135,21 @@ fn drainReadyCompletion(app: anytype) bool {
         if (terminal_token != token) return false;
         completeTerminal(app.tabs.items(), token);
         app.pending_terminal_present = null;
+        logDirtyPresentDone(token, true);
         return true;
     }
+    logDirtyPresentDone(token, false);
     return false;
+}
+
+fn logDirtyPresentDone(token: PresentToken, matched_terminal_present: bool) void {
+    if (builtin.is_test) return;
+    std.log.warn("debug dirty_present_done_ns={} token={} matched_terminal_present={}", .{ EventLoop.nowNs(), token, matched_terminal_present });
+}
+
+fn logPresentSubmit(reason: Reason, token: PresentToken) void {
+    if (builtin.is_test) return;
+    std.log.warn("debug present_submit_ns={} reason={s} token={}", .{ EventLoop.nowNs(), @tagName(reason), token });
 }
 
 fn noteFramePacingPresentComplete(app: anytype) void {
@@ -157,25 +177,31 @@ fn completeTerminal(tabs: anytype, token: PresentToken) void {
 test "derivePresentReason matrix names host and terminal present cadence" {
     const cases = [_]struct {
         host_redraw: bool,
+        terminal_frame: bool,
         step: TerminalSurface.TurnStep,
         reason: Reason,
     }{
-        .{ .host_redraw = false, .step = .surface_idle, .reason = .none },
-        .{ .host_redraw = false, .step = .idle_prepare, .reason = .none },
-        .{ .host_redraw = false, .step = .idle_submit, .reason = .none },
-        .{ .host_redraw = false, .step = .failed, .reason = .none },
-        .{ .host_redraw = false, .step = .rendered, .reason = .terminal_frame },
-        .{ .host_redraw = false, .step = .blocked_present, .reason = .terminal_retire },
-        .{ .host_redraw = true, .step = .surface_idle, .reason = .host_damage },
-        .{ .host_redraw = true, .step = .idle_prepare, .reason = .host_damage },
-        .{ .host_redraw = true, .step = .idle_submit, .reason = .host_damage },
-        .{ .host_redraw = true, .step = .failed, .reason = .host_damage },
-        .{ .host_redraw = true, .step = .rendered, .reason = .terminal_frame },
-        .{ .host_redraw = true, .step = .blocked_present, .reason = .terminal_retire },
+        .{ .host_redraw = false, .terminal_frame = false, .step = .surface_idle, .reason = .none },
+        .{ .host_redraw = false, .terminal_frame = false, .step = .idle_prepare, .reason = .none },
+        .{ .host_redraw = false, .terminal_frame = false, .step = .idle_submit, .reason = .none },
+        .{ .host_redraw = false, .terminal_frame = false, .step = .failed, .reason = .none },
+        .{ .host_redraw = false, .terminal_frame = true, .step = .rendered, .reason = .terminal_frame },
+        .{ .host_redraw = false, .terminal_frame = false, .step = .rendered, .reason = .host_damage },
+        .{ .host_redraw = false, .terminal_frame = false, .step = .blocked_present, .reason = .terminal_retire },
+        .{ .host_redraw = true, .terminal_frame = false, .step = .surface_idle, .reason = .host_damage },
+        .{ .host_redraw = true, .terminal_frame = false, .step = .idle_prepare, .reason = .host_damage },
+        .{ .host_redraw = true, .terminal_frame = false, .step = .idle_submit, .reason = .host_damage },
+        .{ .host_redraw = true, .terminal_frame = false, .step = .failed, .reason = .host_damage },
+        .{ .host_redraw = true, .terminal_frame = true, .step = .rendered, .reason = .terminal_frame },
+        .{ .host_redraw = true, .terminal_frame = false, .step = .blocked_present, .reason = .terminal_retire },
     };
 
     for (cases) |case| {
-        try std.testing.expectEqual(case.reason, deriveReason(case.host_redraw, case.step));
+        try std.testing.expectEqual(case.reason, deriveReason(.{
+            .host_redraw = case.host_redraw,
+            .terminal_frame = case.terminal_frame,
+            .step = case.step,
+        }));
     }
 }
 

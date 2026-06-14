@@ -177,7 +177,7 @@ test "runtime wake is not frame permit" {
         .runtime_admission = false,
     };
     var pacing = FrameTimer.init();
-    pacing.frame_permit_ready = false;
+    pacing.frame_permit_ready = true;
 
     try std.testing.expect(!pacing.shouldWaitForWindow(admission));
     try std.testing.expect(!pacing.renderPermission());
@@ -271,6 +271,7 @@ test "frame permit wait follows refresh cadence" {
     var pacing = FrameTimer.init();
 
     pacing.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+    pacing.notePresentComplete();
     try std.testing.expect(!pacing.frame_permit_ready);
     try std.testing.expectEqual(@as(?u32, 16), pacing.framePermitWaitMs(1_000));
     pacing.refreshFramePermit(16_001_000, 16_000_000);
@@ -279,8 +280,8 @@ test "frame permit wait follows refresh cadence" {
 
 test "terminal keep wake stays independent from frame permit" {
     var pacing = FrameTimer.init();
-    pacing.noteRedrawAndRenderWork(true, false);
     pacing.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+    pacing.noteRedrawAndRenderWork(true, false);
     try std.testing.expect(!pacing.terminalKeepWakePermission());
     try std.testing.expect(pacing.redraw_requested);
 }
