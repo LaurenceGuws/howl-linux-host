@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const DisplayLayout = @import("layout.zig");
+const EventLoop = @import("../event_loop.zig");
 const TerminalSurface = @import("../terminal/surface.zig").Surface;
 const FramePacing = @import("frame_timer.zig");
 
@@ -21,11 +22,40 @@ pub const Plan = struct {
     needs_render_turn: bool,
 };
 
+pub const Outcome = struct {
+    submission: Submission,
+    completed_terminal_present: bool,
+};
+
 pub const Submission = struct {
     reason: Reason,
     submitted: bool,
     token: ?PresentToken,
 };
+
+pub fn lifecycle(app: anytype) Lifecycle(@TypeOf(app)) {
+    return .{ .app = app };
+}
+
+pub fn Lifecycle(comptime AppPtr: type) type {
+    return struct {
+        app: AppPtr,
+
+        const Self = @This();
+
+        pub fn drain(self: Self) bool {
+            return drainReadyCompletion(self.app);
+        }
+
+        pub fn submit(self: Self, tab: anytype, step: TerminalSurface.TurnStep, present_snapshot_seq: u64, snapshot: Snapshot, reason: Reason) Outcome {
+            const submission = submitForApp(self.app, tab, snapshot, reason);
+            recordSubmissionFor(self.app, tab, step, present_snapshot_seq, submission);
+            noteFramePacingRenderSubmitted(self.app, submission);
+            const completed_terminal_present = drainReadyCompletion(self.app);
+            return .{ .submission = submission, .completed_terminal_present = completed_terminal_present };
+        }
+    };
+}
 
 pub fn deriveReason(host_redraw: bool, step: TerminalSurface.TurnStep) Reason {
     return switch (step) {
@@ -39,7 +69,7 @@ pub fn submitWith(display: anytype, tab: anytype, snapshot: Snapshot, reason: Re
     switch (reason) {
         .none, .terminal_retire => return .{ .reason = reason, .submitted = false, .token = null },
         .host_damage, .terminal_frame => {
-            const token = display.submitPresent(.{
+            const token = display.submitPresentSync(.{
                 .term_texture_id = @as(u32, @intCast(tab.termTextureId())),
                 .term_texture_rect = snapshot.texture_rect,
                 .scrollbar = snapshot.scrollbar,
@@ -76,19 +106,48 @@ pub fn recordSubmissionFor(app: anytype, tab: anytype, step: TerminalSurface.Tur
     }
 }
 
-pub fn drainComplete(app: anytype) void {
-    const token = app.display.drainPresentComplete() orelse return;
+fn submitForApp(app: anytype, tab: anytype, snapshot: Snapshot, reason: Reason) Submission {
+    const AppType = @typeInfo(@TypeOf(app)).pointer.child;
+    if (@hasField(AppType, "display")) return submitWith(app.display, tab, snapshot, reason);
+    if (@hasField(AppType, "window")) return submitWith(app.window, tab, snapshot, reason);
+    @compileError("present lifecycle requires an app display owner field");
+}
+
+fn drainReadyCompletion(app: anytype) bool {
+    const AppType = @typeInfo(@TypeOf(app)).pointer.child;
+    const token_opt = if (@hasField(AppType, "display"))
+        app.display.takeReadyPresentComplete()
+    else if (@hasField(AppType, "window"))
+        app.window.takeReadyPresentComplete()
+    else
+        @compileError("present lifecycle requires an app display owner field");
+    const token = token_opt orelse return false;
     noteFramePacingPresentComplete(app);
     if (app.pending_terminal_present) |terminal_token| {
-        if (terminal_token != token) return;
+        if (terminal_token != token) return false;
         completeTerminal(app.tabs.items(), token);
         app.pending_terminal_present = null;
+        return true;
     }
+    return false;
 }
 
 fn noteFramePacingPresentComplete(app: anytype) void {
     const AppType = @typeInfo(@TypeOf(app)).pointer.child;
-    if (@hasField(AppType, "frame_pacing")) app.frame_pacing.notePresentComplete();
+    if (!@hasField(AppType, "frame_pacing")) return;
+    const PacingType = @TypeOf(app.frame_pacing);
+    if (@hasDecl(PacingType, "notePresentComplete")) app.frame_pacing.notePresentComplete();
+}
+
+fn noteFramePacingRenderSubmitted(app: anytype, submission: Submission) void {
+    const AppType = @typeInfo(@TypeOf(app)).pointer.child;
+    if (!@hasField(AppType, "frame_pacing")) return;
+    const PacingType = @TypeOf(app.frame_pacing);
+    if (!@hasDecl(PacingType, "noteRenderSubmittedAt")) return;
+    app.frame_pacing.noteRenderSubmittedAt(.{
+        .reason = submission.reason,
+        .submitted = submission.submitted,
+    }, EventLoop.nowNs());
 }
 
 fn completeTerminal(tabs: anytype, token: PresentToken) void {
@@ -120,35 +179,19 @@ test "derivePresentReason matrix names host and terminal present cadence" {
     }
 }
 
-test "present completion only follows terminal present reasons" {
+test "submitWith names synchronous host submit reasons" {
     const FakeTab = struct {
-        complete_count: u8 = 0,
-        note_count: u8 = 0,
-        last_note_snapshot_seq: u64 = 0,
-        last_note_token: PresentToken = 0,
-        last_complete_token: PresentToken = 0,
         texture_id: u32 = 7,
 
         fn termTextureId(self: *const @This()) u32 {
             return self.texture_id;
         }
-
-        fn notePresentSubmitted(self: *@This(), snapshot_seq: u64, token: PresentToken) void {
-            self.note_count += 1;
-            self.last_note_snapshot_seq = snapshot_seq;
-            self.last_note_token = token;
-        }
-
-        fn completePresent(self: *@This(), token: PresentToken) void {
-            self.complete_count += 1;
-            self.last_complete_token = token;
-        }
     };
-    const FakeWindow = struct {
+    const FakeDisplay = struct {
         present_count: u8 = 0,
         next_token: PresentToken = 40,
 
-        fn submitPresent(self: *@This(), frame: anytype) PresentToken {
+        fn submitPresentSync(self: *@This(), frame: anytype) PresentToken {
             std.debug.assert(frame.term_texture_id == 7);
             self.present_count += 1;
             self.next_token += 1;
@@ -164,32 +207,23 @@ test "present completion only follows terminal present reasons" {
     };
 
     var tab = FakeTab{};
-    var window = FakeWindow{};
+    var display = FakeDisplay{};
 
-    const none = submitWith(&window, &tab, snapshot, .none);
+    const none = submitWith(&display, &tab, snapshot, .none);
     try std.testing.expect(!none.submitted);
-    try std.testing.expectEqual(@as(u8, 0), tab.complete_count);
-    try std.testing.expectEqual(@as(u8, 0), window.present_count);
+    try std.testing.expectEqual(@as(u8, 0), display.present_count);
 
-    const host_damage = submitWith(&window, &tab, snapshot, .host_damage);
+    const host_damage = submitWith(&display, &tab, snapshot, .host_damage);
     try std.testing.expect(host_damage.submitted);
-    try std.testing.expectEqual(@as(u8, 0), tab.complete_count);
-    try std.testing.expectEqual(@as(u8, 1), window.present_count);
+    try std.testing.expectEqual(@as(u8, 1), display.present_count);
 
-    const terminal_frame = submitWith(&window, &tab, snapshot, .terminal_frame);
-    tab.notePresentSubmitted(55, terminal_frame.token.?);
-    completeTerminal(&[_]*FakeTab{&tab}, terminal_frame.token.?);
-    try std.testing.expectEqual(@as(u8, 1), tab.note_count);
-    try std.testing.expectEqual(@as(u64, 55), tab.last_note_snapshot_seq);
-    try std.testing.expectEqual(terminal_frame.token.?, tab.last_complete_token);
-    try std.testing.expectEqual(@as(u8, 1), tab.complete_count);
-    try std.testing.expectEqual(@as(u8, 2), window.present_count);
+    const terminal_frame = submitWith(&display, &tab, snapshot, .terminal_frame);
+    try std.testing.expect(terminal_frame.submitted);
+    try std.testing.expectEqual(@as(u8, 2), display.present_count);
 
-    const terminal_retire = submitWith(&window, &tab, snapshot, .terminal_retire);
+    const terminal_retire = submitWith(&display, &tab, snapshot, .terminal_retire);
     try std.testing.expect(!terminal_retire.submitted);
-    try std.testing.expectEqual(@as(u8, 1), tab.note_count);
-    try std.testing.expectEqual(@as(u8, 1), tab.complete_count);
-    try std.testing.expectEqual(@as(u8, 2), window.present_count);
+    try std.testing.expectEqual(@as(u8, 2), display.present_count);
 }
 
 test "terminal retire submit does not require a new snapshot" {
@@ -205,10 +239,10 @@ test "terminal retire submit does not require a new snapshot" {
             self.note_count += 1;
         }
     };
-    const FakeWindow = struct {
+    const FakeDisplay = struct {
         submit_count: u8 = 0,
 
-        fn submitPresent(_: *@This(), _: anytype) PresentToken {
+        fn submitPresentSync(_: *@This(), _: anytype) PresentToken {
             unreachable;
         }
     };
@@ -224,13 +258,13 @@ test "terminal retire submit does not require a new snapshot" {
     };
 
     var tab = FakeTab{};
-    var window = FakeWindow{};
+    var display = FakeDisplay{};
     var app = FakeApp{};
-    const submission = submitWith(&window, &tab, snapshot, .terminal_retire);
+    const submission = submitWith(&display, &tab, snapshot, .terminal_retire);
     recordSubmissionFor(&app, &tab, .blocked_present, 0, submission);
 
     try std.testing.expect(!submission.submitted);
-    try std.testing.expectEqual(@as(u8, 0), window.submit_count);
+    try std.testing.expectEqual(@as(u8, 0), display.submit_count);
     try std.testing.expectEqual(@as(u8, 0), tab.note_count);
     try std.testing.expectEqual(@as(?PresentToken, 41), app.pending_terminal_present);
 }
@@ -243,12 +277,12 @@ test "terminal retire does not clear pending retained completion" {
             self.complete_count += 1;
         }
     };
-    const FakeWindow = struct {
-        completed: ?PresentToken = null,
+    const FakeDisplay = struct {
+        ready_complete: ?PresentToken = null,
 
-        fn drainPresentComplete(self: *@This()) ?PresentToken {
-            const token = self.completed orelse return null;
-            self.completed = null;
+        fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
             return token;
         }
     };
@@ -260,22 +294,22 @@ test "terminal retire does not clear pending retained completion" {
         }
     };
     const FakeApp = struct {
-        window: *FakeWindow,
+        display: *FakeDisplay,
         tabs: *FakeTabs,
         pending_terminal_present: ?PresentToken,
     };
 
     var tab = FakeTab{};
-    var window = FakeWindow{};
+    var display = FakeDisplay{};
     var tabs = FakeTabs{ .items_buf = .{&tab} };
-    var app = FakeApp{ .window = &window, .tabs = &tabs, .pending_terminal_present = 50 };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .pending_terminal_present = 50 };
 
-    drainComplete(&app);
+    try std.testing.expect(!lifecycle(&app).drain());
     try std.testing.expectEqual(@as(u8, 0), tab.complete_count);
     try std.testing.expectEqual(@as(?PresentToken, 50), app.pending_terminal_present);
 
-    window.completed = 50;
-    drainComplete(&app);
+    display.ready_complete = 50;
+    try std.testing.expect(lifecycle(&app).drain());
     try std.testing.expectEqual(@as(u8, 1), tab.complete_count);
     try std.testing.expectEqual(@as(?PresentToken, null), app.pending_terminal_present);
 }
@@ -302,12 +336,12 @@ test "terminal frame original token completes retained state" {
             self.completed_token = token;
         }
     };
-    const FakeWindow = struct {
-        completed: ?PresentToken = null,
+    const FakeDisplay = struct {
+        ready_complete: ?PresentToken = null,
 
-        fn drainPresentComplete(self: *@This()) ?PresentToken {
-            const token = self.completed orelse return null;
-            self.completed = null;
+        fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
             return token;
         }
     };
@@ -319,34 +353,34 @@ test "terminal frame original token completes retained state" {
         }
     };
     const FakeApp = struct {
-        window: *FakeWindow,
+        display: *FakeDisplay,
         tabs: *FakeTabs,
         pending_terminal_present: ?PresentToken,
     };
 
     var tab = FakeTab{};
-    var window = FakeWindow{};
+    var display = FakeDisplay{};
     var tabs = FakeTabs{ .items_buf = .{&tab} };
-    var app = FakeApp{ .window = &window, .tabs = &tabs, .pending_terminal_present = null };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .pending_terminal_present = null };
     const submission = Submission{ .reason = .terminal_frame, .submitted = true, .token = 42 };
     recordSubmissionFor(&app, &tab, .rendered, 123, submission);
     try std.testing.expectEqual(@as(PresentToken, 42), app.pending_terminal_present.?);
     try std.testing.expectEqual(@as(PresentToken, 42), tab.noted_token);
 
-    window.completed = 42;
-    drainComplete(&app);
+    display.ready_complete = 42;
+    try std.testing.expect(lifecycle(&app).drain());
     try std.testing.expectEqual(@as(u8, 1), tab.complete_count);
     try std.testing.expectEqual(@as(PresentToken, 42), tab.completed_token);
     try std.testing.expectEqual(@as(?PresentToken, null), app.pending_terminal_present);
 }
 
 test "submit and drained completion are distinct host actions" {
-    const FakeWindow = struct {
-        completed: ?PresentToken = null,
+    const FakeDisplay = struct {
+        ready_complete: ?PresentToken = null,
 
-        fn drainPresentComplete(self: *@This()) ?PresentToken {
-            const token = self.completed orelse return null;
-            self.completed = null;
+        fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
             return token;
         }
     };
@@ -365,33 +399,33 @@ test "submit and drained completion are distinct host actions" {
         }
     };
     const FakeApp = struct {
-        window: *FakeWindow,
+        display: *FakeDisplay,
         tabs: *FakeTabs,
         pending_terminal_present: ?PresentToken,
     };
 
-    var window = FakeWindow{ .completed = null };
+    var display = FakeDisplay{ .ready_complete = null };
     var tab = FakeTab{};
     var tabs = FakeTabs{ .items_buf = .{&tab} };
-    var app = FakeApp{ .window = &window, .tabs = &tabs, .pending_terminal_present = 77 };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .pending_terminal_present = 77 };
 
-    drainComplete(&app);
+    try std.testing.expect(!lifecycle(&app).drain());
     try std.testing.expectEqual(@as(u8, 0), tab.complete_count);
     try std.testing.expectEqual(@as(?PresentToken, 77), app.pending_terminal_present);
 
-    window.completed = 77;
-    drainComplete(&app);
+    display.ready_complete = 77;
+    try std.testing.expect(lifecycle(&app).drain());
     try std.testing.expectEqual(@as(u8, 1), tab.complete_count);
     try std.testing.expectEqual(@as(?PresentToken, null), app.pending_terminal_present);
 }
 
 test "host damage drained completion does not call terminal completion" {
-    const FakeWindow = struct {
-        completed: ?PresentToken = 88,
+    const FakeDisplay = struct {
+        ready_complete: ?PresentToken = 88,
 
-        fn drainPresentComplete(self: *@This()) ?PresentToken {
-            const token = self.completed orelse return null;
-            self.completed = null;
+        fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
             return token;
         }
     };
@@ -410,27 +444,27 @@ test "host damage drained completion does not call terminal completion" {
         }
     };
     const FakeApp = struct {
-        window: *FakeWindow,
+        display: *FakeDisplay,
         tabs: *FakeTabs,
         pending_terminal_present: ?PresentToken,
     };
 
-    var window = FakeWindow{};
+    var display = FakeDisplay{};
     var tab = FakeTab{};
     var tabs = FakeTabs{ .items_buf = .{&tab} };
-    var app = FakeApp{ .window = &window, .tabs = &tabs, .pending_terminal_present = null };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .pending_terminal_present = null };
 
-    drainComplete(&app);
+    try std.testing.expect(!lifecycle(&app).drain());
     try std.testing.expectEqual(@as(u8, 0), tab.complete_count);
 }
 
 test "terminal present completes only after drained matching token" {
-    const FakeWindow = struct {
-        completed: ?PresentToken = 90,
+    const FakeDisplay = struct {
+        ready_complete: ?PresentToken = 90,
 
-        fn drainPresentComplete(self: *@This()) ?PresentToken {
-            const token = self.completed orelse return null;
-            self.completed = null;
+        fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
             return token;
         }
     };
@@ -451,23 +485,265 @@ test "terminal present completes only after drained matching token" {
         }
     };
     const FakeApp = struct {
-        window: *FakeWindow,
+        display: *FakeDisplay,
         tabs: *FakeTabs,
         pending_terminal_present: ?PresentToken,
     };
 
-    var window = FakeWindow{};
+    var display = FakeDisplay{};
     var tab = FakeTab{};
     var tabs = FakeTabs{ .items_buf = .{&tab} };
-    var app = FakeApp{ .window = &window, .tabs = &tabs, .pending_terminal_present = 91 };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .pending_terminal_present = 91 };
 
-    drainComplete(&app);
+    try std.testing.expect(!lifecycle(&app).drain());
     try std.testing.expectEqual(@as(u8, 0), tab.complete_count);
     try std.testing.expectEqual(@as(?PresentToken, 91), app.pending_terminal_present);
 
-    window.completed = 91;
-    drainComplete(&app);
+    display.ready_complete = 91;
+    try std.testing.expect(lifecycle(&app).drain());
     try std.testing.expectEqual(@as(u8, 1), tab.complete_count);
     try std.testing.expectEqual(@as(PresentToken, 91), tab.last_token);
     try std.testing.expectEqual(@as(?PresentToken, null), app.pending_terminal_present);
+}
+
+test "terminal frame lifecycle completes synchronously" {
+    const FakeDisplay = struct {
+        present_count: u8 = 0,
+        next_token: PresentToken = 70,
+        ready_complete: ?PresentToken = null,
+
+        fn submitPresentSync(self: *@This(), _: anytype) PresentToken {
+            self.present_count += 1;
+            self.next_token += 1;
+            self.ready_complete = self.next_token;
+            return self.next_token;
+        }
+
+        fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
+            return token;
+        }
+    };
+    const FakeTab = struct {
+        note_count: u8 = 0,
+        complete_count: u8 = 0,
+        last_note_snapshot_seq: u64 = 0,
+        last_note_token: PresentToken = 0,
+        last_complete_token: PresentToken = 0,
+        texture_id: u32 = 7,
+
+        fn termTextureId(self: *const @This()) u32 {
+            return self.texture_id;
+        }
+
+        fn notePresentSubmitted(self: *@This(), snapshot_seq: u64, token: PresentToken) void {
+            self.note_count += 1;
+            self.last_note_snapshot_seq = snapshot_seq;
+            self.last_note_token = token;
+        }
+
+        fn completePresent(self: *@This(), token: PresentToken) void {
+            self.complete_count += 1;
+            self.last_complete_token = token;
+        }
+    };
+    const FakeTabs = struct {
+        items_buf: [1]*FakeTab,
+
+        fn items(self: *@This()) []*FakeTab {
+            return self.items_buf[0..];
+        }
+    };
+    const FakeFramePacing = struct {
+        complete_count: u8 = 0,
+
+        fn notePresentComplete(self: *@This()) void {
+            self.complete_count += 1;
+        }
+    };
+    const FakeApp = struct {
+        display: *FakeDisplay,
+        tabs: *FakeTabs,
+        frame_pacing: FakeFramePacing,
+        pending_terminal_present: ?PresentToken,
+    };
+    const snapshot = Snapshot{
+        .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+        .active_tab = 0,
+        .tab_bar_revision = 1,
+        .labels = &.{"shell"},
+    };
+
+    var display = FakeDisplay{};
+    var tab = FakeTab{};
+    var tabs = FakeTabs{ .items_buf = .{&tab} };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .frame_pacing = .{}, .pending_terminal_present = null };
+
+    const outcome = lifecycle(&app).submit(&tab, .rendered, 55, snapshot, .terminal_frame);
+
+    try std.testing.expect(outcome.submission.submitted);
+    try std.testing.expect(outcome.completed_terminal_present);
+    try std.testing.expectEqual(@as(u8, 1), display.present_count);
+    try std.testing.expectEqual(@as(u8, 1), tab.note_count);
+    try std.testing.expectEqual(@as(u64, 55), tab.last_note_snapshot_seq);
+    try std.testing.expectEqual(tab.last_note_token, tab.last_complete_token);
+    try std.testing.expectEqual(@as(u8, 1), tab.complete_count);
+    try std.testing.expectEqual(@as(u8, 1), app.frame_pacing.complete_count);
+    try std.testing.expectEqual(@as(?PresentToken, null), app.pending_terminal_present);
+}
+
+test "host damage lifecycle drains synchronous completion without terminal retire" {
+    const FakeDisplay = struct {
+        present_count: u8 = 0,
+        next_token: PresentToken = 80,
+        ready_complete: ?PresentToken = null,
+
+        fn submitPresentSync(self: *@This(), _: anytype) PresentToken {
+            self.present_count += 1;
+            self.next_token += 1;
+            self.ready_complete = self.next_token;
+            return self.next_token;
+        }
+
+        fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
+            return token;
+        }
+    };
+    const FakeTab = struct {
+        complete_count: u8 = 0,
+        texture_id: u32 = 7,
+
+        fn termTextureId(self: *const @This()) u32 {
+            return self.texture_id;
+        }
+
+        fn notePresentSubmitted(_: *@This(), _: u64, _: PresentToken) void {
+            unreachable;
+        }
+
+        fn completePresent(self: *@This(), _: PresentToken) void {
+            self.complete_count += 1;
+        }
+    };
+    const FakeTabs = struct {
+        items_buf: [1]*FakeTab,
+
+        fn items(self: *@This()) []*FakeTab {
+            return self.items_buf[0..];
+        }
+    };
+    const FakeFramePacing = struct {
+        complete_count: u8 = 0,
+
+        fn notePresentComplete(self: *@This()) void {
+            self.complete_count += 1;
+        }
+    };
+    const FakeApp = struct {
+        display: *FakeDisplay,
+        tabs: *FakeTabs,
+        frame_pacing: FakeFramePacing,
+        pending_terminal_present: ?PresentToken,
+    };
+    const snapshot = Snapshot{
+        .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+        .active_tab = 0,
+        .tab_bar_revision = 1,
+        .labels = &.{"shell"},
+    };
+
+    var display = FakeDisplay{};
+    var tab = FakeTab{};
+    var tabs = FakeTabs{ .items_buf = .{&tab} };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .frame_pacing = .{}, .pending_terminal_present = null };
+
+    const outcome = lifecycle(&app).submit(&tab, .surface_idle, 0, snapshot, .host_damage);
+
+    try std.testing.expect(outcome.submission.submitted);
+    try std.testing.expect(!outcome.completed_terminal_present);
+    try std.testing.expectEqual(@as(u8, 0), tab.complete_count);
+    try std.testing.expectEqual(@as(u8, 1), app.frame_pacing.complete_count);
+    try std.testing.expectEqual(@as(?PresentToken, null), app.pending_terminal_present);
+}
+
+test "terminal retire lifecycle preserves pending terminal token without new submit" {
+    const FakeDisplay = struct {
+        submit_count: u8 = 0,
+        ready_complete: ?PresentToken = null,
+
+        fn submitPresentSync(self: *@This(), _: anytype) PresentToken {
+            self.submit_count += 1;
+            unreachable;
+        }
+
+        fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
+            return token;
+        }
+    };
+    const FakeTab = struct {
+        note_count: u8 = 0,
+        complete_count: u8 = 0,
+        texture_id: u32 = 7,
+
+        fn termTextureId(self: *const @This()) u32 {
+            return self.texture_id;
+        }
+
+        fn notePresentSubmitted(self: *@This(), _: u64, _: PresentToken) void {
+            self.note_count += 1;
+        }
+
+        fn completePresent(self: *@This(), _: PresentToken) void {
+            self.complete_count += 1;
+        }
+    };
+    const FakeTabs = struct {
+        items_buf: [1]*FakeTab,
+
+        fn items(self: *@This()) []*FakeTab {
+            return self.items_buf[0..];
+        }
+    };
+    const FakeFramePacing = struct {
+        complete_count: u8 = 0,
+
+        fn notePresentComplete(self: *@This()) void {
+            self.complete_count += 1;
+        }
+    };
+    const FakeApp = struct {
+        display: *FakeDisplay,
+        tabs: *FakeTabs,
+        frame_pacing: FakeFramePacing,
+        pending_terminal_present: ?PresentToken,
+    };
+    const snapshot = Snapshot{
+        .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+        .active_tab = 0,
+        .tab_bar_revision = 1,
+        .labels = &.{"shell"},
+    };
+
+    var display = FakeDisplay{};
+    var tab = FakeTab{};
+    var tabs = FakeTabs{ .items_buf = .{&tab} };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .frame_pacing = .{}, .pending_terminal_present = 91 };
+
+    const outcome = lifecycle(&app).submit(&tab, .blocked_present, 0, snapshot, .terminal_retire);
+
+    try std.testing.expect(!outcome.submission.submitted);
+    try std.testing.expect(!outcome.completed_terminal_present);
+    try std.testing.expectEqual(@as(u8, 0), display.submit_count);
+    try std.testing.expectEqual(@as(u8, 0), tab.note_count);
+    try std.testing.expectEqual(@as(u8, 0), tab.complete_count);
+    try std.testing.expectEqual(@as(u8, 0), app.frame_pacing.complete_count);
+    try std.testing.expectEqual(@as(?PresentToken, 91), app.pending_terminal_present);
 }

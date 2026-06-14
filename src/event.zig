@@ -451,41 +451,23 @@ pub const Processor = struct {
 
     fn submitPresent(self: *Self, frame: RenderFrame, plan: PresentPlan) PresentSubmission {
         assert(plan.needs_render_turn);
-        const submission = if (self.frame_pacing.presentSubmissionPermission(plan.reason) or plan.reason == .none or plan.reason == .terminal_retire)
-            submitPresentWith(self.display, frame.tab, frame.snapshot, plan.reason)
+        const reason = if (self.frame_pacing.presentSubmissionPermission(plan.reason) or plan.reason == .none or plan.reason == .terminal_retire)
+            plan.reason
         else
-            PresentSubmission{ .reason = .none, .submitted = false, .token = null };
-        recordPresentSubmission(self, frame, submission);
-        self.frame_pacing.noteRenderSubmittedAt(.{
-            .reason = submission.reason,
-            .submitted = submission.submitted,
-        }, EventLoop.nowNs());
-        AppPresent.drainComplete(self);
-        return submission;
-    }
-
-    fn submitPresentWith(display: *Display.State, tab: *TerminalSurface, snapshot: RenderSnapshot, reason: PresentReason) PresentSubmission {
-        return AppPresent.submitWith(display, tab, .{
-            .texture_rect = snapshot.texture_rect,
-            .scrollbar = snapshot.scrollbar,
-            .active_tab = snapshot.active_tab,
-            .tab_bar_revision = snapshot.tab_bar_revision,
-            .labels = snapshot.labels,
+            PresentReason.none;
+        const present = AppPresent.lifecycle(self);
+        const outcome = present.submit(frame.tab, frame.turn.step, frame.turn.present_snapshot_seq, .{
+            .texture_rect = frame.snapshot.texture_rect,
+            .scrollbar = frame.snapshot.scrollbar,
+            .active_tab = frame.snapshot.active_tab,
+            .tab_bar_revision = frame.snapshot.tab_bar_revision,
+            .labels = frame.snapshot.labels,
         }, reason);
-    }
-
-    fn recordPresentSubmission(self: *Self, frame: RenderFrame, submission: PresentSubmission) void {
-        recordPresentSubmissionFor(self, frame.tab, frame.turn.step, frame.turn.present_snapshot_seq, submission);
-    }
-
-    fn recordPresentSubmissionFor(self: *Self, tab: *TerminalSurface, step: TerminalSurface.TurnStep, present_snapshot_seq: u64, submission: PresentSubmission) void {
-        AppPresent.recordSubmissionFor(self, tab, step, present_snapshot_seq, submission);
+        return outcome.submission;
     }
 
     fn drainPresentComplete(self: *Self) bool {
-        const pending_before = self.pending_terminal_present != null;
-        AppPresent.drainComplete(self);
-        return pending_before and self.pending_terminal_present == null;
+        return AppPresent.lifecycle(self).drain();
     }
 
     fn resizeTerminals(conf: *const Config.UiConfig, app_window: *window.Window, tabs: []*TerminalSurface) void {

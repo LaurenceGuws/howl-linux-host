@@ -69,14 +69,14 @@ pub fn GenericState(comptime c: type) type {
         tab_cache_revision: u64,
         next_present_token: PresentToken,
         submitted_present: ?PresentToken,
-        completed_present: ?PresentToken,
+        ready_present_complete: ?PresentToken,
 
-        pub fn submitPresent(self: *@This(), frame: Layout.Frame) PresentToken {
-            return displaySubmitPresent(C, self, frame);
+        pub fn submitPresentSync(self: *@This(), frame: Layout.Frame) PresentToken {
+            return displaySubmitPresentSync(C, self, frame);
         }
 
-        pub fn drainPresentComplete(self: *@This()) ?PresentToken {
-            return displayDrainPresentComplete(C, self);
+        pub fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            return displayTakeReadyPresentComplete(C, self);
         }
     };
 }
@@ -96,7 +96,7 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) !v
         .tab_cache_revision = 0,
         .next_present_token = 1,
         .submitted_present = null,
-        .completed_present = null,
+        .ready_present_complete = null,
     };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
@@ -119,9 +119,9 @@ pub fn deinit(comptime c: type, state: *GenericState(c)) void {
     state.window = null;
 }
 
-pub fn displaySubmitPresent(comptime c: type, state: *GenericState(c), frame: Layout.Frame) PresentToken {
+pub fn displaySubmitPresentSync(comptime c: type, state: *GenericState(c), frame: Layout.Frame) PresentToken {
     std.debug.assert(state.submitted_present == null);
-    std.debug.assert(state.completed_present == null);
+    std.debug.assert(state.ready_present_complete == null);
     const token = state.next_present_token;
     std.debug.assert(token != 0);
     state.next_present_token +%= 1;
@@ -151,14 +151,14 @@ pub fn displaySubmitPresent(comptime c: type, state: *GenericState(c), frame: La
     _ = c.SDL_GL_SwapWindow(handle);
     std.debug.assert(state.submitted_present == token);
     state.submitted_present = null;
-    state.completed_present = token;
+    state.ready_present_complete = token;
     return token;
 }
 
-pub fn displayDrainPresentComplete(comptime c: type, state: *GenericState(c)) ?PresentToken {
+pub fn displayTakeReadyPresentComplete(comptime c: type, state: *GenericState(c)) ?PresentToken {
     std.debug.assert(state.submitted_present == null);
-    const token = state.completed_present orelse return null;
-    state.completed_present = null;
+    const token = state.ready_present_complete orelse return null;
+    state.ready_present_complete = null;
     std.debug.assert(token != 0);
     return token;
 }
@@ -285,7 +285,7 @@ fn testState() GenericState(FakeC) {
         .tab_cache_revision = 0,
         .next_present_token = 1,
         .submitted_present = null,
-        .completed_present = null,
+        .ready_present_complete = null,
     };
 }
 
@@ -303,14 +303,14 @@ fn testFrame() Layout.Frame {
 
 test "submit present returns monotonic nonzero tokens" {
     var state = testState();
-    const first = displaySubmitPresent(FakeC, &state, testFrame());
+    const first = displaySubmitPresentSync(FakeC, &state, testFrame());
     try std.testing.expect(first != 0);
-    try std.testing.expectEqual(first, displayDrainPresentComplete(FakeC, &state).?);
+    try std.testing.expectEqual(first, displayTakeReadyPresentComplete(FakeC, &state).?);
 
-    const second = displaySubmitPresent(FakeC, &state, testFrame());
+    const second = displaySubmitPresentSync(FakeC, &state, testFrame());
     try std.testing.expect(second != 0);
     try std.testing.expect(second > first);
-    try std.testing.expectEqual(second, displayDrainPresentComplete(FakeC, &state).?);
+    try std.testing.expectEqual(second, displayTakeReadyPresentComplete(FakeC, &state).?);
 }
 
 test "submit present enforces single in-flight state" {
@@ -326,29 +326,40 @@ test "tab cache refreshes only on revision change" {
     var state = testState();
     var frame = testFrame();
 
-    const first = displaySubmitPresent(FakeC, &state, frame);
-    _ = displayDrainPresentComplete(FakeC, &state);
+    const first = displaySubmitPresentSync(FakeC, &state, frame);
+    _ = displayTakeReadyPresentComplete(FakeC, &state);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
 
-    const second = displaySubmitPresent(FakeC, &state, frame);
-    _ = displayDrainPresentComplete(FakeC, &state);
+    const second = displaySubmitPresentSync(FakeC, &state, frame);
+    _ = displayTakeReadyPresentComplete(FakeC, &state);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
     try std.testing.expect(second > first);
 
     frame.tab_bar_revision = 2;
-    const third = displaySubmitPresent(FakeC, &state, frame);
-    _ = displayDrainPresentComplete(FakeC, &state);
+    const third = displaySubmitPresentSync(FakeC, &state, frame);
+    _ = displayTakeReadyPresentComplete(FakeC, &state);
     try std.testing.expectEqual(@as(u32, 2), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
     try std.testing.expect(third > second);
 }
 
 test "present completion drains once before overwrite" {
     var state = testState();
-    const token = displaySubmitPresent(FakeC, &state, testFrame());
-    try std.testing.expectEqual(@as(?PresentToken, token), displayDrainPresentComplete(FakeC, &state));
-    try std.testing.expectEqual(@as(?PresentToken, null), displayDrainPresentComplete(FakeC, &state));
+    const token = displaySubmitPresentSync(FakeC, &state, testFrame());
+    try std.testing.expectEqual(@as(?PresentToken, token), displayTakeReadyPresentComplete(FakeC, &state));
+    try std.testing.expectEqual(@as(?PresentToken, null), displayTakeReadyPresentComplete(FakeC, &state));
 
-    const next = displaySubmitPresent(FakeC, &state, testFrame());
+    const next = displaySubmitPresentSync(FakeC, &state, testFrame());
     try std.testing.expect(next > token);
-    try std.testing.expectEqual(@as(?PresentToken, next), displayDrainPresentComplete(FakeC, &state));
+    try std.testing.expectEqual(@as(?PresentToken, next), displayTakeReadyPresentComplete(FakeC, &state));
+}
+
+test "submit present leaves exactly one ready completion token" {
+    var state = testState();
+
+    const token = displaySubmitPresentSync(FakeC, &state, testFrame());
+
+    try std.testing.expectEqual(@as(?PresentToken, null), state.submitted_present);
+    try std.testing.expectEqual(@as(?PresentToken, token), state.ready_present_complete);
+    try std.testing.expectEqual(@as(?PresentToken, token), displayTakeReadyPresentComplete(FakeC, &state));
+    try std.testing.expectEqual(@as(?PresentToken, null), displayTakeReadyPresentComplete(FakeC, &state));
 }

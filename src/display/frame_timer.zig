@@ -17,6 +17,8 @@ pub const FrameTimer = struct {
     redraw_requested: bool,
     render_work_pending: bool,
     frame_permit_ready: bool,
+    present_completion_pending: bool,
+    frame_deadline_reached_while_pending: bool,
     refresh_interval_ns: u64,
     base_ns: u64,
     last_synced_ns: u64,
@@ -27,6 +29,8 @@ pub const FrameTimer = struct {
             .redraw_requested = false,
             .render_work_pending = false,
             .frame_permit_ready = true,
+            .present_completion_pending = false,
+            .frame_deadline_reached_while_pending = false,
             .refresh_interval_ns = 0,
             .base_ns = 0,
             .last_synced_ns = 0,
@@ -48,8 +52,12 @@ pub const FrameTimer = struct {
             if (!self.frame_permit_ready) self.next_frame_deadline_ns = now_ns + interval_ns;
         }
         if (!self.frame_permit_ready and self.next_frame_deadline_ns != 0 and now_ns >= self.next_frame_deadline_ns) {
-            self.frame_permit_ready = true;
-            self.next_frame_deadline_ns = 0;
+            if (self.present_completion_pending) {
+                self.frame_deadline_reached_while_pending = true;
+            } else {
+                self.frame_permit_ready = true;
+                self.next_frame_deadline_ns = 0;
+            }
         }
     }
 
@@ -66,7 +74,12 @@ pub const FrameTimer = struct {
     }
 
     pub fn notePresentComplete(self: *FrameTimer) void {
-        _ = self;
+        assert(self.present_completion_pending);
+        self.present_completion_pending = false;
+        if (!self.frame_deadline_reached_while_pending) return;
+        self.frame_deadline_reached_while_pending = false;
+        self.frame_permit_ready = true;
+        self.next_frame_deadline_ns = 0;
     }
 
     pub fn shouldWaitForWindow(self: *FrameTimer, pending: Pending, runtime_admission: bool) bool {
@@ -115,6 +128,8 @@ pub const FrameTimer = struct {
         if (submission.submitted) {
             assert(self.frame_permit_ready);
             self.frame_permit_ready = false;
+            self.present_completion_pending = true;
+            self.frame_deadline_reached_while_pending = false;
             self.next_frame_deadline_ns = nextFrameDeadlineNs(self, now_ns, @max(refresh_interval_ns, 1));
         }
         self.redraw_requested = false;
@@ -212,12 +227,15 @@ test "render and present submission respect frame permit and in-flight state" {
 
     pacing.noteRenderSubmittedAtWithInterval(.{ .reason = .host_damage, .submitted = true }, 1_000, 16_000_000);
     try std.testing.expect(!pacing.frame_permit_ready);
+    try std.testing.expect(pacing.present_completion_pending);
     try std.testing.expect(!pacing.renderPermission());
     try std.testing.expect(!pacing.presentSubmissionPermission(.host_damage));
 
     pacing.refreshFramePermit(17_000_000, 16_000_000);
+    try std.testing.expect(!pacing.frame_permit_ready);
     pacing.notePresentComplete();
     try std.testing.expect(pacing.frame_permit_ready);
+    try std.testing.expect(!pacing.present_completion_pending);
 }
 
 test "frame permit wait follows refresh cadence" {
@@ -236,4 +254,32 @@ test "terminal keep wake stays independent from frame permit" {
     pacing.noteRenderSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
     try std.testing.expect(!pacing.terminalKeepWakePermission());
     try std.testing.expect(pacing.redraw_requested);
+}
+
+test "present completion before deadline keeps frame permit blocked" {
+    var pacing = FrameTimer.init();
+
+    pacing.noteRenderSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+    pacing.notePresentComplete();
+
+    try std.testing.expect(!pacing.frame_permit_ready);
+    try std.testing.expectEqual(@as(?u32, 16), pacing.framePermitWaitMs(1_000));
+    pacing.refreshFramePermit(16_001_000, 16_000_000);
+    try std.testing.expect(pacing.frame_permit_ready);
+}
+
+test "deadline reached while present completion pending waits for completion" {
+    var pacing = FrameTimer.init();
+
+    pacing.noteRenderSubmittedAtWithInterval(.{ .reason = .host_damage, .submitted = true }, 1_000, 16_000_000);
+    pacing.refreshFramePermit(17_000_000, 16_000_000);
+
+    try std.testing.expect(!pacing.frame_permit_ready);
+    try std.testing.expect(pacing.present_completion_pending);
+    try std.testing.expectEqual(@as(?u32, null), pacing.framePermitWaitMs(17_000_000));
+
+    pacing.notePresentComplete();
+
+    try std.testing.expect(pacing.frame_permit_ready);
+    try std.testing.expect(!pacing.present_completion_pending);
 }
