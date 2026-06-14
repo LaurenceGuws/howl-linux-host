@@ -147,14 +147,16 @@ pub const State = struct {
 
     pub fn prepare(self: *State, vt_surface: *const c.HowlVtSurfaceResult) PrepareResult {
         var request = std.mem.zeroes(c.HowlRenderPrepareRequest);
-        switch (c.howl_render_text_session_take_prepare_request(self.text_session, vt_surface, &request)) {
+        const take_status = c.howl_render_text_session_take_prepare_request(self.text_session, vt_surface, &request);
+        switch (take_status) {
             c.HOWL_RENDER_PREPARE_IDLE => {
                 self.releaseRdrSfcHandle();
                 return .idle;
             },
             c.HOWL_RENDER_PREPARE_READY => {
                 var rdr_sfc_handle: c.HowlRenderRdrSfcHandle = null;
-                return switch (c.howl_render_text_session_prepare_handle(self.text_session, request, &rdr_sfc_handle)) {
+                const prepare_handle_status = c.howl_render_text_session_prepare_handle(self.text_session, request, &rdr_sfc_handle);
+                return switch (prepare_handle_status) {
                     c.HOWL_RENDER_PREPARE_IDLE => blk: {
                         self.releaseRdrSfcHandle();
                         break :blk .idle;
