@@ -9,7 +9,6 @@ const Input = @import("input/input.zig").Input;
 const TabBar = @import("display/tab_bar.zig").TabBar;
 const TabSlots = @import("terminal/tab_slots.zig").Slots;
 const AppPresent = @import("display/present.zig");
-const pty_wait_thread = @import("terminal/pty_wait_thread.zig");
 const TerminalSurface = @import("terminal/surface.zig").Surface;
 const FramePacing = @import("display/frame_timer.zig");
 const window = @import("display/window.zig");
@@ -47,19 +46,18 @@ pub const Processor = struct {
 
     const LoopPending = FramePacing.Pending;
 
-    const LoopDebugFacts = struct {
-        pending_wake_count: u8,
-        pending_runtime_obligation_count: u8,
+    const LoopRuntimeFacts = struct {
+        tabs: [max_tabs]TerminalSurface.RuntimeFacts,
+        tab_count: usize,
+        runtime_admitted: bool,
+        runtime_wake_pending: bool,
         runtime_wait_ms: ?u32,
         render_work_pending: bool,
-    };
 
-    const LoopTabDebug = struct {
-        wake_pending: bool,
-        continuation_pending: bool,
-        runtime_due_now: bool,
-        runtime_wait_ms: ?u32,
-        render_work_pending: bool,
+        fn tab(self: *const LoopRuntimeFacts, index: usize) TerminalSurface.RuntimeFacts {
+            assert(index < self.tab_count);
+            return self.tabs[index];
+        }
     };
 
     const TerminalProgress = struct {
@@ -158,15 +156,16 @@ pub const Processor = struct {
 
         self.frame_pacing.beginTurn();
         const now_ns = EventLoop.nowNs();
-        const debug_facts = collectLoopDebugFacts(self, now_ns);
-        const admission = computeLoopAdmission(self, now_ns, debug_facts);
+        const wait_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
+        const admission = computeLoopAdmission(self, now_ns, wait_runtime_facts);
         const event_action = pumpWindowEvents(self, admission);
         if (event_action == .quit) return .quit;
 
         const host_mutations_opt = try applyHostOwnedMutations(self);
         if (host_mutations_opt) |host_mutations| {
             _ = drainPresentComplete(self);
-            const terminal_progress = driveRuntimeProgress(self, now_ns);
+            const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
+            const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
 
@@ -175,7 +174,7 @@ pub const Processor = struct {
                 host_mutations.input_outcome.host_visual_changed,
                 terminal_progress,
                 syncActiveBlinkCadence(self, EventLoop.nowNs()),
-                debug_facts.render_work_pending,
+                drive_runtime_facts.render_work_pending,
             );
             self.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
             if (terminal_progress.keep_running) {
@@ -196,59 +195,54 @@ pub const Processor = struct {
         }
     }
 
-    fn computeLoopAdmission(self: *Self, now_ns: u64, debug_facts: LoopDebugFacts) LoopAdmission {
+    fn computeLoopAdmission(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopAdmission {
         assert(now_ns > 0);
         self.frame_pacing.refreshFramePermit(now_ns, self.window.currentRefreshIntervalNs());
-        self.frame_pacing.noteRedrawAndRenderWork(false, debug_facts.render_work_pending);
+        self.frame_pacing.noteRedrawAndRenderWork(false, runtime_facts.render_work_pending);
         const owner_work = self.input.hasPendingOwnerWork();
-        const pending = loopPendingFromFacts(owner_work, debug_facts);
-        const runtime_admission = peekTerminalInputAdmission(self.terminal_input_admitted);
+        const pending = loopPendingFromFacts(owner_work, runtime_facts);
+        const runtime_admission = runtime_facts.runtime_admitted;
         const wait_for_window = self.frame_pacing.shouldWaitForWindow(pending, runtime_admission);
         return .{
             .wait_for_window = wait_for_window,
-            .wait_ms = loopWaitMs(self, now_ns, debug_facts.runtime_wait_ms, self.frame_pacing.framePermitWaitMs(now_ns)),
+            .wait_ms = loopWaitMs(self, now_ns, runtime_facts.runtime_wait_ms, self.frame_pacing.framePermitWaitMs(now_ns)),
         };
     }
 
-    fn collectLoopDebugFacts(self: *Self, now_ns: u64) LoopDebugFacts {
+    fn collectLoopRuntimeFacts(self: *Self, now_ns: u64, terminal_input_admitted: bool) LoopRuntimeFacts {
         const tabs = self.tabs.items();
         assert(tabs.len <= max_tabs);
         assert(tabIndexInRange(tabs, self.active_tab_idx.*));
-        var facts = LoopDebugFacts{
-            .pending_wake_count = 0,
-            .pending_runtime_obligation_count = 0,
+        var facts = LoopRuntimeFacts{
+            .tabs = undefined,
+            .tab_count = tabs.len,
+            .runtime_admitted = false,
+            .runtime_wake_pending = false,
             .runtime_wait_ms = null,
             .render_work_pending = false,
         };
         for (tabs, 0..) |tab, i| {
             const active = @as(TabIndex, @intCast(i)) == self.active_tab_idx.*;
-            noteLoopDebugFacts(&facts, loopTabDebug(tab, now_ns), active);
+            const tab_facts = tab.runtimeFacts(active, now_ns, .{ .input_published = terminal_input_admitted });
+            facts.tabs[i] = tab_facts;
+            noteLoopRuntimeFacts(&facts, tab_facts, active);
         }
         return facts;
     }
 
-    fn loopTabDebug(tab: *TerminalSurface, now_ns: u64) LoopTabDebug {
-        return .{
-            .wake_pending = pty_wait_thread.wakePending(tab),
-            .continuation_pending = tab.progressContinuationPending(),
-            .runtime_due_now = tab.runtimeObligationDueNow(now_ns),
-            .runtime_wait_ms = tab.nextRuntimeObligationWaitMs(now_ns),
-            .render_work_pending = tab.wantsRenderTurn(),
-        };
-    }
-
-    fn noteLoopDebugFacts(facts: *LoopDebugFacts, tab: LoopTabDebug, active: bool) void {
-        if (tab.wake_pending) facts.pending_wake_count += 1;
-        if (tab.continuation_pending) facts.pending_runtime_obligation_count += 1;
-        if (tab.runtime_due_now) facts.pending_runtime_obligation_count += 1;
+    fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, tab: TerminalSurface.RuntimeFacts, active: bool) void {
+        facts.runtime_wake_pending = facts.runtime_wake_pending or tab.runtimeWakePending();
         facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, tab.runtime_wait_ms);
-        if (active) facts.render_work_pending = tab.render_work_pending;
+        if (active) {
+            facts.runtime_admitted = tab.input_published;
+            facts.render_work_pending = tab.render_work_pending;
+        }
     }
 
-    fn loopPendingFromFacts(owner_work: bool, debug_facts: LoopDebugFacts) LoopPending {
+    fn loopPendingFromFacts(owner_work: bool, runtime_facts: LoopRuntimeFacts) LoopPending {
         return .{
             .owner_work = owner_work,
-            .runtime_wake = debug_facts.pending_wake_count > 0 or debug_facts.pending_runtime_obligation_count > 0,
+            .runtime_wake = runtime_facts.runtime_wake_pending,
         };
     }
 
@@ -308,10 +302,6 @@ pub const Processor = struct {
         total.host_visual_changed = total.host_visual_changed or next.host_visual_changed;
     }
 
-    fn peekTerminalInputAdmission(admitted: bool) bool {
-        return admitted;
-    }
-
     fn clearTerminalInputAdmissionOnDrive(admitted: *bool, drove: bool) void {
         if (!drove) return;
         admitted.* = false;
@@ -324,19 +314,20 @@ pub const Processor = struct {
         return true;
     }
 
-    fn driveRuntimeProgress(self: *Self, now_ns: u64) TerminalProgress {
-        const progress = driveTerminalProgress(self.tabs.items(), self.active_tab_idx.*, self.terminal_input_admitted, now_ns);
+    fn driveRuntimeProgress(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) TerminalProgress {
+        const progress = driveTerminalProgress(self.tabs.items(), self.active_tab_idx.*, runtime_facts, now_ns);
         clearTerminalInputAdmissionOnDrive(&self.terminal_input_admitted, progress.drive_performed);
         return progress;
     }
 
-    fn driveTerminalProgress(tabs: []*TerminalSurface, active_tab_idx: TabIndex, terminal_input_admitted: bool, now_ns: u64) TerminalProgress {
+    fn driveTerminalProgress(tabs: []*TerminalSurface, active_tab_idx: TabIndex, runtime_facts: LoopRuntimeFacts, now_ns: u64) TerminalProgress {
         var should_redraw = false;
         var keep_running = false;
         var drive_performed = false;
         for (tabs, 0..) |tab, i| {
             const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
-            const drive = driveTabRuntimeTurn(tab, is_active, now_ns, .{ .input_published = is_active and terminal_input_admitted });
+            const facts = runtime_facts.tab(i);
+            const drive = driveTabRuntimeTurn(tab, is_active, now_ns, facts);
             if (is_active) drive_performed = drive.drove;
             should_redraw = should_redraw or drive.outcome.should_redraw;
             keep_running = keep_running or drive.outcome.keep;
@@ -348,8 +339,8 @@ pub const Processor = struct {
         };
     }
 
-    fn driveTabRuntimeTurn(tab: *TerminalSurface, active: bool, now_ns: u64, admission: TerminalSurface.DriveAdmission) TerminalSurface.DriveProgressResult {
-        return tab.driveProgress(active, now_ns, admission);
+    fn driveTabRuntimeTurn(tab: *TerminalSurface, active: bool, now_ns: u64, facts: TerminalSurface.RuntimeFacts) TerminalSurface.DriveProgressResult {
+        return tab.driveProgressWithFacts(active, now_ns, facts);
     }
 
     fn handleActiveTabProblem(self: *Self) !?LoopAction {
@@ -584,11 +575,26 @@ pub const Processor = struct {
     }
 };
 
-test "terminal input admission wait policy is non-destructive" {
-    const admitted = true;
+test "active runtime admission follows explicit surface facts" {
+    var facts = Processor.LoopRuntimeFacts{
+        .tabs = undefined,
+        .tab_count = 0,
+        .runtime_admitted = false,
+        .runtime_wake_pending = false,
+        .runtime_wait_ms = null,
+        .render_work_pending = false,
+    };
 
-    try std.testing.expect(Processor.peekTerminalInputAdmission(admitted));
-    try std.testing.expect(admitted);
+    Processor.noteLoopRuntimeFacts(&facts, .{
+        .wake_pending = false,
+        .continuation_pending = false,
+        .runtime_due_now = false,
+        .input_published = true,
+        .runtime_wait_ms = null,
+        .render_work_pending = false,
+    }, true);
+
+    try std.testing.expect(facts.runtime_admitted);
 }
 
 test "terminal input admission clears only after drove" {
@@ -608,17 +614,20 @@ test "terminal input admission remains set when no drive occurred" {
 }
 
 test "continuation pending participates in runtime wake admission" {
-    var facts = Processor.LoopDebugFacts{
-        .pending_wake_count = 0,
-        .pending_runtime_obligation_count = 0,
+    var facts = Processor.LoopRuntimeFacts{
+        .tabs = undefined,
+        .tab_count = 0,
+        .runtime_admitted = false,
+        .runtime_wake_pending = false,
         .runtime_wait_ms = null,
         .render_work_pending = false,
     };
 
-    Processor.noteLoopDebugFacts(&facts, .{
+    Processor.noteLoopRuntimeFacts(&facts, .{
         .wake_pending = false,
         .continuation_pending = true,
         .runtime_due_now = false,
+        .input_published = false,
         .runtime_wait_ms = null,
         .render_work_pending = false,
     }, false);

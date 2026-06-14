@@ -37,10 +37,12 @@ const max_fallback_font_paths: u8 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_F
 const TestingHooks = struct {
     wake_pending: ?*const fn (*Surface) bool = null,
     runtime_obligation_due_now: ?*const fn (*Surface, u64) bool = null,
+    next_runtime_obligation_wait_ms: ?*const fn (*Surface, u64) ?u32 = null,
     is_alive: ?*const fn (*Surface) bool = null,
     drive_once: ?*const fn (*HowlTerm, u64) pty_pump.Outcome = null,
     apply_pending_clipboard_writes: ?*const fn (*Surface) void = null,
     ack_wake: ?*const fn (*Surface) void = null,
+    wants_render_turn: ?*const fn (*Surface) bool = null,
     upload_render_surface: ?*const fn (*Surface, *const render_c.HowlRenderSurface) bool = null,
     before_render_submit: ?*const fn (*Surface) void = null,
     observe_submit_execution: ?*const fn (*Surface, *const render_c.HowlRenderSubmitExecution) void = null,
@@ -91,6 +93,23 @@ pub const Surface = struct {
 
     pub const DriveAdmission = struct {
         input_published: bool,
+    };
+
+    pub const RuntimeFacts = struct {
+        wake_pending: bool,
+        continuation_pending: bool,
+        runtime_due_now: bool,
+        input_published: bool,
+        runtime_wait_ms: ?u32,
+        render_work_pending: bool,
+
+        pub fn runtimeWakePending(self: RuntimeFacts) bool {
+            return self.wake_pending or self.continuation_pending or self.runtime_due_now;
+        }
+
+        pub fn driveAdmitted(self: RuntimeFacts, active: bool) bool {
+            return self.continuation_pending or self.wake_pending or self.runtime_due_now or (active and self.input_published);
+        }
     };
 
     pub const DriveProgressResult = struct {
@@ -329,6 +348,7 @@ pub const Surface = struct {
     }
 
     pub fn wantsRenderTurn(self: *const Context) bool {
+        if (testing_hooks.wants_render_turn) |hook| return hook(@constCast(self));
         return self.workState().needsRenderSurface();
     }
 
@@ -355,6 +375,7 @@ pub const Surface = struct {
     }
 
     pub fn nextRuntimeObligationWaitMs(self: *Context, now_ns: u64) ?u32 {
+        if (testing_hooks.next_runtime_obligation_wait_ms) |hook| return hook(self, now_ns);
         const obligation = vt_retained.queryRuntimeObligation(&self.term, now_ns) catch return null;
         if (obligation.pending_now or obligation.deadline_ns == 0) return null;
         const remaining_ns = obligation.deadline_ns -| now_ns;
@@ -366,29 +387,31 @@ pub const Surface = struct {
         return self.progress_continuation_pending;
     }
 
+    pub fn runtimeFacts(self: *Context, active: bool, now_ns: u64, admission: DriveAdmission) RuntimeFacts {
+        return .{
+            .wake_pending = wakePendingHooked(self),
+            .continuation_pending = self.progress_continuation_pending,
+            .runtime_due_now = runtimeObligationDueNowHooked(self, now_ns),
+            .input_published = active and admission.input_published,
+            .runtime_wait_ms = self.nextRuntimeObligationWaitMs(now_ns),
+            .render_work_pending = self.wantsRenderTurn(),
+        };
+    }
+
     pub fn driveProgress(self: *Context, active: bool, now_ns: u64, admission: DriveAdmission) DriveProgressResult {
-        if (!self.progress_continuation_pending) {
-            if (!wakePendingHooked(self)) {
-                if (!runtimeObligationDueNowHooked(self, now_ns)) {
-                    if (!(active and admission.input_published)) {
-                        return .{
-                            .drove = false,
-                            .outcome = .{ .keep = false, .should_redraw = false, .alive = isAliveHooked(self) },
-                        };
-                    }
-                }
-            }
+        return self.driveProgressWithFacts(active, now_ns, self.runtimeFacts(active, now_ns, admission));
+    }
+
+    pub fn driveProgressWithFacts(self: *Context, active: bool, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
+        if (!facts.driveAdmitted(active)) {
+            return .{
+                .drove = false,
+                .outcome = .{ .keep = false, .should_redraw = false, .alive = isAliveHooked(self) },
+            };
         }
 
-        var outcome = driveOnceHooked(&self.term, now_ns);
-        if (active and outcome.should_redraw) {
-            if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
-            outcome.should_redraw = self.resetCursorBlinkActivity(EventLoop.nowNs()) or outcome.should_redraw;
-        }
-        applyPendingClipboardWrites(self);
-        ackWakeHooked(self);
-        self.progress_continuation_pending = outcome.keep;
-        return .{ .drove = true, .outcome = outcome };
+        const outcome = driveProgressBounded(self, now_ns);
+        return driveProgressConsequences(self, active, now_ns, outcome);
     }
 
     pub fn renderTurn(self: *Context) TurnResult {
@@ -650,6 +673,22 @@ pub const Surface = struct {
         return pty_pump.driveOnce(term, now_ns);
     }
 
+    fn driveProgressBounded(self: *Context, now_ns: u64) pty_pump.Outcome {
+        return driveOnceHooked(&self.term, now_ns);
+    }
+
+    fn driveProgressConsequences(self: *Context, active: bool, now_ns: u64, outcome_input: pty_pump.Outcome) DriveProgressResult {
+        var outcome = outcome_input;
+        if (active and outcome.should_redraw) {
+            if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
+            outcome.should_redraw = self.resetCursorBlinkActivity(now_ns) or outcome.should_redraw;
+        }
+        applyPendingClipboardWrites(self);
+        ackWakeHooked(self);
+        self.progress_continuation_pending = outcome.keep;
+        return .{ .drove = true, .outcome = outcome };
+    }
+
     fn ackWakeHooked(self: *Context) void {
         if (testing_hooks.ack_wake) |hook| {
             hook(self);
@@ -859,3 +898,284 @@ pub const testing = struct {
         return Surface.stalePreparedUploadSubmit(snapshot_seq);
     }
 };
+
+test "inactive tab with no admission does not drive" {
+    const TestState = struct {
+        var drive_calls: u8 = 0;
+        var clipboard_calls: u8 = 0;
+        var ack_calls: u8 = 0;
+    };
+
+    testing.installHooks(.{
+        .wake_pending = struct {
+            fn hook(_: *Surface) bool {
+                return false;
+            }
+        }.hook,
+        .runtime_obligation_due_now = struct {
+            fn hook(_: *Surface, _: u64) bool {
+                return false;
+            }
+        }.hook,
+        .next_runtime_obligation_wait_ms = struct {
+            fn hook(_: *Surface, _: u64) ?u32 {
+                return null;
+            }
+        }.hook,
+        .is_alive = struct {
+            fn hook(_: *Surface) bool {
+                return true;
+            }
+        }.hook,
+        .drive_once = struct {
+            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
+                TestState.drive_calls += 1;
+                return .{ .keep = false, .should_redraw = false, .alive = true };
+            }
+        }.hook,
+        .apply_pending_clipboard_writes = struct {
+            fn hook(_: *Surface) void {
+                TestState.clipboard_calls += 1;
+            }
+        }.hook,
+        .ack_wake = struct {
+            fn hook(_: *Surface) void {
+                TestState.ack_calls += 1;
+            }
+        }.hook,
+        .wants_render_turn = struct {
+            fn hook(_: *Surface) bool {
+                return false;
+            }
+        }.hook,
+    });
+    defer testing.resetHooks();
+
+    var surface = testSurfaceBase();
+    const facts = surface.runtimeFacts(false, 11, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(false, 11, facts);
+
+    try std.testing.expect(!facts.driveAdmitted(false));
+    try std.testing.expect(!result.drove);
+    try std.testing.expectEqual(@as(u8, 0), TestState.drive_calls);
+    try std.testing.expectEqual(@as(u8, 0), TestState.clipboard_calls);
+    try std.testing.expectEqual(@as(u8, 0), TestState.ack_calls);
+}
+
+test "active tab with admitted input does drive" {
+    const TestState = struct {
+        var drive_calls: u8 = 0;
+        var clipboard_calls: u8 = 0;
+        var ack_calls: u8 = 0;
+    };
+
+    testing.installHooks(.{
+        .wake_pending = struct {
+            fn hook(_: *Surface) bool {
+                return false;
+            }
+        }.hook,
+        .runtime_obligation_due_now = struct {
+            fn hook(_: *Surface, _: u64) bool {
+                return false;
+            }
+        }.hook,
+        .next_runtime_obligation_wait_ms = struct {
+            fn hook(_: *Surface, _: u64) ?u32 {
+                return null;
+            }
+        }.hook,
+        .drive_once = struct {
+            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
+                TestState.drive_calls += 1;
+                return .{ .keep = false, .should_redraw = false, .alive = true };
+            }
+        }.hook,
+        .apply_pending_clipboard_writes = struct {
+            fn hook(_: *Surface) void {
+                TestState.clipboard_calls += 1;
+            }
+        }.hook,
+        .ack_wake = struct {
+            fn hook(_: *Surface) void {
+                TestState.ack_calls += 1;
+            }
+        }.hook,
+        .wants_render_turn = struct {
+            fn hook(_: *Surface) bool {
+                return false;
+            }
+        }.hook,
+    });
+    defer testing.resetHooks();
+
+    var surface = testSurfaceBase();
+    const facts = surface.runtimeFacts(true, 12, .{ .input_published = true });
+    const result = surface.driveProgressWithFacts(true, 12, facts);
+
+    try std.testing.expect(facts.driveAdmitted(true));
+    try std.testing.expect(result.drove);
+    try std.testing.expectEqual(@as(u8, 1), TestState.drive_calls);
+    try std.testing.expectEqual(@as(u8, 1), TestState.clipboard_calls);
+    try std.testing.expectEqual(@as(u8, 1), TestState.ack_calls);
+}
+
+test "continuation drives without new wake" {
+    const TestState = struct {
+        var drive_calls: u8 = 0;
+    };
+
+    testing.installHooks(.{
+        .wake_pending = struct {
+            fn hook(_: *Surface) bool {
+                return false;
+            }
+        }.hook,
+        .runtime_obligation_due_now = struct {
+            fn hook(_: *Surface, _: u64) bool {
+                return false;
+            }
+        }.hook,
+        .next_runtime_obligation_wait_ms = struct {
+            fn hook(_: *Surface, _: u64) ?u32 {
+                return null;
+            }
+        }.hook,
+        .drive_once = struct {
+            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
+                TestState.drive_calls += 1;
+                return .{ .keep = false, .should_redraw = false, .alive = true };
+            }
+        }.hook,
+        .wants_render_turn = struct {
+            fn hook(_: *Surface) bool {
+                return false;
+            }
+        }.hook,
+    });
+    defer testing.resetHooks();
+
+    var surface = testSurfaceBase();
+    surface.progress_continuation_pending = true;
+    const facts = surface.runtimeFacts(false, 13, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(false, 13, facts);
+
+    try std.testing.expect(facts.driveAdmitted(false));
+    try std.testing.expect(result.drove);
+    try std.testing.expectEqual(@as(u8, 1), TestState.drive_calls);
+}
+
+test "runtime due drives without new input" {
+    const TestState = struct {
+        var drive_calls: u8 = 0;
+    };
+
+    testing.installHooks(.{
+        .wake_pending = struct {
+            fn hook(_: *Surface) bool {
+                return false;
+            }
+        }.hook,
+        .runtime_obligation_due_now = struct {
+            fn hook(_: *Surface, _: u64) bool {
+                return true;
+            }
+        }.hook,
+        .next_runtime_obligation_wait_ms = struct {
+            fn hook(_: *Surface, _: u64) ?u32 {
+                return null;
+            }
+        }.hook,
+        .drive_once = struct {
+            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
+                TestState.drive_calls += 1;
+                return .{ .keep = false, .should_redraw = false, .alive = true };
+            }
+        }.hook,
+        .wants_render_turn = struct {
+            fn hook(_: *Surface) bool {
+                return false;
+            }
+        }.hook,
+    });
+    defer testing.resetHooks();
+
+    var surface = testSurfaceBase();
+    const facts = surface.runtimeFacts(false, 14, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(false, 14, facts);
+
+    try std.testing.expect(facts.driveAdmitted(false));
+    try std.testing.expect(result.drove);
+    try std.testing.expectEqual(@as(u8, 1), TestState.drive_calls);
+}
+
+test "cursor activity reset uses the passed now_ns" {
+    testing.installHooks(.{
+        .wake_pending = struct {
+            fn hook(_: *Surface) bool {
+                return false;
+            }
+        }.hook,
+        .runtime_obligation_due_now = struct {
+            fn hook(_: *Surface, _: u64) bool {
+                return false;
+            }
+        }.hook,
+        .next_runtime_obligation_wait_ms = struct {
+            fn hook(_: *Surface, _: u64) ?u32 {
+                return null;
+            }
+        }.hook,
+        .drive_once = struct {
+            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
+                return .{ .keep = false, .should_redraw = true, .alive = true };
+            }
+        }.hook,
+        .apply_pending_clipboard_writes = struct {
+            fn hook(_: *Surface) void {}
+        }.hook,
+        .ack_wake = struct {
+            fn hook(_: *Surface) void {}
+        }.hook,
+        .wants_render_turn = struct {
+            fn hook(_: *Surface) bool {
+                return false;
+            }
+        }.hook,
+    });
+    defer testing.resetHooks();
+
+    var surface = testSurfaceBase();
+    const now_ns: u64 = 1234;
+    const facts = surface.runtimeFacts(true, now_ns, .{ .input_published = true });
+    const result = surface.driveProgressWithFacts(true, now_ns, facts);
+
+    try std.testing.expect(result.drove);
+    try std.testing.expectEqual(now_ns + cursor_blink.interval_ns, surface.cursor_blink.deadline_ns);
+}
+
+fn testSurfaceBase() Surface {
+    return .{
+        .term = undefined,
+        .progress = .{},
+        .live = false,
+        .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
+        .render_surface_textures = .{},
+        .conf = undefined,
+        .input = undefined,
+        .event_loop = undefined,
+        .title_buf = undefined,
+        .title_len = 0,
+        .title_generation_seen = 0,
+        .geometry = undefined,
+        .font_size_px = 0,
+        .default_font_size_px = 0,
+        .window_focused = true,
+        .widget_focused = true,
+        .scrollbar = .{},
+        .links = .{},
+        .selection = .{},
+        .cursor_blink = .{},
+        .progress_continuation_pending = false,
+    };
+}
