@@ -34,6 +34,20 @@ const terminal_selection = @import("selection.zig");
 const default_history_capacity: u16 = 4096;
 const max_fallback_font_paths: u8 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
+const TestingHooks = struct {
+    wake_pending: ?*const fn (*Surface) bool = null,
+    runtime_obligation_due_now: ?*const fn (*Surface, u64) bool = null,
+    is_alive: ?*const fn (*Surface) bool = null,
+    drive_once: ?*const fn (*HowlTerm, u64) pty_pump.Outcome = null,
+    apply_pending_clipboard_writes: ?*const fn (*Surface) void = null,
+    ack_wake: ?*const fn (*Surface) void = null,
+    upload_render_surface: ?*const fn (*Surface, *const render_c.HowlRenderSurface) bool = null,
+    before_render_submit: ?*const fn (*Surface) void = null,
+    observe_submit_execution: ?*const fn (*Surface, *const render_c.HowlRenderSubmitExecution) void = null,
+};
+
+var testing_hooks: TestingHooks = .{};
+
 const RenderInit = struct {
     render_px: render_c.HowlRenderPixelSize,
     grid_px: render_c.HowlRenderPixelSize,
@@ -353,25 +367,26 @@ pub const Surface = struct {
     }
 
     pub fn driveProgress(self: *Context, active: bool, now_ns: u64, admission: DriveAdmission) DriveProgressResult {
-        return driveProgressWith(self, active, now_ns, admission, ContextDriveOps);
-    }
-
-    fn driveProgressWith(self: anytype, active: bool, now_ns: u64, admission: DriveAdmission, comptime Ops: type) DriveProgressResult {
         if (!self.progress_continuation_pending) {
-            if (!Ops.wakePending(self)) {
-                if (!Ops.runtimeObligationDueNow(self, now_ns)) {
+            if (!wakePendingHooked(self)) {
+                if (!runtimeObligationDueNowHooked(self, now_ns)) {
                     if (!(active and admission.input_published)) {
                         return .{
                             .drove = false,
-                            .outcome = .{ .keep = false, .should_redraw = false, .alive = Ops.isAlive(self) },
+                            .outcome = .{ .keep = false, .should_redraw = false, .alive = isAliveHooked(self) },
                         };
                     }
                 }
             }
         }
 
-        var outcome = Ops.driveOnce(self, now_ns);
-        Ops.postDrive(self, active, &outcome);
+        var outcome = driveOnceHooked(&self.term, now_ns);
+        if (active and outcome.should_redraw) {
+            if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
+            outcome.should_redraw = self.resetCursorBlinkActivity(EventLoop.nowNs()) or outcome.should_redraw;
+        }
+        applyPendingClipboardWrites(self);
+        ackWakeHooked(self);
         self.progress_continuation_pending = outcome.keep;
         return .{ .drove = true, .outcome = outcome };
     }
@@ -400,7 +415,9 @@ pub const Surface = struct {
     pub fn completePresent(self: *Context, token: u64) void {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
-        completePresentLockedWith(&self.term, token, VtPresentAckOps);
+        const snapshot_seq = self.term.render.completePresent(token) orelse return;
+        std.debug.assert(snapshot_seq != 0);
+        vt_surface.ackPublishedSourceLocked(&self.term, snapshot_seq);
     }
 
     pub fn noteRenderTurn(self: *Context, turn: TurnResult) void {
@@ -446,37 +463,18 @@ pub const Surface = struct {
     }
 
     fn applyPendingClipboardWrites(self: *Context) void {
-        const policy = self.conf
-            .clipboard_osc_52;
-        applyPendingClipboardWrite(&self.term, policy, WindowClipboardOps);
+        if (testing_hooks.apply_pending_clipboard_writes) |hook| {
+            hook(self);
+            return;
+        }
+        self.term.mutex.lockFair();
+        defer self.term.mutex.unlock();
+
+        const pending = vt_retained.drainPendingClipboardLocked(&self.term) catch return;
+        const text = pending orelse return;
+        if (self.conf.clipboard_osc_52 != .allow) return;
+        _ = window.setClipboardText(text);
     }
-
-    const ContextDriveOps = struct {
-        fn wakePending(self: *Context) bool {
-            return pty_wait_thread.wakePending(self);
-        }
-
-        fn runtimeObligationDueNow(self: *Context, now_ns: u64) bool {
-            return self.runtimeObligationDueNow(now_ns);
-        }
-
-        fn isAlive(self: *Context) bool {
-            return pty_session.isAlive(&self.term);
-        }
-
-        fn driveOnce(self: *Context, now_ns: u64) pty_pump.Outcome {
-            return pty_pump.driveOnce(&self.term, now_ns);
-        }
-
-        fn postDrive(self: *Context, active: bool, outcome: *pty_pump.Outcome) void {
-            if (active and outcome.should_redraw) {
-                if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
-                outcome.should_redraw = self.resetCursorBlinkActivity(EventLoop.nowNs()) or outcome.should_redraw;
-            }
-            self.applyPendingClipboardWrites();
-            pty_wait_thread.ackWake(self);
-        }
-    };
 
     fn workState(self: *const Context) render_retained.WorkState {
         const mut: *Context = @constCast(self);
@@ -562,34 +560,9 @@ pub const Surface = struct {
     }
 
     fn submitPreparedLocked(self: *Context) SubmitPreparedResult {
-        return submitPreparedLockedWith(self, ContextSubmitBackend);
-    }
-
-    const ContextSubmitBackend = struct {
-        fn upload(self: *Context, prepared_upload: *const render_retained.PreparedUpload) bool {
-            const render_surface = prepared_upload.render_surface orelse {
-                if (prepared_upload.render_surface_status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW) return false;
-                std.debug.panic("trusted render surface retrieval failed: status={}", .{prepared_upload.render_surface_status});
-                return false;
-            };
-            return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, render_surface);
-        }
-
-        fn execution(self: anytype, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
-            return .{
-                .host_surface = .{
-                    .host_surface_id = self.term_texture.host_surface_id,
-                    .width = prepared_upload.info.render_px.width,
-                    .height = prepared_upload.info.render_px.height,
-                },
-            };
-        }
-    };
-
-    fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
-            return missingPreparedUploadSubmit();
+            return .{ .result = .failed, .snapshot_seq = 0 };
         }
         defer upload.deinit();
         const rdr_sfc_handle = self.term.render.rdrSfcHandle();
@@ -597,26 +570,42 @@ pub const Surface = struct {
         std.debug.assert(upload.info.snapshot_seq != 0);
         std.debug.assert(!self.term.render.presentPending());
 
+        const render_surface = upload.render_surface orelse {
+            if (upload.render_surface_status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW) {
+                return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+            }
+            std.debug.panic("trusted render surface retrieval failed: status={}", .{upload.render_surface_status});
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+        };
+
         self.term.mutex.unlock();
-        const upload_ok = Backend.upload(self, &upload);
+        const upload_ok = uploadRenderSurface(self, render_surface);
         self.term.mutex.lockFair();
 
         const current_handle = self.term.render.rdrSfcHandle();
         std.debug.assert(!self.term.render.presentPending());
         if (current_handle != rdr_sfc_handle) {
-            return stalePreparedUploadSubmit(upload.info.snapshot_seq);
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
         if (!upload_ok) {
-            return failedUploadSubmit(upload.info.snapshot_seq);
+            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         }
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
-        const execution = Backend.execution(self, &upload);
+        const execution: render_c.HowlRenderSubmitExecution = .{
+            .host_surface = .{
+                .host_surface_id = self.term_texture.host_surface_id,
+                .width = upload.info.render_px.width,
+                .height = upload.info.render_px.height,
+            },
+        };
+        if (testing_hooks.before_render_submit) |hook| hook(self);
+        if (testing_hooks.observe_submit_execution) |hook| hook(self, &execution);
         const result = self.term.render.submit(&execution, &submit_result);
         if (result == .rendered) {
             self.term_texture = submit_result.host_surface;
         }
-        return submittedPreparedUpload(result, upload.info.snapshot_seq);
+        return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq };
     }
 
     const SubmitPreparedResult = struct {
@@ -633,23 +622,45 @@ pub const Surface = struct {
         };
     }
 
-    fn missingPreparedUploadSubmit() SubmitPreparedResult {
-        return submittedPreparedUpload(.failed, 0);
-    }
-
     fn failedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
-        return submittedPreparedUpload(.failed, snapshot_seq);
+        return .{ .result = .failed, .snapshot_seq = snapshot_seq };
     }
 
     fn stalePreparedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
-        return submittedPreparedUpload(.failed, snapshot_seq);
+        return .{ .result = .failed, .snapshot_seq = snapshot_seq };
     }
 
-    fn submittedPreparedUpload(result: render_retained.SubmitResult, snapshot_seq: u64) SubmitPreparedResult {
-        return .{
-            .result = result,
-            .snapshot_seq = snapshot_seq,
-        };
+    fn wakePendingHooked(self: *Context) bool {
+        if (testing_hooks.wake_pending) |hook| return hook(self);
+        return pty_wait_thread.wakePending(self);
+    }
+
+    fn runtimeObligationDueNowHooked(self: *Context, now_ns: u64) bool {
+        if (testing_hooks.runtime_obligation_due_now) |hook| return hook(self, now_ns);
+        return self.runtimeObligationDueNow(now_ns);
+    }
+
+    fn isAliveHooked(self: *Context) bool {
+        if (testing_hooks.is_alive) |hook| return hook(self);
+        return pty_session.isAlive(&self.term);
+    }
+
+    fn driveOnceHooked(term: *HowlTerm, now_ns: u64) pty_pump.Outcome {
+        if (testing_hooks.drive_once) |hook| return hook(term, now_ns);
+        return pty_pump.driveOnce(term, now_ns);
+    }
+
+    fn ackWakeHooked(self: *Context) void {
+        if (testing_hooks.ack_wake) |hook| {
+            hook(self);
+            return;
+        }
+        pty_wait_thread.ackWake(self);
+    }
+
+    fn uploadRenderSurface(self: *Context, render_surface: *const render_c.HowlRenderSurface) bool {
+        if (testing_hooks.upload_render_surface) |hook| return hook(self, render_surface);
+        return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, render_surface);
     }
 
     fn submitStep(result: render_retained.SubmitResult) TurnStep {
@@ -815,65 +826,25 @@ fn renderFontValid(text_session: render_c.HowlRenderTextSessionHandle) bool {
     return render_c.howl_render_text_session_is_valid_font(text_session) == render_c.HOWL_RENDER_CALL_OK;
 }
 
-const VtPresentAckOps = struct {
-    fn ack(term: *HowlTerm, snapshot_seq: u64) void {
-        vt_surface.ackPublishedSourceLocked(term, snapshot_seq);
-    }
-};
-
-fn completePresentLockedWith(term: anytype, token: u64, comptime Ops: type) void {
-    const snapshot_seq = term.render.completePresent(token) orelse return;
-    std.debug.assert(snapshot_seq != 0);
-    Ops.ack(term, snapshot_seq);
-}
-
-const WindowClipboardOps = struct {
-    fn drainPendingClipboardLocked(term: *HowlTerm) !?[]const u8 {
-        return vt_retained.drainPendingClipboardLocked(term);
-    }
-
-    fn setClipboardText(text: []const u8) bool {
-        return window.setClipboardText(text);
-    }
-};
-
-fn applyPendingClipboardWrite(term: anytype, policy: ClipboardOsc52Policy, comptime Ops: type) void {
-    const mut = @constCast(term);
-    mut.mutex.lockFair();
-    defer mut.mutex.unlock();
-
-    const pending = Ops.drainPendingClipboardLocked(mut) catch return;
-    const text = pending orelse return;
-    if (policy != .allow) return;
-    _ = Ops.setClipboardText(text);
-}
-
 pub const testing = struct {
+    pub const Hooks = TestingHooks;
     pub const RenderAction = Surface.RenderAction;
     pub const SubmitPreparedResult = Surface.SubmitPreparedResult;
 
-    pub fn applyPendingClipboardWrite(term: anytype, policy: ClipboardOsc52Policy, comptime Ops: type) void {
-        @import("surface.zig").applyPendingClipboardWrite(term, policy, Ops);
+    pub fn installHooks(hooks: Hooks) void {
+        testing_hooks = hooks;
     }
 
-    pub fn completePresentLockedWith(term: anytype, token: u64, comptime Ops: type) void {
-        @import("surface.zig").completePresentLockedWith(term, token, Ops);
+    pub fn resetHooks() void {
+        testing_hooks = .{};
     }
 
-    pub fn driveProgressWith(self: anytype, active: bool, now_ns: u64, admission: Surface.DriveAdmission, comptime Ops: type) Surface.DriveProgressResult {
-        return Surface.driveProgressWith(self, active, now_ns, admission, Ops);
-    }
-
-    pub fn contextSubmitExecution(self: anytype, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
-        return Surface.ContextSubmitBackend.execution(self, prepared_upload);
+    pub fn submitPrepared(surface: *Surface) SubmitPreparedResult {
+        return surface.submitPrepared();
     }
 
     pub fn renderAction(work: render_retained.WorkState, bootstrap_surface: bool) RenderAction {
         return Surface.renderAction(work, bootstrap_surface);
-    }
-
-    pub fn submitPreparedLockedWith(self: anytype, comptime Backend: type) SubmitPreparedResult {
-        return Surface.submitPreparedLockedWith(self, Backend);
     }
 
     pub fn idleDrive(step: Surface.TurnStep) Surface.DriveResult {
