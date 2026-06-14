@@ -165,7 +165,7 @@ pub const Processor = struct {
 
         const host_mutations_opt = try applyHostOwnedMutations(self);
         if (host_mutations_opt) |host_mutations| {
-            const present_completed = drainPresentComplete(self);
+            _ = drainPresentComplete(self);
             const terminal_progress = driveRuntimeProgress(self, now_ns);
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
@@ -180,9 +180,6 @@ pub const Processor = struct {
             self.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
             if (terminal_progress.keep_running) {
                 if (self.frame_pacing.terminalKeepWakePermission()) self.event_loop.wake();
-            }
-            if (present_completed) {
-                return .continue_running;
             }
             if (!self.frame_pacing.renderPermission()) {
                 return .continue_running;
@@ -451,10 +448,7 @@ pub const Processor = struct {
 
     fn submitPresent(self: *Self, frame: RenderFrame, plan: PresentPlan) PresentSubmission {
         assert(plan.needs_render_turn);
-        const reason = if (self.frame_pacing.presentSubmissionPermission(plan.reason) or plan.reason == .none or plan.reason == .terminal_retire)
-            plan.reason
-        else
-            PresentReason.none;
+        const reason = self.frame_pacing.admitPresentReason(plan.reason);
         const present = AppPresent.lifecycle(self);
         const outcome = present.submit(frame.tab, frame.turn.step, frame.turn.present_snapshot_seq, .{
             .texture_rect = frame.snapshot.texture_rect,

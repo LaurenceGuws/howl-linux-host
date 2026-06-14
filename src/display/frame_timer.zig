@@ -102,24 +102,24 @@ pub const FrameTimer = struct {
         return self.frame_permit_ready;
     }
 
-    pub fn presentSubmissionPermission(self: FrameTimer, reason: PresentReason) bool {
+    pub fn admitPresentReason(self: FrameTimer, reason: PresentReason) PresentReason {
         switch (reason) {
-            .none, .terminal_retire => return false,
+            .none, .terminal_retire => return reason,
             .host_damage, .terminal_frame => {},
         }
-        if (!self.frame_permit_ready) return false;
-        return true;
+        if (!self.frame_permit_ready) return .none;
+        return reason;
     }
 
-    pub fn noteRenderSubmitted(self: *FrameTimer, submission: Submission) void {
-        self.noteRenderSubmittedAt(submission, 0);
+    pub fn notePresentSubmitted(self: *FrameTimer, submission: Submission) void {
+        self.notePresentSubmittedAt(submission, 0);
     }
 
-    pub fn noteRenderSubmittedAt(self: *FrameTimer, submission: Submission, now_ns: u64) void {
-        self.noteRenderSubmittedAtWithInterval(submission, now_ns, self.refresh_interval_ns);
+    pub fn notePresentSubmittedAt(self: *FrameTimer, submission: Submission, now_ns: u64) void {
+        self.notePresentSubmittedAtWithInterval(submission, now_ns, self.refresh_interval_ns);
     }
 
-    pub fn noteRenderSubmittedAtWithInterval(self: *FrameTimer, submission: Submission, now_ns: u64, refresh_interval_ns: u64) void {
+    pub fn notePresentSubmittedAtWithInterval(self: *FrameTimer, submission: Submission, now_ns: u64, refresh_interval_ns: u64) void {
         switch (submission.reason) {
             .none, .terminal_retire => assert(!submission.submitted),
             .host_damage, .terminal_frame => {},
@@ -217,19 +217,19 @@ test "render and present submission respect frame permit and in-flight state" {
     pacing.frame_permit_ready = false;
     pacing.noteRedrawAndRenderWork(true, false);
     try std.testing.expect(!pacing.renderPermission());
-    try std.testing.expect(!pacing.presentSubmissionPermission(.host_damage));
+    try std.testing.expectEqual(PresentReason.none, pacing.admitPresentReason(.host_damage));
 
     pacing.frame_permit_ready = true;
     try std.testing.expect(pacing.renderPermission());
-    try std.testing.expect(pacing.presentSubmissionPermission(.host_damage));
-    try std.testing.expect(!pacing.presentSubmissionPermission(.none));
-    try std.testing.expect(!pacing.presentSubmissionPermission(.terminal_retire));
+    try std.testing.expectEqual(PresentReason.host_damage, pacing.admitPresentReason(.host_damage));
+    try std.testing.expectEqual(PresentReason.none, pacing.admitPresentReason(.none));
+    try std.testing.expectEqual(PresentReason.terminal_retire, pacing.admitPresentReason(.terminal_retire));
 
-    pacing.noteRenderSubmittedAtWithInterval(.{ .reason = .host_damage, .submitted = true }, 1_000, 16_000_000);
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .host_damage, .submitted = true }, 1_000, 16_000_000);
     try std.testing.expect(!pacing.frame_permit_ready);
     try std.testing.expect(pacing.present_completion_pending);
     try std.testing.expect(!pacing.renderPermission());
-    try std.testing.expect(!pacing.presentSubmissionPermission(.host_damage));
+    try std.testing.expectEqual(PresentReason.none, pacing.admitPresentReason(.host_damage));
 
     pacing.refreshFramePermit(17_000_000, 16_000_000);
     try std.testing.expect(!pacing.frame_permit_ready);
@@ -241,7 +241,7 @@ test "render and present submission respect frame permit and in-flight state" {
 test "frame permit wait follows refresh cadence" {
     var pacing = FrameTimer.init();
 
-    pacing.noteRenderSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
     try std.testing.expect(!pacing.frame_permit_ready);
     try std.testing.expectEqual(@as(?u32, 16), pacing.framePermitWaitMs(1_000));
     pacing.refreshFramePermit(16_001_000, 16_000_000);
@@ -251,7 +251,7 @@ test "frame permit wait follows refresh cadence" {
 test "terminal keep wake stays independent from frame permit" {
     var pacing = FrameTimer.init();
     pacing.noteRedrawAndRenderWork(true, false);
-    pacing.noteRenderSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
     try std.testing.expect(!pacing.terminalKeepWakePermission());
     try std.testing.expect(pacing.redraw_requested);
 }
@@ -259,7 +259,7 @@ test "terminal keep wake stays independent from frame permit" {
 test "present completion before deadline keeps frame permit blocked" {
     var pacing = FrameTimer.init();
 
-    pacing.noteRenderSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
     pacing.notePresentComplete();
 
     try std.testing.expect(!pacing.frame_permit_ready);
@@ -271,7 +271,7 @@ test "present completion before deadline keeps frame permit blocked" {
 test "deadline reached while present completion pending waits for completion" {
     var pacing = FrameTimer.init();
 
-    pacing.noteRenderSubmittedAtWithInterval(.{ .reason = .host_damage, .submitted = true }, 1_000, 16_000_000);
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .host_damage, .submitted = true }, 1_000, 16_000_000);
     pacing.refreshFramePermit(17_000_000, 16_000_000);
 
     try std.testing.expect(!pacing.frame_permit_ready);
@@ -282,4 +282,91 @@ test "deadline reached while present completion pending waits for completion" {
 
     try std.testing.expect(pacing.frame_permit_ready);
     try std.testing.expect(!pacing.present_completion_pending);
+}
+
+test "host-damage submit is admitted by frame owner" {
+    var pacing = FrameTimer.init();
+    pacing.noteRedrawAndRenderWork(true, false);
+
+    try std.testing.expect(pacing.renderPermission());
+    try std.testing.expectEqual(PresentReason.host_damage, pacing.admitPresentReason(.host_damage));
+
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .host_damage, .submitted = true }, 1_000, 16_000_000);
+
+    try std.testing.expect(!pacing.frame_permit_ready);
+    try std.testing.expect(pacing.present_completion_pending);
+    try std.testing.expectEqual(PresentReason.none, pacing.admitPresentReason(.host_damage));
+}
+
+test "terminal-frame submit is admitted by frame owner" {
+    var pacing = FrameTimer.init();
+    pacing.noteRedrawAndRenderWork(true, true);
+
+    try std.testing.expect(pacing.renderPermission());
+    try std.testing.expectEqual(PresentReason.terminal_frame, pacing.admitPresentReason(.terminal_frame));
+
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+
+    try std.testing.expect(!pacing.frame_permit_ready);
+    try std.testing.expect(pacing.present_completion_pending);
+    try std.testing.expect(pacing.redraw_requested == false);
+}
+
+test "terminal-retire stays no-submit under frame owner" {
+    var pacing = FrameTimer.init();
+    pacing.noteRedrawAndRenderWork(true, false);
+
+    try std.testing.expectEqual(PresentReason.terminal_retire, pacing.admitPresentReason(.terminal_retire));
+
+    pacing.notePresentSubmitted(.{ .reason = .terminal_retire, .submitted = false });
+
+    try std.testing.expect(pacing.frame_permit_ready);
+    try std.testing.expect(!pacing.present_completion_pending);
+    try std.testing.expect(!pacing.redraw_requested);
+}
+
+test "completion before next deadline keeps frame permit blocked" {
+    var pacing = FrameTimer.init();
+
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+    pacing.notePresentComplete();
+
+    try std.testing.expect(!pacing.frame_permit_ready);
+    try std.testing.expectEqual(@as(?u32, 16), pacing.framePermitWaitMs(1_000));
+
+    pacing.refreshFramePermit(16_001_000, 16_000_000);
+
+    try std.testing.expect(pacing.frame_permit_ready);
+}
+
+test "deadline release without completion stays blocked until completion arrives" {
+    var pacing = FrameTimer.init();
+
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .host_damage, .submitted = true }, 1_000, 16_000_000);
+    pacing.refreshFramePermit(17_000_000, 16_000_000);
+
+    try std.testing.expect(!pacing.frame_permit_ready);
+    try std.testing.expectEqual(@as(?u32, null), pacing.framePermitWaitMs(17_000_000));
+
+    pacing.notePresentComplete();
+
+    try std.testing.expect(pacing.frame_permit_ready);
+    try std.testing.expectEqual(@as(?u32, null), pacing.framePermitWaitMs(17_000_000));
+}
+
+test "redraw persists across blocked permit" {
+    var pacing = FrameTimer.init();
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+    pacing.noteRedrawAndRenderWork(true, false);
+
+    try std.testing.expect(!pacing.renderPermission());
+    try std.testing.expect(pacing.redraw_requested);
+    try std.testing.expectEqual(PresentReason.none, pacing.admitPresentReason(.host_damage));
+
+    pacing.notePresentComplete();
+    pacing.refreshFramePermit(16_001_000, 16_000_000);
+
+    try std.testing.expect(pacing.renderPermission());
+    try std.testing.expect(pacing.redraw_requested);
+    try std.testing.expectEqual(PresentReason.host_damage, pacing.admitPresentReason(.host_damage));
 }

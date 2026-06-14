@@ -143,8 +143,8 @@ fn noteFramePacingRenderSubmitted(app: anytype, submission: Submission) void {
     const AppType = @typeInfo(@TypeOf(app)).pointer.child;
     if (!@hasField(AppType, "frame_pacing")) return;
     const PacingType = @TypeOf(app.frame_pacing);
-    if (!@hasDecl(PacingType, "noteRenderSubmittedAt")) return;
-    app.frame_pacing.noteRenderSubmittedAt(.{
+    if (!@hasDecl(PacingType, "notePresentSubmittedAt")) return;
+    app.frame_pacing.notePresentSubmittedAt(.{
         .reason = submission.reason,
         .submitted = submission.submitted,
     }, EventLoop.nowNs());
