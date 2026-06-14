@@ -222,6 +222,10 @@ fn recordExpectedPreparedUpload(surface: *Surface) !void {
 }
 
 fn prepareSubmitSurface(surface: *Surface, snapshot_seq: u64) !void {
+    try prepareSubmitSurfaceWithCursor(surface, snapshot_seq, true);
+}
+
+fn prepareSubmitSurfaceWithCursor(surface: *Surface, snapshot_seq: u64, cursor_visible: bool) !void {
     const layout = surface.term.render.surface_layout;
     const cell_count = @as(usize, layout.cols) * @as(usize, layout.rows);
     const cells = try std.testing.allocator.alloc(render_c.HowlVtSurfaceCell, cell_count);
@@ -266,7 +270,7 @@ fn prepareSubmitSurface(surface: *Surface, snapshot_seq: u64) !void {
             .dirty_rows = .{ .ptr = dirty_rows.ptr, .len = dirty_rows.len },
             .dirty_cols_start = .{ .ptr = dirty_cols_start.ptr, .len = dirty_cols_start.len },
             .dirty_cols_end = .{ .ptr = dirty_cols_end.ptr, .len = dirty_cols_end.len },
-            .cursor = .{ .row = 0, .col = 0, .visible = 1, .shape = 0, .blink = 0 },
+            .cursor = .{ .row = 0, .col = 0, .visible = @intFromBool(cursor_visible), .shape = 0, .blink = 0 },
             .colors = std.mem.zeroes(render_c.HowlVtRenderColorState),
             .selection = .{ .active = 0, .selecting = 0, .reserved0 = 0, .start = .{ .row = 0, .col = 0, .reserved0 = 0 }, .end = .{ .row = 0, .col = 0, .reserved0 = 0 } },
         },
@@ -1272,6 +1276,56 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expect(!submit_hook_state.host_upload_had_matching_surface);
     try std.testing.expectEqual(@as(u16, 4), surface.term_texture.width);
     try std.testing.expectEqual(@as(u16, 2), surface.term_texture.height);
+}
+
+test "cursor visibility change while present pending submits latest snapshot after stale completion retires" {
+    var ack_calls: u8 = 0;
+    var ack_snapshot_seq: u64 = 0;
+    var surface = try makeSubmitSurface();
+    defer surface.term.render.deinit();
+    installSubmitHooks(.success);
+    defer surface_testing.resetHooks();
+    try prepareSubmitSurfaceWithCursor(&surface, 51, true);
+
+    const prior_submit = surface_testing.submitPrepared(&surface);
+
+    try std.testing.expectEqual(render_retained.SubmitResult.rendered, prior_submit.result);
+    try std.testing.expectEqual(@as(u64, 51), prior_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
+
+    const prior_token: u64 = 900;
+    surface.notePresentSubmitted(prior_submit.snapshot_seq, prior_token);
+    try std.testing.expect(surface.term.render.presentPending());
+
+    try prepareSubmitSurfaceWithCursor(&surface, 52, false);
+    try std.testing.expectEqual(@as(u64, 52), submit_hook_state.expected_info.snapshot_seq);
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
+    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
+
+    if (surface.term.render.completePresent(prior_token + 1)) |snapshot_seq| {
+        ack_calls += 1;
+        ack_snapshot_seq = snapshot_seq;
+    }
+    try std.testing.expectEqual(@as(u8, 0), ack_calls);
+    try std.testing.expect(surface.term.render.presentPending());
+
+    if (surface.term.render.completePresent(prior_token)) |snapshot_seq| {
+        ack_calls += 1;
+        ack_snapshot_seq = snapshot_seq;
+    }
+    try std.testing.expectEqual(@as(u8, 1), ack_calls);
+    try std.testing.expectEqual(@as(u64, 51), ack_snapshot_seq);
+    try std.testing.expect(!surface.term.render.presentPending());
+    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, surface.term.render.workState(false).state);
+
+    installSubmitHooks(.success);
+    try recordExpectedPreparedUpload(&surface);
+    const latest_submit = surface_testing.submitPrepared(&surface);
+
+    try std.testing.expectEqual(render_retained.SubmitResult.rendered, latest_submit.result);
+    try std.testing.expectEqual(@as(u64, 52), latest_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
+    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
 }
 
 test "complete present acks matching host-owned token once and clears" {

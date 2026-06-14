@@ -747,3 +747,114 @@ test "terminal retire lifecycle preserves pending terminal token without new sub
     try std.testing.expectEqual(@as(u8, 0), app.frame_pacing.complete_count);
     try std.testing.expectEqual(@as(?PresentToken, 91), app.pending_terminal_present);
 }
+
+test "latest terminal snapshot submits only after stale completion retires prior token" {
+    const FakeDisplay = struct {
+        present_count: u8 = 0,
+        next_token: PresentToken = 100,
+        ready_complete: ?PresentToken = null,
+
+        fn submitPresentSync(self: *@This(), _: anytype) PresentToken {
+            self.present_count += 1;
+            self.next_token += 1;
+            return self.next_token;
+        }
+
+        fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
+            return token;
+        }
+    };
+    const FakeTab = struct {
+        note_count: u8 = 0,
+        complete_count: u8 = 0,
+        noted_snapshot_seq: [4]u64 = [_]u64{0} ** 4,
+        noted_token: [4]PresentToken = [_]PresentToken{0} ** 4,
+        completed_token: [4]PresentToken = [_]PresentToken{0} ** 4,
+        texture_id: u32 = 7,
+
+        fn termTextureId(self: *const @This()) u32 {
+            return self.texture_id;
+        }
+
+        fn notePresentSubmitted(self: *@This(), snapshot_seq: u64, token: PresentToken) void {
+            self.noted_snapshot_seq[self.note_count] = snapshot_seq;
+            self.noted_token[self.note_count] = token;
+            self.note_count += 1;
+        }
+
+        fn completePresent(self: *@This(), token: PresentToken) void {
+            self.completed_token[self.complete_count] = token;
+            self.complete_count += 1;
+        }
+    };
+    const FakeTabs = struct {
+        items_buf: [1]*FakeTab,
+
+        fn items(self: *@This()) []*FakeTab {
+            return self.items_buf[0..];
+        }
+    };
+    const FakeFramePacing = struct {
+        complete_count: u8 = 0,
+
+        fn notePresentComplete(self: *@This()) void {
+            self.complete_count += 1;
+        }
+    };
+    const FakeApp = struct {
+        display: *FakeDisplay,
+        tabs: *FakeTabs,
+        frame_pacing: FakeFramePacing,
+        pending_terminal_present: ?PresentToken,
+    };
+    const snapshot = Snapshot{
+        .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+        .active_tab = 0,
+        .tab_bar_revision = 1,
+        .labels = &.{"shell"},
+    };
+
+    var display = FakeDisplay{};
+    var tab = FakeTab{};
+    var tabs = FakeTabs{ .items_buf = .{&tab} };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .frame_pacing = .{}, .pending_terminal_present = null };
+
+    const first = lifecycle(&app).submit(&tab, .rendered, 51, snapshot, .terminal_frame);
+    try std.testing.expect(first.submission.submitted);
+    try std.testing.expect(!first.completed_terminal_present);
+    try std.testing.expectEqual(@as(u8, 1), display.present_count);
+    try std.testing.expectEqual(@as(?PresentToken, 101), app.pending_terminal_present);
+    try std.testing.expectEqual(@as(u8, 1), tab.note_count);
+    try std.testing.expectEqual(@as(u64, 51), tab.noted_snapshot_seq[0]);
+
+    const retire = lifecycle(&app).submit(&tab, .blocked_present, 0, snapshot, .terminal_retire);
+    try std.testing.expect(!retire.submission.submitted);
+    try std.testing.expect(!retire.completed_terminal_present);
+    try std.testing.expectEqual(@as(u8, 1), display.present_count);
+    try std.testing.expectEqual(@as(u8, 1), tab.note_count);
+    try std.testing.expectEqual(@as(u8, 0), tab.complete_count);
+    try std.testing.expectEqual(@as(?PresentToken, 101), app.pending_terminal_present);
+
+    display.ready_complete = 100;
+    try std.testing.expect(!lifecycle(&app).drain());
+    try std.testing.expectEqual(@as(u8, 0), tab.complete_count);
+    try std.testing.expectEqual(@as(?PresentToken, 101), app.pending_terminal_present);
+
+    display.ready_complete = 101;
+    try std.testing.expect(lifecycle(&app).drain());
+    try std.testing.expectEqual(@as(u8, 1), tab.complete_count);
+    try std.testing.expectEqual(@as(PresentToken, 101), tab.completed_token[0]);
+    try std.testing.expectEqual(@as(?PresentToken, null), app.pending_terminal_present);
+    try std.testing.expectEqual(@as(u8, 2), app.frame_pacing.complete_count);
+
+    const latest = lifecycle(&app).submit(&tab, .rendered, 52, snapshot, .terminal_frame);
+    try std.testing.expect(latest.submission.submitted);
+    try std.testing.expect(!latest.completed_terminal_present);
+    try std.testing.expectEqual(@as(u8, 2), display.present_count);
+    try std.testing.expectEqual(@as(u8, 2), tab.note_count);
+    try std.testing.expectEqual(@as(u64, 52), tab.noted_snapshot_seq[1]);
+    try std.testing.expectEqual(@as(?PresentToken, 102), app.pending_terminal_present);
+}
