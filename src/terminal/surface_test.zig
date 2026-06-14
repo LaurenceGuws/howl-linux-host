@@ -25,6 +25,7 @@ const SubmitUploadMode = enum {
 var drive_hook_state: struct {
     wake_pending: bool = false,
     runtime_due_now: bool = false,
+    wants_render_turn: bool = false,
     alive: bool = true,
     drive_calls: u8 = 0,
     clipboard_calls: u8 = 0,
@@ -92,6 +93,10 @@ fn driveIsAliveHook(_: *Surface) bool {
     return drive_hook_state.alive;
 }
 
+fn driveWantsRenderTurnHook(_: *Surface) bool {
+    return drive_hook_state.wants_render_turn;
+}
+
 fn driveOnceHook(_: *terminal_term.Term, _: u64) pty_pump.Outcome {
     const outcome = drive_hook_state.outcomes[drive_hook_state.drive_calls];
     drive_hook_state.drive_calls += 1;
@@ -111,6 +116,7 @@ fn installDriveHooks() void {
     surface_testing.installHooks(.{
         .wake_pending = driveWakePendingHook,
         .runtime_obligation_due_now = driveRuntimeDueHook,
+        .wants_render_turn = driveWantsRenderTurnHook,
         .is_alive = driveIsAliveHook,
         .drive_once = driveOnceHook,
         .apply_pending_clipboard_writes = driveClipboardHook,
@@ -714,34 +720,29 @@ test "pointer UI drain keeps PTY publication separate from host visual mutation"
 }
 
 test "present pending blocks submit path until host present ack" {
-    const work = render_retained.WorkState{
-        .source_pending = false,
-        .prepare_pending = false,
-        .submit_pending = true,
-        .present_pending = true,
-        .bootstrap_surface = false,
-    };
+    var state = try makeSubmitSurface();
+    defer state.term.render.deinit();
+    state.notePresentSubmitted(41, 410);
 
-    try std.testing.expectEqual(surface_testing.RenderAction.blocked_present, surface_testing.renderAction(work, false));
+    const work = state.term.render.workState(false);
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, work.state);
 }
 
 test "submit path runs once no host present is in flight" {
-    const work = render_retained.WorkState{
-        .source_pending = false,
-        .prepare_pending = false,
-        .submit_pending = true,
-        .present_pending = false,
-        .bootstrap_surface = false,
-    };
+    var surface = try makeSubmitSurface();
+    defer surface.term.render.deinit();
+    try prepareSubmitSurface(&surface, 42);
 
-    try std.testing.expectEqual(surface_testing.RenderAction.submit_pending, surface_testing.renderAction(work, false));
+    const work = surface.term.render.workState(false);
+    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, work.state);
 }
 
 test "idle render action constructor reports decision facts" {
-    const result = surface_testing.idleDrive(.idle_submit);
+    const result = surface_testing.idleDrive(.idle, .surface_idle);
 
     try std.testing.expect(!result.prepared);
-    try std.testing.expectEqual(Surface.TurnStep.idle_submit, result.step);
+    try std.testing.expectEqual(render_retained.RetainedState.idle, result.state_after);
+    try std.testing.expectEqual(Surface.TurnStep.surface_idle, result.step);
     try std.testing.expectEqual(@as(u64, 0), result.present_snapshot_seq);
 }
 
@@ -755,8 +756,21 @@ test "failed upload constructor reports failed snapshot" {
 test "stale handle constructor reports failed snapshot" {
     const result = surface_testing.stalePreparedUploadSubmit(88);
 
-    try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
+    try std.testing.expectEqual(render_retained.SubmitResult.stale, result.result);
     try std.testing.expectEqual(@as(u64, 88), result.snapshot_seq);
+}
+
+test "retained submit failure stays on failed owner path until refreshed" {
+    var surface = try makeSubmitSurface();
+    defer surface.term.render.deinit();
+    installSubmitHooks(.fail);
+    defer surface_testing.resetHooks();
+    try prepareSubmitSurface(&surface, 61);
+
+    const submit = surface_testing.submitPrepared(&surface);
+
+    try std.testing.expectEqual(render_retained.SubmitResult.failed, submit.result);
+    try std.testing.expectEqual(render_retained.RetainedState.failed, surface.term.render.retainedState());
 }
 
 fn testRdrSfcHandle() render_c.HowlRenderRdrSfcHandle {
@@ -1060,9 +1074,10 @@ test "host upload failure returns failed submit without render submit" {
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
     try std.testing.expectEqual(@as(u64, 51), result.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 0), submit_hook_state.submit_calls);
+    try std.testing.expectEqual(render_retained.RetainedState.failed, surface.term.render.retainedState());
 }
 
-test "prepared handle mutation after upload does not submit" {
+test "prepared handle mutation after upload returns stale and restores prepare-needed state" {
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
     installSubmitHooks(.mutate_handle);
@@ -1072,8 +1087,9 @@ test "prepared handle mutation after upload does not submit" {
     const result = surface_testing.submitPrepared(&surface);
 
     try std.testing.expect(submit_hook_state.saw_unlocked);
-    try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
+    try std.testing.expectEqual(render_retained.SubmitResult.stale, result.result);
     try std.testing.expectEqual(@as(u8, 0), submit_hook_state.submit_calls);
+    try std.testing.expectEqual(render_retained.RetainedState.prepare_needed, surface.term.render.retainedState());
 }
 
 test "resize success path submits full surface and acks matching present token" {
@@ -1124,14 +1140,7 @@ test "resize success path submits full surface and acks matching present token" 
     surface.notePresentSubmitted(submit.snapshot_seq, token);
     try std.testing.expect(surface.term.render.presentPending());
 
-    const blocked_work = render_retained.WorkState{
-        .source_pending = false,
-        .prepare_pending = false,
-        .submit_pending = true,
-        .present_pending = surface.term.render.presentPending(),
-        .bootstrap_surface = false,
-    };
-    try std.testing.expectEqual(surface_testing.RenderAction.blocked_present, surface_testing.renderAction(blocked_work, false));
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
 
     if (surface.term.render.completePresent(token + 1)) |snapshot_seq| {
         ack_calls += 1;
@@ -1229,14 +1238,7 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expectEqual(@as(u64, 52), submit_hook_state.expected_info.snapshot_seq);
     try std.testing.expectEqual(@as(u64, 2), submit_hook_state.expected_info.geometry_epoch);
 
-    const blocked_work = render_retained.WorkState{
-        .source_pending = false,
-        .prepare_pending = false,
-        .submit_pending = true,
-        .present_pending = surface.term.render.presentPending(),
-        .bootstrap_surface = false,
-    };
-    try std.testing.expectEqual(surface_testing.RenderAction.blocked_present, surface_testing.renderAction(blocked_work, false));
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
 
@@ -1246,7 +1248,7 @@ test "resize while present pending waits for matching ack before resized submit"
     }
     try std.testing.expectEqual(@as(u8, 0), ack_calls);
     try std.testing.expect(surface.term.render.presentPending());
-    try std.testing.expectEqual(surface_testing.RenderAction.blocked_present, surface_testing.renderAction(blocked_work, false));
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
     if (surface.term.render.completePresent(prior_token)) |snapshot_seq| {
@@ -1257,14 +1259,7 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expectEqual(prior_submit.snapshot_seq, ack_snapshot_seq);
     try std.testing.expect(!surface.term.render.presentPending());
 
-    const unblocked_work = render_retained.WorkState{
-        .source_pending = false,
-        .prepare_pending = false,
-        .submit_pending = true,
-        .present_pending = surface.term.render.presentPending(),
-        .bootstrap_surface = false,
-    };
-    try std.testing.expectEqual(surface_testing.RenderAction.submit_pending, surface_testing.renderAction(unblocked_work, false));
+    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, surface.term.render.workState(false).state);
 
     installSubmitHooks(.success);
     try recordExpectedPreparedUpload(&surface);

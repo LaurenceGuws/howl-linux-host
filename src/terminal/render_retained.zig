@@ -5,24 +5,34 @@ pub const PrepareResult = enum { idle, prepared, failed };
 
 pub const SubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
 
+pub const RetainedState = enum {
+    idle,
+    prepare_needed,
+    submit_ready,
+    present_in_flight,
+    failed,
+};
+
 pub const PresentInFlight = struct {
     snapshot_seq: u64,
     token: u64,
 };
 
 pub const WorkState = struct {
-    source_pending: bool,
-    prepare_pending: bool,
-    submit_pending: bool,
-    present_pending: bool,
-    bootstrap_surface: bool,
+    state: RetainedState,
 
     pub fn inFlight(self: WorkState) bool {
-        return self.source_pending or self.prepare_pending or self.submit_pending or self.present_pending;
+        return switch (self.state) {
+            .prepare_needed, .submit_ready, .present_in_flight => true,
+            .idle, .failed => false,
+        };
     }
 
     pub fn needsRenderSurface(self: WorkState) bool {
-        return self.bootstrap_surface or self.inFlight();
+        return switch (self.state) {
+            .prepare_needed, .submit_ready, .present_in_flight => true,
+            .idle, .failed => false,
+        };
     }
 };
 
@@ -56,6 +66,7 @@ pub const State = struct {
     text_session: c.HowlRenderTextSessionHandle,
     rdr_sfc_handle: c.HowlRenderRdrSfcHandle = null,
     present_in_flight: ?PresentInFlight = null,
+    retained_state: RetainedState = .idle,
 
     pub fn init(text_session: c.HowlRenderTextSessionHandle, surface_layout: SurfaceLayout) State {
         return .{ .surface_layout = surface_layout, .text_session = text_session };
@@ -92,16 +103,30 @@ pub const State = struct {
         self.setGeometryEpoch(geometry.geometry_epoch);
     }
 
-    pub fn workState(self: *const State, bootstrap_surface: bool) WorkState {
+    pub fn workState(self: *State, bootstrap_surface: bool) WorkState {
         var state = std.mem.zeroes(c.HowlRenderSessionWorkState);
         std.debug.assert(c.howl_render_text_session_work_state(self.text_session, &state) == c.HOWL_RENDER_CALL_OK);
+        self.retained_state = classifyRetainedState(state, self.presentPending(), bootstrap_surface, self.retained_state);
         return .{
-            .source_pending = state.source_pending != 0,
-            .prepare_pending = state.prepare_pending != 0,
-            .submit_pending = state.submit_pending != 0,
-            .present_pending = self.presentPending(),
-            .bootstrap_surface = bootstrap_surface,
+            .state = self.retained_state,
         };
+    }
+
+    pub fn retainedState(self: *const State) RetainedState {
+        return self.retained_state;
+    }
+
+    pub fn noteRetainedFailure(self: *State) void {
+        self.retained_state = .failed;
+    }
+
+    pub fn notePrepareNeeded(self: *State) void {
+        if (self.presentPending()) {
+            self.retained_state = .present_in_flight;
+            return;
+        }
+        self.releaseRdrSfcHandle();
+        self.retained_state = .prepare_needed;
     }
 
     pub fn notePresentSubmitted(self: *State, snapshot_seq: u64, token: u64) void {
@@ -109,6 +134,7 @@ pub const State = struct {
         std.debug.assert(token != 0);
         std.debug.assert(self.present_in_flight == null);
         self.present_in_flight = .{ .snapshot_seq = snapshot_seq, .token = token };
+        self.retained_state = .present_in_flight;
     }
 
     pub fn completePresent(self: *State, token: u64) ?u64 {
@@ -116,6 +142,7 @@ pub const State = struct {
         const present = self.present_in_flight orelse return null;
         if (present.token != token) return null;
         self.present_in_flight = null;
+        self.retained_state = .idle;
         return present.snapshot_seq;
     }
 
@@ -151,6 +178,7 @@ pub const State = struct {
         switch (take_status) {
             c.HOWL_RENDER_PREPARE_IDLE => {
                 self.releaseRdrSfcHandle();
+                self.retained_state = .idle;
                 return .idle;
             },
             c.HOWL_RENDER_PREPARE_READY => {
@@ -159,17 +187,20 @@ pub const State = struct {
                 return switch (prepare_handle_status) {
                     c.HOWL_RENDER_PREPARE_IDLE => blk: {
                         self.releaseRdrSfcHandle();
+                        self.retained_state = .idle;
                         break :blk .idle;
                     },
                     c.HOWL_RENDER_PREPARE_READY => self.acceptRdrSfcHandle(rdr_sfc_handle, request),
                     else => blk: {
                         self.releaseRdrSfcHandle();
+                        self.retained_state = .failed;
                         break :blk .failed;
                     },
                 };
             },
             else => {
                 self.releaseRdrSfcHandle();
+                self.retained_state = .failed;
                 return .failed;
             },
         }
@@ -177,45 +208,57 @@ pub const State = struct {
 
     pub fn submit(self: *State, execution: *const c.HowlRenderSubmitExecution, result: *c.HowlRenderSubmitResult) SubmitResult {
         if (self.presentPending()) {
+            self.retained_state = .present_in_flight;
             return .idle;
         }
         var rdr_sfc_handle: c.HowlRenderRdrSfcHandle = null;
         switch (c.howl_render_text_session_take_submit_handle(self.text_session, &rdr_sfc_handle)) {
-            c.HOWL_RENDER_SUBMIT_DECISION_IDLE => return .idle,
+            c.HOWL_RENDER_SUBMIT_DECISION_IDLE => {
+                self.retained_state = .idle;
+                return .idle;
+            },
             c.HOWL_RENDER_SUBMIT_DECISION_SUBMIT => {},
             c.HOWL_RENDER_SUBMIT_DECISION_STALE => {
                 self.releaseRdrSfcHandle();
+                self.retained_state = .prepare_needed;
                 return .stale;
             },
             c.HOWL_RENDER_SUBMIT_DECISION_NEEDS_PREPARE => {
                 self.releaseRdrSfcHandle();
+                self.retained_state = .prepare_needed;
                 return .needs_prepare;
             },
             else => {
                 self.releaseRdrSfcHandle();
+                self.retained_state = .failed;
                 return .failed;
             },
         }
         return switch (self.submitHandle(rdr_sfc_handle, execution, result)) {
             c.HOWL_RENDER_SUBMIT_IDLE => blk: {
+                self.retained_state = .idle;
                 break :blk .idle;
             },
             c.HOWL_RENDER_SUBMIT_STALE => blk: {
                 self.releaseRdrSfcHandle();
+                self.retained_state = .prepare_needed;
                 break :blk .stale;
             },
             c.HOWL_RENDER_SUBMIT_NEEDS_PREPARE => blk: {
                 self.releaseRdrSfcHandle();
+                self.retained_state = .prepare_needed;
                 break :blk .needs_prepare;
             },
             c.HOWL_RENDER_SUBMIT_RENDERED => blk: {
                 std.debug.assert(result.host_surface.host_surface_id != 0);
                 std.debug.assert(result.host_surface.width > 0);
                 std.debug.assert(result.host_surface.height > 0);
+                self.retained_state = .idle;
                 break :blk .rendered;
             },
             else => blk: {
                 self.releaseRdrSfcHandle();
+                self.retained_state = .failed;
                 break :blk .failed;
             },
         };
@@ -243,6 +286,7 @@ pub const State = struct {
         const describe_status = c.howl_render_rdr_sfc_describe(rdr_sfc_handle, &info);
         if (describe_status != c.HOWL_RENDER_CALL_OK) {
             self.releaseRdrSfcHandle();
+            self.retained_state = .failed;
             return .failed;
         }
         std.debug.assert(info.snapshot_seq == request.snapshot_seq);
@@ -253,6 +297,7 @@ pub const State = struct {
         info = std.mem.zeroes(c.HowlRenderPreparedSurfaceInfo);
         std.debug.assert(c.howl_render_rdr_sfc_describe(rdr_sfc_handle, &info) == c.HOWL_RENDER_CALL_OK);
         self.storeRdrSfcHandle(rdr_sfc_handle);
+        self.retained_state = .submit_ready;
         return .prepared;
     }
 
@@ -274,6 +319,14 @@ fn surfaceLayoutChanged(current: SurfaceLayout, next: SurfaceLayout) bool {
         current.rows != next.rows or
         current.cell_px.width != next.cell_px.width or
         current.cell_px.height != next.cell_px.height;
+}
+
+fn classifyRetainedState(work_state: c.HowlRenderSessionWorkState, present_pending: bool, bootstrap_surface: bool, retained_state: RetainedState) RetainedState {
+    if (present_pending) return .present_in_flight;
+    if (work_state.submit_pending != 0) return .submit_ready;
+    if (work_state.source_pending != 0 or work_state.prepare_pending != 0 or bootstrap_surface) return .prepare_needed;
+    if (retained_state == .failed) return .failed;
+    return .idle;
 }
 
 fn testSurfaceLayout() SurfaceLayout {
@@ -378,7 +431,28 @@ test "present in flight contributes host-owned pending state" {
     try std.testing.expect(state.presentPending());
 
     const work = state.workState(false);
-    try std.testing.expect(work.present_pending);
+    try std.testing.expectEqual(RetainedState.present_in_flight, work.state);
+}
+
+test "failed retained state remains owned until new work supersedes it" {
+    var state = testState();
+    defer state.deinit();
+    state.retained_state = .failed;
+
+    const work = state.workState(false);
+    try std.testing.expectEqual(RetainedState.failed, work.state);
+}
+
+test "new retained submit work supersedes failed owner state" {
+    var state = testState();
+    defer state.deinit();
+    state.retained_state = .failed;
+    const layout = try derivedTestSurfaceLayout(state.text_session);
+    state.syncSurfaceLayout(layout);
+    try prepareTestSource(&state, 17);
+
+    const work = state.workState(false);
+    try std.testing.expectEqual(RetainedState.submit_ready, work.state);
 }
 
 test "matching complete present returns snapshot once and clears" {

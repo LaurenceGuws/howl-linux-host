@@ -84,8 +84,8 @@ pub const Surface = struct {
     };
 
     pub const TurnResult = struct {
-        work_before: render_retained.WorkState,
-        work_after: render_retained.WorkState,
+        state_before: render_retained.RetainedState,
+        state_after: render_retained.RetainedState,
         prepared: bool,
         step: TurnStep,
         present_snapshot_seq: u64,
@@ -421,8 +421,8 @@ pub const Surface = struct {
         const work_before = self.term.render.workState(bootstrap_surface);
         const drive_result = self.driveRenderLocked(work_before);
         return .{
-            .work_before = work_before,
-            .work_after = self.term.render.workState(bootstrap_surface),
+            .state_before = work_before.state,
+            .state_after = drive_result.state_after,
             .prepared = drive_result.prepared,
             .step = drive_result.step,
             .present_snapshot_seq = drive_result.present_snapshot_seq,
@@ -445,7 +445,7 @@ pub const Surface = struct {
 
     pub fn noteRenderTurn(self: *Context, turn: TurnResult) void {
         if (turn.step == .surface_idle) return;
-        if (turn.prepared and turn.step != .rendered) self.notePreparedStep(turn.work_after);
+        if (turn.prepared and turn.state_after == .submit_ready) self.notePreparedStep(turn.state_after);
     }
 
     pub fn termTextureId(self: *const Context) u64 {
@@ -503,7 +503,7 @@ pub const Surface = struct {
         const mut: *Context = @constCast(self);
         mut.term.mutex.lockFair();
         defer mut.term.mutex.unlock();
-        return self.term.render.workState(self.term_texture.host_surface_id == 0);
+        return mut.term.render.workState(mut.term_texture.host_surface_id == 0);
     }
 
     fn cursorBlinkShouldAnimate(self: *Context) bool {
@@ -528,48 +528,35 @@ pub const Surface = struct {
 
     const DriveResult = struct {
         prepared: bool,
+        state_after: render_retained.RetainedState,
         step: TurnStep,
         present_snapshot_seq: u64,
     };
 
-    const RenderAction = enum {
-        blocked_present,
-        submit_pending,
-        prepare_or_idle,
-        idle_submit,
-    };
-
     fn driveRenderLocked(self: *Context, work: render_retained.WorkState) DriveResult {
-        const bootstrap_surface = self.term_texture.host_surface_id == 0;
-        std.debug.assert(work.bootstrap_surface == bootstrap_surface);
-        return switch (renderAction(work, bootstrap_surface)) {
-            .blocked_present => idleDrive(.blocked_present),
-            .submit_pending => submitDriveResult(false, self.submitPreparedLocked()),
-            .idle_submit => idleDrive(.idle_submit),
-            .prepare_or_idle => blk: {
+        return switch (work.state) {
+            .idle => idleDrive(.idle, .surface_idle),
+            .present_in_flight => idleDrive(.present_in_flight, .blocked_present),
+            .submit_ready => self.submitDriveResult(false, self.submitPreparedLocked()),
+            .failed => idleDrive(.failed, .failed),
+            .prepare_needed => blk: {
                 self.maybeCommitGridResizeLocked();
                 var visible = vt_surface.captureVisibleLocked(&self.term, terminal_links.hoverDecoration(self)) catch {
                     self.links.hover_publish_pending = false;
-                    break :blk idleDrive(.failed);
+                    self.term.render.noteRetainedFailure();
+                    break :blk idleDrive(self.term.render.retainedState(), .failed);
                 };
                 defer visible.deinit(self.term.allocator);
                 self.links.hover_publish_pending = false;
                 const render_visible: *const render_c.HowlVtSurfaceResult = @ptrCast(&visible.surface);
                 const prepare_result = self.term.render.prepare(render_visible);
                 break :blk switch (prepare_result) {
-                    .idle => idleDrive(.idle_prepare),
-                    .failed => idleDrive(.failed),
-                    .prepared => submitDriveResult(true, self.submitPreparedLocked()),
+                    .idle => idleDrive(self.term.render.retainedState(), .idle_prepare),
+                    .failed => idleDrive(self.term.render.retainedState(), .failed),
+                    .prepared => self.submitDriveResult(true, self.submitPreparedLocked()),
                 };
             },
         };
-    }
-
-    fn renderAction(work: render_retained.WorkState, bootstrap_surface: bool) RenderAction {
-        if (work.present_pending) return .blocked_present;
-        if (work.submit_pending) return .submit_pending;
-        if (!(work.source_pending or work.prepare_pending or bootstrap_surface)) return .prepare_or_idle;
-        return .prepare_or_idle;
     }
 
     fn maybeCommitGridResizeLocked(self: *Context) void {
@@ -585,6 +572,7 @@ pub const Surface = struct {
     fn submitPreparedLocked(self: *Context) SubmitPreparedResult {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
+            self.term.render.noteRetainedFailure();
             return .{ .result = .failed, .snapshot_seq = 0 };
         }
         defer upload.deinit();
@@ -595,6 +583,7 @@ pub const Surface = struct {
 
         const render_surface = upload.render_surface orelse {
             if (upload.render_surface_status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW) {
+                self.term.render.noteRetainedFailure();
                 return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
             }
             std.debug.panic("trusted render surface retrieval failed: status={}", .{upload.render_surface_status});
@@ -608,10 +597,12 @@ pub const Surface = struct {
         const current_handle = self.term.render.rdrSfcHandle();
         std.debug.assert(!self.term.render.presentPending());
         if (current_handle != rdr_sfc_handle) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+            self.term.render.notePrepareNeeded();
+            return stalePreparedUploadSubmit(upload.info.snapshot_seq);
         }
         if (!upload_ok) {
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
+            self.term.render.noteRetainedFailure();
+            return failedUploadSubmit(upload.info.snapshot_seq);
         }
 
         var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
@@ -636,10 +627,11 @@ pub const Surface = struct {
         snapshot_seq: u64,
     };
 
-    fn idleDrive(step: TurnStep) DriveResult {
-        std.debug.assert(step == .blocked_present or step == .idle_submit or step == .idle_prepare or step == .failed);
+    fn idleDrive(state_after: render_retained.RetainedState, step: TurnStep) DriveResult {
+        std.debug.assert(step == .surface_idle or step == .blocked_present or step == .idle_prepare or step == .failed);
         return .{
             .prepared = false,
+            .state_after = state_after,
             .step = step,
             .present_snapshot_seq = 0,
         };
@@ -650,7 +642,7 @@ pub const Surface = struct {
     }
 
     fn stalePreparedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
-        return .{ .result = .failed, .snapshot_seq = snapshot_seq };
+        return .{ .result = .stale, .snapshot_seq = snapshot_seq };
     }
 
     fn wakePendingHooked(self: *Context) bool {
@@ -710,18 +702,19 @@ pub const Surface = struct {
         };
     }
 
-    fn submitDriveResult(prepared: bool, submit_result: SubmitPreparedResult) DriveResult {
+    fn submitDriveResult(self: *Context, prepared: bool, submit_result: SubmitPreparedResult) DriveResult {
         const step = submitStep(submit_result.result);
         return .{
             .prepared = prepared,
+            .state_after = self.term.render.retainedState(),
             .step = step,
             .present_snapshot_seq = if (step == .rendered) submit_result.snapshot_seq else 0,
         };
     }
 
-    fn notePreparedStep(self: *Context, work: render_retained.WorkState) void {
+    fn notePreparedStep(self: *Context, state: render_retained.RetainedState) void {
         _ = self;
-        std.debug.assert(work.submit_pending or work.present_pending);
+        std.debug.assert(state == .submit_ready or state == .present_in_flight);
     }
 
     pub fn terminalOwnsMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
@@ -867,7 +860,6 @@ fn renderFontValid(text_session: render_c.HowlRenderTextSessionHandle) bool {
 
 pub const testing = struct {
     pub const Hooks = TestingHooks;
-    pub const RenderAction = Surface.RenderAction;
     pub const SubmitPreparedResult = Surface.SubmitPreparedResult;
 
     pub fn installHooks(hooks: Hooks) void {
@@ -882,12 +874,8 @@ pub const testing = struct {
         return surface.submitPrepared();
     }
 
-    pub fn renderAction(work: render_retained.WorkState, bootstrap_surface: bool) RenderAction {
-        return Surface.renderAction(work, bootstrap_surface);
-    }
-
-    pub fn idleDrive(step: Surface.TurnStep) Surface.DriveResult {
-        return Surface.idleDrive(step);
+    pub fn idleDrive(state_after: render_retained.RetainedState, step: Surface.TurnStep) Surface.DriveResult {
+        return Surface.idleDrive(state_after, step);
     }
 
     pub fn failedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
