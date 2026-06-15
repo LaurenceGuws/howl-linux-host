@@ -221,7 +221,12 @@ pub const Surface = struct {
         self.scrollbar = .{};
         self.links = .{};
         self.selection = .{};
-        self.cursor_blink = .{};
+        self.cursor_blink = cursor_blink.CursorBlink.init(.{
+            .interval_ns = cursor_blink.blinkIntervalNs(request.conf.cursor_blink_interval),
+            .inactivity_stop_ns = cursor_blink.inactivityStopNs(request.conf.cursor_stop_blinking_after),
+            .trail_decay_fast_ns = cursor_blink.trailDecayNs(request.conf.cursor_trail_decay_fast, cursor_blink.default_trail_decay_fast_ns),
+            .trail_decay_slow_ns = cursor_blink.trailDecayNs(request.conf.cursor_trail_decay_slow, cursor_blink.default_trail_decay_slow_ns),
+        });
         self.cursor_position_changed_by_client_at_ms = 0;
         self.cursor_source_row = 0;
         self.cursor_source_col = 0;
@@ -781,14 +786,20 @@ pub const Surface = struct {
         render.focused = @intFromBool(focused);
         render.cursor_opacity = cadence.cursor_opacity;
         render.text_blink_opacity = cadence.text_blink_opacity;
-        render.effective_shape = self.cursor_source_shape;
+        render.effective_shape = effectiveCursorShape(self, focused);
+        render.cursor_color = renderCursorColor(self.conf.cursor);
+        render.cursor_text_color = renderCursorColor(self.conf.cursor_text_color);
+        render.cursor_trail_color = renderCursorColor(self.conf.cursor_trail_color);
+        render.cursor_beam_thickness = self.conf.cursor_beam_thickness;
+        render.cursor_underline_thickness = self.conf.cursor_underline_thickness;
         render.cursor_trail_count = 0;
         for (0..render_retained.max_cursor_trail_rects) |index| {
             const started_ns = self.cursor_trail_started_ns[index];
             if (started_ns == 0) continue;
             const age_ns = now_ns -| started_ns;
-            if (age_ns >= cursor_blink.inactivity_stop_ns) continue;
-            const opacity = 255 - @as(u8, @intCast(@min((age_ns * 255) / cursor_blink.inactivity_stop_ns, 255)));
+            const decay_ns = self.cursor_blink.trailDecayLifetimeNs(index);
+            if (age_ns >= decay_ns) continue;
+            const opacity = 255 - @as(u8, @intCast(@min((age_ns * 255) / decay_ns, 255)));
             if (opacity == 0) continue;
             const slot = render.cursor_trail_count;
             render.cursor_trail_rects[slot].opacity = opacity;
@@ -803,10 +814,21 @@ pub const Surface = struct {
     }
 
     fn trailActive(self: *Context, now_ns: u64) bool {
-        for (self.cursor_trail_started_ns) |started_ns| {
-            if (started_ns != 0 and now_ns -| started_ns < cursor_blink.inactivity_stop_ns) return true;
+        for (self.cursor_trail_started_ns, 0..) |started_ns, index| {
+            if (started_ns != 0 and now_ns -| started_ns < self.cursor_blink.trailDecayLifetimeNs(index)) return true;
         }
         return false;
+    }
+
+    fn effectiveCursorShape(self: *const Context, focused: bool) u8 {
+        if (focused) return self.cursor_source_shape;
+        return switch (self.conf.cursor_shape_unfocused) {
+            .unchanged => self.cursor_source_shape,
+            .block => 0,
+            .underline => 1,
+            .beam => 2,
+            .hollow => 3,
+        };
     }
 
     fn cursorAnimationValid(self: *const Context) bool {
@@ -819,9 +841,9 @@ pub const Surface = struct {
 
     fn notePublishedCursorSource(self: *Context, cursor: render_c.HowlVtCursor, cells: []const render_c.HowlVtSurfaceCell, now_ns: u64) void {
         if (self.cursor_position_changed_by_client_at_ms != cursor.position_changed_by_client_at_ms) {
+            if (self.shouldStartTrail(cursor)) self.noteTrailStart(now_ns);
             self.cursor_position_changed_by_client_at_ms = cursor.position_changed_by_client_at_ms;
             _ = self.resetCursorBlinkActivity(now_ns);
-            self.noteTrailStart(now_ns);
         }
         self.cursor_source_row = cursor.row;
         self.cursor_source_col = cursor.col;
@@ -831,6 +853,14 @@ pub const Surface = struct {
         self.cursor_source_blink = cursor.blink != 0;
         self.cursor_source_shape = cursor.shape;
         self.cursor_text_blinking = blinkingTextUsed(cells);
+    }
+
+    fn shouldStartTrail(self: *const Context, cursor: render_c.HowlVtCursor) bool {
+        if (self.conf.cursor_trail == 0) return false;
+        if (self.cursor_position_changed_by_client_at_ms == 0) return false;
+        const stable_ms = cursor.position_changed_by_client_at_ms -| self.cursor_position_changed_by_client_at_ms;
+        if (stable_ms < self.conf.cursor_trail) return false;
+        return cursorMovementDistance(self.cursor_source_row, self.cursor_source_col, cursor.row, cursor.col) >= self.conf.cursor_trail_start_threshold;
     }
 
     fn noteTrailStart(self: *Context, now_ns: u64) void {
@@ -848,8 +878,18 @@ pub const Surface = struct {
             .opacity = 255,
             .reserved0 = 0,
             .reserved1 = 0,
-            .color = .{ .r = 255, .g = 255, .b = 255 },
+            .color = .{ .r = 0, .g = 0, .b = 0 },
         };
+    }
+
+    fn renderCursorColor(color_value: @import("../config/terminal.zig").CursorColor) render_c.HowlVtColor {
+        return .{ .kind = @intFromEnum(color_value.kind), .value = color_value.value };
+    }
+
+    fn cursorMovementDistance(from_row: u16, from_col: u16, to_row: u16, to_col: u16) u16 {
+        const row_delta = if (to_row > from_row) to_row - from_row else from_row - to_row;
+        const col_delta = if (to_col > from_col) to_col - from_col else from_col - to_col;
+        return row_delta + col_delta;
     }
 
     fn blinkingTextUsed(cells: []const render_c.HowlVtSurfaceCell) bool {
@@ -904,7 +944,7 @@ pub const Surface = struct {
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
         const vt = try initVt(layout.rows, layout.cols, .{
             .default_cursor_style = .{
-                .shape = conf.cursor_style,
+                .shape = conf.cursor_shape,
                 .blink = conf.cursor_blink,
             },
         });
@@ -1376,12 +1416,83 @@ test "cursor facts reaches invalid animation branch from host-owned runtime stat
     try std.testing.expect(!surface.cursorAnimationValid());
 }
 
+test "unfocused cursor shape follows config" {
+    var surface = testSurfaceBase();
+    surface.cursor_source_shape = 0;
+    surface.window_focused = false;
+    surface.widget_focused = true;
+
+    const facts = surface.cursorFacts(1000);
+    try std.testing.expectEqual(@as(u8, 3), facts.render.effective_shape);
+}
+
+test "cursor trail start respects configured duration threshold and color" {
+    var conf = test_terminal_conf;
+    conf.cursor_trail = 100;
+    conf.cursor_trail_start_threshold = 2;
+    conf.cursor_trail_color = .{ .kind = .rgb, .value = 0x102030 };
+
+    var surface = testSurfaceBase();
+    surface.conf = &conf;
+    surface.cursor_source_row = 1;
+    surface.cursor_source_col = 1;
+    surface.cursor_position_changed_by_client_at_ms = 1000;
+
+    const cells = [_]render_c.HowlVtSurfaceCell{std.mem.zeroes(render_c.HowlVtSurfaceCell)};
+    surface.notePublishedCursorSource(.{ .row = 1, .col = 2, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 1050, .cell_cols = 1, .cell_rows = 1 }, cells[0..], 10);
+    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_started_ns[0]);
+
+    surface.notePublishedCursorSource(.{ .row = 1, .col = 4, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 1200, .cell_cols = 1, .cell_rows = 1 }, cells[0..], 20);
+    try std.testing.expectEqual(@as(u64, 20), surface.cursor_trail_started_ns[0]);
+
+    const facts = surface.cursorFacts(20);
+    try std.testing.expectEqual(@as(u32, 0x102030), facts.render.cursor_trail_color.value);
+}
+
+test "cursor trail decay uses configured fast and slow timings" {
+    var conf = test_terminal_conf;
+    conf.cursor_trail = 1;
+    conf.cursor_trail_decay_fast = 0.2;
+    conf.cursor_trail_decay_slow = 0.6;
+
+    var surface = testSurfaceBase();
+    surface.conf = &conf;
+    surface.cursor_blink = cursor_blink.CursorBlink.init(.{
+        .interval_ns = cursor_blink.blinkIntervalNs(conf.cursor_blink_interval),
+        .inactivity_stop_ns = cursor_blink.inactivityStopNs(conf.cursor_stop_blinking_after),
+        .trail_decay_fast_ns = cursor_blink.trailDecayNs(conf.cursor_trail_decay_fast, cursor_blink.default_trail_decay_fast_ns),
+        .trail_decay_slow_ns = cursor_blink.trailDecayNs(conf.cursor_trail_decay_slow, cursor_blink.default_trail_decay_slow_ns),
+    });
+    surface.cursor_source_row = 1;
+    surface.cursor_source_col = 1;
+    surface.noteTrailStart(0);
+    surface.cursor_trail_started_ns[15] = 1;
+    surface.cursor_render.cursor_trail_rects[15] = surface.cursor_render.cursor_trail_rects[0];
+
+    try std.testing.expect(surface.trailActive(@as(u64, 199) * std.time.ns_per_ms));
+    try std.testing.expect(surface.trailActive(@as(u64, 599) * std.time.ns_per_ms));
+    try std.testing.expect(!surface.trailActive(@as(u64, 601) * std.time.ns_per_ms));
+}
+
 const test_terminal_conf: TerminalConfig = .{
     .shell = &.{},
     .start_path = null,
     .command = null,
     .font_size = 1,
     .fonts = .{ .primary = null, .mono = &.{}, .symbols = &.{}, .emoji = &.{} },
+    .cursor = .{ .kind = .rgb, .value = 0xCCCCCC },
+    .cursor_text_color = .{ .kind = .rgb, .value = 0x111111 },
+    .cursor_shape = .block,
+    .cursor_shape_unfocused = .hollow,
+    .cursor_beam_thickness = 1.5,
+    .cursor_underline_thickness = 2.0,
+    .cursor_blink_interval = -1.0,
+    .cursor_stop_blinking_after = 15.0,
+    .cursor_trail = 0,
+    .cursor_trail_decay_fast = 0.1,
+    .cursor_trail_decay_slow = 0.4,
+    .cursor_trail_start_threshold = 2,
+    .cursor_trail_color = .{ .kind = .default, .value = 0 },
     .cursor_style = .block,
     .cursor_blink = true,
     .clipboard_osc_52 = .deny,
