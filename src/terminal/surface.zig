@@ -160,6 +160,7 @@ pub const Surface = struct {
     cursor_source_cols: u16,
     cursor_source_visible: bool,
     cursor_source_blink: bool,
+    cursor_source_has_shape: bool,
     cursor_source_shape: u8,
     cursor_text_blinking: bool,
     cursor_render: render_retained.HostCursorCadence,
@@ -234,6 +235,7 @@ pub const Surface = struct {
         self.cursor_source_cols = 1;
         self.cursor_source_visible = true;
         self.cursor_source_blink = false;
+        self.cursor_source_has_shape = true;
         self.cursor_source_shape = 0;
         self.cursor_text_blinking = false;
         self.cursor_render = std.mem.zeroes(render_retained.HostCursorCadence);
@@ -397,7 +399,7 @@ pub const Surface = struct {
         const focused = self.window_focused and self.widget_focused;
         const render = self.computeCursorRender(now_ns, focused);
         var cadence = self.cursor_blink.cadenceFacts(.{
-            .animate = self.cursor_source_visible and self.cursor_source_blink and focused,
+            .animate = self.cursor_source_visible and self.cursor_source_has_shape and self.cursor_source_blink and focused,
             .animation_valid = self.cursorAnimationValid(),
             .text_blinking = self.cursor_text_blinking,
             .trail_active = render.cursor_trail_count != 0,
@@ -776,7 +778,7 @@ pub const Surface = struct {
 
     fn computeCursorRender(self: *Context, now_ns: u64, focused: bool) render_retained.HostCursorCadence {
         const cadence = self.cursor_blink.cadenceFacts(.{
-            .animate = self.cursor_source_visible and self.cursor_source_blink and focused,
+            .animate = self.cursor_source_visible and self.cursor_source_has_shape and self.cursor_source_blink and focused,
             .animation_valid = self.cursorAnimationValid(),
             .text_blinking = self.cursor_text_blinking,
             .trail_active = self.trailActive(now_ns),
@@ -786,6 +788,10 @@ pub const Surface = struct {
         render.focused = @intFromBool(focused);
         render.cursor_opacity = cadence.cursor_opacity;
         render.text_blink_opacity = cadence.text_blink_opacity;
+        if (!self.cursor_source_has_shape) {
+            render.cursor_opacity = 0;
+            render.text_blink_opacity = 0;
+        }
         render.effective_shape = effectiveCursorShape(self, focused);
         render.cursor_color = renderCursorColor(self.conf.cursor);
         render.cursor_text_color = renderCursorColor(self.conf.cursor_text_color);
@@ -821,6 +827,7 @@ pub const Surface = struct {
     }
 
     fn effectiveCursorShape(self: *const Context, focused: bool) u8 {
+        if (!self.cursor_source_has_shape) return 0;
         if (focused) return self.cursor_source_shape;
         return switch (self.conf.cursor_shape_unfocused) {
             .unchanged => self.cursor_source_shape,
@@ -851,7 +858,8 @@ pub const Surface = struct {
         self.cursor_source_cols = cursor.cell_cols;
         self.cursor_source_visible = cursor.visible != 0;
         self.cursor_source_blink = cursor.blink != 0;
-        self.cursor_source_shape = cursor.shape;
+        self.cursor_source_has_shape = cursor.shape != 3;
+        self.cursor_source_shape = if (self.cursor_source_has_shape) cursor.shape else 0;
         self.cursor_text_blinking = blinkingTextUsed(cells);
     }
 
@@ -1418,12 +1426,25 @@ test "cursor facts reaches invalid animation branch from host-owned runtime stat
 
 test "unfocused cursor shape follows config" {
     var surface = testSurfaceBase();
+    surface.cursor_source_has_shape = true;
     surface.cursor_source_shape = 0;
     surface.window_focused = false;
     surface.widget_focused = true;
 
     const facts = surface.cursorFacts(1000);
     try std.testing.expectEqual(@as(u8, 3), facts.render.effective_shape);
+}
+
+test "published no-shape stays distinct from hidden visibility" {
+    var surface = testSurfaceBase();
+    const cells = [_]vt_c.HowlVtSurfaceCell{std.mem.zeroes(vt_c.HowlVtSurfaceCell)};
+
+    surface.notePublishedCursorSource(.{ .row = 1, .col = 2, .visible = 1, .shape = 3, .blink = 1, .position_changed_by_client_at_ms = 10, .cell_cols = 1, .cell_rows = 1 }, cells[0..], 10);
+
+    try std.testing.expect(surface.cursor_source_visible);
+    try std.testing.expect(!surface.cursor_source_has_shape);
+    const facts = surface.cursorFacts(10);
+    try std.testing.expectEqual(@as(u8, 0), facts.render.cursor_opacity);
 }
 
 test "cursor trail start respects configured duration threshold and color" {
@@ -1540,6 +1561,7 @@ fn testSurfaceBase() Surface {
         .cursor_source_cols = 1,
         .cursor_source_visible = true,
         .cursor_source_blink = false,
+        .cursor_source_has_shape = true,
         .cursor_source_shape = 0,
         .cursor_text_blinking = false,
         .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
