@@ -2,7 +2,6 @@ const pty_session = @import("pty_session.zig");
 const terminal_term = @import("term.zig");
 const EventLoop = @import("../event_loop.zig");
 const std = @import("std");
-const builtin = @import("builtin");
 
 const wait_slice_timeout_ms: i32 = 50;
 
@@ -38,7 +37,6 @@ pub fn wakePending(self: anytype) bool {
 
 pub fn ackWake(self: anytype) void {
     if (self.progress.wake_pending.swap(false, .acq_rel)) {
-        traceTuiWakeAck();
         signalWakeAck(self);
     }
 }
@@ -91,19 +89,8 @@ fn termRef(self: anytype) TermRef(@TypeOf(self.term)) {
 
 fn signalWake(self: anytype, comptime Ops: type) void {
     if (!self.progress.wake_pending.swap(true, .acq_rel)) {
-        traceTuiWakeSignal();
         Ops.wakeEventLoop(self);
     }
-}
-
-fn traceTuiWakeSignal() void {
-    if (builtin.is_test) return;
-    std.log.warn("tui_wake signal", .{});
-}
-
-fn traceTuiWakeAck() void {
-    if (builtin.is_test) return;
-    std.log.warn("tui_wake ack", .{});
 }
 
 fn signalWakeAck(self: anytype) void {

@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 pub const default_interval_ms: u64 = 600;
 pub const default_interval_ns: u64 = default_interval_ms * std.time.ns_per_ms;
@@ -87,7 +86,7 @@ pub const CursorBlink = struct {
 
     pub fn cadenceFacts(self: CursorBlink, input: CadenceInput, now_ns: u64) CadenceFacts {
         const plan_result = self.plan(input, now_ns);
-        const facts: CadenceFacts = .{
+        return .{
             .visible = plan_result.visible,
             .cursor_opacity = plan_result.cursor_opacity,
             .text_blink_opacity = plan_result.text_blink_opacity,
@@ -97,8 +96,6 @@ pub const CursorBlink = struct {
             .dirty = plan_result.changed,
             .wait_ms = waitMs3(plan_result.deadline_ns, plan_result.inactivity_deadline_ns, plan_result.trail_deadline_ns, now_ns),
         };
-        traceCadenceFacts(input, self, facts, now_ns);
-        return facts;
     }
 
     pub fn plan(self: CursorBlink, input: CadenceInput, now_ns: u64) Plan {
@@ -163,15 +160,6 @@ pub const CursorBlink = struct {
         return @max(self.config.trail_decay_fast_ns, self.config.trail_decay_slow_ns);
     }
 };
-
-fn traceCadenceFacts(input: CursorBlink.CadenceInput, state: CursorBlink, facts: CursorBlink.CadenceFacts, now_ns: u64) void {
-    if (builtin.is_test) return;
-    if (!facts.dirty) return;
-    std.log.warn(
-        "cursor_blink cadence now_ns={} animate={} text_blinking={} trail_active={} state_opacity={} state_deadline_ns={} opacity={} dirty={} wait_ms={?}",
-        .{ now_ns, input.animate, input.text_blinking, input.trail_active, state.cursor_opacity, state.deadline_ns, facts.cursor_opacity, facts.dirty, facts.wait_ms },
-    );
-}
 
 pub const Plan = struct {
     visible: bool,
