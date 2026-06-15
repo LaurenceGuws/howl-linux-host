@@ -573,14 +573,18 @@ pub const Surface = struct {
 
     fn setCursorBlinkVisible(self: *Context, visible: bool) bool {
         if (self.cursor_blink.visible == visible) return false;
-        if (!self.applyRenderCursorBlinkVisible(visible)) return false;
+        const prior = self.cursor_blink.visible;
         self.cursor_blink.visible = visible;
+        if (!self.applyRenderCursorBlinkVisible(visible)) {
+            self.cursor_blink.visible = prior;
+            return false;
+        }
         return true;
     }
 
     fn applyRenderCursorBlinkVisible(self: *Context, visible: bool) bool {
         if (testing_hooks.apply_render_cursor_blink_visible) |hook| return hook(self, visible);
-        return setRenderCursorBlinkVisible(&self.term, visible);
+        return self.term.render.setHostCursorCadence(&self.computeCursorRender(EventLoop.nowNs(), self.window_focused and self.widget_focused));
     }
 
     const DriveResult = struct {
@@ -1011,12 +1015,6 @@ fn initVt(rows: u16, cols: u16, options: VtInitOptions) !vt_c.HowlVtHandle {
 fn deinitVt(handle: vt_c.HowlVtHandle) void {
     std.debug.assert(handle != null);
     vt_c.howl_vt_terminal_deinit(handle);
-}
-
-fn setRenderCursorBlinkVisible(term: *HowlTerm, visible: bool) bool {
-    term.mutex.lockFair();
-    defer term.mutex.unlock();
-    return render_c.howl_render_text_session_set_cursor_blink_visible(term.render.text_session, @intFromBool(visible)) == render_c.HOWL_RENDER_CALL_OK;
 }
 
 fn assertRenderInit(render_init: RenderInit) void {
