@@ -839,7 +839,7 @@ pub const Surface = struct {
             self.default_font_size_px > 0;
     }
 
-    fn notePublishedCursorSource(self: *Context, cursor: render_c.HowlVtCursor, cells: []const render_c.HowlVtSurfaceCell, now_ns: u64) void {
+    fn notePublishedCursorSource(self: *Context, cursor: vt_c.HowlVtCursor, cells: []const vt_c.HowlVtSurfaceCell, now_ns: u64) void {
         if (self.cursor_position_changed_by_client_at_ms != cursor.position_changed_by_client_at_ms) {
             if (self.shouldStartTrail(cursor)) self.noteTrailStart(now_ns);
             self.cursor_position_changed_by_client_at_ms = cursor.position_changed_by_client_at_ms;
@@ -855,7 +855,7 @@ pub const Surface = struct {
         self.cursor_text_blinking = blinkingTextUsed(cells);
     }
 
-    fn shouldStartTrail(self: *const Context, cursor: render_c.HowlVtCursor) bool {
+    fn shouldStartTrail(self: *const Context, cursor: vt_c.HowlVtCursor) bool {
         if (self.conf.cursor_trail == 0) return false;
         if (self.cursor_position_changed_by_client_at_ms == 0) return false;
         const stable_ms = cursor.position_changed_by_client_at_ms -| self.cursor_position_changed_by_client_at_ms;
@@ -892,7 +892,7 @@ pub const Surface = struct {
         return row_delta + col_delta;
     }
 
-    fn blinkingTextUsed(cells: []const render_c.HowlVtSurfaceCell) bool {
+    fn blinkingTextUsed(cells: []const vt_c.HowlVtSurfaceCell) bool {
         for (cells) |cell| {
             if (cell.attrs.blink != 0) return true;
         }
