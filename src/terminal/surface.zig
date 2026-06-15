@@ -1438,7 +1438,7 @@ test "cursor trail start respects configured duration threshold and color" {
     surface.cursor_source_col = 1;
     surface.cursor_position_changed_by_client_at_ms = 1000;
 
-    const cells = [_]render_c.HowlVtSurfaceCell{std.mem.zeroes(render_c.HowlVtSurfaceCell)};
+    const cells = [_]vt_c.HowlVtSurfaceCell{std.mem.zeroes(vt_c.HowlVtSurfaceCell)};
     surface.notePublishedCursorSource(.{ .row = 1, .col = 2, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 1050, .cell_cols = 1, .cell_rows = 1 }, cells[0..], 10);
     try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_started_ns[0]);
 
