@@ -477,6 +477,55 @@ test "drive progress follows explicit wake admission" {
     try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
 }
 
+test "pty redraw promotes retained render work after wake drive" {
+    drive_hook_state = .{
+        .outcomes = .{
+            .{ .keep = false, .should_redraw = true, .alive = true },
+            undefined,
+            undefined,
+            undefined,
+        },
+    };
+    installDriveHooks();
+    defer surface_testing.resetHooks();
+    var surface = testSurfaceBase();
+
+    drive_hook_state.wake_pending = true;
+    const facts = surface.runtimeFacts(true, 1, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(true, 1, facts);
+
+    try std.testing.expect(result.drove);
+    try std.testing.expect(result.outcome.should_redraw);
+    try std.testing.expectEqual(render_retained.RetainedState.prepare_needed, surface.term.render.retainedState());
+}
+
+test "pty redraw does not reset cursor blink cadence" {
+    drive_hook_state = .{
+        .outcomes = .{
+            .{ .keep = false, .should_redraw = true, .alive = true },
+            undefined,
+            undefined,
+            undefined,
+        },
+    };
+    installDriveHooks();
+    defer surface_testing.resetHooks();
+    var surface = testSurfaceBase();
+    surface.cursor_source_blink = true;
+    surface.cursor_blink.cursor_opacity = 0;
+    surface.cursor_blink.visible = false;
+    surface.cursor_blink.deadline_ns = 10_000;
+
+    drive_hook_state.wake_pending = true;
+    const facts = surface.runtimeFacts(true, 1, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(true, 1, facts);
+
+    try std.testing.expect(result.drove);
+    try std.testing.expect(result.outcome.should_redraw);
+    try std.testing.expectEqual(@as(u8, 0), surface.cursor_blink.cursor_opacity);
+    try std.testing.expect(!surface.cursor_blink.visible);
+}
+
 test "inactive tab wake re-enters from explicit wake admission" {
     drive_hook_state = .{
         .outcomes = .{
@@ -1667,7 +1716,7 @@ test "host cursor facts preserve explicit no-shape as visible no-draw truth" {
     try std.testing.expect(facts.cadence.visible);
 }
 
-test "cursor blink is scheduled from config even when vt blink bit is off" {
+test "cursor blink follows source blink bit when config permits blinking" {
     var surface = testSurfaceBase();
     surface.conf = &test_terminal_conf;
     surface.cursor_source_visible = true;
@@ -1678,7 +1727,12 @@ test "cursor blink is scheduled from config even when vt blink bit is off" {
 
     const facts = surface.cursorFacts(1000);
 
-    try std.testing.expect(facts.cadence.wait_ms != null);
+    try std.testing.expectEqual(@as(?u32, null), facts.cadence.wait_ms);
+    try std.testing.expectEqual(@as(u8, 255), facts.render.cursor_opacity);
+
+    surface.cursor_source_blink = true;
+    const blinking_facts = surface.cursorFacts(1000);
+    try std.testing.expect(blinking_facts.cadence.wait_ms != null);
 }
 
 test "host unfocused hollow stays distinct from no-shape" {

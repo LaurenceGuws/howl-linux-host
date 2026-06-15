@@ -360,6 +360,7 @@ fn classifyRetainedState(work_state: c.HowlRenderSessionWorkState, present_pendi
     if (present_pending) return .present_in_flight;
     if (work_state.submit_pending != 0) return .submit_ready;
     if (work_state.source_pending != 0 or work_state.prepare_pending != 0 or bootstrap_surface) return .prepare_needed;
+    if (retained_state == .prepare_needed) return .prepare_needed;
     if (retained_state == .failed) return .failed;
     return .idle;
 }
@@ -471,6 +472,11 @@ test "present in flight contributes host-owned pending state" {
 
     const work = state.workState(false);
     try std.testing.expectEqual(RetainedState.present_in_flight, work.state);
+}
+
+test "host-owned prepare needed survives idle render session work state" {
+    const work_state = std.mem.zeroes(c.HowlRenderSessionWorkState);
+    try std.testing.expectEqual(RetainedState.prepare_needed, classifyRetainedState(work_state, false, false, .prepare_needed));
 }
 
 test "failed retained state remains owned until new work supersedes it" {

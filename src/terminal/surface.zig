@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const EventLoop = @import("../event_loop.zig");
 const window = @import("../display/window.zig");
 const Layout = @import("../display/layout.zig");
@@ -388,14 +389,15 @@ pub const Surface = struct {
 
     pub fn wantsRenderTurn(self: *const Context) bool {
         if (testing_hooks.wants_render_turn) |hook| return hook(@constCast(self));
-        return self.workState().needsRenderSurface() or (self.conf.cursor_blink and self.window_focused and self.widget_focused and self.cursor_source_visible);
+        return self.workState().needsRenderSurface();
     }
 
     pub fn cursorFacts(self: *Context, now_ns: u64) CursorFacts {
         const focused = self.window_focused and self.widget_focused;
         const render = self.computeCursorRender(now_ns, focused);
+        const animate = self.cursorBlinkShouldAnimate();
         var cadence = self.cursor_blink.cadenceFacts(.{
-            .animate = self.conf.cursor_blink and self.cursor_source_visible and self.cursor_source_has_shape and focused,
+            .animate = animate,
             .animation_valid = self.cursorAnimationValid(),
             .text_blinking = self.cursor_text_blinking,
             .trail_active = render.cursor_trail_count != 0,
@@ -403,6 +405,7 @@ pub const Surface = struct {
         if (!std.mem.eql(u8, std.mem.asBytes(&render), std.mem.asBytes(&self.cursor_render))) {
             cadence.dirty = true;
         }
+        traceCursorFacts(self, now_ns, focused, animate, render, cadence);
         return .{
             .cadence = cadence,
             .render = render,
@@ -410,7 +413,9 @@ pub const Surface = struct {
     }
 
     pub fn consumeCursorFacts(self: *Context, facts: CursorFacts) bool {
-        if (!self.term.render.setHostCursorCadence(&facts.render)) return false;
+        const upload_ok = self.term.render.setHostCursorCadence(&facts.render);
+        traceConsumeCursorFacts(self, facts, upload_ok);
+        if (!upload_ok) return false;
         self.cursor_render = facts.render;
         self.cursor_blink.applyCadenceFacts(facts.cadence);
         return facts.redraw();
@@ -471,6 +476,7 @@ pub const Surface = struct {
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
         const work_before = self.term.render.workState(bootstrap_surface);
         const drive_result = self.driveRenderLocked(work_before);
+        traceCursorRenderTurn(self, work_before, drive_result);
         return .{
             .state_before = work_before.state,
             .state_after = drive_result.state_after,
@@ -483,6 +489,7 @@ pub const Surface = struct {
     pub fn notePresentSubmitted(self: *Context, snapshot_seq: u64, token: u64) void {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
+        traceCursorPresentSubmitted(self, snapshot_seq, token);
         self.term.render.notePresentSubmitted(snapshot_seq, token);
     }
 
@@ -491,6 +498,7 @@ pub const Surface = struct {
         defer self.term.mutex.unlock();
         const snapshot_seq = self.term.render.completePresent(token) orelse return;
         std.debug.assert(snapshot_seq != 0);
+        traceCursorPresentComplete(self, snapshot_seq, token);
         vt_surface.ackPublishedSourceLocked(&self.term, snapshot_seq);
     }
 
@@ -558,7 +566,7 @@ pub const Surface = struct {
     }
 
     fn cursorBlinkShouldAnimate(self: *Context) bool {
-        return self.window_focused and self.widget_focused and self.cursor_source_visible and self.cursor_source_blink;
+        return self.conf.cursor_blink and self.window_focused and self.widget_focused and self.cursor_source_visible and self.cursor_source_blink and self.cursor_source_has_shape;
     }
 
     const DriveResult = struct {
@@ -585,7 +593,6 @@ pub const Surface = struct {
                 self.links.hover_publish_pending = false;
                 self.notePublishedCursorSource(visible.surface.source.cursor, visible.surface.source.surface_cells.ptr[0..visible.surface.source.surface_cells.len], EventLoop.nowNs());
                 const render_visible: *const render_c.HowlVtSurfaceResult = @ptrCast(&visible.surface);
-                _ = self.term.render.setHostCursorCadence(&self.computeCursorRender(EventLoop.nowNs(), self.window_focused and self.widget_focused));
                 const prepare_result = self.term.render.prepare(render_visible);
                 break :blk switch (prepare_result) {
                     .idle => idleDrive(self.term.render.retainedState(), .idle_prepare),
@@ -706,11 +713,17 @@ pub const Surface = struct {
         return driveOnceHooked(&self.term, now_ns);
     }
 
+    fn noteTerminalSourceChanged(self: *Context) void {
+        self.term.mutex.lockFair();
+        defer self.term.mutex.unlock();
+        self.term.render.notePrepareNeeded();
+    }
+
     fn driveProgressConsequences(self: *Context, active: bool, now_ns: u64, outcome_input: pty_pump.Outcome) DriveProgressResult {
         var outcome = outcome_input;
         if (active and outcome.should_redraw) {
+            self.noteTerminalSourceChanged();
             if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
-            outcome.should_redraw = self.resetCursorBlinkActivity(now_ns) or outcome.should_redraw;
         }
         if (active) {
             outcome.should_redraw = self.driveCursor(now_ns) or outcome.should_redraw;
@@ -758,7 +771,7 @@ pub const Surface = struct {
 
     fn computeCursorRender(self: *Context, now_ns: u64, focused: bool) render_retained.HostCursorCadence {
         const cadence = self.cursor_blink.cadenceFacts(.{
-            .animate = self.conf.cursor_blink and self.cursor_source_visible and self.cursor_source_has_shape and focused,
+            .animate = self.conf.cursor_blink and self.cursor_source_blink and self.cursor_source_visible and self.cursor_source_has_shape and focused,
             .animation_valid = self.cursorAnimationValid(),
             .text_blinking = self.cursor_text_blinking,
             .trail_active = self.trailActive(now_ns),
@@ -845,6 +858,7 @@ pub const Surface = struct {
         self.cursor_source_has_shape = true;
         self.cursor_source_shape = cursor.shape;
         self.cursor_text_blinking = blinkingTextUsed(cells);
+        tracePublishedCursorSource(self, cursor, now_ns);
     }
 
     fn shouldStartTrail(self: *const Context, cursor: vt_c.HowlVtCursor) bool {
@@ -954,6 +968,48 @@ pub const Surface = struct {
         };
     }
 };
+
+fn cursorTraceEnabled(surface: *const Surface) bool {
+    if (builtin.is_test) return false;
+    return surface.conf.cursor_blink or surface.cursor_source_blink or surface.cursor_text_blinking;
+}
+
+fn traceCursorFacts(surface: *const Surface, now_ns: u64, focused: bool, animate: bool, render: render_retained.HostCursorCadence, cadence: cursor_blink.CursorBlink.CadenceFacts) void {
+    if (!cursorTraceEnabled(surface)) return;
+    const render_changed = !std.mem.eql(u8, std.mem.asBytes(&render), std.mem.asBytes(&surface.cursor_render));
+    if (!cadence.dirty and !render_changed) return;
+    std.log.warn(
+        "cursor_blink facts now_ns={} conf_blink={} source_blink={} source_visible={} source_has_shape={} focused={} animate={} render_changed={} dirty={} wait_ms={?} opacity={} shape={}",
+        .{ now_ns, surface.conf.cursor_blink, surface.cursor_source_blink, surface.cursor_source_visible, surface.cursor_source_has_shape, focused, animate, render_changed, cadence.dirty, cadence.wait_ms, render.cursor_opacity, render.effective_shape },
+    );
+}
+
+fn traceConsumeCursorFacts(surface: *const Surface, facts: Surface.CursorFacts, upload_ok: bool) void {
+    if (!cursorTraceEnabled(surface)) return;
+    if (!facts.redraw()) return;
+    std.log.warn("cursor_blink consume upload_ok={} redraw={} wait_ms={?} opacity={} shape={}", .{ upload_ok, facts.redraw(), facts.waitMs(), facts.render.cursor_opacity, facts.render.effective_shape });
+}
+
+fn traceCursorRenderTurn(surface: *const Surface, work_before: render_retained.WorkState, drive_result: Surface.DriveResult) void {
+    if (!cursorTraceEnabled(surface)) return;
+    if (drive_result.step == .surface_idle) return;
+    std.log.warn("cursor_blink render_turn work_before={} state_after={} step={} prepared={} snapshot={} opacity={}", .{ work_before.state, drive_result.state_after, drive_result.step, drive_result.prepared, drive_result.present_snapshot_seq, surface.cursor_render.cursor_opacity });
+}
+
+fn tracePublishedCursorSource(surface: *const Surface, cursor: vt_c.HowlVtCursor, now_ns: u64) void {
+    if (!cursorTraceEnabled(surface)) return;
+    std.log.warn("cursor_blink source now_ns={} conf_blink={} source_blink={} visible={} shape={} row={} col={}", .{ now_ns, surface.conf.cursor_blink, cursor.blink != 0, cursor.visible != 0, cursor.shape, cursor.row, cursor.col });
+}
+
+fn traceCursorPresentSubmitted(surface: *const Surface, snapshot_seq: u64, token: u64) void {
+    if (!cursorTraceEnabled(surface)) return;
+    std.log.warn("cursor_blink present_submitted snapshot={} token={} opacity={}", .{ snapshot_seq, token, surface.cursor_render.cursor_opacity });
+}
+
+fn traceCursorPresentComplete(surface: *const Surface, snapshot_seq: u64, token: u64) void {
+    if (!cursorTraceEnabled(surface)) return;
+    std.log.warn("cursor_blink present_complete snapshot={} token={} opacity={}", .{ snapshot_seq, token, surface.cursor_render.cursor_opacity });
+}
 
 fn initTextSession(render_init: RenderInit) !render_c.HowlRenderTextSessionHandle {
     assertRenderInit(render_init);

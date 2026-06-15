@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 
 const Config = @import("config/config.zig");
@@ -180,8 +181,10 @@ pub const Processor = struct {
         self.frame_pacing.beginTurn();
         const now_ns = EventLoop.nowNs();
         const wait_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
+        traceTuiLoopFacts("wait", now_ns, wait_runtime_facts);
         self.frame_pacing.noteRedrawAndRenderWork(self.window.hasRequestedRedraw(), wait_runtime_facts.render_work_pending);
         const admission = computeLoopAdmission(self, now_ns, wait_runtime_facts);
+        traceTuiAdmission(now_ns, admission);
         const event_action = pumpWindowEvents(self, admission);
         if (event_action == .quit) return .quit;
 
@@ -189,7 +192,9 @@ pub const Processor = struct {
         if (host_mutations_opt) |host_mutations| {
             _ = drainPresentComplete(self);
             const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
+            traceTuiLoopFacts("drive", now_ns, drive_runtime_facts);
             const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
+            traceTuiProgress(now_ns, terminal_progress);
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
             if (host_mutations.input_outcome.host_visual_changed) self.window.requestRedraw();
@@ -201,12 +206,14 @@ pub const Processor = struct {
                 drive_runtime_facts.render_work_pending,
             );
             self.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
+            traceTuiIntent(now_ns, intent, self.frame_pacing.renderPermission());
             if (!self.frame_pacing.renderPermission()) {
                 return .continue_running;
             }
 
             const frame = render(self);
             const present_plan = derivePresentPlan(frame, intent);
+            traceTuiRender(now_ns, frame.turn, present_plan);
             _ = submitPresent(self, frame, present_plan);
             if (quitRequested(self)) |action| return action;
             if (try handleActiveTabProblem(self)) |action| return action;
@@ -602,6 +609,40 @@ pub const Processor = struct {
         return idx < len;
     }
 };
+
+fn traceTuiLoopFacts(phase: []const u8, now_ns: u64, facts: Processor.LoopRuntimeFacts) void {
+    if (builtin.is_test) return;
+    std.log.warn(
+        "tui_wake facts phase={s} now_ns={} runtime_wake_pending={} runtime_admitted={} runtime_wait_ms={?} render_work_pending={}",
+        .{ phase, now_ns, facts.runtime_wake_pending, facts.runtime_admitted, facts.runtime_wait_ms, facts.render_work_pending },
+    );
+}
+
+fn traceTuiAdmission(now_ns: u64, admission: Processor.LoopAdmission) void {
+    if (builtin.is_test) return;
+    std.log.warn("tui_wake admission now_ns={} wait_for_window={} wait_ms={?}", .{ now_ns, admission.wait_for_window, admission.wait_ms });
+}
+
+fn traceTuiProgress(now_ns: u64, progress: Processor.TerminalProgress) void {
+    if (builtin.is_test) return;
+    std.log.warn("tui_wake progress now_ns={} drove={} should_redraw={} keep={}", .{ now_ns, progress.drive_performed, progress.should_redraw, progress.keep_running });
+}
+
+fn traceTuiIntent(now_ns: u64, intent: Processor.RedrawRenderIntent, render_permission: bool) void {
+    if (builtin.is_test) return;
+    std.log.warn(
+        "tui_wake intent now_ns={} host_redraw={} terminal_redraw={} render_work_pending={} needs_render={} render_permission={}",
+        .{ now_ns, intent.host_redraw, intent.terminal_redraw, intent.render_work_pending, intent.needsRender(), render_permission },
+    );
+}
+
+fn traceTuiRender(now_ns: u64, turn: TerminalSurface.TurnResult, plan: Processor.PresentPlan) void {
+    if (builtin.is_test) return;
+    std.log.warn(
+        "tui_wake render now_ns={} state_before={} state_after={} step={} prepared={} snapshot={} needs_render_turn={} reason={}",
+        .{ now_ns, turn.state_before, turn.state_after, turn.step, turn.prepared, turn.present_snapshot_seq, plan.needs_render_turn, plan.reason },
+    );
+}
 
 pub const testing = struct {
     pub const ControlSpineRuntimeFacts = struct {
