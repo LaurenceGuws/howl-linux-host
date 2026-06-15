@@ -16,6 +16,7 @@ pub const Size = struct {
 pub const Window = struct {
     handle: Ptr,
     current_title: [:0]u8,
+    requested_redraw: bool,
     px_w: c_int,
     px_h: c_int,
     logical_w: c_int,
@@ -31,6 +32,7 @@ pub const Window = struct {
         var self = Window{
             .handle = handle,
             .current_title = current_title,
+            .requested_redraw = false,
             .px_w = 1,
             .px_h = 1,
             .logical_w = 1,
@@ -65,6 +67,18 @@ pub const Window = struct {
         if (self.focused == focused) return false;
         self.focused = focused;
         return true;
+    }
+
+    pub fn requestRedraw(self: *Window) void {
+        self.requested_redraw = true;
+    }
+
+    pub fn clearRedrawRequest(self: *Window) void {
+        self.requested_redraw = false;
+    }
+
+    pub fn hasRequestedRedraw(self: *const Window) bool {
+        return self.requested_redraw;
     }
 
     pub fn setTitle(self: *Window, title: []const u8) void {
@@ -204,6 +218,7 @@ test "window title updates only when content changes" {
     var state = Window{
         .handle = undefined,
         .current_title = try std.heap.c_allocator.dupeZ(u8, "shell"),
+        .requested_redraw = false,
         .px_w = 1,
         .px_h = 1,
         .logical_w = 1,
@@ -211,6 +226,12 @@ test "window title updates only when content changes" {
         .focused = true,
     };
     defer std.heap.c_allocator.free(state.current_title);
+
+    try std.testing.expect(!state.hasRequestedRedraw());
+    state.requestRedraw();
+    try std.testing.expect(state.hasRequestedRedraw());
+    state.clearRedrawRequest();
+    try std.testing.expect(!state.hasRequestedRedraw());
 
     try std.testing.expect(!try state.setTitleWith("shell", FakeOps));
     try std.testing.expectEqual(@as(usize, 0), FakeOps.calls);

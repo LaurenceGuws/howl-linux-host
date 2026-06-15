@@ -121,20 +121,23 @@ pub const Config = struct {
         }
 
         const clipboard_osc_52 = loadClipboardPolicy(reader);
-        const cursor = try loadCursorColor(reader);
-        const cursor_text_color = try loadCursorTextColor(reader);
-        const cursor_shape = loadCursorShape(reader);
-        const cursor_shape_unfocused = try loadCursorShapeUnfocused(reader);
-        const cursor_beam_thickness = try loadCursorBeamThickness(reader);
-        const cursor_underline_thickness = try loadCursorUnderlineThickness(reader);
-        const cursor_blink_interval = try loadCursorBlinkInterval(reader);
-        const cursor_stop_blinking_after = try loadCursorStopBlinkingAfter(reader);
-        const cursor_trail = try loadCursorTrail(reader);
-        const cursor_trail_decay = try loadCursorTrailDecay(reader);
-        const cursor_trail_start_threshold = try loadCursorTrailStartThreshold(reader);
-        const cursor_trail_color = try loadCursorTrailColor(reader);
+        var cursor_child = reader.childTable("cursor");
+        defer if (cursor_child) |*child| child.finish();
+        const cursor_reader: ?Lua.Reader = if (cursor_child) |*child| child.view() else null;
+        const cursor = try loadCursorColor(cursor_reader);
+        const cursor_text_color = try loadCursorTextColor(cursor_reader);
+        const cursor_shape = loadCursorShape(cursor_reader);
+        const cursor_shape_unfocused = try loadCursorShapeUnfocused(cursor_reader);
+        const cursor_beam_thickness = try loadCursorBeamThickness(cursor_reader);
+        const cursor_underline_thickness = try loadCursorUnderlineThickness(cursor_reader);
+        const cursor_blink_interval = try loadCursorBlinkInterval(cursor_reader);
+        const cursor_stop_blinking_after = try loadCursorStopBlinkingAfter(cursor_reader);
+        const cursor_trail = try loadCursorTrail(cursor_reader);
+        const cursor_trail_decay = try loadCursorTrailDecay(cursor_reader);
+        const cursor_trail_start_threshold = try loadCursorTrailStartThreshold(cursor_reader);
+        const cursor_trail_color = try loadCursorTrailColor(cursor_reader);
         const cursor_style = cursor_shape;
-        const cursor_blink = cursorBlinkEnabled(cursor_blink_interval, reader);
+        const cursor_blink = cursorBlinkEnabled(cursor_blink_interval);
         var links_child = reader.childTable("links");
         defer if (links_child) |*child| child.finish();
         const link_open = readLinkOpenPolicy(links_child);
@@ -305,92 +308,97 @@ fn loadClipboardPolicy(reader: Lua.Reader) ClipboardOsc52Policy {
     return .deny;
 }
 
-fn loadCursorShape(reader: Lua.Reader) CursorStyle {
+fn loadCursorShape(cursor_reader: ?Lua.Reader) CursorStyle {
     var shape_raw: ?[]u8 = null;
-    reader.optionalStringOwned("cursor_shape", &shape_raw) catch {};
-    defer if (shape_raw) |owned| reader.allocator.free(owned);
-    if (shape_raw) |owned| return parseCursorStyle(owned);
-
-    var style_raw: ?[]u8 = null;
-    reader.optionalStringOwned("cursor_style", &style_raw) catch {};
-    defer if (style_raw) |owned| reader.allocator.free(owned);
-    return parseCursorStyle(style_raw orelse "block");
+    if (cursor_reader) |reader| {
+        reader.optionalStringOwned("shape", &shape_raw) catch {};
+        defer if (shape_raw) |owned| reader.allocator.free(owned);
+        if (shape_raw) |owned| return parseCursorStyle(owned);
+    }
+    return .block;
 }
 
-fn loadCursorShapeUnfocused(reader: Lua.Reader) !CursorUnfocusedShape {
+fn loadCursorShapeUnfocused(cursor_reader: ?Lua.Reader) !CursorUnfocusedShape {
     var raw: ?[]u8 = null;
-    try reader.optionalStringOwned("cursor_shape_unfocused", &raw);
-    defer if (raw) |owned| reader.allocator.free(owned);
-    return if (raw) |owned| try parseCursorUnfocusedShape(owned) else .hollow;
+    if (cursor_reader) |reader| {
+        try reader.optionalStringOwned("shape_unfocused", &raw);
+        defer if (raw) |owned| reader.allocator.free(owned);
+        return if (raw) |owned| try parseCursorUnfocusedShape(owned) else .hollow;
+    }
+    return .hollow;
 }
 
-fn loadCursorColor(reader: Lua.Reader) !CursorColor {
+fn loadCursorColor(cursor_reader: ?Lua.Reader) !CursorColor {
     var raw: ?[]u8 = null;
-    try reader.optionalStringOwned("cursor", &raw);
-    defer if (raw) |owned| reader.allocator.free(owned);
-    return if (raw) |owned| try parseCursorColor(owned, "none") else .{ .kind = .rgb, .value = 0xCCCCCC };
+    if (cursor_reader) |reader| {
+        try reader.optionalStringOwned("color", &raw);
+        defer if (raw) |owned| reader.allocator.free(owned);
+        return if (raw) |owned| try parseCursorColor(owned, "none") else .{ .kind = .rgb, .value = 0xCCCCCC };
+    }
+    return .{ .kind = .rgb, .value = 0xCCCCCC };
 }
 
-fn loadCursorTextColor(reader: Lua.Reader) !CursorColor {
+fn loadCursorTextColor(cursor_reader: ?Lua.Reader) !CursorColor {
     var raw: ?[]u8 = null;
-    try reader.optionalStringOwned("cursor_text_color", &raw);
-    defer if (raw) |owned| reader.allocator.free(owned);
-    return if (raw) |owned| try parseCursorColor(owned, "background") else .{ .kind = .rgb, .value = 0x111111 };
+    if (cursor_reader) |reader| {
+        try reader.optionalStringOwned("text_color", &raw);
+        defer if (raw) |owned| reader.allocator.free(owned);
+        return if (raw) |owned| try parseCursorColor(owned, "background") else .{ .kind = .rgb, .value = 0x111111 };
+    }
+    return .{ .kind = .rgb, .value = 0x111111 };
 }
 
-fn loadCursorTrailColor(reader: Lua.Reader) !CursorColor {
+fn loadCursorTrailColor(cursor_reader: ?Lua.Reader) !CursorColor {
     var raw: ?[]u8 = null;
-    try reader.optionalStringOwned("cursor_trail_color", &raw);
-    defer if (raw) |owned| reader.allocator.free(owned);
-    return if (raw) |owned| try parseCursorColor(owned, "none") else .{ .kind = .default, .value = 0 };
+    if (cursor_reader) |reader| {
+        try reader.optionalStringOwned("trail_color", &raw);
+        defer if (raw) |owned| reader.allocator.free(owned);
+        return if (raw) |owned| try parseCursorColor(owned, "none") else .{ .kind = .default, .value = 0 };
+    }
+    return .{ .kind = .default, .value = 0 };
 }
 
-fn loadCursorBeamThickness(reader: Lua.Reader) !f32 {
-    const value: f32 = @floatCast(reader.numberField("cursor_beam_thickness") orelse 1.5);
+fn loadCursorBeamThickness(cursor_reader: ?Lua.Reader) !f32 {
+    const value: f32 = @floatCast(if (cursor_reader) |reader| reader.numberField("beam_thickness") orelse 1.5 else 1.5);
     if (!(value > 0)) return error.InvalidConfig;
     return value;
 }
 
-fn loadCursorUnderlineThickness(reader: Lua.Reader) !f32 {
-    const value: f32 = @floatCast(reader.numberField("cursor_underline_thickness") orelse 2.0);
+fn loadCursorUnderlineThickness(cursor_reader: ?Lua.Reader) !f32 {
+    const value: f32 = @floatCast(if (cursor_reader) |reader| reader.numberField("underline_thickness") orelse 2.0 else 2.0);
     if (!(value > 0)) return error.InvalidConfig;
     return value;
 }
 
-fn loadCursorBlinkInterval(reader: Lua.Reader) !f64 {
-    return reader.numberField("cursor_blink_interval") orelse legacyCursorBlinkInterval(reader);
+fn loadCursorBlinkInterval(cursor_reader: ?Lua.Reader) !f64 {
+    return if (cursor_reader) |reader| reader.numberField("blink_interval") orelse -1.0 else -1.0;
 }
 
-fn loadCursorStopBlinkingAfter(reader: Lua.Reader) !f64 {
-    return reader.numberField("cursor_stop_blinking_after") orelse 15.0;
+fn loadCursorStopBlinkingAfter(cursor_reader: ?Lua.Reader) !f64 {
+    return if (cursor_reader) |reader| reader.numberField("stop_blinking_after") orelse 15.0 else 15.0;
 }
 
-fn loadCursorTrail(reader: Lua.Reader) !u32 {
-    const value = reader.intField("cursor_trail") orelse 0;
+fn loadCursorTrail(cursor_reader: ?Lua.Reader) !u32 {
+    const value = if (cursor_reader) |reader| reader.intField("trail") orelse 0 else 0;
     if (value < 0) return error.InvalidConfig;
     return @intCast(value);
 }
 
-fn loadCursorTrailDecay(reader: Lua.Reader) !struct { fast: f64, slow: f64 } {
-    const fast = reader.numberField("cursor_trail_decay_fast") orelse 0.1;
-    const slow = reader.numberField("cursor_trail_decay_slow") orelse 0.4;
+fn loadCursorTrailDecay(cursor_reader: ?Lua.Reader) !struct { fast: f64, slow: f64 } {
+    const fast = if (cursor_reader) |reader| reader.numberField("trail_decay_fast") orelse 0.1 else 0.1;
+    const slow = if (cursor_reader) |reader| reader.numberField("trail_decay_slow") orelse 0.4 else 0.4;
     if (fast <= 0 or slow <= 0) return error.InvalidConfig;
     return .{ .fast = fast, .slow = @max(slow, fast) };
 }
 
-fn loadCursorTrailStartThreshold(reader: Lua.Reader) !u16 {
-    const value = reader.intField("cursor_trail_start_threshold") orelse 2;
+fn loadCursorTrailStartThreshold(cursor_reader: ?Lua.Reader) !u16 {
+    const value = if (cursor_reader) |reader| reader.intField("trail_start_threshold") orelse 2 else 2;
     if (value < 0 or value > std.math.maxInt(u16)) return error.InvalidConfig;
     return @intCast(value);
 }
 
-fn legacyCursorBlinkInterval(reader: Lua.Reader) f64 {
-    return if (reader.boolField("cursor_style_blink") orelse true) -1.0 else 0.0;
-}
-
-fn cursorBlinkEnabled(cursor_blink_interval: f64, reader: Lua.Reader) bool {
-    if (reader.numberField("cursor_blink_interval") != null) return cursor_blink_interval != 0;
-    return reader.boolField("cursor_style_blink") orelse true;
+fn cursorBlinkEnabled(cursor_blink_interval: f64) bool {
+    return cursor_blink_interval != 0;
 }
 
 fn loadMouseBypassModPolicy(reader: Lua.Reader) !Input.Mod {
@@ -549,19 +557,21 @@ test "cursor config parses every Kitty cursor field" {
         \\    shell = "/bin/sh",
         \\    start_path = "/tmp",
         \\    font_size = 16,
-        \\    cursor = "#102030",
-        \\    cursor_text_color = "background",
-        \\    cursor_shape = "beam",
-        \\    cursor_shape_unfocused = "underline",
-        \\    cursor_beam_thickness = 2.5,
-        \\    cursor_underline_thickness = 3.5,
-        \\    cursor_blink_interval = 0.75,
-        \\    cursor_stop_blinking_after = 4.25,
-        \\    cursor_trail = 120,
-        \\    cursor_trail_decay_fast = 0.2,
-        \\    cursor_trail_decay_slow = 0.6,
-        \\    cursor_trail_start_threshold = 5,
-        \\    cursor_trail_color = "#405060",
+        \\    cursor = {
+        \\      color = "#102030",
+        \\      text_color = "background",
+        \\      shape = "beam",
+        \\      shape_unfocused = "underline",
+        \\      beam_thickness = 2.5,
+        \\      underline_thickness = 3.5,
+        \\      blink_interval = 0.75,
+        \\      stop_blinking_after = 4.25,
+        \\      trail = 120,
+        \\      trail_decay_fast = 0.2,
+        \\      trail_decay_slow = 0.6,
+        \\      trail_start_threshold = 5,
+        \\      trail_color = "#405060",
+        \\    },
         \\    fallback_mono = {},
         \\    fallback_symbols = {},
         \\    fallback_emoji = {},
@@ -586,14 +596,16 @@ test "cursor config parses every Kitty cursor field" {
     try std.testing.expectEqual(CursorColor{ .kind = .rgb, .value = 0x405060 }, config.cursor_trail_color);
 }
 
-test "cursor config keeps legacy cursor style fallback" {
+test "cursor config nested blink interval disables blink when zero" {
     var config = try loadConfigForTest(std.testing.allocator,
         \\return {
         \\  term = {
         \\    shell = "/bin/sh",
         \\    start_path = "/tmp",
-        \\    cursor_style = "underline",
-        \\    cursor_style_blink = false,
+        \\    cursor = {
+        \\      shape = "underline",
+        \\      blink_interval = 0.0,
+        \\    },
         \\    fallback_mono = {},
         \\    fallback_symbols = {},
         \\    fallback_emoji = {},
@@ -614,7 +626,9 @@ test "cursor config rejects non-positive beam thickness" {
         \\  term = {
         \\    shell = "/bin/sh",
         \\    start_path = "/tmp",
-        \\    cursor_beam_thickness = 0,
+        \\    cursor = {
+        \\      beam_thickness = 0,
+        \\    },
         \\    fallback_mono = {},
         \\    fallback_symbols = {},
         \\    fallback_emoji = {},
@@ -630,7 +644,9 @@ test "cursor config rejects non-positive underline thickness" {
         \\  term = {
         \\    shell = "/bin/sh",
         \\    start_path = "/tmp",
-        \\    cursor_underline_thickness = -1,
+        \\    cursor = {
+        \\      underline_thickness = -1,
+        \\    },
         \\    fallback_mono = {},
         \\    fallback_symbols = {},
         \\    fallback_emoji = {},

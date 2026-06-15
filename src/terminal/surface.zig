@@ -97,18 +97,17 @@ pub const Surface = struct {
 
     pub const RuntimeFacts = struct {
         wake_pending: bool,
-        continuation_pending: bool,
         runtime_due_now: bool,
         input_published: bool,
         runtime_wait_ms: ?u32,
         render_work_pending: bool,
 
         pub fn runtimeWakePending(self: RuntimeFacts) bool {
-            return self.wake_pending or self.continuation_pending or self.runtime_due_now;
+            return self.wake_pending or self.runtime_due_now;
         }
 
         pub fn driveAdmitted(self: RuntimeFacts, active: bool) bool {
-            return self.continuation_pending or self.wake_pending or self.runtime_due_now or (active and self.input_published);
+            return self.wake_pending or self.runtime_due_now or (active and self.input_published);
         }
     };
 
@@ -164,7 +163,6 @@ pub const Surface = struct {
     cursor_text_blinking: bool,
     cursor_render: render_retained.HostCursorCadence,
     cursor_trail_started_ns: [render_retained.max_cursor_trail_rects]u64,
-    progress_continuation_pending: bool,
 
     const InitialRequest = struct {
         conf: *const TerminalConfig,
@@ -239,7 +237,6 @@ pub const Surface = struct {
         self.cursor_text_blinking = false;
         self.cursor_render = std.mem.zeroes(render_retained.HostCursorCadence);
         self.cursor_trail_started_ns = [_]u64{0} ** render_retained.max_cursor_trail_rects;
-        self.progress_continuation_pending = false;
     }
 
     pub fn deinit(self: *Context) void {
@@ -391,14 +388,14 @@ pub const Surface = struct {
 
     pub fn wantsRenderTurn(self: *const Context) bool {
         if (testing_hooks.wants_render_turn) |hook| return hook(@constCast(self));
-        return self.workState().needsRenderSurface();
+        return self.workState().needsRenderSurface() or (self.conf.cursor_blink and self.window_focused and self.widget_focused and self.cursor_source_visible);
     }
 
     pub fn cursorFacts(self: *Context, now_ns: u64) CursorFacts {
         const focused = self.window_focused and self.widget_focused;
         const render = self.computeCursorRender(now_ns, focused);
         var cadence = self.cursor_blink.cadenceFacts(.{
-            .animate = self.cursor_source_visible and self.cursor_source_has_shape and self.cursor_source_blink and focused,
+            .animate = self.conf.cursor_blink and self.cursor_source_visible and self.cursor_source_has_shape and focused,
             .animation_valid = self.cursorAnimationValid(),
             .text_blinking = self.cursor_text_blinking,
             .trail_active = render.cursor_trail_count != 0,
@@ -442,14 +439,9 @@ pub const Surface = struct {
         return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
     }
 
-    pub fn progressContinuationPending(self: *const Context) bool {
-        return self.progress_continuation_pending;
-    }
-
     pub fn runtimeFacts(self: *Context, active: bool, now_ns: u64, admission: DriveAdmission) RuntimeFacts {
         return .{
             .wake_pending = wakePendingHooked(self),
-            .continuation_pending = self.progress_continuation_pending,
             .runtime_due_now = runtimeObligationDueNowHooked(self, now_ns),
             .input_published = active and admission.input_published,
             .runtime_wait_ms = minOptionalWaitMs(self.nextRuntimeObligationWaitMs(now_ns), if (active) self.cursorWaitMs(now_ns) else null),
@@ -719,12 +711,12 @@ pub const Surface = struct {
         if (active and outcome.should_redraw) {
             if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
             outcome.should_redraw = self.resetCursorBlinkActivity(now_ns) or outcome.should_redraw;
-        } else if (active) {
+        }
+        if (active) {
             outcome.should_redraw = self.driveCursor(now_ns) or outcome.should_redraw;
         }
         applyPendingClipboardWrites(self);
         ackWakeHooked(self);
-        self.progress_continuation_pending = outcome.keep;
         return .{ .drove = true, .outcome = outcome };
     }
 
@@ -766,7 +758,7 @@ pub const Surface = struct {
 
     fn computeCursorRender(self: *Context, now_ns: u64, focused: bool) render_retained.HostCursorCadence {
         const cadence = self.cursor_blink.cadenceFacts(.{
-            .animate = self.cursor_source_visible and self.cursor_source_has_shape and self.cursor_source_blink and focused,
+            .animate = self.conf.cursor_blink and self.cursor_source_visible and self.cursor_source_has_shape and focused,
             .animation_valid = self.cursorAnimationValid(),
             .text_blinking = self.cursor_text_blinking,
             .trail_active = self.trailActive(now_ns),
@@ -1189,7 +1181,7 @@ test "active tab with admitted input does drive" {
     try std.testing.expectEqual(@as(u8, 1), TestState.ack_calls);
 }
 
-test "continuation drives without new wake" {
+test "wake drives without continuation" {
     const TestState = struct {
         var drive_calls: u8 = 0;
     };
@@ -1197,7 +1189,7 @@ test "continuation drives without new wake" {
     testing.installHooks(.{
         .wake_pending = struct {
             fn hook(_: *Surface) bool {
-                return false;
+                return true;
             }
         }.hook,
         .runtime_obligation_due_now = struct {
@@ -1225,7 +1217,6 @@ test "continuation drives without new wake" {
     defer testing.resetHooks();
 
     var surface = testSurfaceBase();
-    surface.progress_continuation_pending = true;
     const facts = surface.runtimeFacts(false, 13, .{ .input_published = false });
     const result = surface.driveProgressWithFacts(false, 13, facts);
 
@@ -1535,6 +1526,5 @@ fn testSurfaceBase() Surface {
         .cursor_text_blinking = false,
         .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
         .cursor_trail_started_ns = [_]u64{0} ** render_retained.max_cursor_trail_rects,
-        .progress_continuation_pending = false,
     };
 }

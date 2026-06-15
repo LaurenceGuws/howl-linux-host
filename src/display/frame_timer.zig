@@ -95,7 +95,6 @@ pub const FrameTimer = struct {
         if (admission.owner_work) return false;
         if (admission.runtime_admission) return false;
         if (!self.frame_permit_ready) return true;
-        if (admission.runtime_wake) return false;
         if (self.renderPermission()) return false;
         return true;
     }
@@ -103,7 +102,6 @@ pub const FrameTimer = struct {
     pub fn renderPermission(self: FrameTimer) bool {
         if (!self.frame_permit_ready) return false;
         if (self.redraw_requested) return true;
-        if (self.render_work_pending) return true;
         return false;
     }
 
@@ -187,7 +185,7 @@ test "runtime wake is not frame permit" {
     var pacing = FrameTimer.init();
     pacing.frame_permit_ready = true;
 
-    try std.testing.expect(!pacing.shouldWaitForWindow(admission));
+    try std.testing.expect(pacing.shouldWaitForWindow(admission));
     try std.testing.expect(!pacing.renderPermission());
 }
 
@@ -198,7 +196,7 @@ test "runtime wake participates in wait admission" {
         .runtime_admission = false,
     };
     var pacing = FrameTimer.init();
-    try std.testing.expect(!pacing.shouldWaitForWindow(admission));
+    try std.testing.expect(pacing.shouldWaitForWindow(admission));
 }
 
 test "terminal render work is not frame permit" {
@@ -223,7 +221,7 @@ test "frame work participates in wait admission through frame pacer" {
     };
     var pacing = FrameTimer.init();
     pacing.noteRedrawAndRenderWork(false, true);
-    try std.testing.expect(!pacing.shouldWaitForWindow(admission));
+    try std.testing.expect(pacing.shouldWaitForWindow(admission));
 }
 
 test "owner work prevents waiting" {

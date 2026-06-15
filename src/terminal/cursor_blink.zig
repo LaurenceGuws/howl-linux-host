@@ -106,13 +106,13 @@ pub const CursorBlink = struct {
         const inactivity_deadline_ns = if (input.animate or input.text_blinking) self.inactivity_deadline_ns else 0;
         const trail_deadline_ns = if (input.trail_active) trailDeadline(self, now_ns) else 0;
         var shared_blink_opacity: u8 = 255;
-        const shared_blink_active = input.text_blinking and (inactivity_deadline_ns == 0 or now_ns < inactivity_deadline_ns);
+        const shared_blink_active = (input.animate or input.text_blinking) and (inactivity_deadline_ns == 0 or now_ns < inactivity_deadline_ns);
 
         if (shared_blink_active) {
             if (self.deadline_ns == 0) {
-                shared_blink_opacity = self.text_blink_opacity;
+                shared_blink_opacity = if (input.text_blinking) self.text_blink_opacity else self.cursor_opacity;
             } else {
-                shared_blink_opacity = blinkOpacity(input.animation_valid, now_ns, self.config.interval_ns);
+                shared_blink_opacity = blinkOpacity(false, now_ns, self.config.interval_ns);
             }
             if (deadline_ns == 0) deadline_ns = blinkDeadline(self, now_ns);
         }
@@ -240,6 +240,20 @@ test "disabled animation forces visible" {
     try std.testing.expect(facts.visible);
     try std.testing.expectEqual(@as(u64, 0), facts.deadline_ns);
     try std.testing.expectEqual(@as(?u32, null), facts.wait_ms);
+}
+
+test "cursor blink animates without text blink" {
+    var state = CursorBlink{ .visible = true, .cursor_opacity = 255, .deadline_ns = default_interval_ns };
+    const facts = state.cadenceFacts(.{ .animate = true, .animation_valid = false, .text_blinking = false, .trail_active = false }, default_interval_ns);
+    try std.testing.expectEqual(@as(u8, 0), facts.cursor_opacity);
+    try std.testing.expect(facts.wait_ms != null);
+}
+
+test "cursor blink stays hard edged instead of fading dark" {
+    var state = CursorBlink{ .visible = true, .cursor_opacity = 255, .deadline_ns = default_interval_ns };
+    const half_cycle = default_interval_ns / 2;
+    const facts = state.cadenceFacts(.{ .animate = true, .animation_valid = true, .text_blinking = false, .trail_active = false }, half_cycle);
+    try std.testing.expect(facts.cursor_opacity == 255 or facts.cursor_opacity == 0);
 }
 
 test "deadline initialization does not flicker" {

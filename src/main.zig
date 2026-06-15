@@ -74,6 +74,7 @@ noinline fn start(io: std.Io, options: Args) !void {
     }
     input.* = try initInput();
     input.setBindings(Input.Bindings.Configured.init(conf));
+    input.setRedrawWindow(app_window);
 
     event_loop.* = .{};
     event_loop.init();
@@ -124,7 +125,6 @@ fn createWindow(conf: *const Config.UiConfig) !window.Window {
 fn initInput() !Input {
     var input: Input = undefined;
     input.init();
-    input.requestRedraw();
     return input;
 }
 

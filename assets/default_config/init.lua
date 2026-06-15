@@ -23,10 +23,34 @@ return {
     font_size = 16,
     -- Explicit primary font path. If unset, the bundled default primary is used.
     font_primary = "assets/fonts/IosevkaTermNerdFont-Regular.ttf",
-    -- One of: "block", "underline", "bar".
-    cursor_style = "bar",
-    -- Whether the default cursor style blinks before runtime DECSCUSR overrides it.
-    cursor_style_blink = true,
+    cursor = {
+      -- Cursor color. Hex RGB or "none" for the built-in default.
+      color = "#CCCCCC",
+      -- Cursor text color. Hex RGB or "background" for the active cell background.
+      text_color = "#111111",
+      -- One of: "block", "underline", "bar".
+      shape = "bar",
+      -- One of: "unchanged", "block", "underline", "bar", "hollow".
+      shape_unfocused = "hollow",
+      -- Cursor beam thickness in pixels.
+      beam_thickness = 1.5,
+      -- Cursor underline thickness in pixels.
+      underline_thickness = 2.0,
+      -- Cursor blink interval in seconds. Use 0 to disable or a negative value for the built-in cadence.
+      blink_interval = -1.0,
+      -- Stop cursor blinking after this many seconds of inactivity. Use 0 to keep blinking.
+      stop_blinking_after = 15.0,
+      -- Cursor trail lifetime gate in milliseconds. Use 0 to disable.
+      trail = 0,
+      -- Cursor trail fast decay in seconds.
+      trail_decay_fast = 0.1,
+      -- Cursor trail slow decay in seconds.
+      trail_decay_slow = 0.4,
+      -- Minimum movement in cells before a cursor trail starts.
+      trail_start_threshold = 2,
+      -- Cursor trail color. Hex RGB or "none" for the built-in default.
+      trail_color = "none",
+    },
     -- Ordered explicit fallback override paths. Bundled symbols and emoji
     -- coverage still remain behind these entries.
     fallback_mono = {},

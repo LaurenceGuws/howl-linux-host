@@ -122,7 +122,6 @@ fn testSurfaceBase() Surface {
         .cursor_text_blinking = false,
         .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
         .cursor_trail_started_ns = [_]u64{0} ** render_retained.max_cursor_trail_rects,
-        .progress_continuation_pending = false,
     };
 }
 
@@ -439,7 +438,6 @@ test "cursor activity pushes blink deadline while visible" {
         .cursor_text_blinking = false,
         .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
         .cursor_trail_started_ns = [_]u64{0} ** render_retained.max_cursor_trail_rects,
-        .progress_continuation_pending = false,
     };
 
     try std.testing.expect(!context.resetCursorBlinkActivity(1234));
@@ -447,7 +445,7 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(context.cursor_blink.visible);
 }
 
-test "drive progress keeps per-terminal continuation admission until a later non-keep turn" {
+test "drive progress follows explicit wake admission" {
     drive_hook_state = .{
         .outcomes = .{
             .{ .keep = true, .should_redraw = false, .alive = true },
@@ -460,26 +458,26 @@ test "drive progress keeps per-terminal continuation admission until a later non
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
 
-    const none = surface.driveProgress(true, 1, .{ .input_published = false });
-    try std.testing.expect(!none.drove);
-    try std.testing.expect(!surface.progress_continuation_pending);
-    try std.testing.expectEqual(@as(u8, 0), drive_hook_state.drive_calls);
+    drive_hook_state.wake_pending = true;
+    const first_facts = surface.runtimeFacts(true, 1, .{ .input_published = false });
+    try std.testing.expect(first_facts.driveAdmitted(true));
 
-    const first = surface.driveProgress(true, 2, .{ .input_published = true });
+    const first = surface.driveProgressWithFacts(true, 1, first_facts);
     try std.testing.expect(first.drove);
     try std.testing.expect(first.outcome.keep);
-    try std.testing.expect(surface.progress_continuation_pending);
+    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.drive_calls);
 
-    const second = surface.driveProgress(true, 3, .{ .input_published = false });
-    try std.testing.expect(second.drove);
-    try std.testing.expect(!second.outcome.keep);
-    try std.testing.expect(!surface.progress_continuation_pending);
-    try std.testing.expectEqual(@as(u8, 2), drive_hook_state.drive_calls);
-    try std.testing.expectEqual(@as(u8, 2), drive_hook_state.clipboard_calls);
-    try std.testing.expectEqual(@as(u8, 2), drive_hook_state.ack_calls);
+    drive_hook_state.wake_pending = false;
+    const second_facts = surface.runtimeFacts(true, 2, .{ .input_published = false });
+    try std.testing.expect(!second_facts.driveAdmitted(true));
+    const second = surface.driveProgressWithFacts(true, 2, second_facts);
+    try std.testing.expect(!second.drove);
+    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.drive_calls);
+    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.clipboard_calls);
+    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
 }
 
-test "inactive tab continuation re-enters from per-terminal continuation admission" {
+test "inactive tab wake re-enters from explicit wake admission" {
     drive_hook_state = .{
         .outcomes = .{
             .{ .keep = false, .should_redraw = false, .alive = true },
@@ -491,13 +489,13 @@ test "inactive tab continuation re-enters from per-terminal continuation admissi
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
-    surface.progress_continuation_pending = true;
+    drive_hook_state.wake_pending = true;
 
     const result = surface.driveProgress(false, 4, .{ .input_published = false });
 
     try std.testing.expect(result.drove);
     try std.testing.expectEqual(@as(u8, 1), drive_hook_state.drive_calls);
-    try std.testing.expect(!surface.progress_continuation_pending);
+    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
 }
 
 test "text input fast path publishes text without pointer or UI operations" {
@@ -1470,7 +1468,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
         .runtime_wait_ms = null,
         .render_work_pending = true,
     });
-    try std.testing.expect(!wake_admission.wait_for_window);
+    try std.testing.expect(wake_admission.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), wake_admission.wait_ms);
 
     const first_turn = surface.renderTurn();
@@ -1513,9 +1511,9 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
         .runtime_wait_ms = null,
         .render_work_pending = resumed_work.needsRenderSurface(),
     });
-    try std.testing.expect(!resumed_admission.wait_for_window);
+    try std.testing.expect(resumed_admission.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), resumed_admission.wait_ms);
-    try std.testing.expect(app.frame_pacing.state.renderPermission());
+    try std.testing.expect(!app.frame_pacing.state.renderPermission());
 
     const second_turn = surface.renderTurn();
     try std.testing.expectEqual(Surface.TurnStep.rendered, second_turn.step);
@@ -1667,6 +1665,20 @@ test "host cursor facts preserve explicit no-shape as visible no-draw truth" {
     try std.testing.expectEqual(@as(u8, 255), facts.render.cursor_opacity);
     try std.testing.expectEqual(@as(u8, 255), facts.render.text_blink_opacity);
     try std.testing.expect(facts.cadence.visible);
+}
+
+test "cursor blink is scheduled from config even when vt blink bit is off" {
+    var surface = testSurfaceBase();
+    surface.conf = &test_terminal_conf;
+    surface.cursor_source_visible = true;
+    surface.cursor_source_has_shape = true;
+    surface.cursor_source_blink = false;
+    surface.window_focused = true;
+    surface.widget_focused = true;
+
+    const facts = surface.cursorFacts(1000);
+
+    try std.testing.expect(facts.cadence.wait_ms != null);
 }
 
 test "host unfocused hollow stays distinct from no-shape" {

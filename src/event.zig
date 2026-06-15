@@ -162,7 +162,7 @@ pub const Processor = struct {
         const logical = DisplayLayout.contentLogicalSize(self.window, self.conf.tab_bar.height);
         try slot.tab.init(self.input, self.event_loop, &self.conf.term, px.width, px.height, logical.width, logical.height);
         errdefer slot.tab.deinit();
-        self.input.requestRedraw();
+        self.window.requestRedraw();
 
         self.tabs.appendActive(slot.slot_idx, slot.tab);
         const updated = self.tabs.items();
@@ -180,6 +180,7 @@ pub const Processor = struct {
         self.frame_pacing.beginTurn();
         const now_ns = EventLoop.nowNs();
         const wait_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
+        self.frame_pacing.noteRedrawAndRenderWork(self.window.hasRequestedRedraw(), wait_runtime_facts.render_work_pending);
         const admission = computeLoopAdmission(self, now_ns, wait_runtime_facts);
         const event_action = pumpWindowEvents(self, admission);
         if (event_action == .quit) return .quit;
@@ -188,23 +189,18 @@ pub const Processor = struct {
         if (host_mutations_opt) |host_mutations| {
             _ = drainPresentComplete(self);
             const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
-            const terminal_progress = if (self.frame_pacing.renderPermission())
-                driveRuntimeProgress(self, now_ns, drive_runtime_facts)
-            else
-                TerminalProgress{ .should_redraw = false, .keep_running = false, .drive_performed = false };
+            const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
+            if (host_mutations.input_outcome.host_visual_changed) self.window.requestRedraw();
 
             const intent = deriveRedrawRenderIntent(
-                self.input.drainRedrawRequested(),
+                self.window.hasRequestedRedraw(),
                 host_mutations.input_outcome.host_visual_changed,
                 terminal_progress,
                 drive_runtime_facts.render_work_pending,
             );
             self.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
-            if (terminal_progress.keep_running) {
-                if (self.frame_pacing.terminalKeepWakePermission()) self.event_loop.wake();
-            }
             if (!self.frame_pacing.renderPermission()) {
                 return .continue_running;
             }
@@ -278,7 +274,7 @@ pub const Processor = struct {
     }
 
     fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, runtime: TerminalSurface.RuntimeFacts, active: bool) void {
-        facts.runtime_wake_pending = facts.runtime_wake_pending or runtime.runtimeWakePending();
+        facts.runtime_wake_pending = facts.runtime_wake_pending or runtime.wake_pending or runtime.runtime_due_now;
         facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, runtime.runtime_wait_ms);
         if (active) {
             facts.runtime_admitted = runtime.input_published;
@@ -390,7 +386,7 @@ pub const Processor = struct {
                 .quit => .quit,
                 .close_tab => blk: {
                     closeActiveTab(self.window, self.tabs, self.active_tab_idx);
-                    self.input.requestRedraw();
+                    self.window.requestRedraw();
                     break :blk .continue_running;
                 },
             },
@@ -425,6 +421,7 @@ pub const Processor = struct {
 
     fn render(self: *Self) RenderFrame {
         const tab = activeTab(self.tabs.items(), self.active_tab_idx.*);
+        self.window.clearRedrawRequest();
         const turn = tab.renderTurn();
         const term_texture_before = tab.termTextureId();
         tab.noteRenderTurn(turn);
@@ -662,7 +659,6 @@ test "active runtime admission follows explicit surface facts" {
 
     Processor.noteLoopRuntimeFacts(&facts, .{
         .wake_pending = false,
-        .continuation_pending = false,
         .runtime_due_now = false,
         .input_published = true,
         .runtime_wait_ms = null,
@@ -697,7 +693,7 @@ test "runtime wake prevents waiting without granting render" {
     var frame = FramePacing.FrameTimer.init();
     frame.frame_permit_ready = true;
 
-    try std.testing.expect(!admission.waitForWindow(&frame));
+    try std.testing.expect(admission.waitForWindow(&frame));
     try std.testing.expect(!frame.renderPermission());
 }
 
@@ -741,7 +737,7 @@ test "terminal input admission remains set when no drive occurred" {
     try std.testing.expect(admitted);
 }
 
-test "continuation pending participates in runtime wake admission" {
+test "explicit wake admission does not require continuation" {
     var facts = Processor.LoopRuntimeFacts{
         .tabs = undefined,
         .tab_count = 0,
@@ -753,14 +749,13 @@ test "continuation pending participates in runtime wake admission" {
 
     Processor.noteLoopRuntimeFacts(&facts, .{
         .wake_pending = false,
-        .continuation_pending = true,
         .runtime_due_now = false,
         .input_published = false,
         .runtime_wait_ms = null,
         .render_work_pending = false,
     }, false);
 
-    try std.testing.expect(facts.runtime_wake_pending);
+    try std.testing.expect(!facts.runtime_wake_pending);
 }
 
 test "active surface wait participates through explicit surface facts" {
@@ -775,7 +770,6 @@ test "active surface wait participates through explicit surface facts" {
 
     Processor.noteLoopRuntimeFacts(&facts, .{
         .wake_pending = false,
-        .continuation_pending = false,
         .runtime_due_now = false,
         .input_published = false,
         .runtime_wait_ms = 17,
@@ -794,7 +788,7 @@ test "frame follow-up wait stays finite through loop admission seam" {
         .render_work_pending = true,
     };
     const first_admission = testing.computeLoopAdmissionThroughControlSpine(&frame, 1_000, 16_000_000, false, first_runtime);
-    try std.testing.expect(!first_admission.wait_for_window);
+    try std.testing.expect(first_admission.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), first_admission.wait_ms);
 
     const first_reason = testing.derivePresentReasonThroughControlSpine(.{
@@ -820,19 +814,17 @@ test "frame follow-up wait stays finite through loop admission seam" {
     frame.notePresentComplete();
 
     const resumed_admission = testing.computeLoopAdmissionThroughControlSpine(&frame, 17_001_000, 16_000_000, false, followup_runtime);
-    try std.testing.expect(!resumed_admission.wait_for_window);
+    try std.testing.expect(resumed_admission.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), resumed_admission.wait_ms);
-    try std.testing.expect(frame.renderPermission());
+    try std.testing.expect(!frame.renderPermission());
 }
 
-test "blocked frame permit defers runtime progress until owner can render" {
+test "blocked frame permit still drives runtime progress for owner work" {
     const RuntimeDriver = struct {
         fn run(frame_pacing: *FramePacing.FrameTimer, now_ns: u64, drive_runtime_facts: Processor.LoopRuntimeFacts) Processor.TerminalProgress {
             _ = now_ns;
-            return if (frame_pacing.renderPermission())
-                .{ .should_redraw = drive_runtime_facts.render_work_pending, .keep_running = false, .drive_performed = true }
-            else
-                .{ .should_redraw = false, .keep_running = false, .drive_performed = false };
+            _ = frame_pacing;
+            return .{ .should_redraw = drive_runtime_facts.render_work_pending, .keep_running = false, .drive_performed = true };
         }
     };
 
@@ -848,7 +840,8 @@ test "blocked frame permit defers runtime progress until owner can render" {
         .runtime_wait_ms = null,
         .render_work_pending = true,
     });
-    try std.testing.expect(!blocked.drive_performed);
+    try std.testing.expect(blocked.drive_performed);
+    try std.testing.expect(blocked.should_redraw);
 
     frame.notePresentComplete();
     frame.refreshFramePermit(17_000_000, 16_000_000);
