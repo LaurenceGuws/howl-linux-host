@@ -94,7 +94,7 @@ fn testSurfaceBase() Surface {
         .live = false,
         .term_texture = .{ .host_surface_id = 1, .width = 2, .height = 1 },
         .render_surface_textures = .{},
-        .conf = undefined,
+        .conf = &test_terminal_conf,
         .input = undefined,
         .event_loop = undefined,
         .title_buf = undefined,
@@ -1395,7 +1395,6 @@ test "autonomous cursor-only rendered snapshot plans terminal frame through even
         .host_redraw_requested = false,
         .host_visual_changed = false,
         .runtime_redraw = true,
-        .cursor_redraw = false,
         .render_work_pending = false,
         .step = .rendered,
     });
@@ -1403,9 +1402,8 @@ test "autonomous cursor-only rendered snapshot plans terminal frame through even
 
     const autonomous_reason = processor_testing.derivePresentReasonThroughControlSpine(.{
         .host_redraw_requested = false,
-        .host_visual_changed = false,
+        .host_visual_changed = true,
         .runtime_redraw = false,
-        .cursor_redraw = true,
         .render_work_pending = false,
         .step = .rendered,
     });

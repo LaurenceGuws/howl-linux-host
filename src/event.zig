@@ -49,7 +49,6 @@ pub const Processor = struct {
         tab_count: usize,
         runtime_admitted: bool,
         runtime_wake_pending: bool,
-        active_cursor: ?TerminalSurface.CursorFacts,
         runtime_wait_ms: ?u32,
         render_work_pending: bool,
 
@@ -69,7 +68,6 @@ pub const Processor = struct {
         owner_work: bool,
         runtime_wake: bool,
         runtime_admission: bool,
-        cursor_wait_ms: ?u32,
         runtime_wait_ms: ?u32,
         frame_wait_ms: ?u32,
 
@@ -86,7 +84,7 @@ pub const Processor = struct {
         }
 
         fn waitMs(self: LoopWaitAdmission) ?u32 {
-            return waitMsMerge3(self.cursor_wait_ms, self.runtime_wait_ms, self.frame_wait_ms);
+            return waitMsMerge3(self.runtime_wait_ms, self.frame_wait_ms, null);
         }
     };
 
@@ -191,7 +189,6 @@ pub const Processor = struct {
             _ = drainPresentComplete(self);
             const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
             const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
-            const cursor_redraw = activeSurface(self.tabs.items(), self.active_tab_idx.*).consumeCursorFacts(drive_runtime_facts.active_cursor orelse unreachable);
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
 
@@ -199,7 +196,6 @@ pub const Processor = struct {
                 self.input.drainRedrawRequested(),
                 host_mutations.input_outcome.host_visual_changed,
                 terminal_progress,
-                cursor_redraw,
                 drive_runtime_facts.render_work_pending,
             );
             self.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
@@ -237,7 +233,6 @@ pub const Processor = struct {
             .owner_work = self.input.hasPendingOwnerWork(),
             .runtime_wake = runtime_facts.runtime_wake_pending,
             .runtime_admission = runtime_facts.runtime_admitted,
-            .cursor_wait_ms = if (runtime_facts.active_cursor) |facts| facts.waitMs() else null,
             .runtime_wait_ms = runtime_facts.runtime_wait_ms,
             .frame_wait_ms = self.frame_pacing.framePermitWaitMs(now_ns),
         };
@@ -252,7 +247,6 @@ pub const Processor = struct {
             .tab_count = tabs.len,
             .runtime_admitted = false,
             .runtime_wake_pending = false,
-            .active_cursor = null,
             .runtime_wait_ms = null,
             .render_work_pending = false,
         };
@@ -260,17 +254,16 @@ pub const Processor = struct {
             const active = @as(TabIndex, @intCast(i)) == self.active_tab_idx.*;
             const tab_facts = tab.runtimeFacts(active, now_ns, .{ .input_published = terminal_input_admitted });
             facts.tabs[i] = tab_facts;
-            noteLoopRuntimeFacts(&facts, tab_facts, active, if (active) tab.cursorFacts(now_ns) else null);
+            noteLoopRuntimeFacts(&facts, tab_facts, active);
         }
         return facts;
     }
 
-    fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, runtime: TerminalSurface.RuntimeFacts, active: bool, cursor: ?TerminalSurface.CursorFacts) void {
+    fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, runtime: TerminalSurface.RuntimeFacts, active: bool) void {
         facts.runtime_wake_pending = facts.runtime_wake_pending or runtime.runtimeWakePending();
         facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, runtime.runtime_wait_ms);
         if (active) {
             facts.runtime_admitted = runtime.input_published;
-            facts.active_cursor = cursor;
             facts.render_work_pending = runtime.render_work_pending;
         }
     }
@@ -392,10 +385,10 @@ pub const Processor = struct {
         return if (tab_count == 1) .quit else .close_tab;
     }
 
-    fn deriveRedrawRenderIntent(host_redraw_requested: bool, host_visual_changed: bool, terminal_progress: TerminalProgress, blink_redraw: bool, render_work_pending: bool) RedrawRenderIntent {
+    fn deriveRedrawRenderIntent(host_redraw_requested: bool, host_visual_changed: bool, terminal_progress: TerminalProgress, render_work_pending: bool) RedrawRenderIntent {
         return .{
             .host_redraw = host_redraw_requested or host_visual_changed,
-            .terminal_redraw = terminal_progress.should_redraw or blink_redraw,
+            .terminal_redraw = terminal_progress.should_redraw,
             .terminal_frame = terminal_progress.should_redraw,
             .render_work_pending = render_work_pending,
         };
@@ -600,7 +593,6 @@ pub const testing = struct {
         host_redraw_requested: bool,
         host_visual_changed: bool,
         runtime_redraw: bool,
-        cursor_redraw: bool,
         render_work_pending: bool,
         step: @import("terminal/surface.zig").Surface.TurnStep,
     };
@@ -615,7 +607,6 @@ pub const testing = struct {
             input.host_redraw_requested,
             input.host_visual_changed,
             progress,
-            input.cursor_redraw,
             input.render_work_pending,
         );
         return Processor.derivePresentReason(intent.host_redraw, intent.terminal_frame, input.step);
@@ -628,7 +619,6 @@ test "active runtime admission follows explicit surface facts" {
         .tab_count = 0,
         .runtime_admitted = false,
         .runtime_wake_pending = false,
-        .active_cursor = null,
         .runtime_wait_ms = null,
         .render_work_pending = false,
     };
@@ -640,7 +630,7 @@ test "active runtime admission follows explicit surface facts" {
         .input_published = true,
         .runtime_wait_ms = null,
         .render_work_pending = false,
-    }, true, null);
+    }, true);
 
     try std.testing.expect(facts.runtime_admitted);
 }
@@ -650,7 +640,6 @@ test "owner work prevents waiting" {
         .owner_work = true,
         .runtime_wake = false,
         .runtime_admission = false,
-        .cursor_wait_ms = null,
         .runtime_wait_ms = null,
         .frame_wait_ms = 20,
     };
@@ -665,7 +654,6 @@ test "runtime wake prevents waiting without granting render" {
         .owner_work = false,
         .runtime_wake = true,
         .runtime_admission = false,
-        .cursor_wait_ms = null,
         .runtime_wait_ms = null,
         .frame_wait_ms = 20,
     };
@@ -681,7 +669,6 @@ test "frame wait participates only through frame owner" {
         .owner_work = false,
         .runtime_wake = false,
         .runtime_admission = false,
-        .cursor_wait_ms = null,
         .runtime_wait_ms = null,
         .frame_wait_ms = 33,
     };
@@ -689,13 +676,12 @@ test "frame wait participates only through frame owner" {
     try std.testing.expectEqual(@as(?u32, 33), admission.waitMs());
 }
 
-test "cursor wait participates in minimum wait" {
+test "runtime wait carries active-surface cursor cadence deadline" {
     const admission = Processor.LoopWaitAdmission{
         .owner_work = false,
         .runtime_wake = false,
         .runtime_admission = false,
-        .cursor_wait_ms = 7,
-        .runtime_wait_ms = 19,
+        .runtime_wait_ms = 7,
         .frame_wait_ms = 33,
     };
 
@@ -724,7 +710,6 @@ test "continuation pending participates in runtime wake admission" {
         .tab_count = 0,
         .runtime_admitted = false,
         .runtime_wake_pending = false,
-        .active_cursor = null,
         .runtime_wait_ms = null,
         .render_work_pending = false,
     };
@@ -736,18 +721,17 @@ test "continuation pending participates in runtime wake admission" {
         .input_published = false,
         .runtime_wait_ms = null,
         .render_work_pending = false,
-    }, false, null);
+    }, false);
 
     try std.testing.expect(facts.runtime_wake_pending);
 }
 
-test "active cursor wait participates through explicit surface facts" {
+test "active surface wait participates through explicit surface facts" {
     var facts = Processor.LoopRuntimeFacts{
         .tabs = undefined,
         .tab_count = 0,
         .runtime_admitted = false,
         .runtime_wake_pending = false,
-        .active_cursor = null,
         .runtime_wait_ms = null,
         .render_work_pending = false,
     };
@@ -757,9 +741,9 @@ test "active cursor wait participates through explicit surface facts" {
         .continuation_pending = false,
         .runtime_due_now = false,
         .input_published = false,
-        .runtime_wait_ms = null,
+        .runtime_wait_ms = 17,
         .render_work_pending = false,
-    }, true, .{ .cadence = .{ .visible = true, .cursor_opacity = 255, .text_blink_opacity = 255, .deadline_ns = 1234, .inactivity_deadline_ns = 0, .trail_deadline_ns = 0, .dirty = false, .wait_ms = 17 }, .render = std.mem.zeroes(@import("terminal/render_retained.zig").HostCursorCadence) });
+    }, true);
 
-    try std.testing.expectEqual(@as(?u32, 17), facts.active_cursor.?.waitMs());
+    try std.testing.expectEqual(@as(?u32, 17), facts.runtime_wait_ms);
 }
