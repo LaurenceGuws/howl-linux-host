@@ -60,6 +60,31 @@ pub const PreparedUpload = struct {
     }
 };
 
+pub const max_cursor_trail_rects = 16;
+
+pub const HostCursorTrailRect = extern struct {
+    row: u16,
+    col: u16,
+    rows: u16,
+    cols: u16,
+    opacity: u8,
+    reserved0: u8 = 0,
+    reserved1: u16 = 0,
+    color: c.HowlVtRgb8,
+};
+
+pub const HostCursorCadence = extern struct {
+    focused: u8,
+    cursor_opacity: u8,
+    text_blink_opacity: u8,
+    effective_shape: u8,
+    cursor_trail_count: u16,
+    reserved0: u16 = 0,
+    cursor_trail_rects: [max_cursor_trail_rects]HostCursorTrailRect,
+};
+
+extern fn howl_render_text_session_set_cursor_cadence(handle: c.HowlRenderTextSessionHandle, cadence: *const HostCursorCadence) c_int;
+
 pub const State = struct {
     surface_layout: SurfaceLayout,
     geometry_epoch: u64 = 0,
@@ -156,6 +181,11 @@ pub const State = struct {
 
     pub fn setGeometryEpoch(self: *State, geometry_epoch: u64) void {
         self.geometry_epoch = geometry_epoch;
+    }
+
+    pub fn setHostCursorCadence(self: *State, cadence: *const HostCursorCadence) bool {
+        if (self.text_session == null) return true;
+        return howl_render_text_session_set_cursor_cadence(self.text_session, cadence) == c.HOWL_RENDER_CALL_OK;
     }
 
     pub fn storeRdrSfcHandle(self: *State, rdr_sfc_handle: c.HowlRenderRdrSfcHandle) void {

@@ -56,7 +56,7 @@ fn testSurfaceBase() Surface {
             .pty = .{ .launch = .{ .shell = "", .command = null, .start_path = null } },
             .session = null,
             .vt = null,
-            .render = undefined,
+            .render = render_retained.State.init(null, .{ .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cols = 1, .rows = 1, .cell_px = .{ .width = 1, .height = 1 } }),
             .vt_state = .{},
             .mutex = .{},
         },
@@ -79,6 +79,17 @@ fn testSurfaceBase() Surface {
         .links = .{},
         .selection = .{},
         .cursor_blink = .{},
+        .cursor_position_changed_by_client_at_ms = 0,
+        .cursor_source_row = 0,
+        .cursor_source_col = 0,
+        .cursor_source_rows = 1,
+        .cursor_source_cols = 1,
+        .cursor_source_visible = true,
+        .cursor_source_blink = false,
+        .cursor_source_shape = 0,
+        .cursor_text_blinking = false,
+        .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
+        .cursor_trail_started_ns = [_]u64{0} ** render_retained.max_cursor_trail_rects,
         .progress_continuation_pending = false,
     };
 }
@@ -384,11 +395,22 @@ test "cursor activity pushes blink deadline while visible" {
         .links = .{},
         .selection = .{},
         .cursor_blink = .{},
+        .cursor_position_changed_by_client_at_ms = 0,
+        .cursor_source_row = 0,
+        .cursor_source_col = 0,
+        .cursor_source_rows = 1,
+        .cursor_source_cols = 1,
+        .cursor_source_visible = true,
+        .cursor_source_blink = false,
+        .cursor_source_shape = 0,
+        .cursor_text_blinking = false,
+        .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
+        .cursor_trail_started_ns = [_]u64{0} ** render_retained.max_cursor_trail_rects,
         .progress_continuation_pending = false,
     };
 
     try std.testing.expect(!context.resetCursorBlinkActivity(1234));
-    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.interval_ns, context.cursor_blink.deadline_ns);
+    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.cadence_sample_ns, context.cursor_blink.deadline_ns);
     try std.testing.expect(context.cursor_blink.visible);
 }
 

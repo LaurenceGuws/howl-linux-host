@@ -759,7 +759,7 @@ test "active cursor wait participates through explicit surface facts" {
         .input_published = false,
         .runtime_wait_ms = null,
         .render_work_pending = false,
-    }, true, .{ .cadence = .{ .visible = true, .deadline_ns = 1234, .dirty = false, .wait_ms = 17 } });
+    }, true, .{ .cadence = .{ .visible = true, .cursor_opacity = 255, .text_blink_opacity = 255, .deadline_ns = 1234, .inactivity_deadline_ns = 0, .trail_deadline_ns = 0, .dirty = false, .wait_ms = 17 }, .render = std.mem.zeroes(@import("terminal/render_retained.zig").HostCursorCadence) });
 
     try std.testing.expectEqual(@as(?u32, 17), facts.active_cursor.?.waitMs());
 }
