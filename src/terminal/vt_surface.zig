@@ -346,3 +346,50 @@ test "visible acquisition failure does not touch render" {
     try std.testing.expectError(error.AcquisitionFailed, captureVisibleLockedWith(&term, null, FakeOps));
     try std.testing.expectEqual(@as(u8, 1), FakeOps.scratch_calls);
 }
+
+test "visible capture preserves alternate-screen and explicit no-shape cursor truth" {
+    const FakeTerm = struct {
+        allocator: std.mem.Allocator = std.testing.allocator,
+        vt: vt_c.HowlVtHandle = @ptrFromInt(1),
+        vt_state: struct {
+            scrollback_offset: u32 = 0,
+            cursor_visible: bool = false,
+            cursor_blink: bool = false,
+        } = .{},
+        mutex: struct {
+            fn lock(_: *@This()) void {}
+            fn unlock(_: *@This()) void {}
+        } = .{},
+    };
+
+    const FakeOps = struct {
+        fn visibleMeta(_: vt_c.HowlVtHandle, _: u32) VisibleMeta {
+            return .{ .rows = 1, .cols = 1, .history_count = 0, .is_alternate_screen = true, .snapshot_seq = 9, .dirty_generation = 3 };
+        }
+
+        fn publishScratch(_: std.mem.Allocator, _: anytype, _: u16, _: u16) !PublishScratch {
+            return .{ .cells = &.{}, .dirty_rows = &.{}, .dirty_cols_start = &.{}, .dirty_cols_end = &.{} };
+        }
+
+        fn acquireVisible(_: vt_c.HowlVtHandle, _: u32, meta: VisibleMeta, _: PublishScratch) !VisibleCopy {
+            var visible = zeroVisibleCopy(meta.snapshot_seq);
+            visible.surface.dirty_generation = meta.dirty_generation;
+            visible.surface.source.rows = meta.rows;
+            visible.surface.source.cols = meta.cols;
+            visible.surface.source.is_alternate_screen = 1;
+            visible.surface.source.cursor.visible = 1;
+            visible.surface.source.cursor.blink = 1;
+            visible.surface.source.cursor.shape = 3;
+            return visible;
+        }
+    };
+
+    var term = FakeTerm{};
+    var visible = try captureVisibleLockedWith(&term, null, FakeOps);
+    defer visible.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u8, 1), visible.surface.source.is_alternate_screen);
+    try std.testing.expectEqual(@as(u8, 3), visible.surface.source.cursor.shape);
+    try std.testing.expect(term.vt_state.cursor_visible);
+    try std.testing.expect(term.vt_state.cursor_blink);
+}

@@ -834,7 +834,7 @@ pub const Surface = struct {
             .block => 0,
             .underline => 1,
             .beam => 2,
-            .hollow => 3,
+            .hollow => 4,
         };
     }
 
@@ -858,8 +858,8 @@ pub const Surface = struct {
         self.cursor_source_cols = cursor.cell_cols;
         self.cursor_source_visible = cursor.visible != 0;
         self.cursor_source_blink = cursor.blink != 0;
-        self.cursor_source_has_shape = cursor.shape != 3;
-        self.cursor_source_shape = if (self.cursor_source_has_shape) cursor.shape else 0;
+        self.cursor_source_has_shape = true;
+        self.cursor_source_shape = cursor.shape;
         self.cursor_text_blinking = blinkingTextUsed(cells);
     }
 
@@ -1426,13 +1426,16 @@ test "cursor facts reaches invalid animation branch from host-owned runtime stat
 
 test "unfocused cursor shape follows config" {
     var surface = testSurfaceBase();
+    var conf = test_terminal_conf;
+    conf.cursor_shape_unfocused = .hollow;
+    surface.conf = &conf;
     surface.cursor_source_has_shape = true;
     surface.cursor_source_shape = 0;
     surface.window_focused = false;
     surface.widget_focused = true;
 
     const facts = surface.cursorFacts(1000);
-    try std.testing.expectEqual(@as(u8, 3), facts.render.effective_shape);
+    try std.testing.expectEqual(@as(u8, 4), facts.render.effective_shape);
 }
 
 test "published no-shape stays distinct from hidden visibility" {
@@ -1442,9 +1445,29 @@ test "published no-shape stays distinct from hidden visibility" {
     surface.notePublishedCursorSource(.{ .row = 1, .col = 2, .visible = 1, .shape = 3, .blink = 1, .position_changed_by_client_at_ms = 10, .cell_cols = 1, .cell_rows = 1 }, cells[0..], 10);
 
     try std.testing.expect(surface.cursor_source_visible);
-    try std.testing.expect(!surface.cursor_source_has_shape);
+    try std.testing.expect(surface.cursor_source_has_shape);
+    try std.testing.expectEqual(@as(u8, 3), surface.cursor_source_shape);
     const facts = surface.cursorFacts(10);
-    try std.testing.expectEqual(@as(u8, 0), facts.render.cursor_opacity);
+    try std.testing.expectEqual(@as(u8, 3), facts.render.effective_shape);
+    try std.testing.expectEqual(@as(u8, 255), facts.render.cursor_opacity);
+}
+
+test "unfocused hollow stays distinct from explicit no-shape" {
+    var conf = test_terminal_conf;
+    conf.cursor_shape_unfocused = .hollow;
+
+    var surface = testSurfaceBase();
+    surface.conf = &conf;
+    surface.cursor_source_visible = true;
+    surface.cursor_source_has_shape = true;
+    surface.cursor_source_shape = 3;
+    surface.window_focused = false;
+    surface.widget_focused = true;
+
+    const facts = surface.cursorFacts(1000);
+
+    try std.testing.expectEqual(@as(u8, 4), facts.render.effective_shape);
+    try std.testing.expectEqual(@as(u8, 255), facts.render.cursor_opacity);
 }
 
 test "cursor trail start respects configured duration threshold and color" {

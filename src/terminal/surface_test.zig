@@ -11,11 +11,41 @@ const render_retained = @import("render_retained.zig");
 const surface_layout = @import("render_surface_layout.zig");
 const terminal_scrollbar = @import("scrollbar.zig");
 const terminal_term = @import("term.zig");
+const terminal_config = @import("../config/terminal.zig");
 
 const Surface = surface_mod.Surface;
 const HostInput = @import("../input/input.zig").Input;
 const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
 const surface_testing = surface_mod.testing;
+
+const test_terminal_conf = terminal_config.Config{
+    .shell = &.{},
+    .start_path = null,
+    .command = null,
+    .font_size = 12,
+    .fonts = .{ .primary = null, .mono = &.{}, .symbols = &.{}, .emoji = &.{} },
+    .cursor = .{ .kind = .default, .value = 0 },
+    .cursor_text_color = .{ .kind = .default, .value = 0 },
+    .cursor_shape = .block,
+    .cursor_shape_unfocused = .unchanged,
+    .cursor_beam_thickness = 1.5,
+    .cursor_underline_thickness = 2.0,
+    .cursor_blink_interval = 0.7,
+    .cursor_stop_blinking_after = 15.0,
+    .cursor_trail = 0,
+    .cursor_trail_decay_fast = 0.2,
+    .cursor_trail_decay_slow = 0.6,
+    .cursor_trail_start_threshold = 1,
+    .cursor_trail_color = .{ .kind = .default, .value = 0 },
+    .cursor_style = .block,
+    .cursor_blink = true,
+    .clipboard_osc_52 = .deny,
+    .link_open = .disabled,
+    .link_hover = .off,
+    .link_underline = .straight,
+    .mouse_bypass_mod = .{},
+    .bindings = .{ .bindings = &.{} },
+};
 
 const SubmitUploadMode = enum {
     success,
@@ -1477,4 +1507,41 @@ test "mismatched complete present does not ack or clear" {
     try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
     try std.testing.expectEqual(@as(u64, 19), FakeOps.last_snapshot_seq);
     try std.testing.expect(term.render.present_in_flight == null);
+}
+
+test "host cursor facts preserve explicit no-shape as visible no-draw truth" {
+    var surface = testSurfaceBase();
+    surface.conf = &test_terminal_conf;
+    surface.cursor_source_visible = true;
+    surface.cursor_source_blink = true;
+    surface.cursor_source_has_shape = true;
+    surface.cursor_source_shape = 3;
+    surface.window_focused = true;
+    surface.widget_focused = true;
+
+    const facts = surface.cursorFacts(1000);
+
+    try std.testing.expectEqual(@as(u8, 3), facts.render.effective_shape);
+    try std.testing.expectEqual(@as(u8, 255), facts.render.cursor_opacity);
+    try std.testing.expectEqual(@as(u8, 255), facts.render.text_blink_opacity);
+    try std.testing.expect(facts.cadence.visible);
+}
+
+test "host unfocused hollow stays distinct from no-shape" {
+    var conf = test_terminal_conf;
+    conf.cursor_shape_unfocused = .hollow;
+
+    var surface = testSurfaceBase();
+    surface.conf = &conf;
+    surface.cursor_source_visible = true;
+    surface.cursor_source_has_shape = true;
+    surface.cursor_source_shape = 3;
+    surface.window_focused = false;
+    surface.widget_focused = true;
+
+    const facts = surface.cursorFacts(1000);
+
+    try std.testing.expectEqual(@as(u8, 4), facts.render.effective_shape);
+    try std.testing.expectEqual(@as(u8, 255), facts.render.cursor_opacity);
+    try std.testing.expectEqual(@as(u8, 255), facts.render.text_blink_opacity);
 }
