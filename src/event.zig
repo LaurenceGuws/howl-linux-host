@@ -188,7 +188,10 @@ pub const Processor = struct {
         if (host_mutations_opt) |host_mutations| {
             _ = drainPresentComplete(self);
             const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
-            const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
+            const terminal_progress = if (self.frame_pacing.renderPermission())
+                driveRuntimeProgress(self, now_ns, drive_runtime_facts)
+            else
+                TerminalProgress{ .should_redraw = false, .keep_running = false, .drive_performed = false };
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
 
@@ -219,13 +222,7 @@ pub const Processor = struct {
 
     fn computeLoopAdmission(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopAdmission {
         assert(now_ns > 0);
-        self.frame_pacing.refreshFramePermit(now_ns, self.window.currentRefreshIntervalNs());
-        self.frame_pacing.noteRedrawAndRenderWork(false, runtime_facts.render_work_pending);
-        const admission_facts = loopWaitAdmission(self, now_ns, runtime_facts);
-        return .{
-            .wait_for_window = admission_facts.waitForWindow(&self.frame_pacing),
-            .wait_ms = admission_facts.waitMs(),
-        };
+        return computeLoopAdmissionWithOwnerWork(&self.frame_pacing, self.window.currentRefreshIntervalNs(), self.input.hasPendingOwnerWork(), now_ns, runtime_facts);
     }
 
     fn loopWaitAdmission(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWaitAdmission {
@@ -235,6 +232,27 @@ pub const Processor = struct {
             .runtime_admission = runtime_facts.runtime_admitted,
             .runtime_wait_ms = runtime_facts.runtime_wait_ms,
             .frame_wait_ms = self.frame_pacing.framePermitWaitMs(now_ns),
+        };
+    }
+
+    fn computeLoopAdmissionWithOwnerWork(frame_pacing: *FramePacing.FrameTimer, refresh_interval_ns: u64, owner_work: bool, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopAdmission {
+        assert(now_ns > 0);
+        frame_pacing.refreshFramePermit(now_ns, refresh_interval_ns);
+        frame_pacing.noteRedrawAndRenderWork(false, runtime_facts.render_work_pending);
+        const admission_facts = loopWaitAdmissionWithOwnerWork(frame_pacing, owner_work, now_ns, runtime_facts);
+        return .{
+            .wait_for_window = admission_facts.waitForWindow(frame_pacing),
+            .wait_ms = admission_facts.waitMs(),
+        };
+    }
+
+    fn loopWaitAdmissionWithOwnerWork(frame_pacing: *FramePacing.FrameTimer, owner_work: bool, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWaitAdmission {
+        return .{
+            .owner_work = owner_work,
+            .runtime_wake = runtime_facts.runtime_wake_pending,
+            .runtime_admission = runtime_facts.runtime_admitted,
+            .runtime_wait_ms = runtime_facts.runtime_wait_ms,
+            .frame_wait_ms = frame_pacing.framePermitWaitMs(now_ns),
         };
     }
 
@@ -589,6 +607,13 @@ pub const Processor = struct {
 };
 
 pub const testing = struct {
+    pub const ControlSpineRuntimeFacts = struct {
+        runtime_admitted: bool,
+        runtime_wake_pending: bool,
+        runtime_wait_ms: ?u32,
+        render_work_pending: bool,
+    };
+
     pub const PresentPlanningInput = struct {
         host_redraw_requested: bool,
         host_visual_changed: bool,
@@ -596,6 +621,18 @@ pub const testing = struct {
         render_work_pending: bool,
         step: @import("terminal/surface.zig").Surface.TurnStep,
     };
+
+    pub fn computeLoopAdmissionThroughControlSpine(frame_pacing: *FramePacing.FrameTimer, now_ns: u64, refresh_interval_ns: u64, owner_work: bool, runtime: ControlSpineRuntimeFacts) Processor.LoopAdmission {
+        const runtime_facts = Processor.LoopRuntimeFacts{
+            .tabs = undefined,
+            .tab_count = 0,
+            .runtime_admitted = runtime.runtime_admitted,
+            .runtime_wake_pending = runtime.runtime_wake_pending,
+            .runtime_wait_ms = runtime.runtime_wait_ms,
+            .render_work_pending = runtime.render_work_pending,
+        };
+        return Processor.computeLoopAdmissionWithOwnerWork(frame_pacing, refresh_interval_ns, owner_work, now_ns, runtime_facts);
+    }
 
     pub fn derivePresentReasonThroughControlSpine(input: PresentPlanningInput) @import("display/present.zig").Reason {
         const progress = Processor.TerminalProgress{
@@ -746,4 +783,83 @@ test "active surface wait participates through explicit surface facts" {
     }, true);
 
     try std.testing.expectEqual(@as(?u32, 17), facts.runtime_wait_ms);
+}
+
+test "frame follow-up wait stays finite through loop admission seam" {
+    var frame = FramePacing.FrameTimer.init();
+    const first_runtime = testing.ControlSpineRuntimeFacts{
+        .runtime_admitted = false,
+        .runtime_wake_pending = true,
+        .runtime_wait_ms = null,
+        .render_work_pending = true,
+    };
+    const first_admission = testing.computeLoopAdmissionThroughControlSpine(&frame, 1_000, 16_000_000, false, first_runtime);
+    try std.testing.expect(!first_admission.wait_for_window);
+    try std.testing.expectEqual(@as(?u32, null), first_admission.wait_ms);
+
+    const first_reason = testing.derivePresentReasonThroughControlSpine(.{
+        .host_redraw_requested = false,
+        .host_visual_changed = false,
+        .runtime_redraw = true,
+        .render_work_pending = false,
+        .step = .rendered,
+    });
+    try std.testing.expectEqual(AppPresent.Reason.terminal_frame, first_reason);
+    frame.notePresentSubmittedAtWithInterval(.{ .reason = first_reason, .submitted = true }, 1_000, 16_000_000);
+
+    const followup_runtime = testing.ControlSpineRuntimeFacts{
+        .runtime_admitted = false,
+        .runtime_wake_pending = false,
+        .runtime_wait_ms = null,
+        .render_work_pending = true,
+    };
+    const followup_admission = testing.computeLoopAdmissionThroughControlSpine(&frame, 17_000_000, 16_000_000, false, followup_runtime);
+    try std.testing.expect(followup_admission.wait_for_window);
+    try std.testing.expectEqual(@as(?u32, 1), followup_admission.wait_ms);
+
+    frame.notePresentComplete();
+
+    const resumed_admission = testing.computeLoopAdmissionThroughControlSpine(&frame, 17_001_000, 16_000_000, false, followup_runtime);
+    try std.testing.expect(!resumed_admission.wait_for_window);
+    try std.testing.expectEqual(@as(?u32, null), resumed_admission.wait_ms);
+    try std.testing.expect(frame.renderPermission());
+}
+
+test "blocked frame permit defers runtime progress until owner can render" {
+    const RuntimeDriver = struct {
+        fn run(frame_pacing: *FramePacing.FrameTimer, now_ns: u64, drive_runtime_facts: Processor.LoopRuntimeFacts) Processor.TerminalProgress {
+            _ = now_ns;
+            return if (frame_pacing.renderPermission())
+                .{ .should_redraw = drive_runtime_facts.render_work_pending, .keep_running = false, .drive_performed = true }
+            else
+                .{ .should_redraw = false, .keep_running = false, .drive_performed = false };
+        }
+    };
+
+    var frame = FramePacing.FrameTimer.init();
+    frame.noteRedrawAndRenderWork(false, true);
+    frame.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+
+    const blocked = RuntimeDriver.run(&frame, 2_000, .{
+        .tabs = undefined,
+        .tab_count = 0,
+        .runtime_admitted = false,
+        .runtime_wake_pending = true,
+        .runtime_wait_ms = null,
+        .render_work_pending = true,
+    });
+    try std.testing.expect(!blocked.drive_performed);
+
+    frame.notePresentComplete();
+    frame.refreshFramePermit(17_000_000, 16_000_000);
+
+    const resumed = RuntimeDriver.run(&frame, 17_000_000, .{
+        .tabs = undefined,
+        .tab_count = 0,
+        .runtime_admitted = false,
+        .runtime_wake_pending = true,
+        .runtime_wait_ms = null,
+        .render_work_pending = true,
+    });
+    try std.testing.expect(resumed.drive_performed);
 }

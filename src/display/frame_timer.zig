@@ -52,6 +52,10 @@ pub const FrameTimer = struct {
             self.last_synced_ns = now_ns;
             if (!self.frame_permit_ready) self.next_frame_deadline_ns = now_ns + interval_ns;
         }
+        if (self.frame_permit_ready) {
+            self.base_ns = now_ns;
+            self.last_synced_ns = now_ns;
+        }
         if (!self.frame_permit_ready and self.next_frame_deadline_ns != 0 and now_ns >= self.next_frame_deadline_ns) {
             if (self.present_completion_pending) {
                 self.frame_deadline_reached_while_pending = true;
@@ -64,7 +68,11 @@ pub const FrameTimer = struct {
 
     pub fn framePermitWaitMs(self: FrameTimer, now_ns: u64) ?u32 {
         assert(now_ns > 0);
-        if (self.frame_permit_ready or self.next_frame_deadline_ns == 0 or now_ns >= self.next_frame_deadline_ns) return null;
+        if (self.frame_permit_ready or self.next_frame_deadline_ns == 0) return null;
+        if (now_ns >= self.next_frame_deadline_ns) {
+            if (self.present_completion_pending and self.frame_deadline_reached_while_pending) return 1;
+            return null;
+        }
         const remaining_ns = self.next_frame_deadline_ns - now_ns;
         return @intCast(@max(@as(u64, 1), std.math.divCeil(u64, remaining_ns, std.time.ns_per_ms) catch 1));
     }
@@ -149,7 +157,7 @@ pub const FrameTimer = struct {
             const elapsed_ns = now_ns - self.base_ns;
             const remainder = elapsed_ns % self.refresh_interval_ns;
             self.last_synced_ns = now_ns - remainder;
-            return now_ns;
+            return now_ns + refresh_interval_ns;
         }
 
         self.last_synced_ns = next_frame_ns;
@@ -300,13 +308,19 @@ test "present completion before deadline keeps frame permit blocked" {
 
 test "deadline reached while present completion pending waits for completion" {
     var pacing = FrameTimer.init();
+    const admission = WaitAdmission{
+        .owner_work = false,
+        .runtime_wake = false,
+        .runtime_admission = false,
+    };
 
     pacing.notePresentSubmittedAtWithInterval(.{ .reason = .host_damage, .submitted = true }, 1_000, 16_000_000);
     pacing.refreshFramePermit(17_000_000, 16_000_000);
 
     try std.testing.expect(!pacing.frame_permit_ready);
     try std.testing.expect(pacing.present_completion_pending);
-    try std.testing.expectEqual(@as(?u32, null), pacing.framePermitWaitMs(17_000_000));
+    try std.testing.expectEqual(@as(?u32, 1), pacing.framePermitWaitMs(17_000_000));
+    try std.testing.expect(pacing.shouldWaitForWindow(admission));
 
     pacing.notePresentComplete();
 
@@ -376,12 +390,29 @@ test "deadline release without completion stays blocked until completion arrives
     pacing.refreshFramePermit(17_000_000, 16_000_000);
 
     try std.testing.expect(!pacing.frame_permit_ready);
-    try std.testing.expectEqual(@as(?u32, null), pacing.framePermitWaitMs(17_000_000));
+    try std.testing.expectEqual(@as(?u32, 1), pacing.framePermitWaitMs(17_000_000));
 
     pacing.notePresentComplete();
 
     try std.testing.expect(pacing.frame_permit_ready);
     try std.testing.expectEqual(@as(?u32, null), pacing.framePermitWaitMs(17_000_000));
+}
+
+test "elapsed frame deadline pending completion never yields indefinite wait" {
+    const admission = WaitAdmission{
+        .owner_work = false,
+        .runtime_wake = false,
+        .runtime_admission = false,
+    };
+    var pacing = FrameTimer.init();
+
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
+    pacing.refreshFramePermit(17_000_000, 16_000_000);
+
+    try std.testing.expect(!pacing.frame_permit_ready);
+    try std.testing.expect(pacing.present_completion_pending);
+    try std.testing.expect(pacing.shouldWaitForWindow(admission));
+    try std.testing.expectEqual(@as(?u32, 1), pacing.framePermitWaitMs(17_000_000));
 }
 
 test "redraw persists across blocked permit" {
@@ -399,4 +430,14 @@ test "redraw persists across blocked permit" {
     try std.testing.expect(pacing.renderPermission());
     try std.testing.expect(pacing.redraw_requested);
     try std.testing.expectEqual(PresentReason.host_damage, pacing.admitPresentReason(.host_damage));
+}
+
+test "ready frame permit resyncs next submitted deadline to current turn" {
+    var pacing = FrameTimer.init();
+
+    pacing.refreshFramePermit(200_000_000, 16_000_000);
+    pacing.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 260_000_000, 16_000_000);
+
+    try std.testing.expect(!pacing.frame_permit_ready);
+    try std.testing.expectEqual(@as(u64, 276_000_000), pacing.next_frame_deadline_ns);
 }

@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const assert = std.debug.assert;
 
 const DisplayLayout = @import("layout.zig");
@@ -66,7 +65,7 @@ pub fn Lifecycle(comptime AppPtr: type) type {
 
 pub fn deriveReason(input: ReasonInput) Reason {
     return switch (input.step) {
-        .rendered => if (input.terminal_frame) .terminal_frame else .host_damage,
+        .rendered => .terminal_frame,
         .blocked_present => .terminal_retire,
         .surface_idle, .idle_prepare, .idle_submit, .failed => if (input.host_redraw) .host_damage else .none,
     };
@@ -142,15 +141,9 @@ fn drainReadyCompletion(app: anytype) bool {
     return false;
 }
 
-fn logDirtyPresentDone(token: PresentToken, matched_terminal_present: bool) void {
-    if (builtin.is_test) return;
-    std.log.warn("debug dirty_present_done_ns={} token={} matched_terminal_present={}", .{ EventLoop.nowNs(), token, matched_terminal_present });
-}
+fn logDirtyPresentDone(_: PresentToken, _: bool) void {}
 
-fn logPresentSubmit(reason: Reason, token: PresentToken) void {
-    if (builtin.is_test) return;
-    std.log.warn("debug present_submit_ns={} reason={s} token={}", .{ EventLoop.nowNs(), @tagName(reason), token });
-}
+fn logPresentSubmit(_: Reason, _: PresentToken) void {}
 
 fn noteFramePacingPresentComplete(app: anytype) void {
     const AppType = @typeInfo(@TypeOf(app)).pointer.child;
@@ -186,7 +179,7 @@ test "derivePresentReason matrix names host and terminal present cadence" {
         .{ .host_redraw = false, .terminal_frame = false, .step = .idle_submit, .reason = .none },
         .{ .host_redraw = false, .terminal_frame = false, .step = .failed, .reason = .none },
         .{ .host_redraw = false, .terminal_frame = true, .step = .rendered, .reason = .terminal_frame },
-        .{ .host_redraw = false, .terminal_frame = false, .step = .rendered, .reason = .host_damage },
+        .{ .host_redraw = false, .terminal_frame = false, .step = .rendered, .reason = .terminal_frame },
         .{ .host_redraw = false, .terminal_frame = false, .step = .blocked_present, .reason = .terminal_retire },
         .{ .host_redraw = true, .terminal_frame = false, .step = .surface_idle, .reason = .host_damage },
         .{ .host_redraw = true, .terminal_frame = false, .step = .idle_prepare, .reason = .host_damage },
@@ -883,4 +876,84 @@ test "latest terminal snapshot submits only after stale completion retires prior
     try std.testing.expectEqual(@as(u8, 2), tab.note_count);
     try std.testing.expectEqual(@as(u64, 52), tab.noted_snapshot_seq[1]);
     try std.testing.expectEqual(@as(?PresentToken, 102), app.pending_terminal_present);
+}
+
+test "present lifecycle forwards only submission and completion consequences to frame pacing" {
+    const FakeDisplay = struct {
+        present_count: u8 = 0,
+        next_token: PresentToken = 200,
+        ready_complete: ?PresentToken = null,
+
+        fn submitPresentSync(self: *@This(), _: anytype) PresentToken {
+            self.present_count += 1;
+            self.next_token += 1;
+            return self.next_token;
+        }
+
+        fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
+            return token;
+        }
+    };
+    const FakeTab = struct {
+        texture_id: u32 = 7,
+
+        fn termTextureId(self: *const @This()) u32 {
+            return self.texture_id;
+        }
+
+        fn notePresentSubmitted(_: *@This(), _: u64, _: PresentToken) void {}
+        fn completePresent(_: *@This(), _: PresentToken) void {}
+    };
+    const FakeTabs = struct {
+        items_buf: [1]*FakeTab,
+
+        fn items(self: *@This()) []*FakeTab {
+            return self.items_buf[0..];
+        }
+    };
+    const FakeFramePacing = struct {
+        submit_count: u8 = 0,
+        complete_count: u8 = 0,
+        last_submission: ?FramePacing.Submission = null,
+
+        fn notePresentSubmittedAt(self: *@This(), submission: FramePacing.Submission, _: u64) void {
+            self.submit_count += 1;
+            self.last_submission = submission;
+        }
+
+        fn notePresentComplete(self: *@This()) void {
+            self.complete_count += 1;
+        }
+    };
+    const FakeApp = struct {
+        display: *FakeDisplay,
+        tabs: *FakeTabs,
+        frame_pacing: FakeFramePacing,
+        pending_terminal_present: ?PresentToken,
+    };
+    const snapshot = Snapshot{
+        .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+        .active_tab = 0,
+        .tab_bar_revision = 1,
+        .labels = &.{"shell"},
+    };
+
+    var display = FakeDisplay{};
+    var tab = FakeTab{};
+    var tabs = FakeTabs{ .items_buf = .{&tab} };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .frame_pacing = .{}, .pending_terminal_present = null };
+
+    const submit = lifecycle(&app).submit(&tab, .rendered, 300, snapshot, .terminal_frame);
+    try std.testing.expect(submit.submission.submitted);
+    try std.testing.expectEqual(@as(u8, 1), app.frame_pacing.submit_count);
+    try std.testing.expectEqual(FramePacing.Submission{ .reason = .terminal_frame, .submitted = true }, app.frame_pacing.last_submission.?);
+    try std.testing.expectEqual(@as(u8, 0), app.frame_pacing.complete_count);
+
+    display.ready_complete = submit.submission.token.?;
+    try std.testing.expect(lifecycle(&app).drain());
+    try std.testing.expectEqual(@as(u8, 1), app.frame_pacing.submit_count);
+    try std.testing.expectEqual(@as(u8, 1), app.frame_pacing.complete_count);
 }

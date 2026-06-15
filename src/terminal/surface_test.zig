@@ -2,6 +2,7 @@ const std = @import("std");
 const render_c = @import("howl_render_c");
 
 const event_mod = @import("../event.zig");
+const frame_timer = @import("../display/frame_timer.zig");
 const surface_mod = @import("surface.zig");
 const cursor_blink = @import("cursor_blink.zig");
 const pty_pump = @import("pty_pump.zig");
@@ -1388,6 +1389,149 @@ test "cursor visibility change while present pending submits latest snapshot aft
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
 }
 
+test "terminal frame follows finite frame wait after pty-driven submit without further input" {
+    const PresentTab = struct {
+        surface: *Surface,
+
+        pub fn termTextureId(self: *const @This()) u32 {
+            return @intCast(self.surface.termTextureId());
+        }
+
+        pub fn notePresentSubmitted(self: *@This(), snapshot_seq: u64, token: u64) void {
+            self.surface.notePresentSubmitted(snapshot_seq, token);
+        }
+
+        pub fn completePresent(self: *@This(), token: u64) void {
+            _ = self.surface.term.render.completePresent(token);
+        }
+    };
+    const FakeDisplay = struct {
+        next_token: u64 = 900,
+        ready_complete: ?u64 = null,
+
+        pub fn submitPresentSync(self: *@This(), _: anytype) u64 {
+            self.next_token += 1;
+            return self.next_token;
+        }
+
+        pub fn takeReadyPresentComplete(self: *@This()) ?u64 {
+            const token = self.ready_complete orelse return null;
+            self.ready_complete = null;
+            return token;
+        }
+    };
+    const FakeTabs = struct {
+        items_buf: [1]*PresentTab,
+
+        pub fn items(self: *@This()) []*PresentTab {
+            return self.items_buf[0..];
+        }
+    };
+    const FakeFramePacing = struct {
+        state: frame_timer.FrameTimer = frame_timer.FrameTimer.init(),
+        submit_now_ns: u64 = 1_000,
+        refresh_interval_ns: u64 = 16_000_000,
+
+        pub fn notePresentSubmittedAt(self: *@This(), submission: frame_timer.Submission, _: u64) void {
+            self.state.notePresentSubmittedAtWithInterval(submission, self.submit_now_ns, self.refresh_interval_ns);
+        }
+
+        pub fn notePresentComplete(self: *@This()) void {
+            self.state.notePresentComplete();
+        }
+    };
+    const FakeApp = struct {
+        display: *FakeDisplay,
+        tabs: *FakeTabs,
+        frame_pacing: FakeFramePacing,
+        pending_terminal_present: ?u64,
+    };
+    const snapshot = AppPresent.Snapshot{
+        .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+        .active_tab = 0,
+        .tab_bar_revision = 1,
+        .labels = &.{"shell"},
+    };
+
+    var surface = try makeSubmitSurface();
+    defer surface.term.render.deinit();
+    installSubmitHooks(.success);
+    defer surface_testing.resetHooks();
+    var tab = PresentTab{ .surface = &surface };
+    var display = FakeDisplay{};
+    var tabs = FakeTabs{ .items_buf = .{&tab} };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .frame_pacing = .{}, .pending_terminal_present = null };
+
+    try prepareSubmitSurface(&surface, 51);
+    const wake_admission = event_mod.testing.computeLoopAdmissionThroughControlSpine(&app.frame_pacing.state, 1_000, 16_000_000, false, .{
+        .runtime_admitted = false,
+        .runtime_wake_pending = true,
+        .runtime_wait_ms = null,
+        .render_work_pending = true,
+    });
+    try std.testing.expect(!wake_admission.wait_for_window);
+    try std.testing.expectEqual(@as(?u32, null), wake_admission.wait_ms);
+
+    const first_turn = surface.renderTurn();
+    try std.testing.expectEqual(Surface.TurnStep.rendered, first_turn.step);
+    const first_reason = event_mod.testing.derivePresentReasonThroughControlSpine(.{
+        .host_redraw_requested = false,
+        .host_visual_changed = false,
+        .runtime_redraw = true,
+        .render_work_pending = false,
+        .step = first_turn.step,
+    });
+    try std.testing.expectEqual(AppPresent.Reason.terminal_frame, first_reason);
+    const first_submit = AppPresent.lifecycle(&app).submit(&tab, first_turn.step, first_turn.present_snapshot_seq, snapshot, first_reason);
+    try std.testing.expect(first_submit.submission.submitted);
+    try std.testing.expect(!first_submit.completed_terminal_present);
+    try std.testing.expect(surface.term.render.presentPending());
+    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
+
+    try prepareSubmitSurface(&surface, 52);
+    const blocked_work = surface.term.render.workState(false);
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, blocked_work.state);
+    const followup_admission = event_mod.testing.computeLoopAdmissionThroughControlSpine(&app.frame_pacing.state, 17_000_000, 16_000_000, false, .{
+        .runtime_admitted = false,
+        .runtime_wake_pending = false,
+        .runtime_wait_ms = null,
+        .render_work_pending = blocked_work.needsRenderSurface(),
+    });
+    try std.testing.expect(followup_admission.wait_for_window);
+    try std.testing.expect(followup_admission.wait_ms != null);
+    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
+
+    display.ready_complete = app.pending_terminal_present;
+    try std.testing.expect(AppPresent.lifecycle(&app).drain());
+    try std.testing.expect(!surface.term.render.presentPending());
+    const resumed_work = surface.term.render.workState(false);
+    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, resumed_work.state);
+    const resumed_admission = event_mod.testing.computeLoopAdmissionThroughControlSpine(&app.frame_pacing.state, 17_001_000, 16_000_000, false, .{
+        .runtime_admitted = false,
+        .runtime_wake_pending = false,
+        .runtime_wait_ms = null,
+        .render_work_pending = resumed_work.needsRenderSurface(),
+    });
+    try std.testing.expect(!resumed_admission.wait_for_window);
+    try std.testing.expectEqual(@as(?u32, null), resumed_admission.wait_ms);
+    try std.testing.expect(app.frame_pacing.state.renderPermission());
+
+    const second_turn = surface.renderTurn();
+    try std.testing.expectEqual(Surface.TurnStep.rendered, second_turn.step);
+    const second_reason = event_mod.testing.derivePresentReasonThroughControlSpine(.{
+        .host_redraw_requested = false,
+        .host_visual_changed = false,
+        .runtime_redraw = true,
+        .render_work_pending = false,
+        .step = second_turn.step,
+    });
+    const second_submit = AppPresent.lifecycle(&app).submit(&tab, second_turn.step, second_turn.present_snapshot_seq, snapshot, second_reason);
+    try std.testing.expect(second_submit.submission.submitted);
+    try std.testing.expect(!second_submit.completed_terminal_present);
+    try std.testing.expectEqual(@as(u8, 2), submit_hook_state.submit_calls);
+}
+
 test "autonomous cursor-only rendered snapshot plans terminal frame through event present seam" {
     const processor_testing = event_mod.testing;
 
@@ -1407,7 +1551,7 @@ test "autonomous cursor-only rendered snapshot plans terminal frame through even
         .render_work_pending = false,
         .step = .rendered,
     });
-    try std.testing.expectEqual(AppPresent.Reason.host_damage, autonomous_reason);
+    try std.testing.expectEqual(AppPresent.Reason.terminal_frame, autonomous_reason);
 }
 
 test "complete present acks matching host-owned token once and clears" {
