@@ -407,7 +407,9 @@ pub const Surface = struct {
             .trail_active = render.cursor_trail_count != 0,
         }, now_ns);
         cadence.wait_ms = minOptionalWaitMs(cadence.wait_ms, self.pendingCursorTrailWaitMs(now_ns));
-        if (!std.mem.eql(u8, std.mem.asBytes(&render), std.mem.asBytes(&self.cursor_render))) {
+        var dirty_render = render;
+        dirty_render.now_ns = self.cursor_render.now_ns;
+        if (!std.mem.eql(u8, std.mem.asBytes(&dirty_render), std.mem.asBytes(&self.cursor_render))) {
             cadence.dirty = true;
         }
         return .{
@@ -805,6 +807,9 @@ pub const Surface = struct {
         render.cursor_trail_color = renderCursorColor(self.conf.cursor_trail_color);
         render.cursor_beam_thickness = self.conf.cursor_beam_thickness;
         render.cursor_underline_thickness = self.conf.cursor_underline_thickness;
+        render.cursor_trail_decay_fast_s = secondsFromNs(self.cursor_blink.config.trail_decay_fast_ns);
+        render.cursor_trail_decay_slow_s = secondsFromNs(self.cursor_blink.config.trail_decay_slow_ns);
+        render.now_ns = now_ns;
         render.cursor_trail_count = 0;
         for (0..render_retained.max_cursor_trail_rects) |index| {
             const started_ns = self.cursor_trail_started_ns[index];
@@ -911,6 +916,10 @@ pub const Surface = struct {
 
     fn renderCursorColor(color_value: @import("../config/terminal.zig").CursorColor) render_c.HowlVtColor {
         return .{ .kind = @intFromEnum(color_value.kind), .value = color_value.value };
+    }
+
+    fn secondsFromNs(ns: u64) f32 {
+        return @as(f32, @floatFromInt(ns)) / @as(f32, @floatFromInt(std.time.ns_per_s));
     }
 
     fn cursorMovementDistance(from_row: u16, from_col: u16, to_row: u16, to_col: u16) u16 {

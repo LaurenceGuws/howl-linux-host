@@ -83,9 +83,12 @@ pub const HostCursorCadence = extern struct {
     cursor_trail_color: c.HowlVtColor,
     cursor_beam_thickness: f32,
     cursor_underline_thickness: f32,
+    cursor_trail_decay_fast_s: f32,
+    cursor_trail_decay_slow_s: f32,
     cursor_trail_count: u16,
     reserved0: u16 = 0,
     cursor_trail_rects: [max_cursor_trail_rects]HostCursorTrailRect,
+    now_ns: u64,
 };
 
 extern fn howl_render_text_session_set_cursor_cadence(handle: c.HowlRenderTextSessionHandle, cadence: *const HostCursorCadence) c_int;
