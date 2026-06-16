@@ -428,8 +428,9 @@ pub const Surface = struct {
     }
 
     pub fn resetCursorBlinkActivity(self: *Context, now_ns: u64) bool {
-        if (!self.cursor_blink.resetActivity(now_ns)) return false;
-        return self.driveCursor(now_ns);
+        const changed = self.cursor_blink.resetActivity(now_ns);
+        const redraw = self.driveCursor(now_ns) or changed;
+        return redraw;
     }
 
     pub fn cursorWaitMs(self: *Context, now_ns: u64) ?u32 {

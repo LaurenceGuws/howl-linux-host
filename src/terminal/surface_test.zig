@@ -446,6 +446,7 @@ test "cursor activity pushes blink deadline while visible" {
 
     try std.testing.expect(!context.resetCursorBlinkActivity(1234));
     try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.default_interval_ns, context.cursor_blink.deadline_ns);
+    try std.testing.expectEqual(@as(u64, 1234), context.cursor_render.now_ns);
     try std.testing.expect(context.cursor_blink.visible);
 }
 
