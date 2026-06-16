@@ -151,7 +151,9 @@ pub const Surface = struct {
     links: terminal_links.Links,
     selection: terminal_selection.Selection,
     cursor_blink: cursor_blink.CursorBlink,
-    cursor_position_changed_by_client_at_ms: u64,
+    cursor_position_changed_by_client_sequence: u64,
+    cursor_trail_pending_deadline_ns: u64,
+    cursor_trail_pending_rect: render_retained.HostCursorTrailRect,
     cursor_source_row: u16,
     cursor_source_col: u16,
     cursor_source_rows: u16,
@@ -225,7 +227,9 @@ pub const Surface = struct {
             .trail_decay_fast_ns = cursor_blink.trailDecayNs(request.conf.cursor_trail_decay_fast, cursor_blink.default_trail_decay_fast_ns),
             .trail_decay_slow_ns = cursor_blink.trailDecayNs(request.conf.cursor_trail_decay_slow, cursor_blink.default_trail_decay_slow_ns),
         });
-        self.cursor_position_changed_by_client_at_ms = 0;
+        self.cursor_position_changed_by_client_sequence = 0;
+        self.cursor_trail_pending_deadline_ns = 0;
+        self.cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect);
         self.cursor_source_row = 0;
         self.cursor_source_col = 0;
         self.cursor_source_rows = 1;
@@ -392,6 +396,7 @@ pub const Surface = struct {
     }
 
     pub fn cursorFacts(self: *Context, now_ns: u64) CursorFacts {
+        self.promotePendingCursorTrail(now_ns);
         const focused = self.window_focused and self.widget_focused;
         const render = self.computeCursorRender(now_ns, focused);
         const animate = self.cursorBlinkShouldAnimate();
@@ -401,6 +406,7 @@ pub const Surface = struct {
             .text_blinking = self.cursor_text_blinking,
             .trail_active = render.cursor_trail_count != 0,
         }, now_ns);
+        cadence.wait_ms = minOptionalWaitMs(cadence.wait_ms, self.pendingCursorTrailWaitMs(now_ns));
         if (!std.mem.eql(u8, std.mem.asBytes(&render), std.mem.asBytes(&self.cursor_render))) {
             cadence.dirty = true;
         }
@@ -763,6 +769,20 @@ pub const Surface = struct {
         std.debug.assert(state == .submit_ready or state == .present_in_flight);
     }
 
+    fn promotePendingCursorTrail(self: *Context, now_ns: u64) void {
+        if (self.cursor_trail_pending_deadline_ns == 0 or now_ns < self.cursor_trail_pending_deadline_ns) return;
+        self.noteTrailStart(now_ns, self.cursor_trail_pending_rect);
+        self.cursor_trail_pending_deadline_ns = 0;
+        self.cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect);
+    }
+
+    fn pendingCursorTrailWaitMs(self: *const Context, now_ns: u64) ?u32 {
+        if (self.cursor_trail_pending_deadline_ns == 0 or self.cursor_trail_pending_deadline_ns <= now_ns) return null;
+        const wait_ns = self.cursor_trail_pending_deadline_ns - now_ns;
+        const wait_ms = @max(@as(u64, 1), wait_ns / std.time.ns_per_ms);
+        return @intCast(@min(wait_ms, @as(u64, std.math.maxInt(u32))));
+    }
+
     fn computeCursorRender(self: *Context, now_ns: u64, focused: bool) render_retained.HostCursorCadence {
         const cadence = self.cursor_blink.cadenceFacts(.{
             .animate = self.conf.cursor_blink and self.cursor_source_blink and self.cursor_source_visible and self.cursor_source_has_shape and focused,
@@ -838,9 +858,15 @@ pub const Surface = struct {
     }
 
     fn notePublishedCursorSource(self: *Context, cursor: vt_c.HowlVtCursor, cells: []const vt_c.HowlVtSurfaceCell, now_ns: u64) void {
-        if (self.cursor_position_changed_by_client_at_ms != cursor.position_changed_by_client_at_ms) {
-            if (self.shouldStartTrail(cursor)) self.noteTrailStart(now_ns);
-            self.cursor_position_changed_by_client_at_ms = cursor.position_changed_by_client_at_ms;
+        if (self.cursor_position_changed_by_client_sequence != cursor.position_changed_by_client_at_ms) {
+            if (self.shouldQueueTrail(cursor)) {
+                self.cursor_trail_pending_deadline_ns = now_ns + self.conf.cursor_trail * std.time.ns_per_ms;
+                self.cursor_trail_pending_rect = self.currentCursorTrailRect();
+            } else {
+                self.cursor_trail_pending_deadline_ns = 0;
+                self.cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect);
+            }
+            self.cursor_position_changed_by_client_sequence = cursor.position_changed_by_client_at_ms;
             _ = self.resetCursorBlinkActivity(now_ns);
         }
         self.cursor_source_row = cursor.row;
@@ -854,22 +880,24 @@ pub const Surface = struct {
         self.cursor_text_blinking = blinkingTextUsed(cells);
     }
 
-    fn shouldStartTrail(self: *const Context, cursor: vt_c.HowlVtCursor) bool {
+    fn shouldQueueTrail(self: *const Context, cursor: vt_c.HowlVtCursor) bool {
         if (self.conf.cursor_trail == 0) return false;
-        if (self.cursor_position_changed_by_client_at_ms == 0) return false;
-        const stable_ms = cursor.position_changed_by_client_at_ms -| self.cursor_position_changed_by_client_at_ms;
-        if (stable_ms < self.conf.cursor_trail) return false;
+        if (self.cursor_position_changed_by_client_sequence == 0) return false;
         return cursorMovementDistance(self.cursor_source_row, self.cursor_source_col, cursor.row, cursor.col) >= self.conf.cursor_trail_start_threshold;
     }
 
-    fn noteTrailStart(self: *Context, now_ns: u64) void {
+    fn noteTrailStart(self: *Context, now_ns: u64, rect: render_retained.HostCursorTrailRect) void {
         var index: usize = render_retained.max_cursor_trail_rects - 1;
         while (index > 0) : (index -= 1) {
             self.cursor_trail_started_ns[index] = self.cursor_trail_started_ns[index - 1];
             self.cursor_render.cursor_trail_rects[index] = self.cursor_render.cursor_trail_rects[index - 1];
         }
         self.cursor_trail_started_ns[0] = now_ns;
-        self.cursor_render.cursor_trail_rects[0] = .{
+        self.cursor_render.cursor_trail_rects[0] = rect;
+    }
+
+    fn currentCursorTrailRect(self: *const Context) render_retained.HostCursorTrailRect {
+        return .{
             .row = self.cursor_source_row,
             .col = self.cursor_source_col,
             .rows = self.cursor_source_rows,
@@ -1424,17 +1452,73 @@ test "cursor trail start respects configured duration threshold and color" {
     surface.conf = &conf;
     surface.cursor_source_row = 1;
     surface.cursor_source_col = 1;
-    surface.cursor_position_changed_by_client_at_ms = 1000;
+    surface.cursor_position_changed_by_client_sequence = 1000;
 
     const cells = [_]vt_c.HowlVtSurfaceCell{std.mem.zeroes(vt_c.HowlVtSurfaceCell)};
     surface.notePublishedCursorSource(.{ .row = 1, .col = 2, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 1050, .cell_cols = 1, .cell_rows = 1 }, cells[0..], 10);
     try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_started_ns[0]);
+    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_pending_deadline_ns);
 
-    surface.notePublishedCursorSource(.{ .row = 1, .col = 4, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 1200, .cell_cols = 1, .cell_rows = 1 }, cells[0..], 20);
-    try std.testing.expectEqual(@as(u64, 20), surface.cursor_trail_started_ns[0]);
+    const move_ns = @as(u64, 20) * std.time.ns_per_ms;
+    const ready_ns = move_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms;
+    surface.notePublishedCursorSource(.{ .row = 1, .col = 4, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 1200, .cell_cols = 1, .cell_rows = 1 }, cells[0..], move_ns);
+    try std.testing.expectEqual(ready_ns, surface.cursor_trail_pending_deadline_ns);
+    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_started_ns[0]);
 
-    const facts = surface.cursorFacts(20);
+    const early_facts = surface.cursorFacts(ready_ns - 1);
+    try std.testing.expect(early_facts.cadence.wait_ms != null);
+    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_started_ns[0]);
+
+    const facts = surface.cursorFacts(ready_ns);
+    try std.testing.expectEqual(ready_ns, surface.cursor_trail_started_ns[0]);
+    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_pending_deadline_ns);
+
     try std.testing.expectEqual(@as(u32, 0x102030), facts.render.cursor_trail_color.value);
+}
+
+test "cursor trail pending follows latest qualifying cursor movement" {
+    var conf = test_terminal_conf;
+    conf.cursor_trail = 100;
+    conf.cursor_trail_start_threshold = 2;
+
+    var surface = testSurfaceBase();
+    surface.conf = &conf;
+    surface.cursor_position_changed_by_client_sequence = 1;
+    surface.cursor_source_row = 1;
+    surface.cursor_source_col = 1;
+
+    const cells = [_]vt_c.HowlVtSurfaceCell{std.mem.zeroes(vt_c.HowlVtSurfaceCell)};
+    const first_ns = @as(u64, 10) * std.time.ns_per_ms;
+    surface.notePublishedCursorSource(.{ .row = 1, .col = 4, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 2, .cell_cols = 1, .cell_rows = 1 }, cells[0..], first_ns);
+    try std.testing.expectEqual(first_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms, surface.cursor_trail_pending_deadline_ns);
+    try std.testing.expectEqual(@as(u16, 1), surface.cursor_trail_pending_rect.col);
+
+    const second_ns = @as(u64, 20) * std.time.ns_per_ms;
+    surface.notePublishedCursorSource(.{ .row = 1, .col = 7, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 3, .cell_cols = 1, .cell_rows = 1 }, cells[0..], second_ns);
+    try std.testing.expectEqual(second_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms, surface.cursor_trail_pending_deadline_ns);
+    try std.testing.expectEqual(@as(u16, 4), surface.cursor_trail_pending_rect.col);
+    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_started_ns[0]);
+}
+
+test "cursor trail pending clears on below-threshold movement" {
+    var conf = test_terminal_conf;
+    conf.cursor_trail = 100;
+    conf.cursor_trail_start_threshold = 3;
+
+    var surface = testSurfaceBase();
+    surface.conf = &conf;
+    surface.cursor_position_changed_by_client_sequence = 1;
+    surface.cursor_source_row = 1;
+    surface.cursor_source_col = 1;
+
+    const cells = [_]vt_c.HowlVtSurfaceCell{std.mem.zeroes(vt_c.HowlVtSurfaceCell)};
+    const first_ns = @as(u64, 10) * std.time.ns_per_ms;
+    surface.notePublishedCursorSource(.{ .row = 1, .col = 5, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 2, .cell_cols = 1, .cell_rows = 1 }, cells[0..], first_ns);
+    try std.testing.expect(surface.cursor_trail_pending_deadline_ns != 0);
+
+    surface.notePublishedCursorSource(.{ .row = 1, .col = 6, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 3, .cell_cols = 1, .cell_rows = 1 }, cells[0..], first_ns + std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_pending_deadline_ns);
+    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_started_ns[0]);
 }
 
 test "cursor trail decay uses configured fast and slow timings" {
@@ -1453,7 +1537,7 @@ test "cursor trail decay uses configured fast and slow timings" {
     });
     surface.cursor_source_row = 1;
     surface.cursor_source_col = 1;
-    surface.noteTrailStart(0);
+    surface.noteTrailStart(0, surface.currentCursorTrailRect());
     surface.cursor_trail_started_ns[15] = 1;
     surface.cursor_render.cursor_trail_rects[15] = surface.cursor_render.cursor_trail_rects[0];
 
@@ -1521,7 +1605,9 @@ fn testSurfaceBase() Surface {
         .links = .{},
         .selection = .{},
         .cursor_blink = .{},
-        .cursor_position_changed_by_client_at_ms = 0,
+        .cursor_position_changed_by_client_sequence = 0,
+        .cursor_trail_pending_deadline_ns = 0,
+        .cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect),
         .cursor_source_row = 0,
         .cursor_source_col = 0,
         .cursor_source_rows = 1,
