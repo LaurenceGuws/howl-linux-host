@@ -877,7 +877,7 @@ test "stale handle constructor reports failed snapshot" {
     try std.testing.expectEqual(@as(u64, 88), result.snapshot_seq);
 }
 
-test "retained submit failure stays on failed owner path until refreshed" {
+test "retained submit failure stays on failed retained path until refreshed" {
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
     installSubmitHooks(.fail);

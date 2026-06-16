@@ -118,7 +118,7 @@ const RealOps = struct {
     }
 };
 
-test "progress thread waits and wakes event loop owner thread once" {
+test "progress thread waits and wakes event loop once" {
     fake_state = .{};
     fake_state.is_alive = false;
     const term = FakeTerm.init();

@@ -65,7 +65,7 @@ pub const Processor = struct {
     };
 
     const LoopWaitAdmission = struct {
-        owner_work: bool,
+        pending_events: bool,
         runtime_wake: bool,
         runtime_admission: bool,
         runtime_wait_ms: ?u32,
@@ -73,7 +73,7 @@ pub const Processor = struct {
 
         fn frameAdmission(self: LoopWaitAdmission) FramePacing.WaitAdmission {
             return .{
-                .owner_work = self.owner_work,
+                .pending_events = self.pending_events,
                 .runtime_wake = self.runtime_wake,
                 .runtime_admission = self.runtime_admission,
             };
@@ -124,7 +124,6 @@ pub const Processor = struct {
 
     const PresentReason = AppPresent.Reason;
     const PresentPlan = AppPresent.Plan;
-    const PresentSubmission = AppPresent.Submission;
 
     const ActiveTabProblem = enum {
         exited,
@@ -187,7 +186,7 @@ pub const Processor = struct {
 
         const host_mutations_opt = try applyHostOwnedMutations(self);
         if (host_mutations_opt) |host_mutations| {
-            _ = drainPresentComplete(self);
+            drainPresentComplete(self);
             const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
             const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
             self.configureInputPolicies();
@@ -207,7 +206,7 @@ pub const Processor = struct {
 
             const frame = render(self);
             const present_plan = derivePresentPlan(frame, intent);
-            _ = submitPresent(self, frame, present_plan);
+            submitPresent(self, frame, present_plan);
             if (quitRequested(self)) |action| return action;
             if (try handleActiveTabProblem(self)) |action| return action;
             return .continue_running;
@@ -218,12 +217,12 @@ pub const Processor = struct {
 
     fn computeLoopAdmission(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopAdmission {
         assert(now_ns > 0);
-        return computeLoopAdmissionWithOwnerWork(&self.frame_pacing, self.window.currentRefreshIntervalNs(), self.input.hasPendingOwnerWork(), now_ns, runtime_facts);
+        return computeLoopAdmissionWithPendingEvents(&self.frame_pacing, self.window.currentRefreshIntervalNs(), self.input.hasPendingEvents(), now_ns, runtime_facts);
     }
 
     fn loopWaitAdmission(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWaitAdmission {
         return .{
-            .owner_work = self.input.hasPendingOwnerWork(),
+            .pending_events = self.input.hasPendingEvents(),
             .runtime_wake = runtime_facts.runtime_wake_pending,
             .runtime_admission = runtime_facts.runtime_admitted,
             .runtime_wait_ms = runtime_facts.runtime_wait_ms,
@@ -231,20 +230,20 @@ pub const Processor = struct {
         };
     }
 
-    fn computeLoopAdmissionWithOwnerWork(frame_pacing: *FramePacing.FrameTimer, refresh_interval_ns: u64, owner_work: bool, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopAdmission {
+    fn computeLoopAdmissionWithPendingEvents(frame_pacing: *FramePacing.FrameTimer, refresh_interval_ns: u64, pending_events: bool, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopAdmission {
         assert(now_ns > 0);
         frame_pacing.refreshFramePermit(now_ns, refresh_interval_ns);
         frame_pacing.noteRedrawAndRenderWork(false, runtime_facts.render_work_pending);
-        const admission_facts = loopWaitAdmissionWithOwnerWork(frame_pacing, owner_work, now_ns, runtime_facts);
+        const admission_facts = loopWaitAdmissionWithPendingEvents(frame_pacing, pending_events, now_ns, runtime_facts);
         return .{
             .wait_for_window = admission_facts.waitForWindow(frame_pacing),
             .wait_ms = admission_facts.waitMs(),
         };
     }
 
-    fn loopWaitAdmissionWithOwnerWork(frame_pacing: *FramePacing.FrameTimer, owner_work: bool, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWaitAdmission {
+    fn loopWaitAdmissionWithPendingEvents(frame_pacing: *FramePacing.FrameTimer, pending_events: bool, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWaitAdmission {
         return .{
-            .owner_work = owner_work,
+            .pending_events = pending_events,
             .runtime_wake = runtime_facts.runtime_wake_pending,
             .runtime_admission = runtime_facts.runtime_admitted,
             .runtime_wait_ms = runtime_facts.runtime_wait_ms,
@@ -465,7 +464,7 @@ pub const Processor = struct {
         });
     }
 
-    fn submitPresent(self: *Self, frame: RenderFrame, plan: PresentPlan) PresentSubmission {
+    fn submitPresent(self: *Self, frame: RenderFrame, plan: PresentPlan) void {
         assert(plan.needs_render_turn);
         const reason = self.frame_pacing.admitPresentReason(plan.reason);
         const present = AppPresent.lifecycle(self);
@@ -476,11 +475,12 @@ pub const Processor = struct {
             .tab_bar_revision = frame.snapshot.tab_bar_revision,
             .labels = frame.snapshot.labels,
         }, reason);
-        return outcome.submission;
+        assert(outcome.submission.reason == reason);
     }
 
-    fn drainPresentComplete(self: *Self) bool {
-        return AppPresent.lifecycle(self).drain();
+    fn drainPresentComplete(self: *Self) void {
+        const completed = AppPresent.lifecycle(self).drain();
+        if (completed) assert(self.pending_terminal_present == null);
     }
 
     fn resizeTerminals(conf: *const Config.UiConfig, app_window: *window.Window, tabs: []*TerminalSurface) void {
@@ -619,7 +619,7 @@ pub const testing = struct {
         step: @import("terminal/surface.zig").Surface.TurnStep,
     };
 
-    pub fn computeLoopAdmissionThroughControlSpine(frame_pacing: *FramePacing.FrameTimer, now_ns: u64, refresh_interval_ns: u64, owner_work: bool, runtime: ControlSpineRuntimeFacts) Processor.LoopAdmission {
+    pub fn computeLoopAdmissionThroughControlSpine(frame_pacing: *FramePacing.FrameTimer, now_ns: u64, refresh_interval_ns: u64, pending_events: bool, runtime: ControlSpineRuntimeFacts) Processor.LoopAdmission {
         const runtime_facts = Processor.LoopRuntimeFacts{
             .tabs = undefined,
             .tab_count = 0,
@@ -628,7 +628,7 @@ pub const testing = struct {
             .runtime_wait_ms = runtime.runtime_wait_ms,
             .render_work_pending = runtime.render_work_pending,
         };
-        return Processor.computeLoopAdmissionWithOwnerWork(frame_pacing, refresh_interval_ns, owner_work, now_ns, runtime_facts);
+        return Processor.computeLoopAdmissionWithPendingEvents(frame_pacing, refresh_interval_ns, pending_events, now_ns, runtime_facts);
     }
 
     pub fn derivePresentReasonThroughControlSpine(input: PresentPlanningInput) @import("display/present.zig").Reason {
@@ -668,9 +668,9 @@ test "active runtime admission follows explicit surface facts" {
     try std.testing.expect(facts.runtime_admitted);
 }
 
-test "owner work prevents waiting" {
+test "pending events prevent waiting" {
     var admission = Processor.LoopWaitAdmission{
-        .owner_work = true,
+        .pending_events = true,
         .runtime_wake = false,
         .runtime_admission = false,
         .runtime_wait_ms = null,
@@ -684,7 +684,7 @@ test "owner work prevents waiting" {
 
 test "runtime wake prevents waiting without granting render" {
     var admission = Processor.LoopWaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = true,
         .runtime_admission = false,
         .runtime_wait_ms = null,
@@ -697,9 +697,9 @@ test "runtime wake prevents waiting without granting render" {
     try std.testing.expect(!frame.renderPermission());
 }
 
-test "frame wait participates only through frame owner" {
+test "frame wait participates through frame timer" {
     const admission = Processor.LoopWaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = false,
         .runtime_admission = false,
         .runtime_wait_ms = null,
@@ -711,7 +711,7 @@ test "frame wait participates only through frame owner" {
 
 test "runtime wait carries active-surface cursor cadence deadline" {
     const admission = Processor.LoopWaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = false,
         .runtime_admission = false,
         .runtime_wait_ms = 7,
@@ -819,7 +819,7 @@ test "frame follow-up wait stays finite through loop admission seam" {
     try std.testing.expect(!frame.renderPermission());
 }
 
-test "blocked frame permit still drives runtime progress for owner work" {
+test "blocked frame permit still drives runtime progress for pending events" {
     const RuntimeDriver = struct {
         fn run(frame_pacing: *FramePacing.FrameTimer, now_ns: u64, drive_runtime_facts: Processor.LoopRuntimeFacts) Processor.TerminalProgress {
             _ = now_ns;

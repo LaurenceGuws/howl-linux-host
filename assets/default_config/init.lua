@@ -41,9 +41,9 @@ return {
       -- Stop cursor blinking after this many seconds of inactivity. Use 0 to keep blinking.
       stop_blinking_after = 15.0,
       -- Cursor trail lifetime gate in milliseconds. Use 0 to disable.
-      trail = 0,
+      trail = 100,
       -- Cursor trail fast decay in seconds.
-      trail_decay_fast = 0.1,
+      trail_decay_fast = 0.9,
       -- Cursor trail slow decay in seconds.
       trail_decay_slow = 0.4,
       -- Minimum movement in cells before a cursor trail starts.

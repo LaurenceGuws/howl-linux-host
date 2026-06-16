@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 pub const WaitAdmission = struct {
-    owner_work: bool,
+    pending_events: bool,
     runtime_wake: bool,
     runtime_admission: bool,
 };
@@ -92,7 +92,7 @@ pub const FrameTimer = struct {
     }
 
     pub fn shouldWaitForWindow(self: *FrameTimer, admission: WaitAdmission) bool {
-        if (admission.owner_work) return false;
+        if (admission.pending_events) return false;
         if (admission.runtime_admission) return false;
         if (!self.frame_permit_ready) return true;
         if (self.renderPermission()) return false;
@@ -166,7 +166,7 @@ pub const FrameTimer = struct {
 
 test "redraw request is not frame permit" {
     const admission = WaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = false,
         .runtime_admission = false,
     };
@@ -179,7 +179,7 @@ test "redraw request is not frame permit" {
 
 test "runtime wake is not frame permit" {
     const admission = WaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = true,
         .runtime_admission = false,
     };
@@ -192,7 +192,7 @@ test "runtime wake is not frame permit" {
 
 test "runtime wake participates in wait admission" {
     const admission = WaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = true,
         .runtime_admission = false,
     };
@@ -202,7 +202,7 @@ test "runtime wake participates in wait admission" {
 
 test "terminal render work waits until frame permit" {
     const admission = WaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = false,
         .runtime_admission = false,
     };
@@ -216,7 +216,7 @@ test "terminal render work waits until frame permit" {
 
 test "terminal render work uses ready frame permit" {
     const admission = WaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = false,
         .runtime_admission = false,
     };
@@ -226,9 +226,9 @@ test "terminal render work uses ready frame permit" {
     try std.testing.expect(pacing.renderPermission());
 }
 
-test "owner work prevents waiting" {
+test "pending events prevent waiting" {
     const admission = WaitAdmission{
-        .owner_work = true,
+        .pending_events = true,
         .runtime_wake = false,
         .runtime_admission = false,
     };
@@ -239,7 +239,7 @@ test "owner work prevents waiting" {
 
 test "runtime admission prevents waiting without granting render" {
     const admission = WaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = false,
         .runtime_admission = true,
     };
@@ -309,7 +309,7 @@ test "present completion before deadline keeps frame permit blocked" {
 test "deadline reached while present completion pending waits for completion" {
     var pacing = FrameTimer.init();
     const admission = WaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = false,
         .runtime_admission = false,
     };
@@ -328,7 +328,7 @@ test "deadline reached while present completion pending waits for completion" {
     try std.testing.expect(!pacing.present_completion_pending);
 }
 
-test "host-damage submit is admitted by frame owner" {
+test "host-damage submit is admitted by frame timer" {
     var pacing = FrameTimer.init();
     pacing.noteRedrawAndRenderWork(true, false);
 
@@ -342,7 +342,7 @@ test "host-damage submit is admitted by frame owner" {
     try std.testing.expectEqual(PresentReason.none, pacing.admitPresentReason(.host_damage));
 }
 
-test "terminal-frame submit is admitted by frame owner" {
+test "terminal-frame submit is admitted by frame timer" {
     var pacing = FrameTimer.init();
     pacing.noteRedrawAndRenderWork(true, true);
 
@@ -356,7 +356,7 @@ test "terminal-frame submit is admitted by frame owner" {
     try std.testing.expect(pacing.redraw_requested == false);
 }
 
-test "terminal-retire stays no-submit under frame owner" {
+test "terminal-retire stays no-submit under frame timer" {
     var pacing = FrameTimer.init();
     pacing.noteRedrawAndRenderWork(true, false);
 
@@ -400,7 +400,7 @@ test "deadline release without completion stays blocked until completion arrives
 
 test "elapsed frame deadline pending completion never yields indefinite wait" {
     const admission = WaitAdmission{
-        .owner_work = false,
+        .pending_events = false,
         .runtime_wake = false,
         .runtime_admission = false,
     };

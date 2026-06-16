@@ -178,7 +178,7 @@ pub const Input = struct {
         return out;
     }
 
-    pub fn hasPendingOwnerWork(self: *const Input) bool {
+    pub fn hasPendingEvents(self: *const Input) bool {
         return self.input_events.hasItems() or
             self.scroll_pages != 0 or
             self.binding_buf.hasItems() or
@@ -956,7 +956,7 @@ test "binding action queue preserves FIFO across wraparound" {
     try std.testing.expectEqual(@as(?Input.Bindings.Action, null), input.drainBindingAction());
 }
 
-test "redraw-only pending does not count as owner work" {
+test "redraw-only pending does not count as pending events" {
     var input: Input = undefined;
     input.init();
     var redraw_window = window.Window{
@@ -972,7 +972,7 @@ test "redraw-only pending does not count as owner work" {
     defer std.testing.allocator.free(redraw_window.current_title);
     input.setRedrawWindow(&redraw_window);
 
-    try std.testing.expect(!input.hasPendingOwnerWork());
+    try std.testing.expect(!input.hasPendingEvents());
     try std.testing.expectEqual(@as(?bool, null), input.window_focus_changed);
     try std.testing.expect(!input.window_geometry_changed);
     try std.testing.expect(!input.input_events.hasItems());
@@ -982,7 +982,7 @@ test "redraw-only pending does not count as owner work" {
     input.requestRedraw();
 
     try std.testing.expect(redraw_window.hasRequestedRedraw());
-    try std.testing.expect(!input.hasPendingOwnerWork());
+    try std.testing.expect(!input.hasPendingEvents());
     try std.testing.expectEqual(@as(?bool, null), input.window_focus_changed);
     try std.testing.expect(!input.window_geometry_changed);
     try std.testing.expect(!input.input_events.hasItems());
@@ -990,29 +990,29 @@ test "redraw-only pending does not count as owner work" {
     try std.testing.expectEqual(@as(i32, 0), input.scroll_pages);
 }
 
-test "queued input focus geometry and bindings count as owner work" {
+test "queued input focus geometry and bindings count as pending events" {
     var input: Input = undefined;
     input.init();
 
-    try std.testing.expect(!input.hasPendingOwnerWork());
+    try std.testing.expect(!input.hasPendingEvents());
 
     appendByteEvent(&input, 'x');
-    try std.testing.expect(input.hasPendingOwnerWork());
+    try std.testing.expect(input.hasPendingEvents());
     _ = input.drainInputEvent();
-    try std.testing.expect(!input.hasPendingOwnerWork());
+    try std.testing.expect(!input.hasPendingEvents());
 
     input.window_focus_changed = true;
-    try std.testing.expect(input.hasPendingOwnerWork());
+    try std.testing.expect(input.hasPendingEvents());
     _ = input.drainWindowFocusChanged();
-    try std.testing.expect(!input.hasPendingOwnerWork());
+    try std.testing.expect(!input.hasPendingEvents());
 
     input.window_geometry_changed = true;
-    try std.testing.expect(input.hasPendingOwnerWork());
+    try std.testing.expect(input.hasPendingEvents());
     _ = input.drainWindowGeometryChanged();
-    try std.testing.expect(!input.hasPendingOwnerWork());
+    try std.testing.expect(!input.hasPendingEvents());
 
     appendBindingAction(&input, .terminal_next_tab);
-    try std.testing.expect(input.hasPendingOwnerWork());
+    try std.testing.expect(input.hasPendingEvents());
     _ = input.drainBindingAction();
-    try std.testing.expect(!input.hasPendingOwnerWork());
+    try std.testing.expect(!input.hasPendingEvents());
 }

@@ -15,7 +15,7 @@ It owns platform UX, SDL input, the app event loop, wake policy, tab/window orch
 - The user-facing executable is built from `src/main.zig`.
 - The host embeds `howl-pty`, `howl-vt`, and `howl-render` through their C headers and build-owned translate-C modules.
 - Zig imports into subrepos are not an integration surface.
-- `libs.yaml` is the canonical public owner map.
+- `libs.yaml` is the canonical public module map.
 
 ## Owners
 
@@ -29,7 +29,7 @@ It owns platform UX, SDL input, the app event loop, wake policy, tab/window orch
 - `src/window/window.zig` owns SDL window lifecycle, clipboard calls, cursor shape, URL opening, and GL context setup.
 - `src/window/pacing.zig` owns frame-pacing state and present-permission reasons.
 - `src/window/present.zig`, `texture.zig`, `draw.zig`, and `term_texture.zig` own host-side GL presentation and texture realization.
-- `src/terminal/context.zig` owns one terminal session/surface aggregate and event routing across PTY, VT, render, input, and window owners.
+- `src/terminal/context.zig` owns one terminal session/surface aggregate and event routing across PTY, VT, render, input, and window/display modules.
 - `src/terminal/selection.zig` owns host selection gesture adaptation over context-owned fields.
 - `src/terminal/links.zig` owns visible-link hover/open behavior over context-owned fields.
 - `src/terminal/pty/` owns the host-side PTY ABI seam and wait-thread coordination.
@@ -51,16 +51,16 @@ It owns platform UX, SDL input, the app event loop, wake policy, tab/window orch
 4. The terminal context publishes host input through VT encoding and PTY handoff.
 5. The terminal context runs bounded PTY/VT progress and render prepare/submit/upload work.
 6. `main.zig` admits present only when frame pacing and work state allow it.
-7. `window` owners present host chrome and the active terminal texture.
+7. Window/display modules present host chrome and the active terminal texture.
 8. The terminal context retires submitted render/VT snapshot state after presentation.
 
 ## Invariants
 
 - Host event-loop control flow stays centralized in `main.zig`.
-- Background threads only wait and wake the owner thread; they do not pump PTY, mutate VT, or render.
-- Terminal session mutation enters through `terminal/context.zig` or a smaller terminal owner called by it.
+- Background threads only wait and wake the event-loop thread; they do not pump PTY, mutate VT, or render.
+- Terminal session mutation enters through `terminal/context.zig` or a smaller terminal surface/session module called by it.
 - Host code consumes PTY, VT, and render through shipped C ABIs only.
-- SDL/OpenGL calls stay in host owners and are not exported as broad C buckets.
+- SDL/OpenGL calls stay in host window/display modules and are not exported as broad C buckets.
 - Render prepared buffers are uploaded as complete host surfaces; the host does not reconstruct content from render damage.
 
 ## Non-Goals

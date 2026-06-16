@@ -140,7 +140,7 @@ fn setCurrentThreadName(name: [:0]const u8) void {
     if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(std.c.pthread_self(), name.ptr);
 }
 
-test "child environment policy sets TERM in the app owner" {
+test "child environment policy sets TERM in app config" {
     try std.testing.expect(setenv("TERM", "preexisting-term", 1) == 0);
     applyChildEnvironmentPolicy();
     const value = std.c.getenv("TERM") orelse return error.TestUnexpectedResult;

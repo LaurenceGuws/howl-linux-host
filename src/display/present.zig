@@ -84,7 +84,6 @@ pub fn submitWith(display: anytype, tab: anytype, snapshot: Snapshot, reason: Re
                 .tab_bar_revision = snapshot.tab_bar_revision,
                 .tab_labels = snapshot.labels,
             });
-            logPresentSubmit(reason, token);
             return .{ .reason = reason, .submitted = true, .token = token };
         },
     }
@@ -117,7 +116,7 @@ fn submitForApp(app: anytype, tab: anytype, snapshot: Snapshot, reason: Reason) 
     const AppType = @typeInfo(@TypeOf(app)).pointer.child;
     if (@hasField(AppType, "display")) return submitWith(app.display, tab, snapshot, reason);
     if (@hasField(AppType, "window")) return submitWith(app.window, tab, snapshot, reason);
-    @compileError("present lifecycle requires an app display owner field");
+    @compileError("present lifecycle requires an app display field");
 }
 
 fn drainReadyCompletion(app: anytype) bool {
@@ -127,23 +126,17 @@ fn drainReadyCompletion(app: anytype) bool {
     else if (@hasField(AppType, "window"))
         app.window.takeReadyPresentComplete()
     else
-        @compileError("present lifecycle requires an app display owner field");
+        @compileError("present lifecycle requires an app display field");
     const token = token_opt orelse return false;
     noteFramePacingPresentComplete(app);
     if (app.pending_terminal_present) |terminal_token| {
         if (terminal_token != token) return false;
         completeTerminal(app.tabs.items(), token);
         app.pending_terminal_present = null;
-        logDirtyPresentDone(token, true);
         return true;
     }
-    logDirtyPresentDone(token, false);
     return false;
 }
-
-fn logDirtyPresentDone(_: PresentToken, _: bool) void {}
-
-fn logPresentSubmit(_: Reason, _: PresentToken) void {}
 
 fn noteFramePacingPresentComplete(app: anytype) void {
     const AppType = @typeInfo(@TypeOf(app)).pointer.child;

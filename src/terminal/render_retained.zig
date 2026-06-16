@@ -505,7 +505,7 @@ test "failed retained state remains owned until new work supersedes it" {
     try std.testing.expectEqual(RetainedState.failed, work.state);
 }
 
-test "new retained submit work supersedes failed owner state" {
+test "new retained submit work supersedes failed retained state" {
     var state = testState();
     defer state.deinit();
     state.retained_state = .failed;
