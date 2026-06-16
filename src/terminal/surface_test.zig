@@ -123,7 +123,7 @@ fn testSurfaceBase() Surface {
         .cursor_source_shape = 0,
         .cursor_text_blinking = false,
         .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
-        .cursor_trail_started_ns = [_]u64{0} ** render_retained.max_cursor_trail_rects,
+        .cursor_trail_trigger_ready = false,
     };
 }
 
@@ -441,7 +441,7 @@ test "cursor activity pushes blink deadline while visible" {
         .cursor_source_shape = 0,
         .cursor_text_blinking = false,
         .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
-        .cursor_trail_started_ns = [_]u64{0} ** render_retained.max_cursor_trail_rects,
+        .cursor_trail_trigger_ready = false,
     };
 
     try std.testing.expect(!context.resetCursorBlinkActivity(1234));
