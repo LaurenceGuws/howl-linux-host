@@ -20,6 +20,7 @@ pub const PresentInFlight = struct {
 
 pub const WorkState = struct {
     state: RetainedState,
+    animation_pending: bool = false,
 
     pub fn inFlight(self: WorkState) bool {
         return switch (self.state) {
@@ -29,6 +30,7 @@ pub const WorkState = struct {
     }
 
     pub fn needsRenderSurface(self: WorkState) bool {
+        if (self.animation_pending) return true;
         return switch (self.state) {
             .prepare_needed, .submit_ready, .present_in_flight => true,
             .idle, .failed => false,
@@ -142,6 +144,7 @@ pub const State = struct {
         self.retained_state = classifyRetainedState(state, self.presentPending(), bootstrap_surface, self.retained_state);
         return .{
             .state = self.retained_state,
+            .animation_pending = state.animation_pending != 0,
         };
     }
 
@@ -362,7 +365,7 @@ fn surfaceLayoutChanged(current: SurfaceLayout, next: SurfaceLayout) bool {
 fn classifyRetainedState(work_state: c.HowlRenderSessionWorkState, present_pending: bool, bootstrap_surface: bool, retained_state: RetainedState) RetainedState {
     if (present_pending) return .present_in_flight;
     if (work_state.submit_pending != 0) return .submit_ready;
-    if (work_state.source_pending != 0 or work_state.prepare_pending != 0 or bootstrap_surface) return .prepare_needed;
+    if (work_state.source_pending != 0 or work_state.prepare_pending != 0 or work_state.animation_pending != 0 or bootstrap_surface) return .prepare_needed;
     if (retained_state == .prepare_needed) return .prepare_needed;
     if (retained_state == .failed) return .failed;
     return .idle;
@@ -480,6 +483,17 @@ test "present in flight contributes host-owned pending state" {
 test "host-owned prepare needed survives idle render session work state" {
     const work_state = std.mem.zeroes(c.HowlRenderSessionWorkState);
     try std.testing.expectEqual(RetainedState.prepare_needed, classifyRetainedState(work_state, false, false, .prepare_needed));
+}
+
+test "render animation pending requests retained render work" {
+    var work_state = std.mem.zeroes(c.HowlRenderSessionWorkState);
+    work_state.animation_pending = 1;
+
+    const retained = classifyRetainedState(work_state, false, false, .idle);
+    const work = WorkState{ .state = retained, .animation_pending = true };
+
+    try std.testing.expectEqual(RetainedState.prepare_needed, retained);
+    try std.testing.expect(work.needsRenderSurface());
 }
 
 test "failed retained state remains owned until new work supersedes it" {
