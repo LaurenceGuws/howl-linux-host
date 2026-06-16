@@ -42,6 +42,7 @@ pub const CursorBlink = struct {
     visible: bool = true,
     cursor_opacity: u8 = 255,
     text_blink_opacity: u8 = 255,
+    zero_time_ns: u64 = 0,
     deadline_ns: u64 = 0,
     inactivity_deadline_ns: u64 = 0,
     trail_deadline_ns: u64 = 0,
@@ -69,8 +70,9 @@ pub const CursorBlink = struct {
     }
 
     pub fn resetActivity(self: *CursorBlink, now_ns: u64) bool {
+        self.zero_time_ns = now_ns;
         self.inactivity_deadline_ns = if (self.config.inactivity_stop_ns == 0) 0 else now_ns + self.config.inactivity_stop_ns;
-        self.deadline_ns = if (self.config.interval_ns == 0) 0 else now_ns + cadence_sample_ns;
+        self.deadline_ns = if (self.config.interval_ns == 0) 0 else now_ns + self.config.interval_ns;
         const was_visible = self.visible;
         const was_cursor_opacity = self.cursor_opacity;
         const was_text_opacity = self.text_blink_opacity;
@@ -112,7 +114,7 @@ pub const CursorBlink = struct {
             if (self.deadline_ns == 0) {
                 shared_blink_opacity = if (input.text_blinking) self.text_blink_opacity else self.cursor_opacity;
             } else {
-                shared_blink_opacity = blinkOpacity(false, now_ns, self.config.interval_ns);
+                shared_blink_opacity = blinkOpacity(false, now_ns, self.zero_time_ns, self.config.interval_ns);
             }
             if (deadline_ns == 0) deadline_ns = blinkDeadline(self, now_ns);
         }
@@ -173,21 +175,22 @@ pub const Plan = struct {
 
 fn blinkDeadline(self: CursorBlink, now_ns: u64) u64 {
     if (self.config.interval_ns == 0) return 0;
-    return if (self.deadline_ns == 0 or self.deadline_ns <= now_ns) nextBlinkDeadline(now_ns) else self.deadline_ns;
+    return if (self.deadline_ns == 0 or self.deadline_ns <= now_ns) nextBlinkDeadline(self.zero_time_ns, now_ns, self.config.interval_ns) else self.deadline_ns;
 }
 
 fn trailDeadline(self: CursorBlink, now_ns: u64) u64 {
     return if (self.trail_deadline_ns == 0 or self.trail_deadline_ns <= now_ns) now_ns + cadence_sample_ns else self.trail_deadline_ns;
 }
 
-fn blinkOpacity(animation_valid: bool, now_ns: u64, interval_ns_value: u64) u8 {
+fn blinkOpacity(animation_valid: bool, now_ns: u64, zero_time_ns: u64, interval_ns_value: u64) u8 {
     if (interval_ns_value == 0) return 255;
+    const elapsed_ns = now_ns -| zero_time_ns;
     if (!animation_valid) {
-        const phase = (now_ns / interval_ns_value) % 2;
+        const phase = (elapsed_ns / interval_ns_value) % 2;
         return if (phase == 0) 255 else 0;
     }
     const duration = interval_ns_value * 2;
-    const frac = @as(f32, @floatFromInt(now_ns % duration)) / @as(f32, @floatFromInt(duration));
+    const frac = @as(f32, @floatFromInt(elapsed_ns % duration)) / @as(f32, @floatFromInt(duration));
     const eased = applyEasingCurve(frac);
     return @intFromFloat(eased * 255.0);
 }
@@ -197,8 +200,10 @@ fn applyEasingCurve(frac: f32) f32 {
     return if (x <= 0.0) 0.0 else if (x >= 1.0) 1.0 else x * x * (3.0 - 2.0 * x);
 }
 
-fn nextBlinkDeadline(now_ns: u64) u64 {
-    return now_ns + cadence_sample_ns;
+fn nextBlinkDeadline(zero_time_ns: u64, now_ns: u64, interval_ns_value: u64) u64 {
+    std.debug.assert(interval_ns_value != 0);
+    const elapsed_ns = now_ns -| zero_time_ns;
+    return zero_time_ns + ((elapsed_ns / interval_ns_value) + 1) * interval_ns_value;
 }
 
 fn secondsToNs(seconds: f64) u64 {
@@ -228,7 +233,8 @@ fn waitMsFromDeadline(deadline_ns: u64, now_ns: u64) ?u32 {
 test "cursor activity pushes blink deadline while visible" {
     var state = CursorBlink.init(.{});
     try std.testing.expect(!state.resetActivity(1234));
-    try std.testing.expectEqual(@as(u64, 1234) + cadence_sample_ns, state.deadline_ns);
+    try std.testing.expectEqual(@as(u64, 1234), state.zero_time_ns);
+    try std.testing.expectEqual(@as(u64, 1234) + default_interval_ns, state.deadline_ns);
     try std.testing.expectEqual(@as(u64, 1234) + default_inactivity_stop_ns, state.inactivity_deadline_ns);
     try std.testing.expect(state.visible);
 }
@@ -243,14 +249,14 @@ test "disabled animation forces visible" {
 }
 
 test "cursor blink animates without text blink" {
-    var state = CursorBlink{ .visible = true, .cursor_opacity = 255, .deadline_ns = default_interval_ns };
+    var state = CursorBlink{ .visible = true, .cursor_opacity = 255, .zero_time_ns = 0, .deadline_ns = default_interval_ns };
     const facts = state.cadenceFacts(.{ .animate = true, .animation_valid = false, .text_blinking = false, .trail_active = false }, default_interval_ns);
     try std.testing.expectEqual(@as(u8, 0), facts.cursor_opacity);
     try std.testing.expect(facts.wait_ms != null);
 }
 
 test "cursor blink stays hard edged instead of fading dark" {
-    var state = CursorBlink{ .visible = true, .cursor_opacity = 255, .deadline_ns = default_interval_ns };
+    var state = CursorBlink{ .visible = true, .cursor_opacity = 255, .zero_time_ns = 0, .deadline_ns = default_interval_ns };
     const half_cycle = default_interval_ns / 2;
     const facts = state.cadenceFacts(.{ .animate = true, .animation_valid = true, .text_blinking = false, .trail_active = false }, half_cycle);
     try std.testing.expect(facts.cursor_opacity == 255 or facts.cursor_opacity == 0);
@@ -261,12 +267,23 @@ test "deadline initialization does not flicker" {
     const facts = state.cadenceFacts(.{ .animate = true, .animation_valid = true, .text_blinking = false, .trail_active = false }, 1234);
     try std.testing.expect(!facts.dirty);
     try std.testing.expect(facts.visible);
-    try std.testing.expectEqual(@as(u64, 1234) + cadence_sample_ns, facts.deadline_ns);
+    try std.testing.expectEqual(default_interval_ns, facts.deadline_ns);
 }
 
 test "square wave opacity alternates when animation config is invalid" {
-    try std.testing.expectEqual(@as(u8, 255), blinkOpacity(false, 0, default_interval_ns));
-    try std.testing.expectEqual(@as(u8, 0), blinkOpacity(false, default_interval_ns, default_interval_ns));
+    try std.testing.expectEqual(@as(u8, 255), blinkOpacity(false, 0, 0, default_interval_ns));
+    try std.testing.expectEqual(@as(u8, 0), blinkOpacity(false, default_interval_ns, 0, default_interval_ns));
+    try std.testing.expectEqual(@as(u8, 255), blinkOpacity(false, default_interval_ns, default_interval_ns, default_interval_ns));
+}
+
+test "cursor activity defers hidden blink phase" {
+    var state = CursorBlink{ .visible = false, .cursor_opacity = 0, .zero_time_ns = 0, .deadline_ns = default_interval_ns };
+    try std.testing.expect(state.resetActivity(default_interval_ns));
+
+    const facts = state.cadenceFacts(.{ .animate = true, .animation_valid = false, .text_blinking = false, .trail_active = false }, default_interval_ns + 100 * std.time.ns_per_ms);
+    try std.testing.expect(facts.visible);
+    try std.testing.expectEqual(@as(u8, 255), facts.cursor_opacity);
+    try std.testing.expectEqual(default_interval_ns + default_interval_ns, facts.deadline_ns);
 }
 
 test "inactivity stop keeps stored deadline authoritative after expiry" {
@@ -280,7 +297,7 @@ test "inactivity stop keeps stored deadline authoritative after expiry" {
 }
 
 test "text blink cadence continues when focus suppresses main cursor opacity" {
-    var state = CursorBlink{ .config = .{}, .visible = true, .cursor_opacity = 255, .text_blink_opacity = 255, .deadline_ns = default_interval_ns };
+    var state = CursorBlink{ .config = .{}, .visible = true, .cursor_opacity = 255, .text_blink_opacity = 255, .zero_time_ns = 0, .deadline_ns = default_interval_ns };
     const facts = state.cadenceFacts(.{ .animate = false, .animation_valid = false, .text_blinking = true, .trail_active = false }, default_interval_ns);
     try std.testing.expectEqual(@as(u8, 255), facts.cursor_opacity);
     try std.testing.expectEqual(@as(u8, 0), facts.text_blink_opacity);
@@ -294,7 +311,8 @@ test "configured timing values replace hard-coded blink and trail decay" {
     const slow_ns = trailDecayNs(0.6, default_trail_decay_slow_ns);
     var state = CursorBlink.init(.{ .interval_ns = blink_ns, .inactivity_stop_ns = stop_ns, .trail_decay_fast_ns = fast_ns, .trail_decay_slow_ns = slow_ns });
     try std.testing.expect(!state.resetActivity(1000));
-    try std.testing.expectEqual(@as(u64, 1000) + cadence_sample_ns, state.deadline_ns);
+    try std.testing.expectEqual(@as(u64, 1000), state.zero_time_ns);
+    try std.testing.expectEqual(@as(u64, 1000) + blink_ns, state.deadline_ns);
     try std.testing.expectEqual(@as(u64, 1000) + stop_ns, state.inactivity_deadline_ns);
     try std.testing.expectEqual(fast_ns, state.trailDecayLifetimeNs(0));
     try std.testing.expectEqual(slow_ns, state.trailDecayLifetimeNs(15));

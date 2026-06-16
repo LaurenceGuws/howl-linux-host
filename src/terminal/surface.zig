@@ -1327,7 +1327,7 @@ test "cursor activity reset uses the passed now_ns" {
 
     try std.testing.expect(result.drove);
     try std.testing.expect(surface.cursor_blink.visible);
-    try std.testing.expectEqual(now_ns + cursor_blink.cadence_sample_ns, surface.cursor_blink.deadline_ns);
+    try std.testing.expectEqual(now_ns + cursor_blink.default_interval_ns, surface.cursor_blink.deadline_ns);
     try std.testing.expectEqual(@as(u8, 255), surface.cursor_render.cursor_opacity);
 }
 
@@ -1339,7 +1339,7 @@ test "surface activity reset restores visible and refreshes deadline" {
 
     try std.testing.expect(surface.resetCursorBlinkActivity(1234));
     try std.testing.expect(surface.cursor_blink.visible);
-    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.cadence_sample_ns, surface.cursor_blink.deadline_ns);
+    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.default_interval_ns, surface.cursor_blink.deadline_ns);
     try std.testing.expectEqual(@as(u8, 255), surface.cursor_render.cursor_opacity);
 }
 
