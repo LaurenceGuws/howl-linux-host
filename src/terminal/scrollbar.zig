@@ -3,7 +3,7 @@ const EventLoop = @import("../event_loop.zig");
 const Layout = @import("../display/layout.zig");
 const HostInput = @import("../input/input.zig").Input;
 const terminal_term = @import("term.zig");
-const vt_surface = @import("vt_surface.zig");
+const vt_c = @import("howl_vt_c");
 
 const min_width_logical: c_int = 3;
 const max_width_logical: c_int = 11;
@@ -211,7 +211,7 @@ pub fn setScrollbackOffset(term: anytype, offset: u32) bool {
     const mut = mutableTerm(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    const history_count = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
+    const history_count = visibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
     return setScrollbackOffsetLocked(term, history_count, offset);
 }
 
@@ -387,13 +387,19 @@ fn mutableTerm(term: anytype) *@TypeOf(term.*) {
 }
 
 fn scrollStateLocked(term: anytype) ScrollState {
-    const info = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset);
+    const info = visibleInfo(term.vt, term.vt_state.scrollback_offset);
     return .{
         .visible_rows = term.render.surface_layout.rows,
         .scrollback_count = info.history_count,
         .scrollback_offset = term.vt_state.scrollback_offset,
         .alternate_screen = info.is_alternate_screen,
     };
+}
+
+fn visibleInfo(handle: vt_c.HowlVtHandle, scrollback_offset: u32) struct { history_count: u32, is_alternate_screen: bool } {
+    const result = vt_c.howl_vt_terminal_query_visible_info(handle, scrollback_offset);
+    std.debug.assert(result.status == vt_c.HOWL_VT_CALL_OK);
+    return .{ .history_count = @intCast(result.info.history_count), .is_alternate_screen = result.info.is_alternate_screen != 0 };
 }
 
 fn setScrollbackOffsetLocked(term: anytype, history_count: u32, offset: u32) bool {

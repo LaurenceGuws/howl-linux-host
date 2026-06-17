@@ -2,7 +2,6 @@ const pty_session = @import("pty_session.zig");
 const vt_c = @import("howl_vt_c");
 const terminal_term = @import("term.zig");
 const vt_retained = @import("vt_retained.zig");
-const vt_surface = @import("vt_surface.zig");
 const std = @import("std");
 
 const transport_mode: pty_session.TransportPumpMode = .normal;
@@ -254,7 +253,7 @@ const RealTransportOps = struct {
 };
 
 fn feedTermDataLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u32) bool {
-    const history_before = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
+    const history_before = visibleHistoryCount(term);
     const result = vt_retained.feedLocked(term, bytes);
     if (result.status != vt_c.HOWL_VT_CALL_OK) {
         term.pty.lifecycle = .failed;
@@ -264,11 +263,17 @@ fn feedTermDataLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u
     const title = if (result.title_changed != 0) terminal_term.copyTitleLocked(term) catch null else null;
     drainTerminalReplyLocked(term);
     const history_after = if (result.state_changed != 0)
-        vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count
+        visibleHistoryCount(term)
     else
         history_before;
     vt_retained.finishFeed(term, history_before, history_after, result.state_changed != 0, title);
     return true;
+}
+
+fn visibleHistoryCount(term: *terminal_term.Term) u32 {
+    const info = vt_c.howl_vt_terminal_query_visible_info(term.vt, term.vt_state.scrollback_offset);
+    std.debug.assert(info.status == vt_c.HOWL_VT_CALL_OK);
+    return @intCast(info.info.history_count);
 }
 
 fn drainTerminalReplyLocked(term: *terminal_term.Term) void {

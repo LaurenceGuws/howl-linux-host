@@ -4,7 +4,6 @@ const c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 const pty_session = @import("pty_session.zig");
 const retained = @import("render_retained.zig");
-const vt_surface = @import("vt_surface.zig");
 const vt_retained = @import("vt_retained.zig");
 const terminal_scrollbar = @import("scrollbar.zig");
 
@@ -211,7 +210,9 @@ pub fn resizeTermVt(term: anytype, rows: u16, cols: u16) !void {
 
 pub fn resizeTermVtLocked(term: anytype, rows: u16, cols: u16) !void {
     try requireResizeOk(vt_c.howl_vt_terminal_resize(term.vt, rows, cols));
-    clampScrollbackOffset(term, vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset).history_count);
+    const info = vt_c.howl_vt_terminal_query_visible_info(term.vt, term.vt_state.scrollback_offset);
+    try requireOk(info.status);
+    clampScrollbackOffset(term, @intCast(info.info.history_count));
 }
 
 pub fn setTermCellPixelSize(term: anytype, width: u16, height: u16) !void {

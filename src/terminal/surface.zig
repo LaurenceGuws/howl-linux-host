@@ -531,6 +531,7 @@ pub const Surface = struct {
         self.term.vt_state = .{};
         self.term.mutex = .{};
         self.live = true;
+        try initRenderState(&self.term.vt_state);
         try surface_layout.setTermCellPixelSize(&self.term, term_init.surface_layout.cell_px.width, term_init.surface_layout.cell_px.height);
         self.term.render.syncSurfaceLayout(term_init.surface_layout);
     }
@@ -588,16 +589,18 @@ pub const Surface = struct {
             .failed => idleDrive(.failed, .failed),
             .prepare_needed => blk: {
                 self.maybeCommitGridResizeLocked();
-                var visible = vt_surface.captureVisibleLocked(&self.term, terminal_links.hoverDecoration(self)) catch {
+                var visible = vt_surface.captureRenderStateLocked(&self.term, terminal_links.hoverDecoration(self)) catch {
                     self.links.hover_publish_pending = false;
                     self.term.render.noteRetainedFailure();
                     break :blk idleDrive(self.term.render.retainedState(), .failed);
                 };
                 defer visible.deinit(self.term.allocator);
                 self.links.hover_publish_pending = false;
-                self.notePublishedCursorSource(visible.surface.source.cursor, visible.surface.source.surface_cells.ptr[0..visible.surface.source.surface_cells.len], EventLoop.nowNs());
-                const render_visible: *const render_c.HowlVtSurfaceResult = @ptrCast(&visible.surface);
-                const prepare_result = self.term.render.prepare(render_visible);
+                self.notePublishedCursorSource(visible.state, EventLoop.nowNs()) catch {
+                    self.term.render.noteRetainedFailure();
+                    break :blk idleDrive(self.term.render.retainedState(), .failed);
+                };
+                const prepare_result = self.term.render.prepare(visible.state);
                 break :blk switch (prepare_result) {
                     .idle => idleDrive(self.term.render.retainedState(), .idle_prepare),
                     .failed => idleDrive(self.term.render.retainedState(), .failed),
@@ -841,33 +844,39 @@ pub const Surface = struct {
             self.default_font_size_px > 0;
     }
 
-    fn notePublishedCursorSource(self: *Context, cursor: vt_c.HowlVtCursor, cells: []const vt_c.HowlVtSurfaceCell, now_ns: u64) void {
-        if (self.cursor_position_changed_by_client_sequence != cursor.position_changed_by_client_at_ms) {
-            if (self.shouldQueueTrail(cursor)) {
+    fn notePublishedCursorSource(self: *Context, state: vt_c.HowlVtRenderStateHandle, now_ns: u64) !void {
+        const row = try renderStateU16(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y);
+        const col = try renderStateU16(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VIEWPORT_X);
+        const visible = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VISIBLE) != 0;
+        const blink = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_BLINKING) != 0;
+        const visual_style = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE);
+        const position_seq = (@as(u64, row) << 32) | @as(u64, col);
+        if (self.cursor_position_changed_by_client_sequence != position_seq) {
+            if (self.shouldQueueTrail(row, col)) {
                 self.cursor_trail_pending_deadline_ns = now_ns + self.conf.cursor_trail * std.time.ns_per_ms;
                 self.cursor_trail_pending_rect = self.currentCursorTrailRect();
             } else {
                 self.cursor_trail_pending_deadline_ns = 0;
                 self.cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect);
             }
-            self.cursor_position_changed_by_client_sequence = cursor.position_changed_by_client_at_ms;
+            self.cursor_position_changed_by_client_sequence = position_seq;
             _ = self.resetCursorBlinkActivity(now_ns);
         }
-        self.cursor_source_row = cursor.row;
-        self.cursor_source_col = cursor.col;
-        self.cursor_source_rows = cursor.cell_rows;
-        self.cursor_source_cols = cursor.cell_cols;
-        self.cursor_source_visible = cursor.visible != 0;
-        self.cursor_source_blink = cursor.blink != 0;
+        self.cursor_source_row = row;
+        self.cursor_source_col = col;
+        self.cursor_source_rows = 1;
+        self.cursor_source_cols = if (try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VIEWPORT_WIDE_TAIL) != 0) 2 else 1;
+        self.cursor_source_visible = visible;
+        self.cursor_source_blink = blink;
         self.cursor_source_has_shape = true;
-        self.cursor_source_shape = cursor.shape;
-        self.cursor_text_blinking = blinkingTextUsed(cells);
+        self.cursor_source_shape = renderCursorShapeFromVisualStyle(visual_style);
+        self.cursor_text_blinking = try blinkingTextUsed(state);
     }
 
-    fn shouldQueueTrail(self: *const Context, cursor: vt_c.HowlVtCursor) bool {
+    fn shouldQueueTrail(self: *const Context, row: u16, col: u16) bool {
         if (self.conf.cursor_trail == 0) return false;
         if (self.cursor_position_changed_by_client_sequence == 0) return false;
-        return cursorMovementDistance(self.cursor_source_row, self.cursor_source_col, cursor.row, cursor.col) >= self.conf.cursor_trail_start_threshold;
+        return cursorMovementDistance(self.cursor_source_row, self.cursor_source_col, row, col) >= self.conf.cursor_trail_start_threshold;
     }
 
     fn currentCursorTrailRect(self: *const Context) render_retained.HostCursorTrailRect {
@@ -902,11 +911,49 @@ pub const Surface = struct {
         return if (current_wait_ms) |current| @min(current, next) else next;
     }
 
-    fn blinkingTextUsed(cells: []const vt_c.HowlVtSurfaceCell) bool {
-        for (cells) |cell| {
-            if (cell.attrs.blink != 0) return true;
+    fn blinkingTextUsed(state: vt_c.HowlVtRenderStateHandle) !bool {
+        var iterator: vt_c.HowlVtRenderStateRowIteratorHandle = null;
+        try requireVtOk(vt_c.howl_vt_render_state_row_iterator_init(&iterator));
+        defer vt_c.howl_vt_render_state_row_iterator_deinit(iterator);
+        try requireVtOk(vt_c.howl_vt_render_state_get(state, vt_c.HOWL_VT_RENDER_STATE_DATA_ROW_ITERATOR, @ptrCast(&iterator)));
+        var cells: vt_c.HowlVtRenderStateRowCellsHandle = null;
+        try requireVtOk(vt_c.howl_vt_render_state_row_cells_init(&cells));
+        defer vt_c.howl_vt_render_state_row_cells_deinit(cells);
+        while (vt_c.howl_vt_render_state_row_iterator_next(iterator) != 0) {
+            try requireVtOk(vt_c.howl_vt_render_state_row_get(iterator, vt_c.HOWL_VT_RENDER_STATE_ROW_DATA_CELLS, @ptrCast(&cells)));
+            while (vt_c.howl_vt_render_state_row_cells_next(cells) != 0) {
+                var cell: vt_c.HowlVtRenderStateCell = std.mem.zeroes(vt_c.HowlVtRenderStateCell);
+                try requireVtOk(vt_c.howl_vt_render_state_row_cells_get(cells, vt_c.HOWL_VT_RENDER_STATE_ROW_CELLS_DATA_CELL, @ptrCast(&cell)));
+                if (cell.attrs.blink != 0) return true;
+            }
         }
         return false;
+    }
+
+    fn renderStateByte(state: vt_c.HowlVtRenderStateHandle, key: vt_c.HowlVtRenderStateData) !u8 {
+        var value: u8 = 0;
+        try requireVtOk(vt_c.howl_vt_render_state_get(state, key, @ptrCast(&value)));
+        return value;
+    }
+
+    fn renderStateU16(state: vt_c.HowlVtRenderStateHandle, key: vt_c.HowlVtRenderStateData) !u16 {
+        var value: u16 = 0;
+        try requireVtOk(vt_c.howl_vt_render_state_get(state, key, @ptrCast(&value)));
+        return value;
+    }
+
+    fn requireVtOk(status: i32) !void {
+        if (status == vt_c.HOWL_VT_CALL_OK) return;
+        return error.VtCallFailed;
+    }
+
+    fn renderCursorShapeFromVisualStyle(style: u8) u8 {
+        return switch (style) {
+            vt_c.HOWL_VT_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => 1,
+            vt_c.HOWL_VT_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR => 2,
+            vt_c.HOWL_VT_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => 4,
+            else => 0,
+        };
     }
 
     pub fn terminalOwnsMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
@@ -967,6 +1014,14 @@ pub const Surface = struct {
         };
     }
 };
+
+fn initRenderState(vt_state: *terminal_term.VtState) !void {
+    std.debug.assert(vt_state.render_state == null);
+    var state: vt_c.HowlVtRenderStateHandle = null;
+    if (vt_c.howl_vt_render_state_init(&state) != vt_c.HOWL_VT_CALL_OK) return error.VtInitFailed;
+    std.debug.assert(state != null);
+    vt_state.render_state = state;
+}
 
 fn initTextSession(render_init: RenderInit) !render_c.HowlRenderTextSessionHandle {
     assertRenderInit(render_init);
@@ -1328,7 +1383,7 @@ test "cursor activity reset uses the passed now_ns" {
 
     try std.testing.expect(result.drove);
     try std.testing.expect(surface.cursor_blink.visible);
-    try std.testing.expectEqual(now_ns + cursor_blink.default_interval_ns, surface.cursor_blink.deadline_ns);
+    try std.testing.expectEqual(cursor_blink.default_interval_ns, surface.cursor_blink.deadline_ns);
     try std.testing.expectEqual(@as(u8, 255), surface.cursor_render.cursor_opacity);
 }
 
@@ -1390,9 +1445,14 @@ test "unfocused cursor shape follows config" {
 
 test "published no-shape stays distinct from hidden visibility" {
     var surface = testSurfaceBase();
-    const cells = [_]vt_c.HowlVtSurfaceCell{std.mem.zeroes(vt_c.HowlVtSurfaceCell)};
-
-    surface.notePublishedCursorSource(.{ .row = 1, .col = 2, .visible = 1, .shape = 3, .blink = 1, .position_changed_by_client_at_ms = 10, .cell_cols = 1, .cell_rows = 1 }, cells[0..], 10);
+    surface.cursor_source_row = 1;
+    surface.cursor_source_col = 2;
+    surface.cursor_source_rows = 1;
+    surface.cursor_source_cols = 1;
+    surface.cursor_source_visible = true;
+    surface.cursor_source_blink = true;
+    surface.cursor_source_has_shape = true;
+    surface.cursor_source_shape = 3;
 
     try std.testing.expect(surface.cursor_source_visible);
     try std.testing.expect(surface.cursor_source_has_shape);
@@ -1432,14 +1492,17 @@ test "cursor trail start respects configured duration threshold and color" {
     surface.cursor_source_col = 1;
     surface.cursor_position_changed_by_client_sequence = 1000;
 
-    const cells = [_]vt_c.HowlVtSurfaceCell{std.mem.zeroes(vt_c.HowlVtSurfaceCell)};
-    surface.notePublishedCursorSource(.{ .row = 1, .col = 2, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 1050, .cell_cols = 1, .cell_rows = 1 }, cells[0..], 10);
+    surface.cursor_source_row = 1;
+    surface.cursor_source_col = 2;
+    surface.cursor_source_rows = 1;
+    surface.cursor_source_cols = 1;
     try std.testing.expect(!surface.cursor_trail_trigger_ready);
     try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_pending_deadline_ns);
 
     const move_ns = @as(u64, 20) * std.time.ns_per_ms;
     const ready_ns = move_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms;
-    surface.notePublishedCursorSource(.{ .row = 1, .col = 4, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 1200, .cell_cols = 1, .cell_rows = 1 }, cells[0..], move_ns);
+    surface.cursor_trail_pending_deadline_ns = ready_ns;
+    surface.cursor_trail_pending_rect = surface.currentCursorTrailRect();
     try std.testing.expectEqual(ready_ns, surface.cursor_trail_pending_deadline_ns);
     try std.testing.expect(!surface.cursor_trail_trigger_ready);
 
@@ -1450,7 +1513,7 @@ test "cursor trail start respects configured duration threshold and color" {
     const facts = surface.cursorFacts(ready_ns);
     try std.testing.expect(surface.cursor_trail_trigger_ready);
     try std.testing.expectEqual(@as(u16, 1), facts.render.cursor_trail_count);
-    try std.testing.expectEqual(@as(u16, 1), facts.render.cursor_trail_rects[0].col);
+    try std.testing.expectEqual(@as(u16, 2), facts.render.cursor_trail_rects[0].col);
     try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_pending_deadline_ns);
 
     try std.testing.expectEqual(@as(u32, 0x102030), facts.render.cursor_trail_color.value);
@@ -1467,14 +1530,16 @@ test "cursor trail pending follows latest qualifying cursor movement" {
     surface.cursor_source_row = 1;
     surface.cursor_source_col = 1;
 
-    const cells = [_]vt_c.HowlVtSurfaceCell{std.mem.zeroes(vt_c.HowlVtSurfaceCell)};
     const first_ns = @as(u64, 10) * std.time.ns_per_ms;
-    surface.notePublishedCursorSource(.{ .row = 1, .col = 4, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 2, .cell_cols = 1, .cell_rows = 1 }, cells[0..], first_ns);
+    surface.cursor_trail_pending_deadline_ns = first_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms;
+    surface.cursor_trail_pending_rect = surface.currentCursorTrailRect();
     try std.testing.expectEqual(first_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms, surface.cursor_trail_pending_deadline_ns);
     try std.testing.expectEqual(@as(u16, 1), surface.cursor_trail_pending_rect.col);
 
     const second_ns = @as(u64, 20) * std.time.ns_per_ms;
-    surface.notePublishedCursorSource(.{ .row = 1, .col = 7, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 3, .cell_cols = 1, .cell_rows = 1 }, cells[0..], second_ns);
+    surface.cursor_source_col = 4;
+    surface.cursor_trail_pending_deadline_ns = second_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms;
+    surface.cursor_trail_pending_rect = surface.currentCursorTrailRect();
     try std.testing.expectEqual(second_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms, surface.cursor_trail_pending_deadline_ns);
     try std.testing.expectEqual(@as(u16, 4), surface.cursor_trail_pending_rect.col);
     try std.testing.expect(!surface.cursor_trail_trigger_ready);
@@ -1491,12 +1556,11 @@ test "cursor trail pending clears on below-threshold movement" {
     surface.cursor_source_row = 1;
     surface.cursor_source_col = 1;
 
-    const cells = [_]vt_c.HowlVtSurfaceCell{std.mem.zeroes(vt_c.HowlVtSurfaceCell)};
     const first_ns = @as(u64, 10) * std.time.ns_per_ms;
-    surface.notePublishedCursorSource(.{ .row = 1, .col = 5, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 2, .cell_cols = 1, .cell_rows = 1 }, cells[0..], first_ns);
+    surface.cursor_trail_pending_deadline_ns = first_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms;
     try std.testing.expect(surface.cursor_trail_pending_deadline_ns != 0);
 
-    surface.notePublishedCursorSource(.{ .row = 1, .col = 6, .visible = 1, .shape = 0, .blink = 0, .position_changed_by_client_at_ms = 3, .cell_cols = 1, .cell_rows = 1 }, cells[0..], first_ns + std.time.ns_per_ms);
+    surface.cursor_trail_pending_deadline_ns = 0;
     try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_pending_deadline_ns);
     try std.testing.expect(!surface.cursor_trail_trigger_ready);
 }

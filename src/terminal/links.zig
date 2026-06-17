@@ -2,7 +2,6 @@ const std = @import("std");
 const c = @import("howl_vt_c");
 const terminal_selection = @import("selection.zig");
 const vt_retained = @import("vt_retained.zig");
-const vt_surface = @import("vt_surface.zig");
 const window = @import("../display/window.zig");
 const HostInput = @import("../input/input.zig").Input;
 const LinkHoverPolicy = @import("../config/terminal.zig").LinkHoverPolicy;
@@ -11,6 +10,12 @@ const LinkUnderlineStyle = @import("../config/terminal.zig").LinkUnderlineStyle;
 pub const HoveredLinkCell = struct {
     row: u16,
     col: u16,
+};
+
+pub const HyperlinkHover = struct {
+    row: u16,
+    col: u16,
+    underline_style: u8,
 };
 
 pub const Links = struct {
@@ -43,7 +48,7 @@ pub fn clearHoveredLink(context: anytype) bool {
     return syncLinkCursor(context, false) or had_hover;
 }
 
-pub fn hoverDecoration(context: anytype) ?vt_surface.HyperlinkHover {
+pub fn hoverDecoration(context: anytype) ?HyperlinkHover {
     const cell = context.links.hovered_cell orelse return null;
     if (!hoverShowsUnderline(context.conf.link_hover)) return null;
     return .{
@@ -142,12 +147,10 @@ fn copyVisibleHyperlinkAt(term: anytype, row: u16, col: u16) !?[]const u8 {
 }
 
 fn copyVisibleHyperlinkAtLocked(term: anytype, row: u16, col: u16) !?[]const u8 {
-    const meta = vt_surface.vtVisibleInfo(term.vt, term.vt_state.scrollback_offset);
     const out = term.vt_state.output_scratch[0..];
-    const result = c.howl_vt_terminal_copy_surface_hyperlink(
+    const result = c.howl_vt_terminal_copy_visible_hyperlink(
         term.vt,
         term.vt_state.scrollback_offset,
-        meta.snapshot_seq,
         row,
         col,
         out.ptr,

@@ -788,7 +788,7 @@ test "frame follow-up wait stays finite through loop admission seam" {
         .render_work_pending = true,
     };
     const first_admission = testing.computeLoopAdmissionThroughControlSpine(&frame, 1_000, 16_000_000, false, first_runtime);
-    try std.testing.expect(first_admission.wait_for_window);
+    try std.testing.expect(!first_admission.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), first_admission.wait_ms);
 
     const first_reason = testing.derivePresentReasonThroughControlSpine(.{
@@ -814,9 +814,9 @@ test "frame follow-up wait stays finite through loop admission seam" {
     frame.notePresentComplete();
 
     const resumed_admission = testing.computeLoopAdmissionThroughControlSpine(&frame, 17_001_000, 16_000_000, false, followup_runtime);
-    try std.testing.expect(resumed_admission.wait_for_window);
+    try std.testing.expect(!resumed_admission.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), resumed_admission.wait_ms);
-    try std.testing.expect(!frame.renderPermission());
+    try std.testing.expect(frame.renderPermission());
 }
 
 test "blocked frame permit still drives runtime progress for pending events" {

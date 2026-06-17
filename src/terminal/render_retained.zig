@@ -213,9 +213,9 @@ pub const State = struct {
         self.rdr_sfc_handle = null;
     }
 
-    pub fn prepare(self: *State, vt_surface: *const c.HowlVtSurfaceResult) PrepareResult {
+    pub fn prepare(self: *State, render_state: ?*anyopaque) PrepareResult {
         var request = std.mem.zeroes(c.HowlRenderPrepareRequest);
-        const take_status = c.howl_render_text_session_take_prepare_request(self.text_session, vt_surface, &request);
+        const take_status = c.howl_render_text_session_take_prepare_request(self.text_session, @ptrCast(render_state), &request);
         switch (take_status) {
             c.HOWL_RENDER_PREPARE_IDLE => {
                 self.releaseRdrSfcHandle();
@@ -389,61 +389,19 @@ fn testState() State {
 
 fn prepareTestSource(state: *State, snapshot_seq: u64) !void {
     const layout = state.surface_layout;
-    const cell_count = @as(usize, layout.cols) * @as(usize, layout.rows);
-    var cells = try std.testing.allocator.alloc(c.HowlVtSurfaceCell, cell_count);
-    defer std.testing.allocator.free(cells);
-    var cell_index: usize = 0;
-    while (cell_index < cell_count) : (cell_index += 1) {
-        cells[cell_index] = .{
-            .codepoint = 'a',
-            .flags = .{ .continuation = 0 },
-            .fg_color = .{ .kind = 0, .value = 0 },
-            .bg_color = .{ .kind = 0, .value = 0 },
-            .underline_color = .{ .kind = 0, .value = 0 },
-            .underline_style = 0,
-            .attrs = std.mem.zeroes(c.HowlVtSurfaceCellAttrs),
-            .link_id = 0,
-        };
+    const terminal = c.howl_vt_terminal_init(layout.rows, layout.cols, 16) orelse return error.TestUnexpectedResult;
+    defer c.howl_vt_terminal_deinit(terminal);
+    const bytes = [_]u8{'a'};
+    var feed_index: u64 = 0;
+    while (feed_index < @max(snapshot_seq, 1)) : (feed_index += 1) {
+        const feed = c.howl_vt_terminal_feed(terminal, &bytes, bytes.len);
+        try std.testing.expectEqual(c.HOWL_VT_CALL_OK, feed.status);
     }
-    var dirty_rows = try std.testing.allocator.alloc(u8, layout.rows);
-    defer std.testing.allocator.free(dirty_rows);
-    var dirty_cols_start = try std.testing.allocator.alloc(u16, layout.rows);
-    defer std.testing.allocator.free(dirty_cols_start);
-    var dirty_cols_end = try std.testing.allocator.alloc(u16, layout.rows);
-    defer std.testing.allocator.free(dirty_cols_end);
-    var row: usize = 0;
-    while (row < layout.rows) : (row += 1) {
-        dirty_rows[row] = 1;
-        dirty_cols_start[row] = 0;
-        dirty_cols_end[row] = layout.cols - 1;
-    }
-    var surface = c.HowlVtSurfaceResult{
-        .status = c.HOWL_VT_CALL_OK,
-        .history_count = 0,
-        .scrollback_offset = 0,
-        .snapshot_seq = snapshot_seq,
-        .dirty_generation = snapshot_seq,
-        .source = .{
-            .surface_cells = .{ .ptr = cells.ptr, .len = cells.len },
-            .cols = layout.cols,
-            .rows = layout.rows,
-            .scroll_row = 0,
-            .is_alternate_screen = 0,
-            .reserved0 = 0,
-            .reserved1 = 0,
-            .dirty_rows = .{ .ptr = dirty_rows.ptr, .len = dirty_rows.len },
-            .dirty_cols_start = .{ .ptr = dirty_cols_start.ptr, .len = dirty_cols_start.len },
-            .dirty_cols_end = .{ .ptr = dirty_cols_end.ptr, .len = dirty_cols_end.len },
-            .cursor = .{ .row = 0, .col = 0, .visible = 1, .shape = 0, .blink = 0, .reserved0 = 0, .position_changed_by_client_at_ms = 0, .cell_cols = 1, .cell_rows = 1 },
-            .cursor_color = .{ .kind = 0, .value = 0 },
-            .cursor_text_color = .{ .kind = 0, .value = 0 },
-            .extra_cursor_count = 0,
-            .extra_cursors = [_]c.HowlVtExtraCursor{.{}} ** 256,
-            .colors = std.mem.zeroes(c.HowlVtRenderColorState),
-            .selection = .{ .active = 0, .selecting = 0, .reserved0 = 0, .start = .{ .row = 0, .col = 0, .reserved0 = 0 }, .end = .{ .row = 0, .col = 0, .reserved0 = 0 } },
-        },
-    };
-    try std.testing.expectEqual(PrepareResult.prepared, state.prepare(&surface));
+    var render_state: c.HowlVtRenderStateHandle = null;
+    try std.testing.expectEqual(c.HOWL_VT_CALL_OK, c.howl_vt_render_state_init(&render_state));
+    defer c.howl_vt_render_state_deinit(render_state);
+    try std.testing.expectEqual(c.HOWL_VT_CALL_OK, c.howl_vt_render_state_update(render_state, terminal, 0));
+    try std.testing.expectEqual(PrepareResult.prepared, state.prepare(render_state));
 }
 
 fn derivedTestSurfaceLayout(handle: c.HowlRenderTextSessionHandle) !SurfaceLayout {

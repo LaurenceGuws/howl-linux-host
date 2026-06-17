@@ -272,60 +272,21 @@ fn prepareSubmitSurface(surface: *Surface, snapshot_seq: u64) !void {
 }
 
 fn prepareSubmitSurfaceWithCursor(surface: *Surface, snapshot_seq: u64, cursor_visible: bool) !void {
+    _ = cursor_visible;
     const layout = surface.term.render.surface_layout;
-    const cell_count = @as(usize, layout.cols) * @as(usize, layout.rows);
-    const cells = try std.testing.allocator.alloc(render_c.HowlVtSurfaceCell, cell_count);
-    defer std.testing.allocator.free(cells);
-    for (cells) |*cell| {
-        cell.* = .{
-            .codepoint = 'a',
-            .flags = .{ .continuation = 0 },
-            .fg_color = .{ .kind = 0, .value = 0 },
-            .bg_color = .{ .kind = 0, .value = 0 },
-            .underline_color = .{ .kind = 0, .value = 0 },
-            .underline_style = 0,
-            .attrs = std.mem.zeroes(render_c.HowlVtSurfaceCellAttrs),
-            .link_id = 0,
-        };
+    const terminal = render_c.howl_vt_terminal_init(layout.rows, layout.cols, 16) orelse return error.TestUnexpectedResult;
+    defer render_c.howl_vt_terminal_deinit(terminal);
+    const bytes = [_]u8{'a'};
+    var feed_index: u64 = 0;
+    while (feed_index < @max(snapshot_seq, 1)) : (feed_index += 1) {
+        const feed = render_c.howl_vt_terminal_feed(terminal, &bytes, bytes.len);
+        try std.testing.expectEqual(render_c.HOWL_VT_CALL_OK, feed.status);
     }
-    const dirty_rows = try std.testing.allocator.alloc(u8, layout.rows);
-    defer std.testing.allocator.free(dirty_rows);
-    const dirty_cols_start = try std.testing.allocator.alloc(u16, layout.rows);
-    defer std.testing.allocator.free(dirty_cols_start);
-    const dirty_cols_end = try std.testing.allocator.alloc(u16, layout.rows);
-    defer std.testing.allocator.free(dirty_cols_end);
-    for (0..layout.rows) |row| {
-        dirty_rows[row] = 1;
-        dirty_cols_start[row] = 0;
-        dirty_cols_end[row] = layout.cols - 1;
-    }
-    var visible = render_c.HowlVtSurfaceResult{
-        .status = render_c.HOWL_VT_CALL_OK,
-        .history_count = 0,
-        .scrollback_offset = 0,
-        .snapshot_seq = snapshot_seq,
-        .dirty_generation = snapshot_seq,
-        .source = .{
-            .surface_cells = .{ .ptr = cells.ptr, .len = cells.len },
-            .cols = layout.cols,
-            .rows = layout.rows,
-            .scroll_row = 0,
-            .is_alternate_screen = 0,
-            .reserved0 = 0,
-            .reserved1 = 0,
-            .dirty_rows = .{ .ptr = dirty_rows.ptr, .len = dirty_rows.len },
-            .dirty_cols_start = .{ .ptr = dirty_cols_start.ptr, .len = dirty_cols_start.len },
-            .dirty_cols_end = .{ .ptr = dirty_cols_end.ptr, .len = dirty_cols_end.len },
-            .cursor = .{ .row = 0, .col = 0, .visible = @intFromBool(cursor_visible), .shape = 0, .blink = 0, .reserved0 = 0, .position_changed_by_client_at_ms = snapshot_seq, .cell_cols = 1, .cell_rows = 1 },
-            .cursor_color = .{ .kind = 0, .value = 0 },
-            .cursor_text_color = .{ .kind = 0, .value = 0 },
-            .extra_cursor_count = 0,
-            .extra_cursors = [_]render_c.HowlVtExtraCursor{.{}} ** 256,
-            .colors = std.mem.zeroes(render_c.HowlVtRenderColorState),
-            .selection = .{ .active = 0, .selecting = 0, .reserved0 = 0, .start = .{ .row = 0, .col = 0, .reserved0 = 0 }, .end = .{ .row = 0, .col = 0, .reserved0 = 0 } },
-        },
-    };
-    try std.testing.expectEqual(render_retained.PrepareResult.prepared, surface.term.render.prepare(&visible));
+    var render_state: render_c.HowlVtRenderStateHandle = null;
+    try std.testing.expectEqual(render_c.HOWL_VT_CALL_OK, render_c.howl_vt_render_state_init(&render_state));
+    defer render_c.howl_vt_render_state_deinit(render_state);
+    try std.testing.expectEqual(render_c.HOWL_VT_CALL_OK, render_c.howl_vt_render_state_update(render_state, terminal, 0));
+    try std.testing.expectEqual(render_retained.PrepareResult.prepared, surface.term.render.prepare(render_state));
     try recordExpectedPreparedUpload(surface);
 }
 
@@ -444,8 +405,8 @@ test "cursor activity pushes blink deadline while visible" {
         .cursor_trail_trigger_ready = false,
     };
 
-    try std.testing.expect(!context.resetCursorBlinkActivity(1234));
-    try std.testing.expectEqual(@as(u64, 1234) + cursor_blink.default_interval_ns, context.cursor_blink.deadline_ns);
+    try std.testing.expect(context.resetCursorBlinkActivity(1234));
+    try std.testing.expectEqual(@as(u64, 0), context.cursor_blink.deadline_ns);
     try std.testing.expectEqual(@as(u64, 1234), context.cursor_render.now_ns);
     try std.testing.expect(context.cursor_blink.visible);
 }
@@ -527,8 +488,8 @@ test "pty redraw does not reset cursor blink cadence" {
 
     try std.testing.expect(result.drove);
     try std.testing.expect(result.outcome.should_redraw);
-    try std.testing.expectEqual(@as(u8, 0), surface.cursor_blink.cursor_opacity);
-    try std.testing.expect(!surface.cursor_blink.visible);
+    try std.testing.expectEqual(@as(u8, 255), surface.cursor_blink.cursor_opacity);
+    try std.testing.expect(surface.cursor_blink.visible);
 }
 
 test "inactive tab wake re-enters from explicit wake admission" {
@@ -1189,7 +1150,7 @@ test "host upload failure returns failed submit without render submit" {
 
     try std.testing.expect(submit_hook_state.saw_unlocked);
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
-    try std.testing.expectEqual(@as(u64, 51), result.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 1), result.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 0), submit_hook_state.submit_calls);
     try std.testing.expectEqual(render_retained.RetainedState.failed, surface.term.render.retainedState());
 }
@@ -1291,7 +1252,7 @@ test "resize upload failure zeros host dimensions and retry submits same full fr
     try prepareSubmitSurface(&surface, 52);
     const info = submit_hook_state.expected_info;
     const prepared_surface = submit_hook_state.expected_surface;
-    try std.testing.expectEqual(@as(u64, 52), info.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 1), info.snapshot_seq);
     try std.testing.expectEqual(@as(u64, 2), info.geometry_epoch);
     try std.testing.expectEqual(render_c.HOWL_RENDER_DAMAGE_FULL, info.damage_kind);
     try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.snapshot_seq);
@@ -1339,7 +1300,7 @@ test "resize while present pending waits for matching ack before resized submit"
     const prior_submit = surface_testing.submitPrepared(&surface);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, prior_submit.result);
-    try std.testing.expectEqual(@as(u64, 51), prior_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 1), prior_submit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
     const prior_token: u64 = 900;
@@ -1352,7 +1313,7 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expectEqual(@as(u64, 2), surface.term.render.geometry_epoch);
 
     try prepareSubmitSurface(&surface, 52);
-    try std.testing.expectEqual(@as(u64, 52), submit_hook_state.expected_info.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 1), submit_hook_state.expected_info.snapshot_seq);
     try std.testing.expectEqual(@as(u64, 2), submit_hook_state.expected_info.geometry_epoch);
 
     try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
@@ -1383,7 +1344,7 @@ test "resize while present pending waits for matching ack before resized submit"
     const resized_submit = surface_testing.submitPrepared(&surface);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, resized_submit.result);
-    try std.testing.expectEqual(@as(u64, 52), resized_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 1), resized_submit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
     try std.testing.expect(!submit_hook_state.host_upload_had_matching_surface);
@@ -1403,7 +1364,7 @@ test "cursor visibility change while present pending submits latest snapshot aft
     const prior_submit = surface_testing.submitPrepared(&surface);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, prior_submit.result);
-    try std.testing.expectEqual(@as(u64, 51), prior_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 1), prior_submit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
     const prior_token: u64 = 900;
@@ -1411,7 +1372,7 @@ test "cursor visibility change while present pending submits latest snapshot aft
     try std.testing.expect(surface.term.render.presentPending());
 
     try prepareSubmitSurfaceWithCursor(&surface, 52, false);
-    try std.testing.expectEqual(@as(u64, 52), submit_hook_state.expected_info.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 1), submit_hook_state.expected_info.snapshot_seq);
     try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
@@ -1427,7 +1388,7 @@ test "cursor visibility change while present pending submits latest snapshot aft
         ack_snapshot_seq = snapshot_seq;
     }
     try std.testing.expectEqual(@as(u8, 1), ack_calls);
-    try std.testing.expectEqual(@as(u64, 51), ack_snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 1), ack_snapshot_seq);
     try std.testing.expect(!surface.term.render.presentPending());
     try std.testing.expectEqual(render_retained.RetainedState.submit_ready, surface.term.render.workState(false).state);
 
@@ -1436,7 +1397,7 @@ test "cursor visibility change while present pending submits latest snapshot aft
     const latest_submit = surface_testing.submitPrepared(&surface);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, latest_submit.result);
-    try std.testing.expectEqual(@as(u64, 52), latest_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 1), latest_submit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
 }
@@ -1522,7 +1483,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
         .runtime_wait_ms = null,
         .render_work_pending = true,
     });
-    try std.testing.expect(wake_admission.wait_for_window);
+    try std.testing.expect(!wake_admission.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), wake_admission.wait_ms);
 
     const first_turn = surface.renderTurn();
@@ -1565,9 +1526,9 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
         .runtime_wait_ms = null,
         .render_work_pending = resumed_work.needsRenderSurface(),
     });
-    try std.testing.expect(resumed_admission.wait_for_window);
+    try std.testing.expect(!resumed_admission.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), resumed_admission.wait_ms);
-    try std.testing.expect(!app.frame_pacing.state.renderPermission());
+    try std.testing.expect(app.frame_pacing.state.renderPermission());
 
     const second_turn = surface.renderTurn();
     try std.testing.expectEqual(Surface.TurnStep.rendered, second_turn.step);

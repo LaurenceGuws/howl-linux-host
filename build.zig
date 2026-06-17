@@ -275,6 +275,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     });
     retained_tests.use_llvm = true;
     retained_tests.root_module.linkLibrary(deps.howl_render_lib);
+    retained_tests.root_module.linkLibrary(deps.howl_vt_lib);
     retained_tests.root_module.link_libc = true;
     const run_retained_tests = addTestRunArtifact(b, retained_tests);
 

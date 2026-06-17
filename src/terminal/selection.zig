@@ -1,7 +1,6 @@
 const std = @import("std");
 const c = @import("howl_vt_c");
 const vt_retained = @import("vt_retained.zig");
-const vt_surface = @import("vt_surface.zig");
 const HostInput = @import("../input/input.zig").Input;
 
 pub const MouseHandlingOutcome = struct {
@@ -76,8 +75,9 @@ pub fn handleMouse(context: anytype, mouse_event: HostInput.Mouse.Event) MouseHa
 
 fn eventCell(context: anytype, mouse_event: HostInput.Mouse.Event) SelectionCell {
     const row = context.pixelToTerminalRow(mouse_event.pixel_y);
-    const meta = vt_surface.vtVisibleInfo(context.term.vt, context.term.vt_state.scrollback_offset);
-    const visible_start: i32 = @intCast(meta.history_count - context.term.vt_state.scrollback_offset);
+    const info = c.howl_vt_terminal_query_visible_info(context.term.vt, context.term.vt_state.scrollback_offset);
+    std.debug.assert(info.status == c.HOWL_VT_CALL_OK);
+    const visible_start: i32 = @intCast(info.info.history_count - context.term.vt_state.scrollback_offset);
     return .{
         .row = visible_start + row,
         .col = context.pixelToTerminalCol(mouse_event.pixel_x),
