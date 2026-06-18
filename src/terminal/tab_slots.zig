@@ -15,28 +15,26 @@ pub const Slots = struct {
     active_count: TabIndex = 0,
     free_count: TabIndex = max_tabs,
 
-    pub fn init() Slots {
-        var tabs = Slots{
+    pub fn init(self: *Slots) void {
+        self.* = .{
             .active_count = 0,
             .free_count = max_tabs,
         };
         for (0..max_tabs) |slot| {
-            tabs.free_slots[slot] = @intCast(slot);
+            self.free_slots[slot] = @intCast(slot);
         }
-        tabs.assertCounts();
-        return tabs;
+        self.assertCounts();
     }
 
-    pub fn initForHostStartup() Slots {
-        var tabs = Slots{
+    pub fn initForHostStartup(self: *Slots) void {
+        self.* = .{
             .active_count = 0,
             .free_count = max_tabs,
         };
         for (0..max_tabs) |slot| {
-            tabs.free_slots[slot] = @intCast(max_tabs - 1 - slot);
+            self.free_slots[slot] = @intCast(max_tabs - 1 - slot);
         }
-        tabs.assertCounts();
-        return tabs;
+        self.assertCounts();
     }
 
     pub fn items(self: *Slots) []*TerminalSurface {
@@ -90,7 +88,7 @@ pub const Slots = struct {
         return .{ .slot_idx = slot_idx, .tab = tab };
     }
 
-    fn assertCounts(self: Slots) void {
+    fn assertCounts(self: *const Slots) void {
         assert(self.active_count <= max_tabs);
         assert(self.free_count <= max_tabs);
         assert(self.active_count + self.free_count <= max_tabs);
@@ -98,7 +96,8 @@ pub const Slots = struct {
 };
 
 test "tab slots bound growth and reuse freed slots" {
-    var tabs = Slots.init();
+    var tabs: Slots = undefined;
+    tabs.init();
 
     for (0..max_tabs) |expected_slot| {
         const slot = tabs.acquireSlot() orelse return error.TestUnexpectedResult;
@@ -120,7 +119,8 @@ test "tab slots bound growth and reuse freed slots" {
 }
 
 test "tab slots preserve order on close semantics" {
-    var tabs = Slots.init();
+    var tabs: Slots = undefined;
+    tabs.init();
     var active: [4]*TerminalSurface = undefined;
 
     for (0..4) |i| {

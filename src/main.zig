@@ -59,7 +59,7 @@ noinline fn start(io: std.Io, options: Args) !void {
     defer std.heap.c_allocator.destroy(tab_bar);
 
     const tabs = try std.heap.c_allocator.create(TabSlots);
-    tabs.* = TabSlots.initForHostStartup();
+    tabs.initForHostStartup();
     const active_tab_idx = try std.heap.c_allocator.create(TabBar.TabIndex);
     active_tab_idx.* = 0;
 

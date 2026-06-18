@@ -82,6 +82,10 @@ pub const FrameTimer = struct {
         self.render_work_pending = render_work_pending;
     }
 
+    pub fn redrawPending(self: FrameTimer) bool {
+        return self.redraw_requested;
+    }
+
     pub fn notePresentComplete(self: *FrameTimer) void {
         assert(self.present_completion_pending);
         self.present_completion_pending = false;

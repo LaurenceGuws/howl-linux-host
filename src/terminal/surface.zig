@@ -849,7 +849,7 @@ pub const Surface = struct {
         const col = try renderStateU16(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VIEWPORT_X);
         const visible = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VISIBLE) != 0;
         const blink = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_BLINKING) != 0;
-        const visual_style = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE);
+        const visual_style = try renderStateCursorVisualStyle(state);
         const position_seq = (@as(u64, row) << 32) | @as(u64, col);
         if (self.cursor_position_changed_by_client_sequence != position_seq) {
             if (self.shouldQueueTrail(row, col)) {
@@ -942,12 +942,18 @@ pub const Surface = struct {
         return value;
     }
 
+    fn renderStateCursorVisualStyle(state: vt_c.HowlVtRenderStateHandle) !vt_c.HowlVtRenderStateCursorVisualStyle {
+        var value: vt_c.HowlVtRenderStateCursorVisualStyle = vt_c.HOWL_VT_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR;
+        try requireVtOk(vt_c.howl_vt_render_state_get(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, @ptrCast(&value)));
+        return value;
+    }
+
     fn requireVtOk(status: i32) !void {
         if (status == vt_c.HOWL_VT_CALL_OK) return;
         return error.VtCallFailed;
     }
 
-    fn renderCursorShapeFromVisualStyle(style: u8) u8 {
+    fn renderCursorShapeFromVisualStyle(style: vt_c.HowlVtRenderStateCursorVisualStyle) u8 {
         return switch (style) {
             vt_c.HOWL_VT_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => 1,
             vt_c.HOWL_VT_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR => 2,

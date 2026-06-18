@@ -194,7 +194,7 @@ pub const Processor = struct {
             if (host_mutations.input_outcome.host_visual_changed) self.window.requestRedraw();
 
             const intent = deriveRedrawRenderIntent(
-                self.window.hasRequestedRedraw(),
+                self.frame_pacing.redrawPending(),
                 host_mutations.input_outcome.host_visual_changed,
                 terminal_progress,
                 drive_runtime_facts.render_work_pending,
@@ -855,4 +855,20 @@ test "blocked frame permit still drives runtime progress for pending events" {
         .render_work_pending = true,
     });
     try std.testing.expect(resumed.drive_performed);
+}
+
+test "latched host redraw remains present work after event pump" {
+    var frame = FramePacing.FrameTimer.init();
+    frame.noteRedrawAndRenderWork(true, false);
+
+    const progress = Processor.TerminalProgress{
+        .should_redraw = false,
+        .keep_running = false,
+        .drive_performed = false,
+    };
+    const intent = Processor.deriveRedrawRenderIntent(frame.redrawPending(), false, progress, false);
+
+    try std.testing.expect(intent.needsRender());
+    try std.testing.expect(frame.renderPermission());
+    try std.testing.expectEqual(AppPresent.Reason.host_damage, Processor.derivePresentReason(intent.host_redraw, intent.terminal_frame, .surface_idle));
 }
