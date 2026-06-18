@@ -9,7 +9,7 @@ const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 const pty_pump = @import("pty_pump.zig");
 const pty_wait_thread = @import("pty_wait_thread.zig");
-const fonts_linux = @import("render_fonts_linux.zig");
+const terminal_fonts = @import("fonts.zig");
 const pty_session = @import("pty_session.zig");
 const render_retained = @import("render_retained.zig");
 const vt_surface = @import("vt_surface.zig");
@@ -22,7 +22,7 @@ const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
 const CursorStyle = @import("../config/terminal.zig").CursorStyle;
 const ClipboardOsc52Policy = @import("../config/terminal.zig").ClipboardOsc52Policy;
-const font_size = @import("render_font_size.zig");
+const font_size = terminal_fonts;
 const surface_layout = @import("render_surface_layout.zig");
 const terminal_input = @import("input.zig");
 const term_input = @import("vt_input.zig");
@@ -45,7 +45,7 @@ const TestingHooks = struct {
     wants_render_turn: ?*const fn (*Surface) bool = null,
     upload_render_surface: ?*const fn (*Surface, *const render_c.HowlRenderSurface) bool = null,
     before_render_submit: ?*const fn (*Surface) void = null,
-    observe_submit_execution: ?*const fn (*Surface, *const render_c.HowlRenderSubmitExecution) void = null,
+    observe_submit_execution: ?*const fn (*Surface, *const render_retained.SubmitExecution) void = null,
 };
 
 var testing_hooks: TestingHooks = .{};
@@ -517,7 +517,7 @@ pub const Surface = struct {
 
     fn initTerm(self: *Context) !void {
         const surface_request = self.surfaceLayoutSnapshot();
-        var resolved_fonts = try fonts_linux.resolve(std.heap.c_allocator, self.conf.fonts);
+        var resolved_fonts = try terminal_fonts.resolve(std.heap.c_allocator, self.conf.fonts);
         defer resolved_fonts.deinit(std.heap.c_allocator);
 
         const launch = launchConfig(self.conf);
@@ -527,7 +527,7 @@ pub const Surface = struct {
         self.term.pty = .{ .launch = launch };
         self.term.session = term_init.session;
         self.term.vt = term_init.vt;
-        self.term.render = .init(term_init.text_session, term_init.surface_layout);
+        self.term.render = .init(term_init.surface_layout);
         self.term.vt_state = .{};
         self.term.mutex = .{};
         self.live = true;
@@ -633,7 +633,7 @@ pub const Surface = struct {
         std.debug.assert(!self.term.render.presentPending());
 
         const render_surface = upload.render_surface orelse {
-            if (upload.render_surface_status == render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_COMMAND_BOUND_OVERFLOW) {
+            if (upload.render_surface_status == .command_bound_overflow) {
                 self.term.render.noteRetainedFailure();
                 return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
             }
@@ -656,8 +656,8 @@ pub const Surface = struct {
             return failedUploadSubmit(upload.info.snapshot_seq);
         }
 
-        var submit_result = std.mem.zeroes(render_c.HowlRenderSubmitResult);
-        const execution: render_c.HowlRenderSubmitExecution = .{
+        var submit_result = std.mem.zeroes(render_retained.SubmitOutput);
+        const execution: render_retained.SubmitExecution = .{
             .host_surface = .{
                 .host_surface_id = self.term_texture.host_surface_id,
                 .width = upload.info.render_px.width,
@@ -892,7 +892,7 @@ pub const Surface = struct {
         };
     }
 
-    fn renderCursorColor(color_value: @import("../config/terminal.zig").CursorColor) render_c.HowlVtColor {
+    fn renderCursorColor(color_value: @import("../config/terminal.zig").CursorColor) vt_c.HowlVtColor {
         return .{ .kind = @intFromEnum(color_value.kind), .value = color_value.value };
     }
 
@@ -975,7 +975,6 @@ pub const Surface = struct {
     }
 
     const TermInit = struct {
-        text_session: render_c.HowlRenderTextSessionHandle,
         surface_layout: render_retained.SurfaceLayout,
         session: pty_c.HowlPtySessionHandle,
         vt: vt_c.HowlVtHandle,
@@ -989,7 +988,7 @@ pub const Surface = struct {
         };
     }
 
-    fn renderInit(self: *Context, surface_request: SurfaceLayoutRequest, resolved_fonts: *const fonts_linux.ResolvedFonts) RenderInit {
+    fn renderInit(self: *Context, surface_request: SurfaceLayoutRequest, resolved_fonts: *const terminal_fonts.ResolvedFonts) RenderInit {
         return .{
             .render_px = surface_request.render_px,
             .grid_px = surface_request.grid_px,
@@ -1000,9 +999,7 @@ pub const Surface = struct {
     }
 
     fn initTermState(conf: *const TerminalConfig, launch: terminal_term.PtyLaunch, render_init: RenderInit) !TermInit {
-        const text_session = try initTextSession(render_init);
-        errdefer if (text_session) |handle| render_c.howl_render_text_session_deinit(handle);
-        const layout = try initSurfaceLayout(text_session, render_init);
+        const layout = initSurfaceLayout(render_init);
         const session_handle = try pty_session.initHandle(launch, layout.cols, layout.rows);
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
         const vt = try initVt(layout.rows, layout.cols, .{
@@ -1013,7 +1010,6 @@ pub const Surface = struct {
         });
         errdefer if (vt) |handle| deinitVt(handle);
         return .{
-            .text_session = text_session.?,
             .surface_layout = layout,
             .session = session_handle.?,
             .vt = vt.?,
@@ -1029,29 +1025,9 @@ fn initRenderState(vt_state: *terminal_term.VtState) !void {
     vt_state.render_state = state;
 }
 
-fn initTextSession(render_init: RenderInit) !render_c.HowlRenderTextSessionHandle {
+fn initSurfaceLayout(render_init: RenderInit) render_retained.SurfaceLayout {
     assertRenderInit(render_init);
-    const text_session = render_c.howl_render_text_session_init(.{
-        .surface_px = render_init.render_px,
-        .font_size_px = render_init.font_size_px,
-    }) orelse return error.RendererInitFailed;
-    errdefer render_c.howl_render_text_session_deinit(text_session);
-    if (!applyPrimaryFontPath(text_session, render_init.primary_font_path)) return error.RenderConfigFailed;
-    if (!applyFallbackFontPaths(text_session, render_init.fallback_font_paths)) return error.RenderConfigFailed;
-    if (!renderFontValid(text_session)) return error.RenderConfigFailed;
-    return text_session;
-}
-
-fn initSurfaceLayout(text_session: render_c.HowlRenderTextSessionHandle, render_init: RenderInit) !render_retained.SurfaceLayout {
-    const layout = render_c.howl_render_text_session_derive_layout(text_session, render_init.render_px, render_init.grid_px);
-    if (layout.status != render_c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
-    return .{
-        .render_px = render_init.render_px,
-        .grid_px = render_init.grid_px,
-        .cols = layout.grid.cols,
-        .rows = layout.grid.rows,
-        .cell_px = .{ .width = layout.cell_px.width, .height = layout.cell_px.height },
-    };
+    return surface_layout.deriveHostLayout(.{ .render_px = render_init.render_px, .grid_px = render_init.grid_px }, render_init.font_size_px);
 }
 
 fn initVt(rows: u16, cols: u16, options: VtInitOptions) !vt_c.HowlVtHandle {
@@ -1085,25 +1061,6 @@ fn assertRenderInit(render_init: RenderInit) void {
     std.debug.assert(render_init.fallback_font_paths.len <= max_fallback_font_paths);
 }
 
-fn applyPrimaryFontPath(text_session: render_c.HowlRenderTextSessionHandle, font_path: ?[:0]const u8) bool {
-    const path = font_path orelse return render_c.howl_render_text_session_set_font_path(text_session, null, 0) == render_c.HOWL_RENDER_CALL_OK;
-    if (path.len == 0) return render_c.howl_render_text_session_set_font_path(text_session, null, 0) == render_c.HOWL_RENDER_CALL_OK;
-    return render_c.howl_render_text_session_set_font_path(text_session, path.ptr, path.len) == render_c.HOWL_RENDER_CALL_OK;
-}
-
-fn applyFallbackFontPaths(text_session: render_c.HowlRenderTextSessionHandle, paths: []const [:0]const u8) bool {
-    std.debug.assert(paths.len <= max_fallback_font_paths);
-    if (paths.len == 0) return render_c.howl_render_text_session_set_fallback_font_paths(text_session, null, 0) == render_c.HOWL_RENDER_CALL_OK;
-    const path_count: u8 = @intCast(paths.len);
-    var raw: [max_fallback_font_paths]?[*]const u8 = [_]?[*]const u8{null} ** max_fallback_font_paths;
-    var index: u8 = 0;
-    while (index < path_count) : (index += 1) raw[index] = paths[index].ptr;
-    return render_c.howl_render_text_session_set_fallback_font_paths(text_session, &raw, path_count) == render_c.HOWL_RENDER_CALL_OK;
-}
-
-fn renderFontValid(text_session: render_c.HowlRenderTextSessionHandle) bool {
-    return render_c.howl_render_text_session_is_valid_font(text_session) == render_c.HOWL_RENDER_CALL_OK;
-}
 
 pub const testing = struct {
     pub const Hooks = TestingHooks;
@@ -1627,7 +1584,7 @@ fn testSurfaceBase() Surface {
             .pty = .{ .launch = .{ .shell = "", .command = null, .start_path = null } },
             .session = null,
             .vt = null,
-            .render = render_retained.State.init(null, .{ .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cols = 1, .rows = 1, .cell_px = .{ .width = 1, .height = 1 } }),
+            .render = render_retained.State.init(.{ .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cols = 1, .rows = 1, .cell_px = .{ .width = 1, .height = 1 } }),
             .vt_state = .{},
             .mutex = .{},
         },

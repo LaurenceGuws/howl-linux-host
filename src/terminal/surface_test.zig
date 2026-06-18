@@ -1,5 +1,6 @@
 const std = @import("std");
 const render_c = @import("howl_render_c");
+const vt_c = @import("howl_vt_c");
 
 const event_mod = @import("../event.zig");
 const frame_timer = @import("../display/frame_timer.zig");
@@ -75,8 +76,8 @@ var submit_hook_state: struct {
     host_upload_render_px: render_c.HowlRenderPixelSize = .{ .width = 0, .height = 0 },
     host_upload_surface_px: render_c.HowlRenderPixelSize = .{ .width = 0, .height = 0 },
     submit_calls: u8 = 0,
-    last_execution: render_c.HowlRenderSubmitExecution = std.mem.zeroes(render_c.HowlRenderSubmitExecution),
-    expected_info: render_c.HowlRenderPreparedSurfaceInfo = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceInfo),
+    last_execution: render_retained.SubmitExecution = std.mem.zeroes(render_retained.SubmitExecution),
+    expected_info: render_retained.PreparedInfo = std.mem.zeroes(render_retained.PreparedInfo),
     expected_surface: render_c.HowlRenderSurface = std.mem.zeroes(render_c.HowlRenderSurface),
 } = .{};
 
@@ -87,7 +88,7 @@ fn testSurfaceBase() Surface {
             .pty = .{ .launch = .{ .shell = "", .command = null, .start_path = null } },
             .session = null,
             .vt = null,
-            .render = render_retained.State.init(null, .{ .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cols = 1, .rows = 1, .cell_px = .{ .width = 1, .height = 1 } }),
+            .render = render_retained.State.init(.{ .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cols = 1, .rows = 1, .cell_px = .{ .width = 1, .height = 1 } }),
             .vt_state = .{},
             .mutex = .{},
         },
@@ -214,7 +215,7 @@ fn beforeRenderSubmitHook(surface: *Surface) void {
     submit_hook_state.submit_calls += 1;
 }
 
-fn observeSubmitExecutionHook(_: *Surface, execution: *const render_c.HowlRenderSubmitExecution) void {
+fn observeSubmitExecutionHook(_: *Surface, execution: *const render_retained.SubmitExecution) void {
     submit_hook_state.last_execution = execution.*;
 }
 
@@ -227,8 +228,8 @@ fn installSubmitHooks(mode: SubmitUploadMode) void {
     submit_hook_state.host_upload_render_px = .{ .width = 0, .height = 0 };
     submit_hook_state.host_upload_surface_px = .{ .width = 0, .height = 0 };
     submit_hook_state.submit_calls = 0;
-    submit_hook_state.last_execution = std.mem.zeroes(render_c.HowlRenderSubmitExecution);
-    submit_hook_state.expected_info = std.mem.zeroes(render_c.HowlRenderPreparedSurfaceInfo);
+    submit_hook_state.last_execution = std.mem.zeroes(render_retained.SubmitExecution);
+    submit_hook_state.expected_info = std.mem.zeroes(render_retained.PreparedInfo);
     submit_hook_state.expected_surface = std.mem.zeroes(render_c.HowlRenderSurface);
     surface_testing.installHooks(.{
         .upload_render_surface = uploadRenderSurfaceHook,
@@ -237,23 +238,10 @@ fn installSubmitHooks(mode: SubmitUploadMode) void {
     });
 }
 
-fn deriveRenderLayout(render_px: render_c.HowlRenderPixelSize, grid_px: render_c.HowlRenderPixelSize, text_session: render_c.HowlRenderTextSessionHandle) !render_retained.SurfaceLayout {
-    const layout = render_c.howl_render_text_session_derive_layout(text_session, render_px, grid_px);
-    try std.testing.expectEqual(render_c.HOWL_RENDER_CALL_OK, layout.status);
-    return .{
-        .render_px = render_px,
-        .grid_px = grid_px,
-        .cols = layout.grid.cols,
-        .rows = layout.grid.rows,
-        .cell_px = layout.cell_px,
-    };
-}
-
 fn makeSubmitSurface() !Surface {
     var surface = testSurfaceBase();
-    const text_session = render_c.howl_render_text_session_init(.{ .surface_px = .{ .width = 100, .height = 80 }, .font_size_px = 12 }) orelse return error.RendererInitFailed;
-    const layout = try deriveRenderLayout(.{ .width = 100, .height = 80 }, .{ .width = 90, .height = 70 }, text_session);
-    surface.term.render = render_retained.State.init(text_session, layout);
+    const layout = surface_layout.deriveHostLayout(.{ .render_px = .{ .width = 100, .height = 80 }, .grid_px = .{ .width = 90, .height = 70 } }, surface.font_size_px);
+    surface.term.render = render_retained.State.init(layout);
     surface.term.render.syncSurfaceLayout(layout);
     surface.geometry = surface_layout.init(100, 80, 100, 80);
     return surface;
@@ -274,18 +262,18 @@ fn prepareSubmitSurface(surface: *Surface, snapshot_seq: u64) !void {
 fn prepareSubmitSurfaceWithCursor(surface: *Surface, snapshot_seq: u64, cursor_visible: bool) !void {
     _ = cursor_visible;
     const layout = surface.term.render.surface_layout;
-    const terminal = render_c.howl_vt_terminal_init(layout.rows, layout.cols, 16) orelse return error.TestUnexpectedResult;
-    defer render_c.howl_vt_terminal_deinit(terminal);
+    const terminal = vt_c.howl_vt_terminal_init(layout.rows, layout.cols, 16) orelse return error.TestUnexpectedResult;
+    defer vt_c.howl_vt_terminal_deinit(terminal);
     const bytes = [_]u8{'a'};
     var feed_index: u64 = 0;
     while (feed_index < @max(snapshot_seq, 1)) : (feed_index += 1) {
-        const feed = render_c.howl_vt_terminal_feed(terminal, &bytes, bytes.len);
-        try std.testing.expectEqual(render_c.HOWL_VT_CALL_OK, feed.status);
+        const feed = vt_c.howl_vt_terminal_feed(terminal, &bytes, bytes.len);
+        try std.testing.expectEqual(vt_c.HOWL_VT_CALL_OK, feed.status);
     }
-    var render_state: render_c.HowlVtRenderStateHandle = null;
-    try std.testing.expectEqual(render_c.HOWL_VT_CALL_OK, render_c.howl_vt_render_state_init(&render_state));
-    defer render_c.howl_vt_render_state_deinit(render_state);
-    try std.testing.expectEqual(render_c.HOWL_VT_CALL_OK, render_c.howl_vt_render_state_update(render_state, terminal, 0));
+    var render_state: vt_c.HowlVtRenderStateHandle = null;
+    try std.testing.expectEqual(vt_c.HOWL_VT_CALL_OK, vt_c.howl_vt_render_state_init(&render_state));
+    defer vt_c.howl_vt_render_state_deinit(render_state);
+    try std.testing.expectEqual(vt_c.HOWL_VT_CALL_OK, vt_c.howl_vt_render_state_update(render_state, terminal, 0));
     try std.testing.expectEqual(render_retained.PrepareResult.prepared, surface.term.render.prepare(render_state));
     try recordExpectedPreparedUpload(surface);
 }
@@ -296,7 +284,7 @@ fn resizeSubmitSurface(surface: *Surface, render_width: c_int, render_height: c_
     surface.geometry.grid_px_h = surface.geometry.pending_grid_px_h;
     surface.geometry.last_resize_ns = 0;
     const request = surface_layout.snapshotSurfaceLayoutLocked(&surface.geometry);
-    const layout = try deriveRenderLayout(request.render_px, request.grid_px, surface.term.render.text_session);
+    const layout = surface_layout.deriveHostLayout(request, surface.font_size_px);
     surface.term.render.syncSurfaceLayout(layout);
     return request;
 }
@@ -851,23 +839,10 @@ test "retained submit failure stays on failed retained path until refreshed" {
     try std.testing.expectEqual(render_retained.RetainedState.failed, surface.term.render.retainedState());
 }
 
-fn testRdrSfcHandle() render_c.HowlRenderRdrSfcHandle {
-    return @ptrFromInt(0x10);
-}
-
-fn testPreparedUploadInfo() render_c.HowlRenderPreparedSurfaceInfo {
+fn testPreparedUploadInfo() render_retained.PreparedInfo {
     return .{
-        .status = render_c.HOWL_RENDER_CALL_OK,
         .snapshot_seq = 51,
-        .dirty_epoch = 1,
-        .geometry_epoch = 1,
-        .required_base_seq = 0,
         .render_px = .{ .width = 2, .height = 1 },
-        .cell_px = .{ .width = 1, .height = 1 },
-        .grid = .{ .cols = 2, .rows = 1 },
-        .damage_kind = render_c.HOWL_RENDER_DAMAGE_FULL,
-        .reserved0 = 0,
-        .reserved1 = 0,
     };
 }
 
@@ -892,13 +867,13 @@ const TestRenderOperation = enum {
 const TestSubmitRender = struct {
     submit_calls: u8 = 0,
     submit_observed_locked: bool = false,
-    last_execution: render_c.HowlRenderSubmitExecution = std.mem.zeroes(render_c.HowlRenderSubmitExecution),
+    last_execution: render_retained.SubmitExecution = std.mem.zeroes(render_retained.SubmitExecution),
     mutex: ?*terminal_term.Mutex = null,
-    rdr_sfc_handle: render_c.HowlRenderRdrSfcHandle = testRdrSfcHandle(),
+    prepared_surface: render_retained.PreparedHandle = null,
     geometry_epoch: u64 = 1,
     present_in_flight: ?struct { snapshot_seq: u64, token: u64 } = null,
     render_px: render_c.HowlRenderPixelSize = .{ .width = 2, .height = 1 },
-    prepared_info: render_c.HowlRenderPreparedSurfaceInfo = testPreparedUploadInfo(),
+    prepared_info: render_retained.PreparedInfo = testPreparedUploadInfo(),
     render_surface: render_c.HowlRenderSurface = testRenderSurface(testPreparedUploadInfo()),
     operations: [8]TestRenderOperation = undefined,
     operation_count: u8 = 0,
@@ -921,11 +896,7 @@ const TestSubmitRender = struct {
         self.record(.prepare);
         self.prepared_info = testPreparedUploadInfo();
         self.prepared_info.snapshot_seq = 52;
-        self.prepared_info.dirty_epoch = 2;
-        self.prepared_info.geometry_epoch = self.geometry_epoch;
         self.prepared_info.render_px = self.render_px;
-        self.prepared_info.grid = .{ .cols = self.render_px.width, .rows = self.render_px.height };
-        self.prepared_info.damage_kind = render_c.HOWL_RENDER_DAMAGE_FULL;
         self.render_surface = testRenderSurface(self.prepared_info);
     }
 
@@ -933,21 +904,21 @@ const TestSubmitRender = struct {
         self.record(.prepared_upload);
         upload.* = .{
             .info = self.prepared_info,
-            .render_surface_status = render_c.HOWL_RENDER_PREPARED_SURFACE_RENDER_SURFACE_OK,
+            .render_surface_status = .invalid,
             .render_surface = &self.render_surface,
         };
         return true;
     }
 
-    pub fn rdrSfcHandle(self: *@This()) render_c.HowlRenderRdrSfcHandle {
-        return self.rdr_sfc_handle;
+    pub fn rdrSfcHandle(self: *@This()) render_retained.PreparedHandle {
+        return self.prepared_surface;
     }
 
     pub fn presentPending(self: *@This()) bool {
         return self.present_in_flight != null;
     }
 
-    pub fn submit(self: *@This(), execution: *const render_c.HowlRenderSubmitExecution, result: *render_c.HowlRenderSubmitResult) render_retained.SubmitResult {
+    pub fn submit(self: *@This(), execution: *const render_retained.SubmitExecution, result: *render_retained.SubmitOutput) render_retained.SubmitResult {
         self.record(.submit);
         self.submit_calls += 1;
         self.last_execution = execution.*;
@@ -977,17 +948,17 @@ const TestSubmitRender = struct {
     }
 };
 
-fn testRenderSurface(info: render_c.HowlRenderPreparedSurfaceInfo) render_c.HowlRenderSurface {
+fn testRenderSurface(info: render_retained.PreparedInfo) render_c.HowlRenderSurface {
     var surface = std.mem.zeroes(render_c.HowlRenderSurface);
     surface.token = .{
         .snapshot_seq = info.snapshot_seq,
-        .surface_seq = info.dirty_epoch,
-        .geometry_epoch = info.geometry_epoch,
+        .surface_seq = info.snapshot_seq,
+        .geometry_epoch = 1,
         .resource_epoch = 0,
     };
     surface.render_px = info.render_px;
-    surface.cell_px = info.cell_px;
-    surface.grid = info.grid;
+    surface.cell_px = .{ .width = 1, .height = 1 };
+    surface.grid = .{ .cols = info.render_px.width, .rows = info.render_px.height };
     return surface;
 }
 
@@ -1036,7 +1007,7 @@ const TestSubmitContext = struct {
     }
 };
 
-fn executionFromContext(context: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_c.HowlRenderSubmitExecution {
+fn executionFromContext(context: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_retained.SubmitExecution {
     return .{
         .host_surface = .{
             .host_surface_id = context.term_texture.host_surface_id,

@@ -5,13 +5,13 @@ const Input = @import("../input/input.zig").Input;
 
 const Lua = howl_lua;
 
-pub const FontStack = struct {
+pub const Fonts = struct {
     primary: ?[:0]u8,
     mono: []const [:0]u8,
     symbols: []const [:0]u8,
     emoji: []const [:0]u8,
 
-    pub fn deinit(self: *FontStack, alloc: std.mem.Allocator) void {
+    pub fn deinit(self: *Fonts, alloc: std.mem.Allocator) void {
         if (self.primary) |p| alloc.free(p);
         freeZSlice(alloc, self.mono);
         freeZSlice(alloc, self.symbols);
@@ -70,7 +70,7 @@ pub const Config = struct {
     start_path: ?[]u8,
     command: ?[]u8,
     font_size: u16,
-    fonts: FontStack,
+    fonts: Fonts,
     cursor: CursorColor,
     cursor_text_color: CursorColor,
     cursor_shape: CursorStyle,
@@ -274,7 +274,7 @@ fn loadBindings(alloc: std.mem.Allocator, bindings_child: *Lua.ChildTable) !Inpu
     return .{ .bindings = try out.toOwnedSlice(alloc) };
 }
 
-fn loadFonts(alloc: std.mem.Allocator, reader: Lua.Reader) !FontStack {
+fn loadFonts(alloc: std.mem.Allocator, reader: Lua.Reader) !Fonts {
     var primary: ?[:0]u8 = null;
     var primary_raw: ?[]u8 = null;
     try reader.optionalStringOwned("font_primary", &primary_raw);

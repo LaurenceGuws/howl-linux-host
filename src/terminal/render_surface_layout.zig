@@ -154,19 +154,7 @@ fn deriveSurfaceLayout(term: anytype, request: SurfaceLayoutRequest) !retained.S
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const layout = c.howl_render_text_session_derive_layout(
-        term.render.text_session,
-        request.render_px,
-        request.grid_px,
-    );
-    if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
-    const next = retained.SurfaceLayout{
-        .render_px = request.render_px,
-        .grid_px = request.grid_px,
-        .cols = layout.grid.cols,
-        .rows = layout.grid.rows,
-        .cell_px = .{ .width = layout.cell_px.width, .height = layout.cell_px.height },
-    };
+    const next = deriveHostLayout(request, term.render.surface_layout.cell_px.height);
     return term.render.surfaceLayoutSync(next);
 }
 
@@ -176,20 +164,20 @@ fn deriveSurfaceLayoutLocked(term: anytype, request: SurfaceLayoutRequest) !reta
     std.debug.assert(request.grid_px.width > 0);
     std.debug.assert(request.grid_px.height > 0);
 
-    const layout = c.howl_render_text_session_derive_layout(
-        term.render.text_session,
-        request.render_px,
-        request.grid_px,
-    );
-    if (layout.status != c.HOWL_RENDER_CALL_OK) return error.InvalidDimensions;
-    const next = retained.SurfaceLayout{
+    const next = deriveHostLayout(request, term.render.surface_layout.cell_px.height);
+    return term.render.surfaceLayoutSync(next);
+}
+
+pub fn deriveHostLayout(request: SurfaceLayoutRequest, font_size_px: u16) retained.SurfaceLayout {
+    const cell_h = @max(font_size_px, 1);
+    const cell_w = @max(@divTrunc(cell_h, 2), 1);
+    return .{
         .render_px = request.render_px,
         .grid_px = request.grid_px,
-        .cols = layout.grid.cols,
-        .rows = layout.grid.rows,
-        .cell_px = .{ .width = layout.cell_px.width, .height = layout.cell_px.height },
+        .cols = @max(1, @divTrunc(request.grid_px.width, cell_w)),
+        .rows = @max(1, @divTrunc(request.grid_px.height, cell_h)),
+        .cell_px = .{ .width = cell_w, .height = cell_h },
     };
-    return term.render.surfaceLayoutSync(next);
 }
 
 fn commitSurfaceLayout(term: anytype, layout: retained.SurfaceLayout) void {
