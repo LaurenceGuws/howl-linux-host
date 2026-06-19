@@ -274,6 +274,7 @@ fn testFrame() Layout.Frame {
         .active_tab = 0,
         .tab_bar_revision = 1,
         .tab_labels = &.{},
+        .damage = .fullFrame(),
     };
 }
 

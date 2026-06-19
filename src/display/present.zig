@@ -2,6 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const DisplayLayout = @import("layout.zig");
+const PresentDamage = @import("present_damage.zig").Damage;
 const TerminalSurface = @import("../terminal/surface.zig").Surface;
 
 pub const Reason = enum { none, host_damage, terminal_frame, terminal_retire };
@@ -13,6 +14,7 @@ pub const Snapshot = struct {
     active_tab: u8,
     tab_bar_revision: u64,
     labels: []const []const u8,
+    damage: PresentDamage,
 };
 
 pub const Outcome = struct {
@@ -69,6 +71,7 @@ pub fn submitWith(display: anytype, tab: anytype, snapshot: Snapshot, reason: Re
                 .active_tab = snapshot.active_tab,
                 .tab_bar_revision = snapshot.tab_bar_revision,
                 .tab_labels = snapshot.labels,
+                .damage = snapshot.damage,
             });
             return .{ .reason = reason, .submitted = true, .token = token };
         },
@@ -134,6 +137,7 @@ test "submitWith submits only visual present reasons" {
         .active_tab = 0,
         .tab_bar_revision = 1,
         .labels = &.{"shell"},
+        .damage = .fullFrame(),
     };
 
     var tab = FakeTab{};
@@ -184,6 +188,7 @@ test "terminal frame completes immediately after synchronous submit" {
         .active_tab = 0,
         .tab_bar_revision = 1,
         .labels = &.{"shell"},
+        .damage = .fullFrame(),
     };
 
     var tab = FakeTab{};
@@ -197,6 +202,42 @@ test "terminal frame completes immediately after synchronous submit" {
     try std.testing.expectEqual(@as(u8, 1), tab.complete_count);
     try std.testing.expectEqual(@as(u64, 55), tab.noted_snapshot_seq);
     try std.testing.expectEqual(@as(PresentToken, 77), tab.completed_token);
+}
+
+test "submitWith carries snapshot damage to display frame" {
+    const FakeTab = struct {
+        fn termTextureId(_: *const @This()) u32 {
+            return 11;
+        }
+    };
+    const FakeDisplay = struct {
+        frame_damage: PresentDamage = .fullFrame(),
+
+        fn submitPresentSync(self: *@This(), frame: anytype) PresentToken {
+            self.frame_damage = frame.damage;
+            return 88;
+        }
+    };
+
+    var damage = PresentDamage{ .full = false, .count = 1 };
+    damage.rects[0] = .{ .x = 3, .y = 4, .width = 5, .height = 6 };
+    const snapshot = Snapshot{
+        .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
+        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+        .active_tab = 0,
+        .tab_bar_revision = 1,
+        .labels = &.{"shell"},
+        .damage = damage,
+    };
+
+    var tab = FakeTab{};
+    var display = FakeDisplay{};
+    const submission = submitWith(&display, &tab, snapshot, .terminal_frame);
+
+    try std.testing.expect(submission.submitted);
+    try std.testing.expect(!display.frame_damage.full);
+    try std.testing.expectEqual(@as(u32, 1), display.frame_damage.count);
+    try std.testing.expectEqual(damage.rects[0], display.frame_damage.rects[0]);
 }
 
 test "terminal retire has no async completion side effect" {

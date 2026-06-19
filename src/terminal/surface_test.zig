@@ -1507,6 +1507,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
         .active_tab = 0,
         .tab_bar_revision = 1,
         .labels = &.{"shell"},
+        .damage = .fullFrame(),
     };
 
     var surface = try makeSubmitSurface();

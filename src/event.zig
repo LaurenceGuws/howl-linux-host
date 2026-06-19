@@ -98,6 +98,7 @@ pub const Processor = struct {
         active_tab: TabIndex,
         tab_bar_revision: u64,
         labels: []const []const u8,
+        damage: TerminalSurface.PresentDamage,
     };
 
     const RenderFrame = struct {
@@ -448,6 +449,7 @@ pub const Processor = struct {
             .active_tab = tab_bar_snapshot.active_idx,
             .tab_bar_revision = tabBarRevision(tabs, self.active_tab_idx.*),
             .labels = tab_bar_snapshot.labels,
+            .damage = .fullFrame(),
         };
     }
 
@@ -463,6 +465,7 @@ pub const Processor = struct {
             .active_tab = frame.snapshot.active_tab,
             .tab_bar_revision = frame.snapshot.tab_bar_revision,
             .labels = frame.snapshot.labels,
+            .damage = frame.turn.present_damage,
         }, reason);
         assert(outcome.submission.reason == reason);
     }

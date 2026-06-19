@@ -68,6 +68,7 @@ pub const Surface = struct {
     const Context = @This();
 
     pub const DrainInputOutcome = terminal_input.DrainInputOutcome;
+    pub const PresentDamage = @import("../display/present_damage.zig").Damage;
 
     pub const OverlaySnapshot = struct {
         scrollbar: Layout.ScrollbarLayout,
@@ -88,6 +89,7 @@ pub const Surface = struct {
         prepared: bool,
         step: TurnStep,
         present_snapshot_seq: u64,
+        present_damage: PresentDamage,
     };
 
     pub const DriveAdmission = struct {
@@ -507,6 +509,7 @@ pub const Surface = struct {
             .prepared = drive_result.prepared,
             .step = drive_result.step,
             .present_snapshot_seq = drive_result.present_snapshot_seq,
+            .present_damage = drive_result.present_damage,
         };
     }
 
@@ -598,6 +601,7 @@ pub const Surface = struct {
         state_after: render_retained.RetainedState,
         step: TurnStep,
         present_snapshot_seq: u64,
+        present_damage: PresentDamage,
     };
 
     fn driveRenderLocked(self: *Context, admission: render_retained.RenderTurnAdmission) DriveResult {
@@ -675,6 +679,7 @@ pub const Surface = struct {
             return failedUploadSubmit(upload.info.snapshot_seq);
         }
 
+        const present_damage = PresentDamage.fromRenderFrame(render_surface);
         var submit_result = std.mem.zeroes(render_retained.SubmitOutput);
         const execution: render_retained.SubmitExecution = .{
             .host_texture = .{
@@ -689,12 +694,13 @@ pub const Surface = struct {
         if (result == .rendered) {
             self.term_texture = submit_result.host_texture;
         }
-        return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq };
+        return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq, .damage = present_damage };
     }
 
     const SubmitPreparedResult = struct {
         result: render_retained.SubmitResult,
         snapshot_seq: u64,
+        damage: PresentDamage = .fullFrame(),
     };
 
     fn idleDrive(state_after: render_retained.RetainedState, step: TurnStep) DriveResult {
@@ -704,6 +710,7 @@ pub const Surface = struct {
             .state_after = state_after,
             .step = step,
             .present_snapshot_seq = 0,
+            .present_damage = .fullFrame(),
         };
     }
 
@@ -787,6 +794,7 @@ pub const Surface = struct {
             .state_after = self.term.render.retainedState(),
             .step = step,
             .present_snapshot_seq = if (step == .rendered) submit_result.snapshot_seq else 0,
+            .present_damage = if (step == .rendered) submit_result.damage else .fullFrame(),
         };
     }
 

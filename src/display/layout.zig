@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const PresentDamage = @import("present_damage.zig").Damage;
 const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 
 pub const Rect = struct {
@@ -32,6 +33,7 @@ pub const Frame = struct {
     active_tab: TabIndex,
     tab_bar_revision: u64,
     tab_labels: []const []const u8,
+    damage: PresentDamage,
 };
 
 pub fn contentPixelSize(window: anytype, tab_bar_height: u32) Size {
