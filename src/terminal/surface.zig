@@ -43,7 +43,7 @@ const TestingHooks = struct {
     apply_pending_clipboard_writes: ?*const fn (*Surface) void = null,
     ack_wake: ?*const fn (*Surface) void = null,
     wants_render_turn: ?*const fn (*Surface) bool = null,
-    upload_render_surface: ?*const fn (*Surface, *const render_c.HowlRenderSurface) bool = null,
+    upload_render_surface: ?*const fn (*Surface, *const render_c.HowlRenderSurfaceFrame) bool = null,
     before_render_submit: ?*const fn (*Surface) void = null,
     observe_submit_execution: ?*const fn (*Surface, *const render_retained.SubmitExecution) void = null,
 };
@@ -133,7 +133,7 @@ pub const Surface = struct {
     term: HowlTerm,
     progress: pty_wait_thread.WaitThread = .{},
     live: bool,
-    term_texture: render_c.HowlRenderHostSurface,
+    term_texture: render_c.HowlRenderHostTexture,
     render_surface_textures: term_texture.RenderResourceTextures,
     conf: *const TerminalConfig,
     input: *HostInput,
@@ -204,7 +204,7 @@ pub const Surface = struct {
         self.term = undefined;
         self.progress = .{};
         self.live = false;
-        self.term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 };
+        self.term_texture = .{ .host_texture_id = 0, .width = 0, .height = 0 };
         self.render_surface_textures = .{};
         self.conf = request.conf;
         self.input = request.input;
@@ -245,7 +245,7 @@ pub const Surface = struct {
     pub fn deinit(self: *Context) void {
         if (self.links.cursor_active) window.useDefaultCursor();
         self.links.cursor_active = false;
-        term_texture.deleteTexture(&self.term_texture.host_surface_id);
+        term_texture.deleteTexture(&self.term_texture.host_texture_id);
         self.render_surface_textures.deinit();
         self.term_texture.width = 0;
         self.term_texture.height = 0;
@@ -498,7 +498,7 @@ pub const Surface = struct {
     pub fn renderTurn(self: *Context) TurnResult {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
-        const bootstrap_surface = self.term_texture.host_surface_id == 0;
+        const bootstrap_surface = self.term_texture.host_texture_id == 0;
         const admission_before = self.term.render.admitRenderTurn(bootstrap_surface);
         const drive_result = self.driveRenderLocked(admission_before);
         return .{
@@ -530,7 +530,7 @@ pub const Surface = struct {
     }
 
     pub fn termTextureId(self: *const Context) u64 {
-        return self.term_texture.host_surface_id;
+        return self.term_texture.host_texture_id;
     }
 
     fn initTerm(self: *Context) !void {
@@ -586,7 +586,7 @@ pub const Surface = struct {
         const mut: *Context = @constCast(self);
         mut.term.mutex.lockFair();
         defer mut.term.mutex.unlock();
-        return mut.term.render.admitRenderTurn(mut.term_texture.host_surface_id == 0);
+        return mut.term.render.admitRenderTurn(mut.term_texture.host_texture_id == 0);
     }
 
     fn cursorBlinkShouldAnimate(self: *Context) bool {
@@ -651,12 +651,12 @@ pub const Surface = struct {
         std.debug.assert(upload.info.snapshot_seq != 0);
         std.debug.assert(!self.term.render.presentPending());
 
-        const render_surface = upload.render_surface orelse {
-            if (upload.render_surface_status == .command_bound_overflow) {
+        const render_surface = upload.surface_frame orelse {
+            if (upload.surface_frame_status == .command_bound_overflow) {
                 self.term.render.noteRetainedFailure();
                 return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
             }
-            std.debug.panic("trusted render surface retrieval failed: status={}", .{upload.render_surface_status});
+            std.debug.panic("trusted render surface retrieval failed: status={}", .{upload.surface_frame_status});
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         };
 
@@ -677,8 +677,8 @@ pub const Surface = struct {
 
         var submit_result = std.mem.zeroes(render_retained.SubmitOutput);
         const execution: render_retained.SubmitExecution = .{
-            .host_surface = .{
-                .host_surface_id = self.term_texture.host_surface_id,
+            .host_texture = .{
+                .host_texture_id = self.term_texture.host_texture_id,
                 .width = upload.info.render_px.width,
                 .height = upload.info.render_px.height,
             },
@@ -687,7 +687,7 @@ pub const Surface = struct {
         if (testing_hooks.observe_submit_execution) |hook| hook(self, &execution);
         const result = self.term.render.submit(&execution, &submit_result);
         if (result == .rendered) {
-            self.term_texture = submit_result.host_surface;
+            self.term_texture = submit_result.host_texture;
         }
         return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq };
     }
@@ -767,9 +767,9 @@ pub const Surface = struct {
         pty_wait_thread.ackWake(self);
     }
 
-    fn uploadRenderSurface(self: *Context, render_surface: *const render_c.HowlRenderSurface) bool {
-        if (testing_hooks.upload_render_surface) |hook| return hook(self, render_surface);
-        return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, render_surface);
+    fn uploadRenderSurface(self: *Context, surface_frame: *const render_c.HowlRenderSurfaceFrame) bool {
+        if (testing_hooks.upload_render_surface) |hook| return hook(self, surface_frame);
+        return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, surface_frame);
     }
 
     fn submitStep(result: render_retained.SubmitResult) TurnStep {
@@ -1629,7 +1629,7 @@ fn testSurfaceBase() Surface {
         },
         .progress = .{},
         .live = false,
-        .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
+        .term_texture = .{ .host_texture_id = 0, .width = 0, .height = 0 },
         .render_surface_textures = .{},
         .conf = &test_terminal_conf,
         .input = undefined,

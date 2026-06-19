@@ -62,7 +62,7 @@ fn spriteResourceKind(kind: u32) bool {
         kind == render_c.HOWL_RENDER_RESOURCE_SPRITE_COLOR;
 }
 
-fn resourceHasFutureUpload(surface: *const render_c.HowlRenderSurface, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
+fn resourceHasFutureUpload(surface: *const render_c.HowlRenderSurfaceFrame, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
     const uploads = spanSlice(render_c.HowlRenderResourceUpload, surface.uploads.ptr, surface.uploads.count);
     for (uploads) |upload| {
         if (!sameResource(upload.resource, resource)) continue;
@@ -96,7 +96,7 @@ fn spanCountValid(ptr: anytype, count: u32, count_max: u32, expected_max: u32) b
     return true;
 }
 
-pub fn classifyRenderSurface(surface: *const render_c.HowlRenderSurface) ?RenderSurfaceClass {
+pub fn classifyRenderSurface(surface: *const render_c.HowlRenderSurfaceFrame) ?RenderSurfaceClass {
     if (renderSurfaceSprite(surface)) return .sprite;
     if (renderSurfaceSpritePatch(surface)) return .sprite_patch;
     if (renderSurfaceGlyphs(surface)) return .glyph;
@@ -106,34 +106,34 @@ pub fn classifyRenderSurface(surface: *const render_c.HowlRenderSurface) ?Render
     return null;
 }
 
-pub fn assertRenderSurfacePatchHostSurface(class: RenderSurfaceClass, had_matching_surface: bool) void {
+pub fn assertRenderSurfacePatchHostTexture(class: RenderSurfaceClass, had_matching_texture: bool) void {
     if (!class.patch()) return;
-    std.debug.assert(had_matching_surface);
-    if (!had_matching_surface) std.debug.panic("trusted render surface patch requires matching host surface", .{});
+    std.debug.assert(had_matching_texture);
+    if (!had_matching_texture) std.debug.panic("trusted render surface patch requires matching host texture", .{});
 }
 
-pub fn uploadFillCommands(host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) bool {
+pub fn uploadFillCommands(host_texture: render_c.HowlRenderHostTexture, render_surface: *const render_c.HowlRenderSurfaceFrame) bool {
     std.debug.assert(renderSurfaceFillOnly(render_surface) or renderSurfaceFillPatch(render_surface));
-    std.debug.assert(host_surface.host_surface_id != 0);
-    std.debug.assert(host_surface.width == render_surface.render_px.width);
-    std.debug.assert(host_surface.height == render_surface.render_px.height);
+    std.debug.assert(host_texture.host_texture_id != 0);
+    std.debug.assert(host_texture.width == render_surface.render_px.width);
+    std.debug.assert(host_texture.height == render_surface.render_px.height);
 
-    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(host_surface.host_surface_id));
+    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(host_texture.host_texture_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
     gl_c.glPixelStorei(gl_c.GL_UNPACK_ALIGNMENT, 1);
     gl_c.glPixelStorei(gl_c.GL_UNPACK_ROW_LENGTH, 0);
 
-    const commands = spanSlice(render_c.HowlRenderSurfaceCommand, render_surface.commands.ptr, render_surface.commands.count);
+    const commands = spanSlice(render_c.HowlRenderSurfaceFrameCommand, render_surface.commands.ptr, render_surface.commands.count);
     for (commands) |command| {
         if (!uploadFillCommand(command)) return false;
     }
     return true;
 }
 
-pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurface) void {
-    std.debug.assert(host_surface.host_surface_id != 0);
-    std.debug.assert(host_surface.width == render_surface.render_px.width);
-    std.debug.assert(host_surface.height == render_surface.render_px.height);
+pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_texture: render_c.HowlRenderHostTexture, render_surface: *const render_c.HowlRenderSurfaceFrame) void {
+    std.debug.assert(host_texture.host_texture_id != 0);
+    std.debug.assert(host_texture.width == render_surface.render_px.width);
+    std.debug.assert(host_texture.height == render_surface.render_px.height);
 
     var framebuffer: c_uint = 0;
     glGenFramebuffers(1, &framebuffer);
@@ -144,7 +144,7 @@ pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surfa
     gl_c.glGetIntegerv(gl_c.GL_FRAMEBUFFER_BINDING, &prior_framebuffer);
     glBindFramebuffer(gl_c.GL_FRAMEBUFFER, framebuffer);
     defer glBindFramebuffer(gl_c.GL_FRAMEBUFFER, @intCast(prior_framebuffer));
-    glFramebufferTexture2D(gl_c.GL_FRAMEBUFFER, gl_c.GL_COLOR_ATTACHMENT0, gl_c.GL_TEXTURE_2D, @intCast(host_surface.host_surface_id), 0);
+    glFramebufferTexture2D(gl_c.GL_FRAMEBUFFER, gl_c.GL_COLOR_ATTACHMENT0, gl_c.GL_TEXTURE_2D, @intCast(host_texture.host_texture_id), 0);
     const framebuffer_status = glCheckFramebufferStatus(gl_c.GL_FRAMEBUFFER);
     if (framebuffer_status != gl_c.GL_FRAMEBUFFER_COMPLETE) {
         std.debug.panic("GL backend invariant failed: framebuffer incomplete: status={}", .{framebuffer_status});
@@ -165,7 +165,7 @@ pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surfa
     defer glBlendFuncSeparate(@intCast(prior_blend_src_rgb), @intCast(prior_blend_dst_rgb), @intCast(prior_blend_src_alpha), @intCast(prior_blend_dst_alpha));
     defer if (prior_blend_enabled) gl_c.glEnable(gl_c.GL_BLEND) else gl_c.glDisable(gl_c.GL_BLEND);
 
-    gl_c.glViewport(0, 0, host_surface.width, host_surface.height);
+    gl_c.glViewport(0, 0, host_texture.width, host_texture.height);
     gl_c.glDisable(gl_c.GL_DEPTH_TEST);
     gl_c.glEnable(gl_c.GL_BLEND);
     glBlendFuncSeparate(gl_c.GL_SRC_ALPHA, gl_c.GL_ONE_MINUS_SRC_ALPHA, gl_c.GL_ONE, gl_c.GL_ONE_MINUS_SRC_ALPHA);
@@ -173,26 +173,26 @@ pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surfa
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
 
-    const commands = spanSlice(render_c.HowlRenderSurfaceCommand, render_surface.commands.ptr, render_surface.commands.count);
+    const commands = spanSlice(render_c.HowlRenderSurfaceFrameCommand, render_surface.commands.ptr, render_surface.commands.count);
     for (commands, 0..) |command, command_index| {
         switch (command.kind) {
-            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT,
             => {
-                drawFillCommand(host_surface, command);
+                drawFillCommand(host_texture, command);
             },
-            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE => {
                 const slot = textures.textureSlotFor(command.resource) orelse std.debug.panic("trusted sprite command missing texture slot", .{});
                 if (resourceHasFutureUpload(render_surface, command.resource, @intCast(command_index))) {
                     std.debug.panic("trusted sprite command used before final upload", .{});
                 }
-                drawSpriteCommand(host_surface, command, slot);
+                drawSpriteCommand(host_texture, command, slot);
             },
-            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN => {
                 if (glyphCommandHasFutureUpload(render_surface, command, @intCast(command_index))) {
                     std.debug.panic("trusted glyph command used before final upload", .{});
                 }
-                drawGlyphCommand(textures, host_surface, command);
+                drawGlyphCommand(textures, host_texture, command);
             },
             else => std.debug.panic("trusted render surface has unknown command kind={}", .{command.kind}),
         }
@@ -201,9 +201,9 @@ pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surfa
     if (error_code != 0) std.debug.panic("GL backend invariant failed: render surface command upload failed: error={}", .{error_code});
 }
 
-pub fn renderSurfaceFillOnly(surface: *const render_c.HowlRenderSurface) bool {
+pub fn renderSurfaceFillOnly(surface: *const render_c.HowlRenderSurfaceFrame) bool {
     if (!resourceFreeCommands(surface)) return false;
-    const commands = spanSlice(render_c.HowlRenderSurfaceCommand, surface.commands.ptr, surface.commands.count);
+    const commands = spanSlice(render_c.HowlRenderSurfaceFrameCommand, surface.commands.ptr, surface.commands.count);
     var has_full_clear = false;
     for (commands, 0..) |command, index| {
         if (!renderSurfaceFillCommand(command)) return false;
@@ -214,9 +214,9 @@ pub fn renderSurfaceFillOnly(surface: *const render_c.HowlRenderSurface) bool {
     return renderSurfaceFillCoverage(surface, commands);
 }
 
-pub fn renderSurfaceFillPatch(surface: *const render_c.HowlRenderSurface) bool {
+pub fn renderSurfaceFillPatch(surface: *const render_c.HowlRenderSurfaceFrame) bool {
     if (!resourceFreeCommands(surface)) return false;
-    const commands = spanSlice(render_c.HowlRenderSurfaceCommand, surface.commands.ptr, surface.commands.count);
+    const commands = spanSlice(render_c.HowlRenderSurfaceFrameCommand, surface.commands.ptr, surface.commands.count);
     for (commands) |command| {
         if (!renderSurfaceFillCommand(command)) return false;
         if (!rectHasArea(command.rect)) return false;
@@ -225,10 +225,10 @@ pub fn renderSurfaceFillPatch(surface: *const render_c.HowlRenderSurface) bool {
     return true;
 }
 
-fn renderSurfaceFillCoverage(surface: *const render_c.HowlRenderSurface, commands: []const render_c.HowlRenderSurfaceCommand) bool {
+fn renderSurfaceFillCoverage(surface: *const render_c.HowlRenderSurfaceFrame, commands: []const render_c.HowlRenderSurfaceFrameCommand) bool {
     var covered_area: u64 = 0;
     for (commands, 0..) |command, index| {
-        if (command.kind != render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT) return false;
+        if (command.kind != render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT) return false;
         if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
         var prior_index: usize = 0;
         while (prior_index < index) : (prior_index += 1) {
@@ -241,17 +241,17 @@ fn renderSurfaceFillCoverage(surface: *const render_c.HowlRenderSurface, command
     return covered_area == surface_area;
 }
 
-pub fn renderSurfaceSprite(surface: *const render_c.HowlRenderSurface) bool {
+pub fn renderSurfaceSprite(surface: *const render_c.HowlRenderSurfaceFrame) bool {
     if (!hasCommands(surface)) return false;
-    const commands = spanSlice(render_c.HowlRenderSurfaceCommand, surface.commands.ptr, surface.commands.count);
+    const commands = spanSlice(render_c.HowlRenderSurfaceFrameCommand, surface.commands.ptr, surface.commands.count);
     var sprite_count: u32 = 0;
     for (commands, 0..) |command, index| {
         if (index == 0 and !renderSurfaceFullClear(surface, command)) return false;
         switch (command.kind) {
-            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT,
             => if (!renderSurfaceFillCommand(command)) return false,
-            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE => {
                 if (!renderSurfaceSpriteCommand(command)) return false;
                 sprite_count += 1;
             },
@@ -261,16 +261,16 @@ pub fn renderSurfaceSprite(surface: *const render_c.HowlRenderSurface) bool {
     return sprite_count > 0;
 }
 
-pub fn renderSurfaceSpritePatch(surface: *const render_c.HowlRenderSurface) bool {
+pub fn renderSurfaceSpritePatch(surface: *const render_c.HowlRenderSurfaceFrame) bool {
     if (!hasCommands(surface)) return false;
-    const commands = spanSlice(render_c.HowlRenderSurfaceCommand, surface.commands.ptr, surface.commands.count);
+    const commands = spanSlice(render_c.HowlRenderSurfaceFrameCommand, surface.commands.ptr, surface.commands.count);
     var sprite_count: u32 = 0;
     for (commands) |command| {
         switch (command.kind) {
-            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT,
             => if (!renderSurfaceFillCommand(command)) return false,
-            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE => {
                 if (!renderSurfaceSpriteCommand(command)) return false;
                 if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
                 sprite_count += 1;
@@ -281,18 +281,18 @@ pub fn renderSurfaceSpritePatch(surface: *const render_c.HowlRenderSurface) bool
     return sprite_count > 0;
 }
 
-pub fn renderSurfaceGlyphs(surface: *const render_c.HowlRenderSurface) bool {
+pub fn renderSurfaceGlyphs(surface: *const render_c.HowlRenderSurfaceFrame) bool {
     if (!hasCommands(surface)) return false;
-    const commands = spanSlice(render_c.HowlRenderSurfaceCommand, surface.commands.ptr, surface.commands.count);
+    const commands = spanSlice(render_c.HowlRenderSurfaceFrameCommand, surface.commands.ptr, surface.commands.count);
     var glyph_count: u32 = 0;
     for (commands, 0..) |command, index| {
         if (index == 0 and !renderSurfaceFullClear(surface, command)) return false;
         switch (command.kind) {
-            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT,
             => if (!renderSurfaceFillCommand(command)) return false,
-            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => if (!renderSurfaceSpriteCommand(command)) return false,
-            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE => if (!renderSurfaceSpriteCommand(command)) return false,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN => {
                 if (!glyphCommandValid(surface, command)) return false;
                 glyph_count += command.glyphs.count;
             },
@@ -302,24 +302,24 @@ pub fn renderSurfaceGlyphs(surface: *const render_c.HowlRenderSurface) bool {
     return glyph_count > 0;
 }
 
-pub fn renderSurfaceGlyphPatch(surface: *const render_c.HowlRenderSurface) bool {
+pub fn renderSurfaceGlyphPatch(surface: *const render_c.HowlRenderSurfaceFrame) bool {
     if (!hasCommands(surface)) return false;
-    const commands = spanSlice(render_c.HowlRenderSurfaceCommand, surface.commands.ptr, surface.commands.count);
+    const commands = spanSlice(render_c.HowlRenderSurfaceFrameCommand, surface.commands.ptr, surface.commands.count);
     var glyph_count: u32 = 0;
     for (commands) |command| {
         switch (command.kind) {
-            render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
-            render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT,
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT,
             => {
                 if (!renderSurfaceFillCommand(command)) return false;
                 if (!rectHasArea(command.rect)) return false;
                 if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
             },
-            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE => {
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE => {
                 if (!renderSurfaceSpriteCommand(command)) return false;
                 if (!rectFitsResource(command.rect, surface.render_px.width, surface.render_px.height)) return false;
             },
-            render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN => {
+            render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN => {
                 if (!glyphCommandValid(surface, command)) return false;
                 glyph_count += command.glyphs.count;
             },
@@ -329,10 +329,10 @@ pub fn renderSurfaceGlyphPatch(surface: *const render_c.HowlRenderSurface) bool 
     return glyph_count > 0;
 }
 
-fn renderSurfaceFillCommand(command: render_c.HowlRenderSurfaceCommand) bool {
+fn renderSurfaceFillCommand(command: render_c.HowlRenderSurfaceFrameCommand) bool {
     switch (command.kind) {
-        render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT,
-        render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT,
+        render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT,
+        render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT,
         => {},
         else => return false,
     }
@@ -341,8 +341,8 @@ fn renderSurfaceFillCommand(command: render_c.HowlRenderSurfaceCommand) bool {
     return true;
 }
 
-fn renderSurfaceSpriteCommand(command: render_c.HowlRenderSurfaceCommand) bool {
-    if (command.kind != render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE) return false;
+fn renderSurfaceSpriteCommand(command: render_c.HowlRenderSurfaceFrameCommand) bool {
+    if (command.kind != render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE) return false;
     if (!rectHasArea(command.rect)) return false;
     if (command.glyphs.count != 0) return false;
     if (command.resource.value == 0) return false;
@@ -351,8 +351,8 @@ fn renderSurfaceSpriteCommand(command: render_c.HowlRenderSurfaceCommand) bool {
     return true;
 }
 
-fn glyphCommandValid(surface: *const render_c.HowlRenderSurface, command: render_c.HowlRenderSurfaceCommand) bool {
-    if (command.kind != render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN) return false;
+fn glyphCommandValid(surface: *const render_c.HowlRenderSurfaceFrame, command: render_c.HowlRenderSurfaceFrameCommand) bool {
+    if (command.kind != render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN) return false;
     if (command.rect.x_px != 0 or command.rect.y_px != 0) return false;
     if (command.rect.width_px != 0 or command.rect.height_px != 0) return false;
     if (command.color_rgba != 0) return false;
@@ -370,20 +370,20 @@ fn glyphCommandValid(surface: *const render_c.HowlRenderSurface, command: render
     return true;
 }
 
-fn glyphSpanValid(command: render_c.HowlRenderSurfaceCommand) bool {
-    return spanCountValid(command.glyphs.ptr, command.glyphs.count, command.glyphs.count_max, render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX);
+fn glyphSpanValid(command: render_c.HowlRenderSurfaceFrameCommand) bool {
+    return spanCountValid(command.glyphs.ptr, command.glyphs.count, command.glyphs.count_max, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX);
 }
 
-fn hasCommands(surface: *const render_c.HowlRenderSurface) bool {
+fn hasCommands(surface: *const render_c.HowlRenderSurfaceFrame) bool {
     return surface.commands.count != 0;
 }
 
-fn resourceFreeCommands(surface: *const render_c.HowlRenderSurface) bool {
+fn resourceFreeCommands(surface: *const render_c.HowlRenderSurfaceFrame) bool {
     return surface.creates.count == 0 and surface.uploads.count == 0 and surface.retires.count == 0 and hasCommands(surface);
 }
 
-fn renderSurfaceFullClear(surface: *const render_c.HowlRenderSurface, command: render_c.HowlRenderSurfaceCommand) bool {
-    if (command.kind != render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT) return false;
+fn renderSurfaceFullClear(surface: *const render_c.HowlRenderSurfaceFrame, command: render_c.HowlRenderSurfaceFrameCommand) bool {
+    if (command.kind != render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT) return false;
     if (command.rect.x_px != 0) return false;
     if (command.rect.y_px != 0) return false;
     if (command.rect.width_px != surface.render_px.width) return false;
@@ -391,7 +391,7 @@ fn renderSurfaceFullClear(surface: *const render_c.HowlRenderSurface, command: r
     return true;
 }
 
-fn uploadFillCommand(command: render_c.HowlRenderSurfaceCommand) bool {
+fn uploadFillCommand(command: render_c.HowlRenderSurfaceFrameCommand) bool {
     const width = command.rect.width_px;
     const height = command.rect.height_px;
     std.debug.assert(width != 0);
@@ -415,7 +415,7 @@ fn uploadFillCommand(command: render_c.HowlRenderSurfaceCommand) bool {
 const row_pixels_max = 8192;
 const fill_upload_tile_bytes_max = 256 * 1024;
 
-fn fillCommandFitsHostRow(command: render_c.HowlRenderSurfaceCommand) bool {
+fn fillCommandFitsHostRow(command: render_c.HowlRenderSurfaceFrameCommand) bool {
     return command.rect.width_px <= row_pixels_max;
 }
 
@@ -449,14 +449,14 @@ fn stageFillUploadTile(tile: []u8, width: u16, rows: u16, rgba: [4]u8) void {
     }
 }
 
-fn drawFillCommand(surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand) void {
+fn drawFillCommand(surface: render_c.HowlRenderHostTexture, command: render_c.HowlRenderSurfaceFrameCommand) void {
     gl_c.glDisable(gl_c.GL_TEXTURE_2D);
     const rgba = unpackRenderSurfaceRgba(command.color_rgba);
     gl_c.glColor4ub(rgba[0], rgba[1], rgba[2], rgba[3]);
     drawQuad(surface, command.rect);
 }
 
-fn drawSpriteCommand(surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand, slot: RenderResourceTextures.Slot) void {
+fn drawSpriteCommand(surface: render_c.HowlRenderHostTexture, command: render_c.HowlRenderSurfaceFrameCommand, slot: RenderResourceTextures.Slot) void {
     std.debug.assert(spriteUploadCoversCommand(slot, command.rect));
     gl_c.glEnable(gl_c.GL_TEXTURE_2D);
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
@@ -486,7 +486,7 @@ fn spriteUploadCoversCommand(slot: RenderResourceTextures.Slot, command_rect: re
     return bytes_required <= slot.upload_bytes_count;
 }
 
-fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderSurface, command: render_c.HowlRenderSurfaceCommand, command_index: u32) bool {
+fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderSurfaceFrame, command: render_c.HowlRenderSurfaceFrameCommand, command_index: u32) bool {
     const glyphs = spanSlice(render_c.HowlRenderGlyphRef, command.glyphs.ptr, command.glyphs.count);
     for (glyphs) |glyph| {
         if (resourceHasFutureUpload(surface, glyph.atlas_resource, command_index)) return true;
@@ -494,7 +494,7 @@ fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderSurface, comma
     return false;
 }
 
-fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceCommand) void {
+fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRenderHostTexture, command: render_c.HowlRenderSurfaceFrameCommand) void {
     const glyphs = spanSlice(render_c.HowlRenderGlyphRef, command.glyphs.ptr, command.glyphs.count);
     gl_c.glEnable(gl_c.GL_TEXTURE_2D);
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
@@ -517,7 +517,7 @@ fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRen
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
 }
 
-fn drawQuad(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSurfaceRect) void {
+fn drawQuad(surface: render_c.HowlRenderHostTexture, rect: render_c.HowlRenderSurfaceRect) void {
     const left = ndcX(rect.x_px, surface.width);
     const right = ndcX(rect.x_px + rect.width_px, surface.width);
     const top = ndcY(rect.y_px, surface.height);
@@ -538,13 +538,13 @@ fn emitQuadVerticesWithTex(left: f32, right: f32, top: f32, bottom: f32, tex_lef
     gl_c.glVertex2f(left, bottom);
 }
 
-fn drawTexturedQuad(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSurfaceRect, texture_rect: render_c.HowlRenderSurfaceRect, texture_width: u32, texture_height: u32) void {
+fn drawTexturedQuad(surface: render_c.HowlRenderHostTexture, rect: render_c.HowlRenderSurfaceRect, texture_rect: render_c.HowlRenderSurfaceRect, texture_width: u32, texture_height: u32) void {
     gl_c.glBegin(gl_c.GL_QUADS);
     emitTexturedQuadVertices(surface, rect, texture_rect, texture_width, texture_height);
     gl_c.glEnd();
 }
 
-fn emitTexturedQuadVertices(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSurfaceRect, texture_rect: render_c.HowlRenderSurfaceRect, texture_width: u32, texture_height: u32) void {
+fn emitTexturedQuadVertices(surface: render_c.HowlRenderHostTexture, rect: render_c.HowlRenderSurfaceRect, texture_rect: render_c.HowlRenderSurfaceRect, texture_width: u32, texture_height: u32) void {
     const left = ndcX(rect.x_px, surface.width);
     const right = ndcX(rect.x_px + rect.width_px, surface.width);
     const top = ndcY(rect.y_px, surface.height);
@@ -595,11 +595,11 @@ pub const testing = struct {
         @import("render_surface_commands.zig").stageFillUploadTile(tile, width, rows, rgba);
     }
 
-    pub fn resourceHasFutureUpload(surface: *const render_c.HowlRenderSurface, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
+    pub fn resourceHasFutureUpload(surface: *const render_c.HowlRenderSurfaceFrame, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
         return @import("render_surface_commands.zig").resourceHasFutureUpload(surface, resource, command_index);
     }
 
-    pub fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderSurface, command: render_c.HowlRenderSurfaceCommand, command_index: u32) bool {
+    pub fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderSurfaceFrame, command: render_c.HowlRenderSurfaceFrameCommand, command_index: u32) bool {
         return @import("render_surface_commands.zig").glyphCommandHasFutureUpload(surface, command, command_index);
     }
 

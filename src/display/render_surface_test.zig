@@ -13,11 +13,11 @@ fn testRect(width: u16, height: u16) render_c.HowlRenderSurfaceRect {
     return .{ .x_px = 0, .y_px = 0, .width_px = width, .height_px = height };
 }
 
-fn commandSpan(commands: []const render_c.HowlRenderSurfaceCommand) render_c.HowlRenderSurfaceCommandSpan {
+fn commandSpan(commands: []const render_c.HowlRenderSurfaceFrameCommand) render_c.HowlRenderSurfaceFrameCommandSpan {
     return .{
         .ptr = commands.ptr,
         .count = @intCast(commands.len),
-        .count_max = render_c.HOWL_RENDER_SURFACE_COMMANDS_MAX,
+        .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_COMMANDS_MAX,
     };
 }
 
@@ -25,37 +25,37 @@ fn uploadSpan(uploads: []const render_c.HowlRenderResourceUpload, bytes_count_to
     return .{
         .ptr = uploads.ptr,
         .count = @intCast(uploads.len),
-        .count_max = render_c.HOWL_RENDER_SURFACE_UPLOADS_MAX,
+        .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_UPLOADS_MAX,
         .bytes_count_total = bytes_count_total,
-        .bytes_count_max = render_c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX,
+        .bytes_count_max = render_c.HOWL_RENDER_SURFACE_FRAME_UPLOAD_BYTES_MAX,
     };
 }
 
-fn testSurface() render_c.HowlRenderSurface {
+fn testSurface() render_c.HowlRenderSurfaceFrame {
     return .{
-        .surface_version = render_c.HOWL_RENDER_SURFACE_VERSION,
+        .frame_version = render_c.HOWL_RENDER_SURFACE_FRAME_VERSION,
         .reserved0 = 0,
         .token = .{
             .snapshot_seq = 1,
-            .surface_seq = 1,
+            .frame_seq = 1,
             .geometry_epoch = 1,
             .resource_epoch = 1,
         },
         .render_px = .{ .width = 1, .height = 1 },
         .cell_px = .{ .width = 1, .height = 1 },
         .grid = .{ .cols = 1, .rows = 1 },
-        .damage = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_DAMAGE_ITEMS_MAX },
-        .creates = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_CREATES_MAX },
-        .uploads = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_UPLOADS_MAX, .bytes_count_total = 0, .bytes_count_max = render_c.HOWL_RENDER_SURFACE_UPLOAD_BYTES_MAX },
-        .commands = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_COMMANDS_MAX },
-        .retires = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_RETIRES_MAX },
+        .damage = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_DAMAGE_ITEMS_MAX },
+        .creates = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_CREATES_MAX },
+        .uploads = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_UPLOADS_MAX, .bytes_count_total = 0, .bytes_count_max = render_c.HOWL_RENDER_SURFACE_FRAME_UPLOAD_BYTES_MAX },
+        .commands = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_COMMANDS_MAX },
+        .retires = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_RETIRES_MAX },
     };
 }
 
 test "render surface fill classifier rejects out of bounds fill" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(2, 2), .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 1 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(2, 2), .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 1 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -70,9 +70,9 @@ test "render surface fbo y coordinates target texture row zero first" {
 }
 
 test "render surface fill only accepts full clear and fill commands" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
@@ -81,9 +81,9 @@ test "render surface fill only accepts full clear and fill commands" {
 }
 
 test "render surface fill only accepts full non-overlapping coverage without clear" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -93,7 +93,7 @@ test "render surface fill only accepts full non-overlapping coverage without cle
 }
 
 test "render surface fill only rejects coverage gaps without clear" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
@@ -102,9 +102,9 @@ test "render surface fill only rejects coverage gaps without clear" {
 }
 
 test "render surface fill only rejects coverage overlap without clear" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 1 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 1 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -114,7 +114,7 @@ test "render surface fill only rejects coverage overlap without clear" {
 }
 
 test "render surface fill patch accepts partial bounded fills" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
@@ -123,9 +123,9 @@ test "render surface fill patch accepts partial bounded fills" {
 }
 
 test "render surface fill patch accepts bounded clear and fill commands" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -135,11 +135,11 @@ test "render surface fill patch accepts bounded clear and fill commands" {
 }
 
 test "render surface classification names fill and fill patch shapes" {
-    var fill_commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var fill_commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var fill_surface = testSurface();
     fill_surface.commands = commandSpan(&fill_commands);
 
-    var patch_commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var patch_commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var patch_surface = testSurface();
     patch_surface.render_px = .{ .width = 2, .height = 2 };
     patch_surface.commands = commandSpan(&patch_commands);
@@ -149,7 +149,7 @@ test "render surface classification names fill and fill patch shapes" {
 }
 
 test "render surface fill patch rejects out of bounds fill" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 2 }, .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
@@ -179,7 +179,7 @@ test "render surface fill upload tile repeats the same rgba row" {
 }
 
 test "render surface fill only rejects mixed resource commands" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(9, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(9, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
@@ -187,9 +187,9 @@ test "render surface fill only rejects mixed resource commands" {
 }
 
 test "render surface sprite surface accepts clear fill and sprite commands" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(10, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(10, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
@@ -198,7 +198,7 @@ test "render surface sprite surface accepts clear fill and sprite commands" {
 }
 
 test "render surface sprite patch accepts bounded sprite commands without clear" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(15, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(15, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
@@ -206,14 +206,14 @@ test "render surface sprite patch accepts bounded sprite commands without clear"
 }
 
 test "render surface classification names sprite and sprite patch shapes" {
-    var sprite_commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(30, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+    var sprite_commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(30, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
     };
     var sprite_surface = testSurface();
     sprite_surface.commands = commandSpan(&sprite_commands);
 
-    var patch_commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(31, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var patch_commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(31, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var patch_surface = testSurface();
     patch_surface.commands = commandSpan(&patch_commands);
 
@@ -223,7 +223,7 @@ test "render surface classification names sprite and sprite patch shapes" {
 
 test "render surface sprite patch rejects glyph commands" {
     var glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(16, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 0, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } }};
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX } }};
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
@@ -267,7 +267,7 @@ test "render surface future upload detects command visibility mismatch" {
 test "render surface glyph future upload detects command visibility mismatch" {
     const resource = testResource(19, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA);
     var glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = resource, .atlas_rect = testRect(1, 1), .x_px = 0, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    const command = render_c.HowlRenderSurfaceCommand{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } };
+    const command = render_c.HowlRenderSurfaceFrameCommand{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX } };
     var bytes = [_]u8{255};
     var uploads = [_]render_c.HowlRenderResourceUpload{.{ .resource = resource, .rect = testRect(1, 1), .bytes_ptr = &bytes, .bytes_count = 1, .stride_bytes = 1, .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8, .upload_seq = 1 }};
     var surface = testSurface();
@@ -279,7 +279,7 @@ test "render surface glyph future upload detects command visibility mismatch" {
 
 test "render surface sprite surface rejects glyph commands" {
     var glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(11, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 0, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = 1 } }};
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = 1 } }};
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
@@ -288,9 +288,9 @@ test "render surface sprite surface rejects glyph commands" {
 
 test "render surface glyph surface accepts clear fill sprite and glyph commands" {
     var glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(12, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 0, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX } },
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
@@ -300,9 +300,9 @@ test "render surface glyph surface accepts clear fill sprite and glyph commands"
 
 test "render surface glyph surface rejects no full clear glyph patch frames" {
     var glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(22, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 0, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX } },
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -313,10 +313,10 @@ test "render surface glyph surface rejects no full clear glyph patch frames" {
 
 test "render surface glyph patch accepts bounded fill clear and glyph commands" {
     var glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(23, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 1, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 1 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 1 }, .color_rgba = 0xffffffff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX } },
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -327,15 +327,15 @@ test "render surface glyph patch accepts bounded fill clear and glyph commands" 
 
 test "render surface classification names glyph and glyph patch shapes" {
     var full_glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(32, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 0, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    var glyph_commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &full_glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } },
+    var glyph_commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &full_glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX } },
     };
     var glyph_surface = testSurface();
     glyph_surface.commands = commandSpan(&glyph_commands);
 
     var patch_glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(33, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 1, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    var patch_commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &patch_glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } }};
+    var patch_commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &patch_glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX } }};
     var patch_surface = testSurface();
     patch_surface.render_px = .{ .width = 2, .height = 1 };
     patch_surface.commands = commandSpan(&patch_commands);
@@ -345,7 +345,7 @@ test "render surface classification names glyph and glyph patch shapes" {
 }
 
 test "render surface classification rejects unsupported shapes" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = std.math.maxInt(u8), .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = std.math.maxInt(u8), .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
@@ -354,10 +354,10 @@ test "render surface classification rejects unsupported shapes" {
 
 test "render surface glyph patch accepts bounded sprite and glyph commands" {
     var glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(45, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), .atlas_rect = testRect(1, 1), .x_px = 1, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(2, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(46, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(2, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(46, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX } },
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 1 };
@@ -367,11 +367,11 @@ test "render surface glyph patch accepts bounded sprite and glyph commands" {
 }
 
 test "render surface glyph patch rejects sprite and unknown commands" {
-    var sprite_commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(24, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var sprite_commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0xffffffff, .resource = testResource(24, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA), .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var sprite_surface = testSurface();
     sprite_surface.commands = commandSpan(&sprite_commands);
 
-    var unknown_commands = [_]render_c.HowlRenderSurfaceCommand{.{ .kind = std.math.maxInt(u8), .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
+    var unknown_commands = [_]render_c.HowlRenderSurfaceFrameCommand{.{ .kind = std.math.maxInt(u8), .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } }};
     var unknown_surface = testSurface();
     unknown_surface.commands = commandSpan(&unknown_commands);
 
@@ -381,9 +381,9 @@ test "render surface glyph patch rejects sprite and unknown commands" {
 
 test "render surface glyph surface rejects color atlas" {
     var glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = testResource(13, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR), .atlas_rect = testRect(1, 1), .x_px = 0, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = &glyph, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX } },
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
@@ -392,9 +392,9 @@ test "render surface glyph surface rejects color atlas" {
 }
 
 test "render surface glyph surface rejects invalid glyph span" {
-    var commands = [_]render_c.HowlRenderSurfaceCommand{
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
-        .{ .kind = render_c.HOWL_RENDER_SURFACE_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_GLYPHS_PER_RUN_MAX } },
+    var commands = [_]render_c.HowlRenderSurfaceFrameCommand{
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .reserved0 = 0, .reserved1 = 0, .rect = testRect(1, 1), .color_rgba = 0x000000ff, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 } },
+        .{ .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN, .reserved0 = 0, .reserved1 = 0, .rect = .{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, .color_rgba = 0, .resource = .{ .value = 0, .generation = 0, .kind = 0 }, .glyphs = .{ .ptr = null, .count = 1, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX } },
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);

@@ -26,11 +26,11 @@ pub const RenderResourceTextures = struct {
         for (&self.slots) |*slot| deleteSlot(slot);
     }
 
-    pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
+    pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurfaceFrame) void {
         self.realizeSurfaceLocked(surface);
     }
 
-    fn realizeSurfaceLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
+    fn realizeSurfaceLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurfaceFrame) void {
         self.validateSurface(surface);
         const creates = spanSlice(
             render_c.HowlRenderResourceCreate,
@@ -62,11 +62,11 @@ pub const RenderResourceTextures = struct {
         std.debug.panic("GL backend invariant failed: {s}: error={}", .{ message, error_code });
     }
 
-    fn validateSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
+    fn validateSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurfaceFrame) void {
         _ = self.validateSurfaceTransition(surface);
     }
 
-    fn validateSurfaceTransition(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) RenderResourceTextures {
+    fn validateSurfaceTransition(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurfaceFrame) RenderResourceTextures {
         var next = self.*;
         const creates = spanSlice(
             render_c.HowlRenderResourceCreate,
@@ -305,7 +305,7 @@ pub const testing = struct {
         textures.commitUploadMetadata(uploads);
     }
 
-    pub fn validateSurface(textures: *RenderResourceTextures, surface: *const render_c.HowlRenderSurface) void {
+    pub fn validateSurface(textures: *RenderResourceTextures, surface: *const render_c.HowlRenderSurfaceFrame) void {
         textures.validateSurface(surface);
     }
 };
