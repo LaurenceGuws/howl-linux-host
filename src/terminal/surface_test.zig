@@ -1423,17 +1423,10 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     };
     const FakeDisplay = struct {
         next_token: u64 = 900,
-        ready_complete: ?u64 = null,
 
         pub fn submitPresentSync(self: *@This(), _: anytype) u64 {
             self.next_token += 1;
             return self.next_token;
-        }
-
-        pub fn takeReadyPresentComplete(self: *@This()) ?u64 {
-            const token = self.ready_complete orelse return null;
-            self.ready_complete = null;
-            return token;
         }
     };
     const FakeTabs = struct {
@@ -1481,33 +1474,18 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     try std.testing.expectEqual(AppPresent.Reason.terminal_frame, first_reason);
     const first_submit = AppPresent.lifecycle(&app).submit(&tab, first_turn.step, first_turn.present_snapshot_seq, snapshot, first_reason);
     try std.testing.expect(first_submit.submission.submitted);
-    try std.testing.expect(!first_submit.completed_terminal_present);
-    try std.testing.expect(surface.term.render.presentPending());
+    try std.testing.expect(first_submit.completed_terminal_present);
+    try std.testing.expect(!surface.term.render.presentPending());
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
     try prepareSubmitSurface(&surface, 52);
-    const blocked_work = surface.term.render.workState(false);
-    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, blocked_work.state);
-    const followup_wait = event_mod.testing.computeLoopWaitFromFacts(1_000, false, false, false, 17_000_000, .{
-        .runtime_admitted = false,
-        .runtime_wake_pending = false,
-        .runtime_wait_ms = null,
-        .render_work_pending = blocked_work.needsRenderSurface(),
-    });
-    try std.testing.expect(followup_wait.wait_for_window);
-    try std.testing.expect(followup_wait.wait_ms != null);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-
-    display.ready_complete = app.pending_terminal_present;
-    try std.testing.expect(AppPresent.lifecycle(&app).drain());
-    try std.testing.expect(!surface.term.render.presentPending());
-    const resumed_work = surface.term.render.workState(false);
-    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, resumed_work.state);
+    const next_work = surface.term.render.workState(false);
+    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, next_work.state);
     const resumed_wait = event_mod.testing.computeLoopWaitFromFacts(17_001_000, false, true, false, null, .{
         .runtime_admitted = false,
         .runtime_wake_pending = false,
         .runtime_wait_ms = null,
-        .render_work_pending = resumed_work.needsRenderSurface(),
+        .render_work_pending = next_work.needsRenderSurface(),
     });
     try std.testing.expect(!resumed_wait.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), resumed_wait.wait_ms);
@@ -1517,7 +1495,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     const second_reason = event_mod.testing.derivePresentReasonFromFacts(false, false, second_turn.step);
     const second_submit = AppPresent.lifecycle(&app).submit(&tab, second_turn.step, second_turn.present_snapshot_seq, snapshot, second_reason);
     try std.testing.expect(second_submit.submission.submitted);
-    try std.testing.expect(!second_submit.completed_terminal_present);
+    try std.testing.expect(second_submit.completed_terminal_present);
     try std.testing.expectEqual(@as(u8, 2), submit_hook_state.submit_calls);
 }
 

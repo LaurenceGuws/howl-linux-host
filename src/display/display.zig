@@ -68,15 +68,9 @@ pub fn GenericState(comptime c: type) type {
         tab_cache_h: c_int,
         tab_cache_revision: u64,
         next_present_token: PresentToken,
-        submitted_present: ?PresentToken,
-        ready_present_complete: ?PresentToken,
 
         pub fn submitPresentSync(self: *@This(), frame: Layout.Frame) PresentToken {
             return displaySubmitPresentSync(C, self, frame);
-        }
-
-        pub fn takeReadyPresentComplete(self: *@This()) ?PresentToken {
-            return displayTakeReadyPresentComplete(C, self);
         }
     };
 }
@@ -95,8 +89,6 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) !v
         .tab_cache_h = 0,
         .tab_cache_revision = 0,
         .next_present_token = 1,
-        .submitted_present = null,
-        .ready_present_complete = null,
     };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
@@ -120,13 +112,10 @@ pub fn deinit(comptime c: type, state: *GenericState(c)) void {
 }
 
 pub fn displaySubmitPresentSync(comptime c: type, state: *GenericState(c), frame: Layout.Frame) PresentToken {
-    std.debug.assert(state.submitted_present == null);
-    std.debug.assert(state.ready_present_complete == null);
     const token = state.next_present_token;
     std.debug.assert(token != 0);
     state.next_present_token +%= 1;
     if (state.next_present_token == 0) state.next_present_token = 1;
-    state.submitted_present = token;
 
     const handle = state.window orelse unreachable;
     var fb_w: c_int = 0;
@@ -149,17 +138,6 @@ pub fn displaySubmitPresentSync(comptime c: type, state: *GenericState(c), frame
     );
     Rects.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
     _ = c.SDL_GL_SwapWindow(handle);
-    std.debug.assert(state.submitted_present == token);
-    state.submitted_present = null;
-    state.ready_present_complete = token;
-    return token;
-}
-
-pub fn displayTakeReadyPresentComplete(comptime c: type, state: *GenericState(c)) ?PresentToken {
-    std.debug.assert(state.submitted_present == null);
-    const token = state.ready_present_complete orelse return null;
-    state.ready_present_complete = null;
-    std.debug.assert(token != 0);
     return token;
 }
 
@@ -284,8 +262,6 @@ fn testState() GenericState(FakeC) {
         .tab_cache_h = 0,
         .tab_cache_revision = 0,
         .next_present_token = 1,
-        .submitted_present = null,
-        .ready_present_complete = null,
     };
 }
 
@@ -305,18 +281,16 @@ test "submit present returns monotonic nonzero tokens" {
     var state = testState();
     const first = displaySubmitPresentSync(FakeC, &state, testFrame());
     try std.testing.expect(first != 0);
-    try std.testing.expectEqual(first, displayTakeReadyPresentComplete(FakeC, &state).?);
 
     const second = displaySubmitPresentSync(FakeC, &state, testFrame());
     try std.testing.expect(second != 0);
     try std.testing.expect(second > first);
-    try std.testing.expectEqual(second, displayTakeReadyPresentComplete(FakeC, &state).?);
 }
 
-test "submit present enforces single in-flight state" {
+test "submit present has no deferred in-flight state" {
     var state = testState();
-    state.submitted_present = 7;
-    try std.testing.expect(state.submitted_present != null);
+    _ = displaySubmitPresentSync(FakeC, &state, testFrame());
+    _ = displaySubmitPresentSync(FakeC, &state, testFrame());
 }
 
 test "tab cache refreshes only on revision change" {
@@ -327,39 +301,22 @@ test "tab cache refreshes only on revision change" {
     var frame = testFrame();
 
     const first = displaySubmitPresentSync(FakeC, &state, frame);
-    _ = displayTakeReadyPresentComplete(FakeC, &state);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
 
     const second = displaySubmitPresentSync(FakeC, &state, frame);
-    _ = displayTakeReadyPresentComplete(FakeC, &state);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
     try std.testing.expect(second > first);
 
     frame.tab_bar_revision = 2;
     const third = displaySubmitPresentSync(FakeC, &state, frame);
-    _ = displayTakeReadyPresentComplete(FakeC, &state);
     try std.testing.expectEqual(@as(u32, 2), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
     try std.testing.expect(third > second);
 }
 
-test "present completion drains once before overwrite" {
-    var state = testState();
-    const token = displaySubmitPresentSync(FakeC, &state, testFrame());
-    try std.testing.expectEqual(@as(?PresentToken, token), displayTakeReadyPresentComplete(FakeC, &state));
-    try std.testing.expectEqual(@as(?PresentToken, null), displayTakeReadyPresentComplete(FakeC, &state));
-
-    const next = displaySubmitPresentSync(FakeC, &state, testFrame());
-    try std.testing.expect(next > token);
-    try std.testing.expectEqual(@as(?PresentToken, next), displayTakeReadyPresentComplete(FakeC, &state));
-}
-
-test "submit present leaves exactly one ready completion token" {
+test "submit present completion is synchronous" {
     var state = testState();
 
     const token = displaySubmitPresentSync(FakeC, &state, testFrame());
 
-    try std.testing.expectEqual(@as(?PresentToken, null), state.submitted_present);
-    try std.testing.expectEqual(@as(?PresentToken, token), state.ready_present_complete);
-    try std.testing.expectEqual(@as(?PresentToken, token), displayTakeReadyPresentComplete(FakeC, &state));
-    try std.testing.expectEqual(@as(?PresentToken, null), displayTakeReadyPresentComplete(FakeC, &state));
+    try std.testing.expect(token != 0);
 }
