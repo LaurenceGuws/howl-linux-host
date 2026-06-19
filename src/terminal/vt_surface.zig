@@ -27,11 +27,11 @@ pub const RenderStateCapture = struct {
 pub fn captureRenderState(term: *terminal_term.Term, hover: ?HyperlinkHover) !RenderStateCapture {
     term.mutex.lockFair();
     defer term.mutex.unlock();
-    return captureRenderStateLockedWith(term, hover, RealOps);
+    return captureRenderStateLockedWith(term, hover, RenderStateCaptureOps);
 }
 
 pub fn captureRenderStateLocked(term: *terminal_term.Term, hover: ?HyperlinkHover) !RenderStateCapture {
-    return captureRenderStateLockedWith(term, hover, RealOps);
+    return captureRenderStateLockedWith(term, hover, RenderStateCaptureOps);
 }
 
 fn captureRenderStateLockedWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) !RenderStateCapture {
@@ -45,7 +45,7 @@ fn captureRenderStateLockedWith(term: anytype, hover: ?HyperlinkHover, comptime 
     return .{ .state = state, .info = info };
 }
 
-const RealOps = struct {
+const RenderStateCaptureOps = struct {
     fn update(state: vt_c.HowlVtRenderStateHandle, handle: vt_c.HowlVtHandle, scrollback_offset: u32) i32 {
         return vt_c.howl_vt_render_state_update(state, handle, scrollback_offset);
     }

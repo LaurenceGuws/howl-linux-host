@@ -40,7 +40,7 @@ const TransportProgress = struct {
 };
 
 pub fn driveOnce(term: *terminal_term.Term, now_ns: u64) Outcome {
-    return driveOnceWith(term, now_ns, RealOps);
+    return driveOnceWith(term, now_ns, TerminalProgressOps);
 }
 
 fn driveOnceWith(term: anytype, now_ns: u64, comptime Ops: type) Outcome {
@@ -53,7 +53,7 @@ fn driveOnceWith(term: anytype, now_ns: u64, comptime Ops: type) Outcome {
     return .{ .keep = keep, .should_redraw = should_redraw, .alive = alive };
 }
 
-const RealOps = struct {
+const TerminalProgressOps = struct {
     fn pumpTransport(term: *terminal_term.Term, mode: pty_session.TransportPumpMode) TransportProgress {
         return pumpTransportSlice(term, mode);
     }
@@ -306,7 +306,7 @@ test "progress drive requests redraw on transport read" {
     try std.testing.expect(outcome.alive);
 }
 
-test "progress drive keeps work bounded after saturated transport slice" {
+test "progress drive requests another turn after saturated transport slice" {
     fake_state = .{};
     fake_state.reads = 1;
     fake_state.read_bytes = 8;
@@ -337,7 +337,7 @@ test "progress drive reports quiet transport death without redraw" {
     try std.testing.expect(!outcome.alive);
 }
 
-test "progress drive requests redraw and next turn for runtime work" {
+test "progress drive requests redraw and next turn for runtime obligation" {
     fake_state = .{};
     fake_state.runtime_state_changed = true;
     fake_state.runtime_pending_now = true;
@@ -440,7 +440,7 @@ test "transport pump forces unfair lock at backlog threshold" {
     try std.testing.expect(!term.data_locked);
 }
 
-test "transport pump caps locked feed work" {
+test "transport pump caps locked feed bytes" {
     test_transport = .{};
     test_transport.read_chunks = .{ 4, 4, 4, 0 };
     var term = TestTransportTerm{};

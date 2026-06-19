@@ -24,7 +24,7 @@ pub const WaitThread = struct {
 };
 
 pub fn progressThreadMain(self: anytype) void {
-    progressThreadMainWith(self, RealOps);
+    progressThreadMainWith(self, ProgressThreadOps);
 }
 
 pub fn wakePending(self: anytype) bool {
@@ -81,7 +81,7 @@ fn signalWake(self: anytype, comptime Ops: type) void {
     }
 }
 
-const RealOps = struct {
+const ProgressThreadOps = struct {
     fn driveProgress(self: anytype, now_ns: u64) pty_pump.Outcome {
         return pty_pump.driveOnce(termRef(self), now_ns);
     }
@@ -110,7 +110,7 @@ test "progress thread drives terminal before waking event loop" {
     try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
 }
 
-test "progress thread drains kept work before waiting again" {
+test "progress thread drains kept turns before waiting again" {
     fake_state = .{};
     fake_state.drive_alive_calls = 2;
     fake_state.drive_keep_calls = 1;

@@ -2,7 +2,6 @@ const terminal_config = @import("../config/terminal.zig");
 const render_c = @import("howl_render_c");
 const std = @import("std");
 
-
 const Allocator = std.mem.Allocator;
 const max_fallback_font_paths: u16 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 const bundled_fallback_paths: [3][:0]const u8 = .{
@@ -153,10 +152,10 @@ pub fn reset(self: anytype) bool {
 }
 
 fn set(self: anytype, next: u16) bool {
-    return setWith(self, next, RealOps);
+    return setWith(self, next, FontSizeOps);
 }
 
-const RealOps = struct {
+const FontSizeOps = struct {
     fn setFontSizePx(term: anytype, next: u16) bool {
         std.debug.assert(next > 0);
         term.mutex.lock();
