@@ -4,6 +4,7 @@ const assert = std.debug.assert;
 const Config = @import("config/config.zig");
 const Display = @import("display/display.zig");
 const DisplayLayout = @import("display/layout.zig");
+const DisplayViewport = @import("display/viewport.zig");
 const EventLoop = @import("event_loop.zig");
 const Input = @import("input/input.zig").Input;
 const TabBar = @import("display/tab_bar.zig").TabBar;
@@ -136,14 +137,12 @@ pub const Processor = struct {
     pub fn openTab(self: *Self) !void {
         const items = self.tabs.items();
         assert(items.len <= max_tabs);
-        const before_tab_bar_height = tabBarHeightForCount(&self.conf.tab_bar, items.len);
-        const next_tab_bar_height = tabBarHeightForCount(&self.conf.tab_bar, items.len + 1);
+        const before_tab_bar_height = DisplayViewport.tabBarHeight(self.conf.tab_bar, items.len);
+        const next_viewport = DisplayViewport.regions(self.window, self.conf.tab_bar, items.len + 1);
         const slot = self.tabs.acquireSlot() orelse return;
         errdefer self.tabs.releaseSlot(slot.slot_idx);
 
-        const px = DisplayLayout.contentPixelSize(self.window, next_tab_bar_height);
-        const logical = DisplayLayout.contentLogicalSize(self.window, next_tab_bar_height);
-        try slot.tab.init(self.input, self.event_loop, &self.conf.term, px.width, px.height, logical.width, logical.height);
+        try slot.tab.init(self.input, self.event_loop, &self.conf.term, next_viewport.content_px.width, next_viewport.content_px.height, next_viewport.content_logical.width, next_viewport.content_logical.height);
         errdefer slot.tab.deinit();
         self.window.requestRedraw();
 
@@ -153,7 +152,7 @@ pub const Processor = struct {
         assert(updated.len <= max_tabs);
         self.active_tab_idx.* = @intCast(updated.len - 1);
         assert(tabIndexInRange(updated, self.active_tab_idx.*));
-        if (before_tab_bar_height != next_tab_bar_height) resizeTerminalsForTabBarHeight(self.window, updated, next_tab_bar_height);
+        if (before_tab_bar_height != next_viewport.tab_bar_px) resizeTerminalsForViewport(updated, next_viewport);
         syncTerminalFocus(self.window, updated, self.active_tab_idx.*);
         syncActiveWindowTitle(self.window, activeSurface(updated, self.active_tab_idx.*));
     }
@@ -326,13 +325,8 @@ pub const Processor = struct {
 
     fn forwardTerminalInput(self: *Self) TerminalSurface.DrainInputOutcome {
         const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
-        const tab_bar_height = activeTabBarHeight(&self.conf.tab_bar, self.tabs.items());
-        const content_px = DisplayLayout.contentPixelSize(self.window, tab_bar_height);
-        const content_logical = DisplayLayout.contentLogicalSize(self.window, tab_bar_height);
-        const terminal_px = tab.textureSize();
-        const terminal_logical = DisplayLayout.terminalLogicalSize(content_logical, content_px, terminal_px);
-        const origin_y = DisplayLayout.tabBarHeightLogical(self.window, tab_bar_height);
-        const outcome = forwardTerminalInputFlow(tab, self.input, 0, origin_y, terminal_logical.width, terminal_logical.height);
+        const viewport = DisplayViewport.terminal(self.window, self.conf.tab_bar, self.tabs.items().len, tab.textureSize());
+        const outcome = forwardTerminalInputFlow(tab, self.input, 0, @intCast(viewport.regions.tab_bar_logical), viewport.logical_size.width, viewport.logical_size.height);
         self.terminal_input_admitted = self.terminal_input_admitted or outcome.published_to_pty;
         return outcome;
     }
@@ -443,15 +437,13 @@ pub const Processor = struct {
     }
 
     fn renderSnapshot(self: *Self, tab: *TerminalSurface) RenderSnapshot {
-        const content_rect = DisplayLayout.contentRect(self.window, activeTabBarHeight(&self.conf.tab_bar, self.tabs.items()));
-        const texture_size = tab.textureSize();
-        const texture_rect = DisplayLayout.terminalRect(content_rect, texture_size);
-        const overlay = tab.overlaySnapshot(texture_rect);
+        const viewport = DisplayViewport.terminal(self.window, self.conf.tab_bar, self.tabs.items().len, tab.textureSize());
+        const overlay = tab.overlaySnapshot(viewport.texture_rect);
         var title_buf: [TabBar.max_tabs][]const u8 = undefined;
         const tabs = self.tabs.items();
         const tab_bar_snapshot = self.tab_bar.snapshot(self.active_tab_idx.*, tabTitles(tabs, title_buf[0..]));
         return .{
-            .texture_rect = texture_rect,
+            .texture_rect = viewport.texture_rect,
             .scrollbar = overlay.scrollbar,
             .active_tab = tab_bar_snapshot.active_idx,
             .tab_bar_revision = tabBarRevision(tabs, self.active_tab_idx.*),
@@ -480,21 +472,11 @@ pub const Processor = struct {
     }
 
     fn resizeTerminals(conf: *const Config.UiConfig, app_window: *window.Window, tabs: []*TerminalSurface) void {
-        resizeTerminalsForTabBarHeight(app_window, tabs, activeTabBarHeight(&conf.tab_bar, tabs));
+        resizeTerminalsForViewport(tabs, DisplayViewport.regions(app_window, conf.tab_bar, tabs.len));
     }
 
-    fn resizeTerminalsForTabBarHeight(app_window: *window.Window, tabs: []*TerminalSurface, tab_bar_height: u32) void {
-        const px = DisplayLayout.contentPixelSize(app_window, tab_bar_height);
-        const logical = DisplayLayout.contentLogicalSize(app_window, tab_bar_height);
-        for (tabs) |tab| tab.resize(px.width, px.height, logical.width, logical.height);
-    }
-
-    fn activeTabBarHeight(tab_bar: anytype, tabs: []*TerminalSurface) u32 {
-        return tabBarHeightForCount(tab_bar, tabs.len);
-    }
-
-    fn tabBarHeightForCount(tab_bar: anytype, tab_count: usize) u32 {
-        return if (tab_count >= tab_bar.min_tabs_for_bar) tab_bar.height else 0;
+    fn resizeTerminalsForViewport(tabs: []*TerminalSurface, viewport: DisplayViewport.Regions) void {
+        for (tabs) |tab| tab.resize(viewport.content_px.width, viewport.content_px.height, viewport.content_logical.width, viewport.content_logical.height);
     }
 
     fn setWindowFocused(app_window: *window.Window, tabs: []*TerminalSurface, active_tab_idx: TabIndex, focused: bool) void {
@@ -541,7 +523,7 @@ pub const Processor = struct {
     fn closeActiveTab(conf: *const Config.UiConfig, app_window: *window.Window, tabs: *TabSlots, active_tab_idx: *TabIndex) void {
         const items = tabs.items();
         if (items.len <= 1) return;
-        const before_tab_bar_height = activeTabBarHeight(&conf.tab_bar, items);
+        const before_tab_bar_height = DisplayViewport.tabBarHeight(conf.tab_bar, items.len);
         assert(tabIndexInRange(items, active_tab_idx.*));
         const idx: TabIndex = active_tab_idx.*;
         const removed = tabs.orderedRemoveActive(idx);
@@ -550,8 +532,8 @@ pub const Processor = struct {
         const updated = tabs.items();
         if (!tabIndexInRange(updated, active_tab_idx.*)) active_tab_idx.* = @intCast(updated.len - 1);
         assert(tabIndexInRange(updated, active_tab_idx.*));
-        const after_tab_bar_height = activeTabBarHeight(&conf.tab_bar, updated);
-        if (before_tab_bar_height != after_tab_bar_height) resizeTerminalsForTabBarHeight(app_window, updated, after_tab_bar_height);
+        const after_viewport = DisplayViewport.regions(app_window, conf.tab_bar, updated.len);
+        if (before_tab_bar_height != after_viewport.tab_bar_px) resizeTerminalsForViewport(updated, after_viewport);
         syncTerminalFocus(app_window, updated, active_tab_idx.*);
         syncActiveWindowTitle(app_window, activeSurface(updated, active_tab_idx.*));
     }
@@ -645,10 +627,10 @@ test "tab bar height follows configured minimum tab count" {
         min_tabs_for_bar: u16 = 2,
     }{};
 
-    try std.testing.expectEqual(@as(u32, 0), Processor.tabBarHeightForCount(&tab_bar, 0));
-    try std.testing.expectEqual(@as(u32, 0), Processor.tabBarHeightForCount(&tab_bar, 1));
-    try std.testing.expectEqual(@as(u32, 30), Processor.tabBarHeightForCount(&tab_bar, 2));
-    try std.testing.expectEqual(@as(u32, 30), Processor.tabBarHeightForCount(&tab_bar, 3));
+    try std.testing.expectEqual(@as(u32, 0), DisplayViewport.tabBarHeight(tab_bar, 0));
+    try std.testing.expectEqual(@as(u32, 0), DisplayViewport.tabBarHeight(tab_bar, 1));
+    try std.testing.expectEqual(@as(u32, 30), DisplayViewport.tabBarHeight(tab_bar, 2));
+    try std.testing.expectEqual(@as(u32, 30), DisplayViewport.tabBarHeight(tab_bar, 3));
 }
 
 test "active runtime admission follows explicit surface facts" {
