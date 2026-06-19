@@ -51,7 +51,7 @@ pub const Processor = struct {
         runtime_admitted: bool,
         runtime_wake_pending: bool,
         runtime_wait_ms: ?u32,
-        render_work_pending: bool,
+        render_turn_pending: bool,
 
         fn tab(self: *const LoopRuntimeFacts, index: usize) TerminalSurface.RuntimeFacts {
             assert(index < self.tab_count);
@@ -72,13 +72,13 @@ pub const Processor = struct {
         runtime_wait_ms: ?u32,
         frame_wait_ms: ?u32,
         frame_ready: bool,
-        frame_work_pending: bool,
+        visual_present_pending: bool,
 
         fn waitForWindow(self: LoopWaitIntent) bool {
             if (self.pending_events) return false;
             if (self.runtime_wake) return false;
             if (self.runtime_admission) return false;
-            if (self.frame_ready and self.frame_work_pending) return false;
+            if (self.frame_ready and self.visual_present_pending) return false;
             return true;
         }
 
@@ -179,8 +179,8 @@ pub const Processor = struct {
             if (terminal_progress.should_redraw) self.window.requestRedraw();
 
             const host_redraw = self.window.hasRequestedRedraw() or input_outcome.host_visual_changed;
-            const render_pending = host_redraw or terminal_progress.should_redraw or drive_runtime_facts.render_work_pending;
-            if (!self.window.hasFrame() or !render_pending) {
+            const visual_present_pending = host_redraw or terminal_progress.should_redraw or drive_runtime_facts.render_turn_pending;
+            if (!self.window.hasFrame() or !visual_present_pending) {
                 return .continue_running;
             }
 
@@ -209,7 +209,7 @@ pub const Processor = struct {
             .runtime_wait_ms = runtime_facts.runtime_wait_ms,
             .frame_wait_ms = frameDeadlineWaitMs(now_ns, self.frame_deadline_ns),
             .frame_ready = self.window.hasFrame(),
-            .frame_work_pending = self.window.hasRequestedRedraw() or runtime_facts.render_work_pending,
+            .visual_present_pending = self.window.hasRequestedRedraw() or runtime_facts.render_turn_pending,
         };
     }
 
@@ -230,7 +230,7 @@ pub const Processor = struct {
             .runtime_wait_ms = runtime_facts.runtime_wait_ms,
             .frame_wait_ms = frame_wait_ms,
             .frame_ready = frame_ready,
-            .frame_work_pending = redraw_requested or runtime_facts.render_work_pending,
+            .visual_present_pending = redraw_requested or runtime_facts.render_turn_pending,
         };
     }
 
@@ -268,7 +268,7 @@ pub const Processor = struct {
             .runtime_admitted = false,
             .runtime_wake_pending = false,
             .runtime_wait_ms = null,
-            .render_work_pending = false,
+            .render_turn_pending = false,
         };
         for (tabs, 0..) |tab, i| {
             const active = @as(TabIndex, @intCast(i)) == self.active_tab_idx.*;
@@ -284,7 +284,7 @@ pub const Processor = struct {
         facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, runtime.runtime_wait_ms);
         if (active) {
             facts.runtime_admitted = runtime.input_published;
-            facts.render_work_pending = runtime.render_work_pending;
+            facts.render_turn_pending = runtime.render_turn_pending;
         }
     }
 
@@ -601,7 +601,7 @@ pub const testing = struct {
         runtime_admitted: bool,
         runtime_wake_pending: bool,
         runtime_wait_ms: ?u32,
-        render_work_pending: bool,
+        render_turn_pending: bool,
     };
 
     pub fn computeLoopWaitFromFacts(now_ns: u64, pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_deadline_ns: ?u64, runtime: RuntimeFactsInput) Processor.LoopWait {
@@ -611,7 +611,7 @@ pub const testing = struct {
             .runtime_admitted = runtime.runtime_admitted,
             .runtime_wake_pending = runtime.runtime_wake_pending,
             .runtime_wait_ms = runtime.runtime_wait_ms,
-            .render_work_pending = runtime.render_work_pending,
+            .render_turn_pending = runtime.render_turn_pending,
         };
         return Processor.computeLoopWaitWithPendingEvents(pending_events, frame_ready, redraw_requested, frame_deadline_ns, now_ns, runtime_facts);
     }
@@ -640,7 +640,7 @@ test "active runtime admission follows explicit surface facts" {
         .runtime_admitted = false,
         .runtime_wake_pending = false,
         .runtime_wait_ms = null,
-        .render_work_pending = false,
+        .render_turn_pending = false,
     };
 
     Processor.noteLoopRuntimeFacts(&facts, .{
@@ -648,7 +648,7 @@ test "active runtime admission follows explicit surface facts" {
         .runtime_due_now = false,
         .input_published = true,
         .runtime_wait_ms = null,
-        .render_work_pending = false,
+        .render_turn_pending = false,
     }, true);
 
     try std.testing.expect(facts.runtime_admitted);
@@ -662,7 +662,7 @@ test "pending events prevent waiting" {
         .runtime_wait_ms = null,
         .frame_wait_ms = 20,
         .frame_ready = false,
-        .frame_work_pending = true,
+        .visual_present_pending = true,
     };
 
     try std.testing.expect(!wait.waitForWindow());
@@ -676,7 +676,7 @@ test "runtime wake prevents waiting without granting frame" {
         .runtime_wait_ms = null,
         .frame_wait_ms = 20,
         .frame_ready = false,
-        .frame_work_pending = false,
+        .visual_present_pending = false,
     };
 
     try std.testing.expect(!wait.waitForWindow());
@@ -690,7 +690,7 @@ test "frame wait participates through frame deadline" {
         .runtime_wait_ms = null,
         .frame_wait_ms = 33,
         .frame_ready = false,
-        .frame_work_pending = true,
+        .visual_present_pending = true,
     };
 
     try std.testing.expectEqual(@as(?u32, 33), wait.waitMs());
@@ -704,7 +704,7 @@ test "runtime wait carries active-surface cursor cadence deadline" {
         .runtime_wait_ms = 7,
         .frame_wait_ms = 33,
         .frame_ready = false,
-        .frame_work_pending = true,
+        .visual_present_pending = true,
     };
 
     try std.testing.expectEqual(@as(?u32, 7), wait.waitMs());
@@ -733,7 +733,7 @@ test "explicit wake admission does not require continuation" {
         .runtime_admitted = false,
         .runtime_wake_pending = false,
         .runtime_wait_ms = null,
-        .render_work_pending = false,
+        .render_turn_pending = false,
     };
 
     Processor.noteLoopRuntimeFacts(&facts, .{
@@ -741,7 +741,7 @@ test "explicit wake admission does not require continuation" {
         .runtime_due_now = false,
         .input_published = false,
         .runtime_wait_ms = null,
-        .render_work_pending = false,
+        .render_turn_pending = false,
     }, false);
 
     try std.testing.expect(!facts.runtime_wake_pending);
@@ -754,7 +754,7 @@ test "active surface wait participates through explicit surface facts" {
         .runtime_admitted = false,
         .runtime_wake_pending = false,
         .runtime_wait_ms = null,
-        .render_work_pending = false,
+        .render_turn_pending = false,
     };
 
     Processor.noteLoopRuntimeFacts(&facts, .{
@@ -762,18 +762,18 @@ test "active surface wait participates through explicit surface facts" {
         .runtime_due_now = false,
         .input_published = false,
         .runtime_wait_ms = 17,
-        .render_work_pending = false,
+        .render_turn_pending = false,
     }, true);
 
     try std.testing.expectEqual(@as(?u32, 17), facts.runtime_wait_ms);
 }
 
-test "blocked frame work waits until frame deadline" {
+test "blocked render turn waits until frame deadline" {
     const first_runtime = testing.RuntimeFactsInput{
         .runtime_admitted = false,
         .runtime_wake_pending = true,
         .runtime_wait_ms = null,
-        .render_work_pending = true,
+        .render_turn_pending = true,
     };
     const first_wait = testing.computeLoopWaitFromFacts(1_000, false, true, false, null, first_runtime);
     try std.testing.expect(!first_wait.wait_for_window);
@@ -786,7 +786,7 @@ test "blocked frame work waits until frame deadline" {
         .runtime_admitted = false,
         .runtime_wake_pending = false,
         .runtime_wait_ms = null,
-        .render_work_pending = true,
+        .render_turn_pending = true,
     };
     const followup_wait = testing.computeLoopWaitFromFacts(1_000, false, false, false, 17_000_000, followup_runtime);
     try std.testing.expect(followup_wait.wait_for_window);
@@ -801,7 +801,7 @@ test "blocked frame still drives runtime progress for pending events" {
     const RuntimeDriver = struct {
         fn run(now_ns: u64, drive_runtime_facts: Processor.LoopRuntimeFacts) Processor.TerminalProgress {
             _ = now_ns;
-            return .{ .should_redraw = drive_runtime_facts.render_work_pending, .keep_running = false, .drive_performed = true };
+            return .{ .should_redraw = drive_runtime_facts.render_turn_pending, .keep_running = false, .drive_performed = true };
         }
     };
 
@@ -811,7 +811,7 @@ test "blocked frame still drives runtime progress for pending events" {
         .runtime_admitted = false,
         .runtime_wake_pending = true,
         .runtime_wait_ms = null,
-        .render_work_pending = true,
+        .render_turn_pending = true,
     });
     try std.testing.expect(blocked.drive_performed);
     try std.testing.expect(blocked.should_redraw);
@@ -822,11 +822,11 @@ test "blocked frame still drives runtime progress for pending events" {
         .runtime_admitted = false,
         .runtime_wake_pending = true,
         .runtime_wait_ms = null,
-        .render_work_pending = true,
+        .render_turn_pending = true,
     });
     try std.testing.expect(resumed.drive_performed);
 }
 
-test "latched host redraw remains present work after event pump" {
+test "latched host redraw remains a present reason after event pump" {
     try std.testing.expectEqual(AppPresent.Reason.host_damage, Processor.derivePresentReason(true, .surface_idle));
 }

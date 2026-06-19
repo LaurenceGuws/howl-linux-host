@@ -20,19 +20,19 @@ pub const PresentInFlight = struct {
     token: u64,
 };
 
-pub const WorkState = struct {
+pub const RenderTurnAdmission = struct {
     state: RetainedState,
     animation_pending: bool = false,
 
-    pub fn inFlight(self: WorkState) bool {
+    pub fn hasRetainedTurn(self: RenderTurnAdmission) bool {
         return switch (self.state) {
             .prepare_needed, .submit_ready, .present_in_flight => true,
             .idle, .failed => false,
         };
     }
 
-    pub fn needsRenderSurface(self: WorkState) bool {
-        return self.animation_pending or self.inFlight();
+    pub fn needsRenderTurn(self: RenderTurnAdmission) bool {
+        return self.animation_pending or self.hasRetainedTurn();
     }
 };
 
@@ -164,7 +164,7 @@ pub const State = struct {
         if (self.geometry_epoch == 0) self.geometry_epoch = 1;
     }
 
-    pub fn workState(self: *State, bootstrap_surface: bool) WorkState {
+    pub fn admitRenderTurn(self: *State, bootstrap_surface: bool) RenderTurnAdmission {
         if (self.presentPending()) self.retained_state = .present_in_flight else if (bootstrap_surface and self.retained_state == .idle) self.retained_state = .prepare_needed;
         return .{ .state = self.retained_state, .animation_pending = self.cursor_animation_pending };
     }

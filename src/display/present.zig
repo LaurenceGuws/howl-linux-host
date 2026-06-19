@@ -111,7 +111,7 @@ test "deriveReason maps dirty causes to synchronous present reasons" {
     try std.testing.expectEqual(Reason.terminal_retire, deriveReason(false, .blocked_present));
 }
 
-test "submitWith submits only visual present work" {
+test "submitWith submits only visual present reasons" {
     const FakeTab = struct {
         fn termTextureId(_: *const @This()) u32 {
             return 7;

@@ -493,7 +493,7 @@ test "pty wake is acknowledged without host transport drive" {
     try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
 }
 
-test "pty wake observes retained render work prepared by pty thread" {
+test "pty wake observes retained render turn prepared by pty thread" {
     drive_hook_state = .{};
     installDriveHooks();
     defer surface_testing.resetHooks();
@@ -507,7 +507,7 @@ test "pty wake observes retained render work prepared by pty thread" {
 
     try std.testing.expect(!result.drove);
     try std.testing.expect(!result.outcome.should_redraw);
-    try std.testing.expect(facts.render_work_pending);
+    try std.testing.expect(facts.render_turn_pending);
     try std.testing.expectEqual(render_retained.RetainedState.prepare_needed, surface.term.render.retainedState());
 }
 
@@ -909,8 +909,8 @@ test "present pending blocks submit path until host present ack" {
     defer state.term.render.deinit();
     state.notePresentSubmitted(41, 410);
 
-    const work = state.term.render.workState(false);
-    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, work.state);
+    const admission = state.term.render.admitRenderTurn(false);
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, admission.state);
 }
 
 test "submit path runs once no host present is in flight" {
@@ -918,8 +918,8 @@ test "submit path runs once no host present is in flight" {
     defer surface.term.render.deinit();
     try prepareSubmitSurface(&surface, 42);
 
-    const work = surface.term.render.workState(false);
-    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, work.state);
+    const admission = surface.term.render.admitRenderTurn(false);
+    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, admission.state);
 }
 
 test "cursor cadence without runtime admission keeps render wake pending" {
@@ -939,7 +939,7 @@ test "cursor cadence without runtime admission keeps render wake pending" {
         .runtime_due_now = false,
         .input_published = false,
         .runtime_wait_ms = null,
-        .render_work_pending = false,
+        .render_turn_pending = false,
     });
 
     try std.testing.expect(!result.drove);
@@ -1282,7 +1282,7 @@ test "resize success path submits full surface and acks matching present token" 
     surface.notePresentSubmitted(submit.snapshot_seq, token);
     try std.testing.expect(surface.term.render.presentPending());
 
-    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.admitRenderTurn(false).state);
 
     if (surface.term.render.completePresent(token + 1)) |snapshot_seq| {
         ack_calls += 1;
@@ -1380,7 +1380,7 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expectEqual(@as(u64, 2), submit_hook_state.expected_info.snapshot_seq);
     try std.testing.expectEqual(@as(u64, 3), submit_hook_state.expected_surface.token.geometry_epoch);
 
-    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.admitRenderTurn(false).state);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
 
@@ -1390,7 +1390,7 @@ test "resize while present pending waits for matching ack before resized submit"
     }
     try std.testing.expectEqual(@as(u8, 0), ack_calls);
     try std.testing.expect(surface.term.render.presentPending());
-    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.admitRenderTurn(false).state);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
     if (surface.term.render.completePresent(prior_token)) |snapshot_seq| {
@@ -1401,7 +1401,7 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expectEqual(prior_submit.snapshot_seq, ack_snapshot_seq);
     try std.testing.expect(!surface.term.render.presentPending());
 
-    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, surface.term.render.workState(false).state);
+    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, surface.term.render.admitRenderTurn(false).state);
 
     installSubmitHooks(.success);
     try recordExpectedPreparedUpload(&surface);
@@ -1437,7 +1437,7 @@ test "cursor visibility change while present pending submits latest snapshot aft
 
     try prepareSubmitSurfaceWithCursor(&surface, 52, false);
     try std.testing.expectEqual(@as(u64, 2), submit_hook_state.expected_info.snapshot_seq);
-    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
+    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.admitRenderTurn(false).state);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
     if (surface.term.render.completePresent(prior_token + 1)) |snapshot_seq| {
@@ -1454,7 +1454,7 @@ test "cursor visibility change while present pending submits latest snapshot aft
     try std.testing.expectEqual(@as(u8, 1), ack_calls);
     try std.testing.expectEqual(@as(u64, 1), ack_snapshot_seq);
     try std.testing.expect(!surface.term.render.presentPending());
-    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, surface.term.render.workState(false).state);
+    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, surface.term.render.admitRenderTurn(false).state);
 
     installSubmitHooks(.success);
     try recordExpectedPreparedUpload(&surface);
@@ -1523,7 +1523,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
         .runtime_admitted = false,
         .runtime_wake_pending = true,
         .runtime_wait_ms = null,
-        .render_work_pending = true,
+        .render_turn_pending = true,
     });
     try std.testing.expect(!wake_wait.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), wake_wait.wait_ms);
@@ -1539,13 +1539,13 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
     try prepareSubmitSurface(&surface, 52);
-    const next_work = surface.term.render.workState(false);
-    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, next_work.state);
+    const next_admission = surface.term.render.admitRenderTurn(false);
+    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, next_admission.state);
     const resumed_wait = event_mod.testing.computeLoopWaitFromFacts(17_001_000, false, true, false, null, .{
         .runtime_admitted = false,
         .runtime_wake_pending = false,
         .runtime_wait_ms = null,
-        .render_work_pending = next_work.needsRenderSurface(),
+        .render_turn_pending = next_admission.needsRenderTurn(),
     });
     try std.testing.expect(!resumed_wait.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), resumed_wait.wait_ms);

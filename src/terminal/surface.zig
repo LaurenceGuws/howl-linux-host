@@ -99,7 +99,7 @@ pub const Surface = struct {
         runtime_due_now: bool,
         input_published: bool,
         runtime_wait_ms: ?u32,
-        render_work_pending: bool,
+        render_turn_pending: bool,
 
         pub fn runtimeWakePending(self: RuntimeFacts) bool {
             return self.wake_pending or self.runtime_due_now;
@@ -403,7 +403,7 @@ pub const Surface = struct {
 
     pub fn wantsRenderTurn(self: *const Context) bool {
         if (testing_hooks.wants_render_turn) |hook| return hook(@constCast(self));
-        return self.workState().needsRenderSurface();
+        return self.renderTurnAdmission().needsRenderTurn();
     }
 
     pub fn cursorFacts(self: *Context, now_ns: u64) CursorFacts {
@@ -468,7 +468,7 @@ pub const Surface = struct {
             .runtime_due_now = runtimeObligationDueNowHooked(self, now_ns),
             .input_published = active and admission.input_published,
             .runtime_wait_ms = minOptionalWaitMs(self.nextRuntimeObligationWaitMs(now_ns), if (active) self.cursorWaitMs(now_ns) else null),
-            .render_work_pending = self.wantsRenderTurn(),
+            .render_turn_pending = self.wantsRenderTurn(),
         };
     }
 
@@ -499,10 +499,10 @@ pub const Surface = struct {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         const bootstrap_surface = self.term_texture.host_surface_id == 0;
-        const work_before = self.term.render.workState(bootstrap_surface);
-        const drive_result = self.driveRenderLocked(work_before);
+        const admission_before = self.term.render.admitRenderTurn(bootstrap_surface);
+        const drive_result = self.driveRenderLocked(admission_before);
         return .{
-            .state_before = work_before.state,
+            .state_before = admission_before.state,
             .state_after = drive_result.state_after,
             .prepared = drive_result.prepared,
             .step = drive_result.step,
@@ -582,11 +582,11 @@ pub const Surface = struct {
         _ = window.setClipboardText(text);
     }
 
-    fn workState(self: *const Context) render_retained.WorkState {
+    fn renderTurnAdmission(self: *const Context) render_retained.RenderTurnAdmission {
         const mut: *Context = @constCast(self);
         mut.term.mutex.lockFair();
         defer mut.term.mutex.unlock();
-        return mut.term.render.workState(mut.term_texture.host_surface_id == 0);
+        return mut.term.render.admitRenderTurn(mut.term_texture.host_surface_id == 0);
     }
 
     fn cursorBlinkShouldAnimate(self: *Context) bool {
@@ -600,8 +600,8 @@ pub const Surface = struct {
         present_snapshot_seq: u64,
     };
 
-    fn driveRenderLocked(self: *Context, work: render_retained.WorkState) DriveResult {
-        return switch (work.state) {
+    fn driveRenderLocked(self: *Context, admission: render_retained.RenderTurnAdmission) DriveResult {
+        return switch (admission.state) {
             .idle => idleDrive(.idle, .surface_idle),
             .present_in_flight => idleDrive(.present_in_flight, .blocked_present),
             .submit_ready => self.submitDriveResult(false, self.submitPreparedLocked()),
