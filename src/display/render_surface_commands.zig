@@ -1,5 +1,6 @@
 const std = @import("std");
 const gl_c = @import("gl_c");
+const Coordinates = @import("coordinates.zig");
 const render_c = @import("howl_render_c");
 const render_surface_resources = @import("render_surface_resources.zig");
 
@@ -563,11 +564,11 @@ fn emitTexturedQuadVertices(surface: render_c.HowlRenderHostSurface, rect: rende
 }
 
 fn ndcX(x: i32, width: u16) f32 {
-    return (@as(f32, @floatFromInt(x)) / @as(f32, @floatFromInt(@max(width, 1)))) * 2.0 - 1.0;
+    return Coordinates.renderTargetBottomLeftXToNdc(x, @max(width, 1));
 }
 
 fn ndcY(y: i32, height: u16) f32 {
-    return (@as(f32, @floatFromInt(y)) / @as(f32, @floatFromInt(@max(height, 1)))) * 2.0 - 1.0;
+    return Coordinates.renderTargetBottomLeftYToNdc(y, @max(height, 1));
 }
 
 fn unpackRenderSurfaceRgba(color_rgba: u32) [4]u8 {

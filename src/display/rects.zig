@@ -1,4 +1,5 @@
 const Font = @import("../config/tab_bar.zig");
+const Coordinates = @import("coordinates.zig");
 const Layout = @import("layout.zig");
 const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 
@@ -130,9 +131,9 @@ fn textureSubRect(comptime c: type, fb_w: c_int, fb_h: c_int, texture_id: u32, x
 }
 
 fn ndcX(x: c_int, fb_w: c_int) f32 {
-    return (@as(f32, @floatFromInt(x)) / @as(f32, @floatFromInt(@max(fb_w, 1)))) * 2.0 - 1.0;
+    return Coordinates.windowTopLeftXToNdc(x, @max(fb_w, 1));
 }
 
 fn ndcY(y: c_int, fb_h: c_int) f32 {
-    return 1.0 - (@as(f32, @floatFromInt(y)) / @as(f32, @floatFromInt(@max(fb_h, 1)))) * 2.0;
+    return Coordinates.windowTopLeftYToNdc(y, @max(fb_h, 1));
 }
