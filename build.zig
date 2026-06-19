@@ -108,14 +108,14 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .howl_render_include = howl_render_include,
         .howl_pty_include = howl_pty_include,
         .howl_vt_include = howl_vt_include,
-        .howl_pty_c = translateCModule(b, b.path("src/howl_pty_c.h"), target, optimize, &.{howl_pty_include}),
-        .howl_vt_c = translateCModule(b, b.path("src/howl_vt_c.h"), target, optimize, &.{howl_vt_include}),
-        .howl_render_c = translateCModule(b, b.path("src/howl_render_c.h"), target, optimize, &.{ howl_render_include, howl_vt_include }),
-        .sdl_c = translateCModule(b, b.path("src/sdl_c.h"), target, optimize, &.{sdl_include}),
-        .gl_c = translateCModule(b, b.path("src/display/gl_c.h"), target, optimize, &.{sdl_include}),
+        .howl_pty_c = translateCModule(b, b.path("src/pty/howl_pty_c.h"), target, optimize, &.{howl_pty_include}),
+        .howl_vt_c = translateCModule(b, b.path("src/vt/howl_vt_c.h"), target, optimize, &.{howl_vt_include}),
+        .howl_render_c = translateCModule(b, b.path("src/render/howl_render_c.h"), target, optimize, &.{ howl_render_include, howl_vt_include }),
+        .sdl_c = translateCModule(b, b.path("src/window/sdl_c.h"), target, optimize, &.{sdl_include}),
+        .gl_c = translateCModule(b, b.path("src/render/gl_c.h"), target, optimize, &.{sdl_include}),
         .sdl_include = sdl_include,
         .sdl_lib = sdl_dep.artifact("SDL3"),
-        .stb_image = b.path("src/display/stb_image.c"),
+        .stb_image = b.path("src/window/stb_image.c"),
         .vendor_include = b.path("vendor"),
     };
 }
@@ -260,7 +260,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     const tab_bar_tests = b.addTest(.{
         .name = "test-tab-bar",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/display/tab_bar.zig"),
+            .root_source_file = b.path("src/tab_bar/tab_bar.zig"),
             .target = target,
             .optimize = optimize,
         }),
@@ -339,7 +339,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
 
 fn retainedRenderTestModule(b: *Build, deps: HostDeps) *Module {
     const module = b.createModule(.{
-        .root_source_file = b.path("src/terminal/render_retained.zig"),
+        .root_source_file = b.path("src/render/surface_retained.zig"),
         .target = deps.target,
         .optimize = deps.optimize,
     });
@@ -349,7 +349,7 @@ fn retainedRenderTestModule(b: *Build, deps: HostDeps) *Module {
 
 fn renderSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
     const module = b.createModule(.{
-        .root_source_file = b.path("src/display/render_surface.zig"),
+        .root_source_file = b.path("src/render/surface.zig"),
         .target = deps.target,
         .optimize = deps.optimize,
     });

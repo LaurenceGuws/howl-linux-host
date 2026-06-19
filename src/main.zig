@@ -1,13 +1,13 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const Config = @import("config/config.zig");
-const Display = @import("display/display.zig");
-const EventLoop = @import("event_loop.zig");
+const Display = @import("window/window.zig");
+const EventLoop = @import("events/event_loop.zig");
 const Input = @import("input/input.zig").Input;
-const Processor = @import("event.zig").Processor;
-const TabBar = @import("display/tab_bar.zig").TabBar;
-const TabSlots = @import("terminal/tab_slots.zig").Slots;
-const window = @import("display/window.zig");
+const Processor = @import("events/event.zig").Processor;
+const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
+const TabSlots = @import("tab_bar/tab_slots.zig").Slots;
+const window = @import("window/window2.zig");
 
 pub const Args = cli.Args;
 const child_term_value: [*:0]const u8 = "xterm-256color";
