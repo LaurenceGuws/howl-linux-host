@@ -467,9 +467,10 @@ pub const Surface = struct {
 
     pub fn driveProgressWithFacts(self: *Context, active: bool, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
         if (!facts.driveAdmitted(active)) {
+            const cursor_redraw = if (active) self.driveCursor(now_ns) else false;
             return .{
                 .drove = false,
-                .outcome = .{ .keep = false, .should_redraw = if (active) self.driveCursor(now_ns) else false, .alive = isAliveHooked(self) },
+                .outcome = .{ .keep = cursor_redraw, .should_redraw = cursor_redraw, .alive = isAliveHooked(self) },
             };
         }
 
@@ -528,6 +529,7 @@ pub const Surface = struct {
         self.term.session = term_init.session;
         self.term.vt = term_init.vt;
         self.term.render = .init(term_init.surface_layout);
+        try initRenderText(&self.term.render, render_init);
         self.term.vt_state = .{};
         self.term.mutex = .{};
         self.live = true;
@@ -627,8 +629,8 @@ pub const Surface = struct {
             return .{ .result = .failed, .snapshot_seq = 0 };
         }
         defer upload.deinit();
-        const rdr_sfc_handle = self.term.render.rdrSfcHandle();
-        std.debug.assert(rdr_sfc_handle != null);
+        const prepared_surface_handle = self.term.render.preparedSurfaceHandle();
+        std.debug.assert(prepared_surface_handle != null);
         std.debug.assert(upload.info.snapshot_seq != 0);
         std.debug.assert(!self.term.render.presentPending());
 
@@ -645,9 +647,9 @@ pub const Surface = struct {
         const upload_ok = uploadRenderSurface(self, render_surface);
         self.term.mutex.lockFair();
 
-        const current_handle = self.term.render.rdrSfcHandle();
+        const current_handle = self.term.render.preparedSurfaceHandle();
         std.debug.assert(!self.term.render.presentPending());
-        if (current_handle != rdr_sfc_handle) {
+        if (current_handle != prepared_surface_handle) {
             self.term.render.notePrepareNeeded();
             return stalePreparedUploadSubmit(upload.info.snapshot_seq);
         }
@@ -1030,6 +1032,20 @@ fn initSurfaceLayout(render_init: RenderInit) render_retained.SurfaceLayout {
     return surface_layout.deriveHostLayout(.{ .render_px = render_init.render_px, .grid_px = render_init.grid_px }, render_init.font_size_px);
 }
 
+fn initRenderText(render: *render_retained.State, render_init: RenderInit) !void {
+    assertRenderInit(render_init);
+    var fallback_paths: [max_fallback_font_paths]?[*:0]const u8 = [_]?[*:0]const u8{null} ** max_fallback_font_paths;
+    for (render_init.fallback_font_paths, 0..) |path, index| fallback_paths[index] = path.ptr;
+    const config = render_c.HowlRenderTextConfig{
+        .font_size_px = render_init.font_size_px,
+        .fallback_font_path_count = @intCast(render_init.fallback_font_paths.len),
+        .reserved0 = 0,
+        .primary_font_path = if (render_init.primary_font_path) |path| path.ptr else null,
+        .fallback_font_paths = &fallback_paths,
+    };
+    if (!render.initText(&config)) return error.RenderInitFailed;
+}
+
 fn initVt(rows: u16, cols: u16, options: VtInitOptions) !vt_c.HowlVtHandle {
     std.debug.assert(rows > 0);
     std.debug.assert(cols > 0);
@@ -1060,7 +1076,6 @@ fn assertRenderInit(render_init: RenderInit) void {
     std.debug.assert(render_init.font_size_px > 0);
     std.debug.assert(render_init.fallback_font_paths.len <= max_fallback_font_paths);
 }
-
 
 pub const testing = struct {
     pub const Hooks = TestingHooks;

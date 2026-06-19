@@ -5,13 +5,14 @@ const vt_retained = @import("vt_retained.zig");
 const std = @import("std");
 
 const transport_mode: pty_session.TransportPumpMode = .normal;
-const transport_backlog_bytes: u32 = pty_session.transport_chunk_bytes * 4;
+const transport_backlog_bytes: u32 = pty_session.transport_chunk_bytes * 16;
 const transport_force_lock_backlog_bytes: u32 = transport_backlog_bytes;
 const transport_locked_feed_bytes: u32 = transport_backlog_bytes;
 
 comptime {
     std.debug.assert(pty_session.transport_chunk_bytes > 0);
     std.debug.assert(transport_backlog_bytes >= pty_session.transport_chunk_bytes);
+    std.debug.assert(transport_backlog_bytes == 1024 * 1024);
     std.debug.assert(transport_force_lock_backlog_bytes > 0);
     std.debug.assert(transport_force_lock_backlog_bytes <= transport_backlog_bytes);
     std.debug.assert(transport_locked_feed_bytes > 0);
@@ -134,8 +135,6 @@ fn pumpTransportSliceWith(
     var scratch: [backlog_bytes]u8 = undefined;
     var reads: u32 = 0;
     var backlog_len: u32 = 0;
-    var lock_for_feed = false;
-    var force_lock = false;
     while (reads < limits.max_reads and backlog_len < limits.max_bytes and backlog_len < force_threshold) {
         const remaining = transportReadRemaining(limits, backlog_len, force_threshold, backlog_bytes);
         if (remaining == 0) break;
@@ -146,17 +145,6 @@ fn pumpTransportSliceWith(
         std.debug.assert(backlog_len + chunk_len <= force_threshold);
         reads += 1;
         backlog_len += chunk_len;
-
-        if (Ops.tryLockUnfair(term)) {
-            lock_for_feed = true;
-            break;
-        }
-        if (backlog_len >= force_threshold) {
-            Ops.lockUnfair(term);
-            lock_for_feed = true;
-            force_lock = true;
-            break;
-        }
     }
 
     std.debug.assert(reads <= limits.max_reads);
@@ -165,19 +153,18 @@ fn pumpTransportSliceWith(
 
     var bytes_fed: u32 = 0;
     var pending_input_bytes = outbound.pending_input_bytes;
-    if (lock_for_feed) {
+    if (backlog_len != 0) {
+        Ops.lockUnfair(term);
         defer Ops.unlock(term);
         std.debug.assert(backlog_len <= locked_feed_bytes);
-        if (backlog_len != 0) {
-            const chunk = scratch[0..backlog_len];
-            if (Ops.feedTermBytesLocked(term, chunk, backlog_len)) bytes_fed = backlog_len;
-        }
+        const chunk = scratch[0..backlog_len];
+        if (Ops.feedTermBytesLocked(term, chunk, backlog_len)) bytes_fed = backlog_len;
         pending_input_bytes = Ops.pendingInputBytesLocked(term);
     }
 
     std.debug.assert(bytes_fed <= locked_feed_bytes);
     std.debug.assert(bytes_fed <= limits.max_bytes);
-    const hit_limit = reads == limits.max_reads or backlog_len == limits.max_bytes or force_lock;
+    const hit_limit = reads == limits.max_reads or backlog_len == limits.max_bytes or backlog_len == force_threshold;
 
     return .{
         .drained_input_bytes = outbound.drained_input_bytes,
@@ -225,10 +212,6 @@ const RealTransportOps = struct {
 
     fn lockUnfair(term: *terminal_term.Term) void {
         term.mutex.lockUnfair();
-    }
-
-    fn tryLockUnfair(term: *terminal_term.Term) bool {
-        return term.mutex.tryLockUnfair();
     }
 
     fn unlock(term: *terminal_term.Term) void {
@@ -418,19 +401,17 @@ test "pending vt output stays pending after publish failure" {
     try std.testing.expectEqual(@as(u8, 0), ReplyOps.clear_calls);
 }
 
-test "transport pump keeps reading after opportunistic lock failure" {
+test "transport pump drains available bytes before locking" {
     test_transport = .{};
     test_transport.read_chunks = .{ 3, 3, 0, 0 };
-    test_transport.try_results = .{ false, true, false, false };
     var term = TestTransportTerm{};
 
     const progress = pumpTransportSliceWith(&term, .normal, TestTransportOps, 8, 8, 8);
 
     try std.testing.expectEqual(@as(u32, 2), progress.reads);
     try std.testing.expectEqual(@as(u32, 6), progress.bytes_read);
-    try std.testing.expectEqual(@as(u8, 2), test_transport.try_calls);
     try std.testing.expectEqual(@as(u8, 1), test_transport.outbound_calls);
-    try std.testing.expectEqual(@as(u8, 0), test_transport.lock_calls);
+    try std.testing.expectEqual(@as(u8, 1), test_transport.lock_calls);
     try std.testing.expectEqual(@as(u8, 1), test_transport.feed_calls);
     try std.testing.expectEqual(@as(u8, 1), test_transport.pending_calls);
     try std.testing.expectEqual(@as(u32, 6), test_transport.feed_bytes);
@@ -441,7 +422,6 @@ test "transport pump keeps reading after opportunistic lock failure" {
 test "transport pump forces unfair lock at backlog threshold" {
     test_transport = .{};
     test_transport.read_chunks = .{ 4, 4, 0, 0 };
-    test_transport.try_results = .{ false, false, false, false };
     var term = TestTransportTerm{};
 
     const progress = pumpTransportSliceWith(&term, .normal, TestTransportOps, 8, 8, 8);
@@ -449,7 +429,6 @@ test "transport pump forces unfair lock at backlog threshold" {
     try std.testing.expectEqual(@as(u32, 2), progress.reads);
     try std.testing.expectEqual(@as(u32, 8), progress.bytes_read);
     try std.testing.expect(progress.hit_limit);
-    try std.testing.expectEqual(@as(u8, 2), test_transport.try_calls);
     try std.testing.expectEqual(@as(u8, 1), test_transport.outbound_calls);
     try std.testing.expectEqual(@as(u8, 1), test_transport.lock_calls);
     try std.testing.expectEqual(@as(u8, 1), test_transport.feed_calls);
@@ -462,7 +441,6 @@ test "transport pump forces unfair lock at backlog threshold" {
 test "transport pump caps locked feed work" {
     test_transport = .{};
     test_transport.read_chunks = .{ 4, 4, 4, 0 };
-    test_transport.try_results = .{ false, false, false, false };
     var term = TestTransportTerm{};
 
     const progress = pumpTransportSliceWith(&term, .normal, TestTransportOps, 16, 8, 8);
@@ -480,21 +458,20 @@ test "transport pump caps locked feed work" {
     try std.testing.expect(!term.data_locked);
 }
 
-test "transport pump does not force lock below backlog threshold" {
+test "transport pump feeds partial backlog when transport drains" {
     test_transport = .{};
     test_transport.read_chunks = .{ 4, 0, 0, 0 };
-    test_transport.try_results = .{ false, false, false, false };
     var term = TestTransportTerm{};
 
     const progress = pumpTransportSliceWith(&term, .normal, TestTransportOps, 16, 8, 8);
 
     try std.testing.expectEqual(@as(u32, 1), progress.reads);
-    try std.testing.expectEqual(@as(u32, 0), progress.bytes_read);
+    try std.testing.expectEqual(@as(u32, 4), progress.bytes_read);
     try std.testing.expect(!progress.hit_limit);
-    try std.testing.expectEqual(@as(u8, 1), test_transport.try_calls);
-    try std.testing.expectEqual(@as(u8, 0), test_transport.lock_calls);
-    try std.testing.expectEqual(@as(u8, 0), test_transport.feed_calls);
-    try std.testing.expectEqual(@as(u8, 0), test_transport.pending_calls);
+    try std.testing.expectEqual(@as(u8, 1), test_transport.lock_calls);
+    try std.testing.expectEqual(@as(u8, 1), test_transport.feed_calls);
+    try std.testing.expectEqual(@as(u8, 1), test_transport.pending_calls);
+    try std.testing.expectEqual(@as(u32, 4), test_transport.feed_bytes);
     try std.testing.expect(!term.lease_held);
     try std.testing.expect(!term.data_locked);
 }
@@ -512,8 +489,6 @@ var test_transport: struct {
     pending_calls: u8 = 0,
     read_calls: u8 = 0,
     read_chunks: [4]u32 = .{ 0, 0, 0, 0 },
-    try_calls: u8 = 0,
-    try_results: [4]bool = .{ false, false, false, false },
     unlock_calls: u8 = 0,
 } = .{};
 
@@ -540,16 +515,6 @@ const TestTransportOps = struct {
         std.debug.assert(!term.data_locked);
         test_transport.lock_calls += 1;
         term.data_locked = true;
-    }
-
-    fn tryLockUnfair(term: *TestTransportTerm) bool {
-        std.debug.assert(term.lease_held);
-        std.debug.assert(!term.data_locked);
-        const index: usize = test_transport.try_calls;
-        test_transport.try_calls += 1;
-        const acquired = test_transport.try_results[index];
-        if (acquired) term.data_locked = true;
-        return acquired;
     }
 
     fn unlock(term: *TestTransportTerm) void {

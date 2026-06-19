@@ -10,7 +10,7 @@ const TabBar = @import("display/tab_bar.zig").TabBar;
 const TabSlots = @import("terminal/tab_slots.zig").Slots;
 const AppPresent = @import("display/present.zig");
 const TerminalSurface = @import("terminal/surface.zig").Surface;
-const FramePacing = @import("display/frame_timer.zig");
+const FrameTiming = @import("display/frame_timer.zig");
 const window = @import("display/window.zig");
 
 const TabIndex = TabBar.TabIndex;
@@ -28,9 +28,10 @@ pub const Processor = struct {
     event_loop: *EventLoop.EventLoop,
     terminal_input_admitted: bool,
     pending_terminal_present: ?Display.PresentToken,
-    frame_pacing: FramePacing.FrameTimer,
+    frame_timer: FrameTiming.FrameTimer,
+    frame_deadline_ns: ?u64,
 
-    pub const FramePacingState = FramePacing.FrameTimer;
+    pub const FrameTimerState = FrameTiming.FrameTimer;
 
     const Self = @This();
 
@@ -64,48 +65,31 @@ pub const Processor = struct {
         drive_performed: bool = false,
     };
 
-    const LoopWaitAdmission = struct {
+    const LoopWaitIntent = struct {
         pending_events: bool,
         runtime_wake: bool,
         runtime_admission: bool,
         runtime_wait_ms: ?u32,
         frame_wait_ms: ?u32,
+        frame_ready: bool,
+        frame_work_pending: bool,
 
-        fn frameAdmission(self: LoopWaitAdmission) FramePacing.WaitAdmission {
-            return .{
-                .pending_events = self.pending_events,
-                .runtime_wake = self.runtime_wake,
-                .runtime_admission = self.runtime_admission,
-            };
+        fn waitForWindow(self: LoopWaitIntent) bool {
+            if (self.pending_events) return false;
+            if (self.runtime_wake) return false;
+            if (self.runtime_admission) return false;
+            if (self.frame_ready and self.frame_work_pending) return false;
+            return true;
         }
 
-        fn waitForWindow(self: LoopWaitAdmission, frame_pacing: *FramePacing.FrameTimer) bool {
-            return frame_pacing.shouldWaitForWindow(self.frameAdmission());
-        }
-
-        fn waitMs(self: LoopWaitAdmission) ?u32 {
+        fn waitMs(self: LoopWaitIntent) ?u32 {
             return waitMsMerge3(self.runtime_wait_ms, self.frame_wait_ms, null);
         }
     };
 
-    const LoopAdmission = struct {
+    const LoopWait = struct {
         wait_for_window: bool,
         wait_ms: ?u32,
-    };
-
-    const HostMutations = struct {
-        input_outcome: TerminalSurface.DrainInputOutcome,
-    };
-
-    const RedrawRenderIntent = struct {
-        host_redraw: bool,
-        terminal_redraw: bool,
-        terminal_frame: bool,
-        render_work_pending: bool,
-
-        fn needsRender(self: RedrawRenderIntent) bool {
-            return self.host_redraw or self.terminal_redraw or self.render_work_pending;
-        }
     };
 
     const RenderSnapshot = struct {
@@ -123,7 +107,6 @@ pub const Processor = struct {
     };
 
     const PresentReason = AppPresent.Reason;
-    const PresentPlan = AppPresent.Plan;
 
     const ActiveTabProblem = enum {
         exited,
@@ -176,37 +159,33 @@ pub const Processor = struct {
     fn runLoopTurn(self: *Self) !LoopAction {
         if (quitRequested(self)) |action| return action;
 
-        self.frame_pacing.beginTurn();
         const now_ns = EventLoop.nowNs();
+        self.noteFrameDeadline(now_ns);
         const wait_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
-        self.frame_pacing.noteRedrawAndRenderWork(self.window.hasRequestedRedraw(), wait_runtime_facts.render_work_pending);
-        const admission = computeLoopAdmission(self, now_ns, wait_runtime_facts);
-        const event_action = pumpWindowEvents(self, admission);
+        const wait = computeLoopWait(self, now_ns, wait_runtime_facts);
+        const event_action = pumpWindowEvents(self, wait);
         if (event_action == .quit) return .quit;
 
-        const host_mutations_opt = try applyHostOwnedMutations(self);
-        if (host_mutations_opt) |host_mutations| {
+        const input_outcome_opt = try applyHostOwnedMutations(self);
+        if (input_outcome_opt) |input_outcome| {
             drainPresentComplete(self);
             const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
             const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
-            if (host_mutations.input_outcome.host_visual_changed) self.window.requestRedraw();
+            if (input_outcome.host_visual_changed) self.window.requestRedraw();
+            if (terminal_progress.should_redraw) self.window.requestRedraw();
 
-            const intent = deriveRedrawRenderIntent(
-                self.frame_pacing.redrawPending(),
-                host_mutations.input_outcome.host_visual_changed,
-                terminal_progress,
-                drive_runtime_facts.render_work_pending,
-            );
-            self.frame_pacing.noteRedrawAndRenderWork(intent.host_redraw or intent.terminal_redraw, intent.render_work_pending);
-            if (!self.frame_pacing.renderPermission()) {
+            const host_redraw = self.window.hasRequestedRedraw() or input_outcome.host_visual_changed;
+            const render_pending = host_redraw or terminal_progress.should_redraw or drive_runtime_facts.render_work_pending;
+            if (!self.window.hasFrame() or !render_pending) {
                 return .continue_running;
             }
 
             const frame = render(self);
-            const present_plan = derivePresentPlan(frame, intent);
-            submitPresent(self, frame, present_plan);
+            const present_reason = derivePresentReason(host_redraw, frame.turn.step);
+            submitPresent(self, frame, present_reason);
+            if (present_reason == .host_damage or present_reason == .terminal_frame) try self.requestFrame(EventLoop.nowNs());
             if (quitRequested(self)) |action| return action;
             if (try handleActiveTabProblem(self)) |action| return action;
             return .continue_running;
@@ -215,40 +194,66 @@ pub const Processor = struct {
         }
     }
 
-    fn computeLoopAdmission(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopAdmission {
+    fn computeLoopWait(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWait {
         assert(now_ns > 0);
-        return computeLoopAdmissionWithPendingEvents(&self.frame_pacing, self.window.currentRefreshIntervalNs(), self.input.hasPendingEvents(), now_ns, runtime_facts);
+        return computeLoopWaitWithPendingEvents(self.input.hasPendingEvents(), self.window.hasFrame(), self.window.hasRequestedRedraw(), self.frame_deadline_ns, now_ns, runtime_facts);
     }
 
-    fn loopWaitAdmission(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWaitAdmission {
+    fn loopWaitIntent(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWaitIntent {
         return .{
             .pending_events = self.input.hasPendingEvents(),
             .runtime_wake = runtime_facts.runtime_wake_pending,
             .runtime_admission = runtime_facts.runtime_admitted,
             .runtime_wait_ms = runtime_facts.runtime_wait_ms,
-            .frame_wait_ms = self.frame_pacing.framePermitWaitMs(now_ns),
+            .frame_wait_ms = frameDeadlineWaitMs(now_ns, self.frame_deadline_ns),
+            .frame_ready = self.window.hasFrame(),
+            .frame_work_pending = self.window.hasRequestedRedraw() or runtime_facts.render_work_pending,
         };
     }
 
-    fn computeLoopAdmissionWithPendingEvents(frame_pacing: *FramePacing.FrameTimer, refresh_interval_ns: u64, pending_events: bool, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopAdmission {
+    fn computeLoopWaitWithPendingEvents(pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_deadline_ns: ?u64, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWait {
         assert(now_ns > 0);
-        frame_pacing.refreshFramePermit(now_ns, refresh_interval_ns);
-        frame_pacing.noteRedrawAndRenderWork(false, runtime_facts.render_work_pending);
-        const admission_facts = loopWaitAdmissionWithPendingEvents(frame_pacing, pending_events, now_ns, runtime_facts);
+        const wait_intent = loopWaitIntentWithPendingEvents(pending_events, frame_ready, redraw_requested, frameDeadlineWaitMs(now_ns, frame_deadline_ns), runtime_facts);
         return .{
-            .wait_for_window = admission_facts.waitForWindow(frame_pacing),
-            .wait_ms = admission_facts.waitMs(),
+            .wait_for_window = wait_intent.waitForWindow(),
+            .wait_ms = wait_intent.waitMs(),
         };
     }
 
-    fn loopWaitAdmissionWithPendingEvents(frame_pacing: *FramePacing.FrameTimer, pending_events: bool, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWaitAdmission {
+    fn loopWaitIntentWithPendingEvents(pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_wait_ms: ?u32, runtime_facts: LoopRuntimeFacts) LoopWaitIntent {
         return .{
             .pending_events = pending_events,
             .runtime_wake = runtime_facts.runtime_wake_pending,
             .runtime_admission = runtime_facts.runtime_admitted,
             .runtime_wait_ms = runtime_facts.runtime_wait_ms,
-            .frame_wait_ms = frame_pacing.framePermitWaitMs(now_ns),
+            .frame_wait_ms = frame_wait_ms,
+            .frame_ready = frame_ready,
+            .frame_work_pending = redraw_requested or runtime_facts.render_work_pending,
         };
+    }
+
+    fn noteFrameDeadline(self: *Self, now_ns: u64) void {
+        assert(now_ns > 0);
+        if (self.window.hasFrame()) return;
+        const deadline_ns = self.frame_deadline_ns orelse return;
+        if (now_ns < deadline_ns) return;
+        self.window.markFrameReady();
+        self.frame_deadline_ns = null;
+    }
+
+    fn requestFrame(self: *Self, now_ns: u64) !void {
+        assert(now_ns > 0);
+        self.window.markFrameUsed();
+        const timeout_ns = self.frame_timer.computeTimeoutNs(now_ns, try self.window.currentRefreshIntervalNs());
+        self.frame_deadline_ns = now_ns + timeout_ns;
+    }
+
+    fn frameDeadlineWaitMs(now_ns: u64, deadline_ns: ?u64) ?u32 {
+        assert(now_ns > 0);
+        const deadline = deadline_ns orelse return null;
+        if (now_ns >= deadline) return 0;
+        const remaining_ns = deadline - now_ns;
+        return @intCast(@max(@as(u64, 1), std.math.divCeil(u64, remaining_ns, std.time.ns_per_ms) catch 1));
     }
 
     fn collectLoopRuntimeFacts(self: *Self, now_ns: u64, terminal_input_admitted: bool) LoopRuntimeFacts {
@@ -286,21 +291,21 @@ pub const Processor = struct {
         return .quit;
     }
 
-    fn pumpWindowEvents(self: *Self, admission: LoopAdmission) LoopAction {
-        const signal = self.event_loop.pumpInput(self.input, admission.wait_for_window, admission.wait_ms);
+    fn pumpWindowEvents(self: *Self, wait: LoopWait) LoopAction {
+        const signal = self.event_loop.pumpInput(self.input, wait.wait_for_window, wait.wait_ms);
         return switch (signal) {
             .none => .continue_running,
             .quit => .quit,
         };
     }
 
-    fn applyHostOwnedMutations(self: *Self) !?HostMutations {
+    fn applyHostOwnedMutations(self: *Self) !?TerminalSurface.DrainInputOutcome {
         applyFocusChange(self);
         try drainBindingActions(self);
         if (quitRequested(self) != null) return null;
         const input_outcome = forwardTerminalInput(self);
         _ = applyWindowResize(self);
-        return .{ .input_outcome = input_outcome };
+        return input_outcome;
     }
 
     fn applyFocusChange(self: *Self) void {
@@ -398,15 +403,6 @@ pub const Processor = struct {
         return if (tab_count == 1) .quit else .close_tab;
     }
 
-    fn deriveRedrawRenderIntent(host_redraw_requested: bool, host_visual_changed: bool, terminal_progress: TerminalProgress, render_work_pending: bool) RedrawRenderIntent {
-        return .{
-            .host_redraw = host_redraw_requested or host_visual_changed,
-            .terminal_redraw = terminal_progress.should_redraw,
-            .terminal_frame = terminal_progress.should_redraw,
-            .render_work_pending = render_work_pending,
-        };
-    }
-
     fn waitMsMerge3(first: ?u32, second: ?u32, third: ?u32) ?u32 {
         var wait_ms = minOptionalWaitMs(first, second);
         wait_ms = minOptionalWaitMs(wait_ms, third);
@@ -449,24 +445,11 @@ pub const Processor = struct {
         };
     }
 
-    fn derivePresentPlan(frame: RenderFrame, intent: RedrawRenderIntent) PresentPlan {
-        return .{
-            .reason = derivePresentReason(intent.host_redraw, intent.terminal_frame, frame.turn.step),
-            .needs_render_turn = intent.needsRender(),
-        };
+    fn derivePresentReason(host_redraw: bool, step: TerminalSurface.TurnStep) PresentReason {
+        return AppPresent.deriveReason(host_redraw, step);
     }
 
-    fn derivePresentReason(host_redraw: bool, terminal_frame: bool, step: TerminalSurface.TurnStep) PresentReason {
-        return AppPresent.deriveReason(.{
-            .host_redraw = host_redraw,
-            .terminal_frame = terminal_frame,
-            .step = step,
-        });
-    }
-
-    fn submitPresent(self: *Self, frame: RenderFrame, plan: PresentPlan) void {
-        assert(plan.needs_render_turn);
-        const reason = self.frame_pacing.admitPresentReason(plan.reason);
+    fn submitPresent(self: *Self, frame: RenderFrame, reason: PresentReason) void {
         const present = AppPresent.lifecycle(self);
         const outcome = present.submit(frame.tab, frame.turn.step, frame.turn.present_snapshot_seq, .{
             .texture_rect = frame.snapshot.texture_rect,
@@ -604,22 +587,14 @@ pub const Processor = struct {
 };
 
 pub const testing = struct {
-    pub const ControlSpineRuntimeFacts = struct {
+    pub const RuntimeFactsInput = struct {
         runtime_admitted: bool,
         runtime_wake_pending: bool,
         runtime_wait_ms: ?u32,
         render_work_pending: bool,
     };
 
-    pub const PresentPlanningInput = struct {
-        host_redraw_requested: bool,
-        host_visual_changed: bool,
-        runtime_redraw: bool,
-        render_work_pending: bool,
-        step: @import("terminal/surface.zig").Surface.TurnStep,
-    };
-
-    pub fn computeLoopAdmissionThroughControlSpine(frame_pacing: *FramePacing.FrameTimer, now_ns: u64, refresh_interval_ns: u64, pending_events: bool, runtime: ControlSpineRuntimeFacts) Processor.LoopAdmission {
+    pub fn computeLoopWaitFromFacts(now_ns: u64, pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_deadline_ns: ?u64, runtime: RuntimeFactsInput) Processor.LoopWait {
         const runtime_facts = Processor.LoopRuntimeFacts{
             .tabs = undefined,
             .tab_count = 0,
@@ -628,22 +603,11 @@ pub const testing = struct {
             .runtime_wait_ms = runtime.runtime_wait_ms,
             .render_work_pending = runtime.render_work_pending,
         };
-        return Processor.computeLoopAdmissionWithPendingEvents(frame_pacing, refresh_interval_ns, pending_events, now_ns, runtime_facts);
+        return Processor.computeLoopWaitWithPendingEvents(pending_events, frame_ready, redraw_requested, frame_deadline_ns, now_ns, runtime_facts);
     }
 
-    pub fn derivePresentReasonThroughControlSpine(input: PresentPlanningInput) @import("display/present.zig").Reason {
-        const progress = Processor.TerminalProgress{
-            .should_redraw = input.runtime_redraw,
-            .keep_running = false,
-            .drive_performed = false,
-        };
-        const intent = Processor.deriveRedrawRenderIntent(
-            input.host_redraw_requested,
-            input.host_visual_changed,
-            progress,
-            input.render_work_pending,
-        );
-        return Processor.derivePresentReason(intent.host_redraw, intent.terminal_frame, input.step);
+    pub fn derivePresentReasonFromFacts(host_redraw_requested: bool, host_visual_changed: bool, step: @import("terminal/surface.zig").Surface.TurnStep) @import("display/present.zig").Reason {
+        return Processor.derivePresentReason(host_redraw_requested or host_visual_changed, step);
     }
 };
 
@@ -669,56 +633,59 @@ test "active runtime admission follows explicit surface facts" {
 }
 
 test "pending events prevent waiting" {
-    var admission = Processor.LoopWaitAdmission{
+    const wait = Processor.LoopWaitIntent{
         .pending_events = true,
         .runtime_wake = false,
         .runtime_admission = false,
         .runtime_wait_ms = null,
         .frame_wait_ms = 20,
+        .frame_ready = false,
+        .frame_work_pending = true,
     };
-    var frame = FramePacing.FrameTimer.init();
-    frame.frame_permit_ready = false;
 
-    try std.testing.expect(!admission.waitForWindow(&frame));
+    try std.testing.expect(!wait.waitForWindow());
 }
 
-test "runtime wake prevents waiting without granting render" {
-    var admission = Processor.LoopWaitAdmission{
+test "runtime wake prevents waiting without granting frame" {
+    const wait = Processor.LoopWaitIntent{
         .pending_events = false,
         .runtime_wake = true,
         .runtime_admission = false,
         .runtime_wait_ms = null,
         .frame_wait_ms = 20,
+        .frame_ready = false,
+        .frame_work_pending = false,
     };
-    var frame = FramePacing.FrameTimer.init();
-    frame.frame_permit_ready = true;
 
-    try std.testing.expect(admission.waitForWindow(&frame));
-    try std.testing.expect(!frame.renderPermission());
+    try std.testing.expect(!wait.waitForWindow());
 }
 
-test "frame wait participates through frame timer" {
-    const admission = Processor.LoopWaitAdmission{
+test "frame wait participates through frame deadline" {
+    const wait = Processor.LoopWaitIntent{
         .pending_events = false,
         .runtime_wake = false,
         .runtime_admission = false,
         .runtime_wait_ms = null,
         .frame_wait_ms = 33,
+        .frame_ready = false,
+        .frame_work_pending = true,
     };
 
-    try std.testing.expectEqual(@as(?u32, 33), admission.waitMs());
+    try std.testing.expectEqual(@as(?u32, 33), wait.waitMs());
 }
 
 test "runtime wait carries active-surface cursor cadence deadline" {
-    const admission = Processor.LoopWaitAdmission{
+    const wait = Processor.LoopWaitIntent{
         .pending_events = false,
         .runtime_wake = false,
         .runtime_admission = false,
         .runtime_wait_ms = 7,
         .frame_wait_ms = 33,
+        .frame_ready = false,
+        .frame_work_pending = true,
     };
 
-    try std.testing.expectEqual(@as(?u32, 7), admission.waitMs());
+    try std.testing.expectEqual(@as(?u32, 7), wait.waitMs());
 }
 
 test "terminal input admission clears only after drove" {
@@ -779,60 +746,44 @@ test "active surface wait participates through explicit surface facts" {
     try std.testing.expectEqual(@as(?u32, 17), facts.runtime_wait_ms);
 }
 
-test "frame follow-up wait stays finite through loop admission seam" {
-    var frame = FramePacing.FrameTimer.init();
-    const first_runtime = testing.ControlSpineRuntimeFacts{
+test "blocked frame work waits until frame deadline" {
+    const first_runtime = testing.RuntimeFactsInput{
         .runtime_admitted = false,
         .runtime_wake_pending = true,
         .runtime_wait_ms = null,
         .render_work_pending = true,
     };
-    const first_admission = testing.computeLoopAdmissionThroughControlSpine(&frame, 1_000, 16_000_000, false, first_runtime);
-    try std.testing.expect(!first_admission.wait_for_window);
-    try std.testing.expectEqual(@as(?u32, null), first_admission.wait_ms);
+    const first_wait = testing.computeLoopWaitFromFacts(1_000, false, true, false, null, first_runtime);
+    try std.testing.expect(!first_wait.wait_for_window);
+    try std.testing.expectEqual(@as(?u32, null), first_wait.wait_ms);
 
-    const first_reason = testing.derivePresentReasonThroughControlSpine(.{
-        .host_redraw_requested = false,
-        .host_visual_changed = false,
-        .runtime_redraw = true,
-        .render_work_pending = false,
-        .step = .rendered,
-    });
+    const first_reason = testing.derivePresentReasonFromFacts(false, false, .rendered);
     try std.testing.expectEqual(AppPresent.Reason.terminal_frame, first_reason);
-    frame.notePresentSubmittedAtWithInterval(.{ .reason = first_reason, .submitted = true }, 1_000, 16_000_000);
 
-    const followup_runtime = testing.ControlSpineRuntimeFacts{
+    const followup_runtime = testing.RuntimeFactsInput{
         .runtime_admitted = false,
         .runtime_wake_pending = false,
         .runtime_wait_ms = null,
         .render_work_pending = true,
     };
-    const followup_admission = testing.computeLoopAdmissionThroughControlSpine(&frame, 17_000_000, 16_000_000, false, followup_runtime);
-    try std.testing.expect(followup_admission.wait_for_window);
-    try std.testing.expectEqual(@as(?u32, 1), followup_admission.wait_ms);
+    const followup_wait = testing.computeLoopWaitFromFacts(1_000, false, false, false, 17_000_000, followup_runtime);
+    try std.testing.expect(followup_wait.wait_for_window);
+    try std.testing.expectEqual(@as(?u32, 17), followup_wait.wait_ms);
 
-    frame.notePresentComplete();
-
-    const resumed_admission = testing.computeLoopAdmissionThroughControlSpine(&frame, 17_001_000, 16_000_000, false, followup_runtime);
-    try std.testing.expect(!resumed_admission.wait_for_window);
-    try std.testing.expectEqual(@as(?u32, null), resumed_admission.wait_ms);
-    try std.testing.expect(frame.renderPermission());
+    const resumed_wait = testing.computeLoopWaitFromFacts(17_000_000, false, true, false, null, followup_runtime);
+    try std.testing.expect(!resumed_wait.wait_for_window);
+    try std.testing.expectEqual(@as(?u32, null), resumed_wait.wait_ms);
 }
 
-test "blocked frame permit still drives runtime progress for pending events" {
+test "blocked frame still drives runtime progress for pending events" {
     const RuntimeDriver = struct {
-        fn run(frame_pacing: *FramePacing.FrameTimer, now_ns: u64, drive_runtime_facts: Processor.LoopRuntimeFacts) Processor.TerminalProgress {
+        fn run(now_ns: u64, drive_runtime_facts: Processor.LoopRuntimeFacts) Processor.TerminalProgress {
             _ = now_ns;
-            _ = frame_pacing;
             return .{ .should_redraw = drive_runtime_facts.render_work_pending, .keep_running = false, .drive_performed = true };
         }
     };
 
-    var frame = FramePacing.FrameTimer.init();
-    frame.noteRedrawAndRenderWork(false, true);
-    frame.notePresentSubmittedAtWithInterval(.{ .reason = .terminal_frame, .submitted = true }, 1_000, 16_000_000);
-
-    const blocked = RuntimeDriver.run(&frame, 2_000, .{
+    const blocked = RuntimeDriver.run(2_000, .{
         .tabs = undefined,
         .tab_count = 0,
         .runtime_admitted = false,
@@ -843,10 +794,7 @@ test "blocked frame permit still drives runtime progress for pending events" {
     try std.testing.expect(blocked.drive_performed);
     try std.testing.expect(blocked.should_redraw);
 
-    frame.notePresentComplete();
-    frame.refreshFramePermit(17_000_000, 16_000_000);
-
-    const resumed = RuntimeDriver.run(&frame, 17_000_000, .{
+    const resumed = RuntimeDriver.run(17_000_000, .{
         .tabs = undefined,
         .tab_count = 0,
         .runtime_admitted = false,
@@ -858,17 +806,5 @@ test "blocked frame permit still drives runtime progress for pending events" {
 }
 
 test "latched host redraw remains present work after event pump" {
-    var frame = FramePacing.FrameTimer.init();
-    frame.noteRedrawAndRenderWork(true, false);
-
-    const progress = Processor.TerminalProgress{
-        .should_redraw = false,
-        .keep_running = false,
-        .drive_performed = false,
-    };
-    const intent = Processor.deriveRedrawRenderIntent(frame.redrawPending(), false, progress, false);
-
-    try std.testing.expect(intent.needsRender());
-    try std.testing.expect(frame.renderPermission());
-    try std.testing.expectEqual(AppPresent.Reason.host_damage, Processor.derivePresentReason(intent.host_redraw, intent.terminal_frame, .surface_idle));
+    try std.testing.expectEqual(AppPresent.Reason.host_damage, Processor.derivePresentReason(true, .surface_idle));
 }

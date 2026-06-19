@@ -251,6 +251,7 @@ const ContextOps = struct {
         const before = ScrollVisualState.capture(self);
         const consumed = terminal_scrollbar.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
         const after = ScrollVisualState.capture(self);
+        if (before.scrollback_offset != after.scrollback_offset) noteRenderScrollbackChanged(self);
         return .{ .consumed = consumed, .host_visual_changed = !std.meta.eql(before, after) };
     }
 
@@ -272,6 +273,7 @@ const ContextOps = struct {
         if (delta == 0) return false;
         terminal_scrollbar.byRows(self, delta);
         const after = terminal_scrollbar.scrollState(&self.term).scrollback_offset;
+        if (before != after) noteRenderScrollbackChanged(self);
         return before != after;
     }
 
@@ -283,6 +285,12 @@ const ContextOps = struct {
         return terminal_links.handleMouse(self, mouse_event);
     }
 };
+
+fn noteRenderScrollbackChanged(self: anytype) void {
+    self.term.mutex.lockFair();
+    defer self.term.mutex.unlock();
+    self.term.render.notePrepareNeeded();
+}
 
 fn pixelToCol(term: *const HowlTerm, pixel_x: i32) u16 {
     const current_layout = term.render.surface_layout;

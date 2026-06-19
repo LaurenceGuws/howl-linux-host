@@ -2,6 +2,8 @@ const std = @import("std");
 const c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 
+const fallback_clear_rgba = 0x202040ff;
+
 pub const PrepareResult = enum { idle, prepared, failed };
 pub const SubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
 
@@ -116,6 +118,7 @@ pub const State = struct {
     surface_layout: SurfaceLayout,
     geometry_epoch: u64 = 1,
     prepared_surface: PreparedHandle = null,
+    text_handle: c.HowlRenderTextHandle = null,
     surface: c.HowlRenderSurface = emptySurface(),
     damage: [1]c.HowlRenderSurfaceDamageItem = undefined,
     commands: [1]c.HowlRenderSurfaceCommand = undefined,
@@ -123,13 +126,24 @@ pub const State = struct {
     present_in_flight: ?PresentInFlight = null,
     retained_state: RetainedState = .idle,
     cursor_animation_pending: bool = false,
+    cursor_cadence: HostCursorCadence = defaultCursorCadence(),
 
     pub fn init(surface_layout: SurfaceLayout) State {
         return .{ .surface_layout = surface_layout };
     }
 
     pub fn deinit(self: *State) void {
+        if (self.text_handle) |handle| c.howl_render_text_deinit(handle);
+        self.text_handle = null;
         self.prepared_surface = null;
+    }
+
+    pub fn initText(self: *State, config: *const c.HowlRenderTextConfig) bool {
+        var handle: c.HowlRenderTextHandle = null;
+        if (c.howl_render_text_init(&handle, config) != c.HOWL_RENDER_CALL_OK) return false;
+        if (self.text_handle) |old| c.howl_render_text_deinit(old);
+        self.text_handle = handle;
+        return true;
     }
 
     pub fn surfaceLayoutSync(self: *const State, next: SurfaceLayout) SurfaceLayoutSync {
@@ -185,7 +199,7 @@ pub const State = struct {
         const present = self.present_in_flight orelse return null;
         if (present.token != token) return null;
         self.present_in_flight = null;
-        self.retained_state = .idle;
+        self.retained_state = if (self.prepared_surface != null) .submit_ready else .idle;
         return present.snapshot_seq;
     }
 
@@ -193,7 +207,7 @@ pub const State = struct {
         return self.present_in_flight != null;
     }
 
-    pub fn rdrSfcHandle(self: *const State) PreparedHandle {
+    pub fn preparedSurfaceHandle(self: *const State) PreparedHandle {
         return self.prepared_surface;
     }
 
@@ -203,7 +217,10 @@ pub const State = struct {
     }
 
     pub fn setHostCursorCadence(self: *State, cadence: *const HostCursorCadence) bool {
-        self.cursor_animation_pending = cadence.cursor_trail_count != 0;
+        const changed = !std.mem.eql(u8, std.mem.asBytes(&self.cursor_cadence), std.mem.asBytes(cadence));
+        self.cursor_cadence = cadence.*;
+        self.cursor_animation_pending = cadence.cursor_trail_count != 0 or cadence.cursor_opacity != 255 or cadence.text_blink_opacity != 255;
+        if (changed) self.notePrepareNeeded();
         return true;
     }
 
@@ -211,19 +228,27 @@ pub const State = struct {
         self.prepared_surface = null;
     }
 
-    pub fn forgetRdrSfcHandle(self: *State) void {
+    pub fn forgetPreparedSurfaceHandle(self: *State) void {
         self.prepared_surface = null;
     }
 
     pub fn prepare(self: *State, render_state: ?*anyopaque) PrepareResult {
         const state: vt_c.HowlVtRenderStateHandle = @ptrCast(render_state orelse return self.prepareFullSurface(self.snapshot_seq + 1));
+        if (self.text_handle) |handle| return self.prepareTextSurface(handle, state);
         const snapshot_seq = readRenderStateU64(state, vt_c.HOWL_VT_RENDER_STATE_DATA_SNAPSHOT_SEQ) catch return self.failPrepare();
         return self.prepareFullSurface(@max(snapshot_seq, self.snapshot_seq + 1));
     }
 
     pub fn submit(self: *State, execution: *const SubmitExecution, result: *SubmitOutput) SubmitResult {
-        _ = self;
+        if (self.text_handle) |handle| {
+            if (c.howl_render_text_submit(handle, execution.host_surface, &result.host_surface) != c.HOWL_RENDER_CALL_OK) return .failed;
+            self.prepared_surface = null;
+            self.retained_state = .idle;
+            return .rendered;
+        }
         result.host_surface = execution.host_surface;
+        self.prepared_surface = null;
+        self.retained_state = .idle;
         return .rendered;
     }
 
@@ -258,7 +283,7 @@ pub const State = struct {
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = self.surface_layout.render_px.width, .height_px = self.surface_layout.render_px.height },
-            .color_rgba = 0x000000ff,
+            .color_rgba = fallback_clear_rgba,
             .resource = .{ .value = 0, .generation = 0, .kind = 0 },
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         };
@@ -270,6 +295,33 @@ pub const State = struct {
         self.surface.damage = .{ .ptr = &self.damage, .count = 1, .count_max = 1 };
         self.surface.commands = .{ .ptr = &self.commands, .count = 1, .count_max = 1 };
         self.prepared_surface = &self.surface;
+        self.retained_state = .submit_ready;
+        return .prepared;
+    }
+
+    fn prepareTextSurface(self: *State, handle: c.HowlRenderTextHandle, state: vt_c.HowlVtRenderStateHandle) PrepareResult {
+        var upload = std.mem.zeroes(c.HowlRenderTextPreparedUpload);
+        const prepare_input = c.HowlRenderTextPrepare{
+            .render_state = @ptrCast(state),
+            .render_px = self.surface_layout.render_px,
+            .grid_px = self.surface_layout.grid_px,
+            .cell_px = self.surface_layout.cell_px,
+            .grid = .{ .cols = self.surface_layout.cols, .rows = self.surface_layout.rows },
+            .geometry_epoch = self.geometry_epoch,
+            .focused = self.cursor_cadence.focused,
+            .cursor_opacity = self.cursor_cadence.cursor_opacity,
+            .text_blink_opacity = self.cursor_cadence.text_blink_opacity,
+            .effective_shape = self.cursor_cadence.effective_shape,
+            .cursor_color = @bitCast(self.cursor_cadence.cursor_color),
+            .cursor_text_color = @bitCast(self.cursor_cadence.cursor_text_color),
+            .cursor_beam_thickness = self.cursor_cadence.cursor_beam_thickness,
+            .cursor_underline_thickness = self.cursor_cadence.cursor_underline_thickness,
+        };
+        if (c.howl_render_text_prepare(handle, &prepare_input, &upload) != c.HOWL_RENDER_CALL_OK) return self.failPrepare();
+        const surface = upload.render_surface orelse return self.failPrepare();
+        std.debug.assert(upload.snapshot_seq != 0);
+        self.snapshot_seq = upload.snapshot_seq;
+        self.prepared_surface = surface;
         self.retained_state = .submit_ready;
         return .prepared;
     }
@@ -312,4 +364,14 @@ fn surfaceLayoutChanged(current: SurfaceLayout, next: SurfaceLayout) bool {
         current.rows != next.rows or
         current.cell_px.width != next.cell_px.width or
         current.cell_px.height != next.cell_px.height;
+}
+
+fn defaultCursorCadence() HostCursorCadence {
+    var cadence = std.mem.zeroes(HostCursorCadence);
+    cadence.focused = 1;
+    cadence.cursor_opacity = 255;
+    cadence.text_blink_opacity = 255;
+    cadence.cursor_beam_thickness = 1.5;
+    cadence.cursor_underline_thickness = 2.0;
+    return cadence;
 }

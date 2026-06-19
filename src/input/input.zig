@@ -962,6 +962,7 @@ test "redraw-only pending does not count as pending events" {
     var redraw_window = window.Window{
         .handle = undefined,
         .current_title = try std.testing.allocator.dupeZ(u8, "redraw"),
+        .has_frame = true,
         .requested_redraw = false,
         .px_w = 1,
         .px_h = 1,

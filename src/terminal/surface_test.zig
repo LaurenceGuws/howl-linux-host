@@ -3,7 +3,6 @@ const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 
 const event_mod = @import("../event.zig");
-const frame_timer = @import("../display/frame_timer.zig");
 const surface_mod = @import("surface.zig");
 const cursor_blink = @import("cursor_blink.zig");
 const pty_pump = @import("pty_pump.zig");
@@ -175,8 +174,8 @@ fn uploadRenderSurfaceHook(surface: *Surface, render_surface: *const render_c.Ho
     submit_hook_state.saw_unlocked = surface.term.mutex.tryLockUnfair();
     if (submit_hook_state.saw_unlocked) surface.term.mutex.unlock();
     std.debug.assert(render_surface.token.snapshot_seq == submit_hook_state.expected_info.snapshot_seq);
-    std.debug.assert(render_surface.token.surface_seq == submit_hook_state.expected_info.dirty_epoch);
-    std.debug.assert(render_surface.token.geometry_epoch == submit_hook_state.expected_info.geometry_epoch);
+    std.debug.assert(render_surface.token.surface_seq == submit_hook_state.expected_surface.token.surface_seq);
+    std.debug.assert(render_surface.token.geometry_epoch == submit_hook_state.expected_surface.token.geometry_epoch);
     std.debug.assert(render_surface.render_px.width == submit_hook_state.expected_info.render_px.width);
     std.debug.assert(render_surface.render_px.height == submit_hook_state.expected_info.render_px.height);
     submit_hook_state.host_upload_calls += 1;
@@ -202,7 +201,7 @@ fn uploadRenderSurfaceHook(surface: *Surface, render_surface: *const render_c.Ho
             return false;
         },
         .mutate_handle => {
-            surface.term.render.rdr_sfc_handle = null;
+            surface.term.render.forgetPreparedSurfaceHandle();
             return true;
         },
     }
@@ -253,6 +252,42 @@ fn recordExpectedPreparedUpload(surface: *Surface) !void {
     defer upload.deinit();
     submit_hook_state.expected_info = upload.info;
     submit_hook_state.expected_surface = upload.render_surface.?.*;
+}
+
+test "retained prepare emits visible full clear surface" {
+    const layout = render_retained.SurfaceLayout{
+        .render_px = .{ .width = 4, .height = 2 },
+        .grid_px = .{ .width = 4, .height = 2 },
+        .cols = 4,
+        .rows = 2,
+        .cell_px = .{ .width = 1, .height = 1 },
+    };
+    var retained = render_retained.State.init(layout);
+    defer retained.deinit();
+
+    try std.testing.expectEqual(render_retained.PrepareResult.prepared, retained.prepare(null));
+    var upload = std.mem.zeroes(render_retained.PreparedUpload);
+    try std.testing.expect(retained.preparedUpload(&upload));
+    defer upload.deinit();
+
+    const prepared_surface = upload.render_surface orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 1), upload.info.snapshot_seq);
+    try std.testing.expectEqual(@as(u16, 4), upload.info.render_px.width);
+    try std.testing.expectEqual(@as(u16, 2), upload.info.render_px.height);
+    try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.surface_seq);
+    try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 0), prepared_surface.token.resource_epoch);
+    try std.testing.expectEqual(@as(u16, 4), prepared_surface.render_px.width);
+    try std.testing.expectEqual(@as(u16, 2), prepared_surface.render_px.height);
+    try std.testing.expectEqual(@as(u32, 1), prepared_surface.damage.count);
+    try std.testing.expect(prepared_surface.damage.ptr != null);
+    try std.testing.expectEqual(render_c.HOWL_RENDER_SURFACE_DAMAGE_FULL, prepared_surface.damage.ptr[0].kind);
+    try std.testing.expectEqual(@as(u32, 1), prepared_surface.commands.count);
+    try std.testing.expect(prepared_surface.commands.ptr != null);
+    try std.testing.expectEqual(render_c.HOWL_RENDER_SURFACE_COMMAND_CLEAR_RECT, prepared_surface.commands.ptr[0].kind);
+    try std.testing.expect(prepared_surface.commands.ptr[0].color_rgba != 0x000000ff);
+    try std.testing.expectEqual(@as(u8, 0xff), @as(u8, @intCast(prepared_surface.commands.ptr[0].color_rgba & 0xff)));
 }
 
 fn prepareSubmitSurface(surface: *Surface, snapshot_seq: u64) !void {
@@ -803,6 +838,32 @@ test "submit path runs once no host present is in flight" {
     try std.testing.expectEqual(render_retained.RetainedState.submit_ready, work.state);
 }
 
+test "cursor cadence without runtime admission keeps render wake pending" {
+    drive_hook_state = .{};
+    installDriveHooks();
+    defer surface_testing.resetHooks();
+    var surface = testSurfaceBase();
+    surface.cursor_source_visible = true;
+    surface.cursor_source_blink = true;
+    surface.cursor_source_has_shape = true;
+    surface.cursor_source_shape = 0;
+    surface.cursor_blink.zero_time_ns = 0;
+    surface.cursor_blink.deadline_ns = cursor_blink.default_interval_ns;
+
+    const result = surface.driveProgressWithFacts(true, cursor_blink.default_interval_ns, .{
+        .wake_pending = false,
+        .runtime_due_now = false,
+        .input_published = false,
+        .runtime_wait_ms = null,
+        .render_work_pending = false,
+    });
+
+    try std.testing.expect(!result.drove);
+    try std.testing.expect(result.outcome.keep);
+    try std.testing.expect(result.outcome.should_redraw);
+    try std.testing.expectEqual(render_retained.RetainedState.prepare_needed, surface.term.render.retainedState());
+}
+
 test "idle render action constructor reports decision facts" {
     const result = surface_testing.idleDrive(.idle, .surface_idle);
 
@@ -910,7 +971,7 @@ const TestSubmitRender = struct {
         return true;
     }
 
-    pub fn rdrSfcHandle(self: *@This()) render_retained.PreparedHandle {
+    pub fn preparedSurfaceHandle(self: *@This()) render_retained.PreparedHandle {
         return self.prepared_surface;
     }
 
@@ -1149,22 +1210,20 @@ test "resize success path submits full surface and acks matching present token" 
     installSubmitHooks(.success);
     defer surface_testing.resetHooks();
 
-    try std.testing.expectEqual(@as(u64, 1), surface.term.render.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 2), surface.term.render.geometry_epoch);
     const request = try resizeSubmitSurface(&surface, 4, 2);
 
     try std.testing.expectEqual(@as(u16, 4), request.render_px.width);
     try std.testing.expectEqual(@as(u16, 2), request.render_px.height);
-    try std.testing.expectEqual(@as(u64, 2), surface.term.render.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 3), surface.term.render.geometry_epoch);
 
     try prepareSubmitSurface(&surface, 52);
     const info = submit_hook_state.expected_info;
     const prepared_surface = submit_hook_state.expected_surface;
     try std.testing.expect(info.snapshot_seq != 0);
-    try std.testing.expect(info.dirty_epoch != 0);
-    try std.testing.expectEqual(surface.term.render.geometry_epoch, info.geometry_epoch);
     try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.snapshot_seq);
-    try std.testing.expectEqual(info.dirty_epoch, prepared_surface.token.surface_seq);
-    try std.testing.expectEqual(info.geometry_epoch, prepared_surface.token.geometry_epoch);
+    try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.surface_seq);
+    try std.testing.expectEqual(surface.term.render.geometry_epoch, prepared_surface.token.geometry_epoch);
     try std.testing.expectEqual(@as(u64, 0), prepared_surface.token.resource_epoch);
     try std.testing.expectEqual(info.render_px.width, prepared_surface.render_px.width);
     try std.testing.expectEqual(info.render_px.height, prepared_surface.render_px.height);
@@ -1224,11 +1283,11 @@ test "resize upload failure zeros host dimensions and retry submits same full fr
     const info = submit_hook_state.expected_info;
     const prepared_surface = submit_hook_state.expected_surface;
     try std.testing.expectEqual(@as(u64, 1), info.snapshot_seq);
-    try std.testing.expectEqual(@as(u64, 2), info.geometry_epoch);
-    try std.testing.expectEqual(render_c.HOWL_RENDER_DAMAGE_FULL, info.damage_kind);
     try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.snapshot_seq);
-    try std.testing.expectEqual(info.dirty_epoch, prepared_surface.token.surface_seq);
-    try std.testing.expectEqual(info.geometry_epoch, prepared_surface.token.geometry_epoch);
+    try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.surface_seq);
+    try std.testing.expectEqual(@as(u64, 3), prepared_surface.token.geometry_epoch);
+    try std.testing.expectEqual(@as(u32, 1), prepared_surface.damage.count);
+    try std.testing.expectEqual(render_c.HOWL_RENDER_SURFACE_DAMAGE_FULL, prepared_surface.damage.ptr[0].kind);
 
     const failed_submit = surface_testing.submitPrepared(&surface);
 
@@ -1281,11 +1340,11 @@ test "resize while present pending waits for matching ack before resized submit"
     const request = try resizeSubmitSurface(&surface, 4, 2);
     try std.testing.expectEqual(@as(u16, 4), request.render_px.width);
     try std.testing.expectEqual(@as(u16, 2), request.render_px.height);
-    try std.testing.expectEqual(@as(u64, 2), surface.term.render.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 3), surface.term.render.geometry_epoch);
 
     try prepareSubmitSurface(&surface, 52);
-    try std.testing.expectEqual(@as(u64, 1), submit_hook_state.expected_info.snapshot_seq);
-    try std.testing.expectEqual(@as(u64, 2), submit_hook_state.expected_info.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 2), submit_hook_state.expected_info.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 3), submit_hook_state.expected_surface.token.geometry_epoch);
 
     try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
@@ -1315,7 +1374,7 @@ test "resize while present pending waits for matching ack before resized submit"
     const resized_submit = surface_testing.submitPrepared(&surface);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, resized_submit.result);
-    try std.testing.expectEqual(@as(u64, 1), resized_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 2), resized_submit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
     try std.testing.expect(!submit_hook_state.host_upload_had_matching_surface);
@@ -1343,7 +1402,7 @@ test "cursor visibility change while present pending submits latest snapshot aft
     try std.testing.expect(surface.term.render.presentPending());
 
     try prepareSubmitSurfaceWithCursor(&surface, 52, false);
-    try std.testing.expectEqual(@as(u64, 1), submit_hook_state.expected_info.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 2), submit_hook_state.expected_info.snapshot_seq);
     try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.workState(false).state);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
@@ -1368,7 +1427,7 @@ test "cursor visibility change while present pending submits latest snapshot aft
     const latest_submit = surface_testing.submitPrepared(&surface);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, latest_submit.result);
-    try std.testing.expectEqual(@as(u64, 1), latest_submit.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 2), latest_submit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
 }
@@ -1411,23 +1470,9 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
             return self.items_buf[0..];
         }
     };
-    const FakeFramePacing = struct {
-        state: frame_timer.FrameTimer = frame_timer.FrameTimer.init(),
-        submit_now_ns: u64 = 1_000,
-        refresh_interval_ns: u64 = 16_000_000,
-
-        pub fn notePresentSubmittedAt(self: *@This(), submission: frame_timer.Submission, _: u64) void {
-            self.state.notePresentSubmittedAtWithInterval(submission, self.submit_now_ns, self.refresh_interval_ns);
-        }
-
-        pub fn notePresentComplete(self: *@This()) void {
-            self.state.notePresentComplete();
-        }
-    };
     const FakeApp = struct {
         display: *FakeDisplay,
         tabs: *FakeTabs,
-        frame_pacing: FakeFramePacing,
         pending_terminal_present: ?u64,
     };
     const snapshot = AppPresent.Snapshot{
@@ -1445,27 +1490,21 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     var tab = PresentTab{ .surface = &surface };
     var display = FakeDisplay{};
     var tabs = FakeTabs{ .items_buf = .{&tab} };
-    var app = FakeApp{ .display = &display, .tabs = &tabs, .frame_pacing = .{}, .pending_terminal_present = null };
+    var app = FakeApp{ .display = &display, .tabs = &tabs, .pending_terminal_present = null };
 
     try prepareSubmitSurface(&surface, 51);
-    const wake_admission = event_mod.testing.computeLoopAdmissionThroughControlSpine(&app.frame_pacing.state, 1_000, 16_000_000, false, .{
+    const wake_wait = event_mod.testing.computeLoopWaitFromFacts(1_000, false, true, false, null, .{
         .runtime_admitted = false,
         .runtime_wake_pending = true,
         .runtime_wait_ms = null,
         .render_work_pending = true,
     });
-    try std.testing.expect(!wake_admission.wait_for_window);
-    try std.testing.expectEqual(@as(?u32, null), wake_admission.wait_ms);
+    try std.testing.expect(!wake_wait.wait_for_window);
+    try std.testing.expectEqual(@as(?u32, null), wake_wait.wait_ms);
 
     const first_turn = surface.renderTurn();
     try std.testing.expectEqual(Surface.TurnStep.rendered, first_turn.step);
-    const first_reason = event_mod.testing.derivePresentReasonThroughControlSpine(.{
-        .host_redraw_requested = false,
-        .host_visual_changed = false,
-        .runtime_redraw = true,
-        .render_work_pending = false,
-        .step = first_turn.step,
-    });
+    const first_reason = event_mod.testing.derivePresentReasonFromFacts(false, false, first_turn.step);
     try std.testing.expectEqual(AppPresent.Reason.terminal_frame, first_reason);
     const first_submit = AppPresent.lifecycle(&app).submit(&tab, first_turn.step, first_turn.present_snapshot_seq, snapshot, first_reason);
     try std.testing.expect(first_submit.submission.submitted);
@@ -1476,14 +1515,14 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     try prepareSubmitSurface(&surface, 52);
     const blocked_work = surface.term.render.workState(false);
     try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, blocked_work.state);
-    const followup_admission = event_mod.testing.computeLoopAdmissionThroughControlSpine(&app.frame_pacing.state, 17_000_000, 16_000_000, false, .{
+    const followup_wait = event_mod.testing.computeLoopWaitFromFacts(1_000, false, false, false, 17_000_000, .{
         .runtime_admitted = false,
         .runtime_wake_pending = false,
         .runtime_wait_ms = null,
         .render_work_pending = blocked_work.needsRenderSurface(),
     });
-    try std.testing.expect(followup_admission.wait_for_window);
-    try std.testing.expect(followup_admission.wait_ms != null);
+    try std.testing.expect(followup_wait.wait_for_window);
+    try std.testing.expect(followup_wait.wait_ms != null);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
     display.ready_complete = app.pending_terminal_present;
@@ -1491,25 +1530,18 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     try std.testing.expect(!surface.term.render.presentPending());
     const resumed_work = surface.term.render.workState(false);
     try std.testing.expectEqual(render_retained.RetainedState.submit_ready, resumed_work.state);
-    const resumed_admission = event_mod.testing.computeLoopAdmissionThroughControlSpine(&app.frame_pacing.state, 17_001_000, 16_000_000, false, .{
+    const resumed_wait = event_mod.testing.computeLoopWaitFromFacts(17_001_000, false, true, false, null, .{
         .runtime_admitted = false,
         .runtime_wake_pending = false,
         .runtime_wait_ms = null,
         .render_work_pending = resumed_work.needsRenderSurface(),
     });
-    try std.testing.expect(!resumed_admission.wait_for_window);
-    try std.testing.expectEqual(@as(?u32, null), resumed_admission.wait_ms);
-    try std.testing.expect(app.frame_pacing.state.renderPermission());
+    try std.testing.expect(!resumed_wait.wait_for_window);
+    try std.testing.expectEqual(@as(?u32, null), resumed_wait.wait_ms);
 
     const second_turn = surface.renderTurn();
     try std.testing.expectEqual(Surface.TurnStep.rendered, second_turn.step);
-    const second_reason = event_mod.testing.derivePresentReasonThroughControlSpine(.{
-        .host_redraw_requested = false,
-        .host_visual_changed = false,
-        .runtime_redraw = true,
-        .render_work_pending = false,
-        .step = second_turn.step,
-    });
+    const second_reason = event_mod.testing.derivePresentReasonFromFacts(false, false, second_turn.step);
     const second_submit = AppPresent.lifecycle(&app).submit(&tab, second_turn.step, second_turn.present_snapshot_seq, snapshot, second_reason);
     try std.testing.expect(second_submit.submission.submitted);
     try std.testing.expect(!second_submit.completed_terminal_present);
@@ -1519,22 +1551,10 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
 test "autonomous cursor-only rendered snapshot plans terminal frame through event present seam" {
     const processor_testing = event_mod.testing;
 
-    const keydown_reason = processor_testing.derivePresentReasonThroughControlSpine(.{
-        .host_redraw_requested = false,
-        .host_visual_changed = false,
-        .runtime_redraw = true,
-        .render_work_pending = false,
-        .step = .rendered,
-    });
+    const keydown_reason = processor_testing.derivePresentReasonFromFacts(false, false, .rendered);
     try std.testing.expectEqual(AppPresent.Reason.terminal_frame, keydown_reason);
 
-    const autonomous_reason = processor_testing.derivePresentReasonThroughControlSpine(.{
-        .host_redraw_requested = false,
-        .host_visual_changed = true,
-        .runtime_redraw = false,
-        .render_work_pending = false,
-        .step = .rendered,
-    });
+    const autonomous_reason = processor_testing.derivePresentReasonFromFacts(false, true, .rendered);
     try std.testing.expectEqual(AppPresent.Reason.terminal_frame, autonomous_reason);
 }
 
