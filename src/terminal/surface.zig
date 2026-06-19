@@ -51,8 +51,7 @@ const TestingHooks = struct {
 var testing_hooks: TestingHooks = .{};
 
 const RenderInit = struct {
-    render_px: render_c.HowlRenderPixelSize,
-    grid_px: render_c.HowlRenderPixelSize,
+    content_px: render_c.HowlRenderPixelSize,
     font_size_px: u16,
     primary_font_path: ?[:0]const u8 = null,
     fallback_font_paths: []const [:0]const u8 = &.{},
@@ -316,6 +315,18 @@ pub const Surface = struct {
     pub fn overlaySnapshot(self: *const Context, texture_rect: Layout.Rect) OverlaySnapshot {
         return .{
             .scrollbar = terminal_scrollbar.layout(@constCast(self), texture_rect),
+        };
+    }
+
+    pub fn textureSize(self: *const Context) Layout.Size {
+        const render_px = self.term.render.surface_layout.render_px;
+        const width = @as(c_int, @intCast(render_px.width));
+        const height = @as(c_int, @intCast(render_px.height));
+        std.debug.assert(width > 0);
+        std.debug.assert(height > 0);
+        return .{
+            .width = width,
+            .height = height,
         };
     }
 
@@ -998,8 +1009,7 @@ pub const Surface = struct {
 
     fn renderInit(self: *Context, surface_request: SurfaceLayoutRequest, resolved_fonts: *const terminal_fonts.ResolvedFonts) RenderInit {
         return .{
-            .render_px = surface_request.render_px,
-            .grid_px = surface_request.grid_px,
+            .content_px = surface_request.content_px,
             .font_size_px = @max(self.conf.font_size, 1),
             .primary_font_path = resolved_fonts.primary,
             .fallback_font_paths = resolved_fonts.fallbacks,
@@ -1035,7 +1045,7 @@ fn initRenderState(vt_state: *terminal_term.VtState) !void {
 
 fn initSurfaceLayout(render_init: RenderInit) render_retained.SurfaceLayout {
     assertRenderInit(render_init);
-    return surface_layout.deriveHostLayout(.{ .render_px = render_init.render_px, .grid_px = render_init.grid_px }, render_init.font_size_px);
+    return surface_layout.snapSurfaceLayout(.{ .content_px = render_init.content_px }, render_init.font_size_px);
 }
 
 fn initRenderText(render: *render_retained.State, render_init: RenderInit) !void {
@@ -1075,10 +1085,8 @@ fn deinitVt(handle: vt_c.HowlVtHandle) void {
 }
 
 fn assertRenderInit(render_init: RenderInit) void {
-    std.debug.assert(render_init.render_px.width > 0);
-    std.debug.assert(render_init.render_px.height > 0);
-    std.debug.assert(render_init.grid_px.width > 0);
-    std.debug.assert(render_init.grid_px.height > 0);
+    std.debug.assert(render_init.content_px.width > 0);
+    std.debug.assert(render_init.content_px.height > 0);
     std.debug.assert(render_init.font_size_px > 0);
     std.debug.assert(render_init.fallback_font_paths.len <= max_fallback_font_paths);
 }

@@ -129,7 +129,8 @@ pub fn handlePointerAndUiInputEvent(self: anytype, event: HostInput.Event, origi
             outcome.host_visual_changed = scroll_outcome.host_visual_changed;
             if (scroll_outcome.consumed) return outcome;
 
-            const local_mouse = Ops.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, self.geometry.render_px_w, self.geometry.render_px_h) orelse {
+            const terminal_px = self.term.render.surface_layout.render_px;
+            const local_mouse = Ops.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, @intCast(terminal_px.width), @intCast(terminal_px.height)) orelse {
                 if (mouse_event.host_only and Ops.clearHoveredLinkOp(self)) outcome.host_visual_changed = true;
                 return outcome;
             };

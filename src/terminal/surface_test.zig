@@ -3,6 +3,7 @@ const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 
 const event_mod = @import("../event.zig");
+const display_layout = @import("../display/layout.zig");
 const surface_mod = @import("surface.zig");
 const cursor_blink = @import("cursor_blink.zig");
 const pty_pump = @import("pty_pump.zig");
@@ -239,7 +240,7 @@ fn installSubmitHooks(mode: SubmitUploadMode) void {
 
 fn makeSubmitSurface() !Surface {
     var surface = testSurfaceBase();
-    const layout = surface_layout.deriveHostLayout(.{ .render_px = .{ .width = 100, .height = 80 }, .grid_px = .{ .width = 90, .height = 70 } }, surface.font_size_px);
+    const layout = surface_layout.snapSurfaceLayout(.{ .content_px = .{ .width = 100, .height = 80 } }, surface.font_size_px);
     surface.term.render = render_retained.State.init(layout);
     surface.term.render.syncSurfaceLayout(layout);
     surface.geometry = surface_layout.init(100, 80, 100, 80);
@@ -315,11 +316,11 @@ fn prepareSubmitSurfaceWithCursor(surface: *Surface, snapshot_seq: u64, cursor_v
 
 fn resizeSubmitSurface(surface: *Surface, render_width: c_int, render_height: c_int) !SurfaceLayoutRequest {
     surface_layout.resize(surface, render_width, render_height, render_width, render_height);
-    surface.geometry.grid_px_w = surface.geometry.pending_grid_px_w;
-    surface.geometry.grid_px_h = surface.geometry.pending_grid_px_h;
+    surface.geometry.content_px_w = surface.geometry.pending_content_px_w;
+    surface.geometry.content_px_h = surface.geometry.pending_content_px_h;
     surface.geometry.last_resize_ns = 0;
     const request = surface_layout.snapshotSurfaceLayoutLocked(&surface.geometry);
-    const layout = surface_layout.deriveHostLayout(request, surface.font_size_px);
+    const layout = surface_layout.snapSurfaceLayout(request, surface.font_size_px);
     surface.term.render.syncSurfaceLayout(layout);
     return request;
 }
@@ -351,23 +352,59 @@ const ClipboardCase = struct {
     }
 };
 
-test "surface layout request ignores logical size" {
+test "surface layout request snapshots content size and ignores logical size" {
     var state = surface_layout.State{
-        .render_px_w = 640,
-        .render_px_h = 480,
+        .content_px_w = 640,
+        .content_px_h = 480,
         .logical_w = 321,
         .logical_h = 123,
-        .grid_px_w = 600,
-        .grid_px_h = 440,
-        .pending_grid_px_w = 600,
-        .pending_grid_px_h = 440,
+        .pending_content_px_w = 640,
+        .pending_content_px_h = 480,
     };
 
     const request = surface_layout.snapshotSurfaceLayoutLocked(&state);
-    try std.testing.expectEqual(@as(u16, 640), request.render_px.width);
-    try std.testing.expectEqual(@as(u16, 480), request.render_px.height);
-    try std.testing.expectEqual(@as(u16, 600), request.grid_px.width);
-    try std.testing.expectEqual(@as(u16, 440), request.grid_px.height);
+    try std.testing.expectEqual(@as(u16, 640), request.content_px.width);
+    try std.testing.expectEqual(@as(u16, 480), request.content_px.height);
+}
+
+test "snap surface layout truncates content to whole terminal cells" {
+    const layout = surface_layout.snapSurfaceLayout(.{ .content_px = .{ .width = 960, .height = 570 } }, 16);
+
+    try std.testing.expectEqual(@as(u16, 8), layout.cell_px.width);
+    try std.testing.expectEqual(@as(u16, 16), layout.cell_px.height);
+    try std.testing.expectEqual(@as(u16, 120), layout.cols);
+    try std.testing.expectEqual(@as(u16, 35), layout.rows);
+    try std.testing.expectEqual(@as(u16, 960), layout.grid_px.width);
+    try std.testing.expectEqual(@as(u16, 560), layout.grid_px.height);
+    try std.testing.expectEqual(layout.grid_px.width, layout.render_px.width);
+    try std.testing.expectEqual(layout.grid_px.height, layout.render_px.height);
+}
+
+test "display terminal rect places snapped terminal texture size" {
+    const rect = display_layout.terminalRect(.{ .x = 7, .y = 19, .width = 960, .height = 570 }, .{ .width = 960, .height = 560 });
+
+    try std.testing.expectEqual(@as(c_int, 7), rect.x);
+    try std.testing.expectEqual(@as(c_int, 19), rect.y);
+    try std.testing.expectEqual(@as(c_int, 960), rect.width);
+    try std.testing.expectEqual(@as(c_int, 560), rect.height);
+}
+
+test "display terminal logical size follows snapped terminal pixels" {
+    const size = display_layout.terminalLogicalSize(.{ .width = 960, .height = 570 }, .{ .width = 960, .height = 570 }, .{ .width = 960, .height = 560 });
+
+    try std.testing.expectEqual(@as(c_int, 960), size.width);
+    try std.testing.expectEqual(@as(c_int, 560), size.height);
+}
+
+test "surface texture size uses snapped terminal render size" {
+    var surface = testSurfaceBase();
+    const layout = surface_layout.snapSurfaceLayout(.{ .content_px = .{ .width = 960, .height = 570 } }, 16);
+    surface.term.render = render_retained.State.init(layout);
+
+    const size = surface.textureSize();
+
+    try std.testing.expectEqual(@as(c_int, 960), size.width);
+    try std.testing.expectEqual(@as(c_int, 560), size.height);
 }
 
 test "pending VT clipboard write follows OSC 52 policy" {
@@ -511,7 +548,7 @@ test "inactive tab wake acknowledges without host transport drive" {
 
 test "text input fast path publishes text without pointer or UI operations" {
     const FakeContext = struct {
-        geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
+        geometry: struct { content_px_w: c_int = 80, content_px_h: c_int = 25 } = .{},
         publish_bytes_ok: bool = false,
         publish_key_ok: bool = false,
         publish_mouse_ok: bool = false,
@@ -639,7 +676,12 @@ test "text input fast path publishes text without pointer or UI operations" {
 
 test "text fast path compacts mixed input before pointer UI drain" {
     const FakeContext = struct {
-        geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
+        geometry: struct { content_px_w: c_int = 80, content_px_h: c_int = 25 } = .{},
+        term: struct {
+            render: struct {
+                surface_layout: render_retained.SurfaceLayout = .{ .render_px = .{ .width = 80, .height = 25 }, .grid_px = .{ .width = 80, .height = 25 }, .cols = 80, .rows = 25, .cell_px = .{ .width = 1, .height = 1 } },
+            } = .{},
+        } = .{},
         order: *[8]u8,
         order_len: *u8,
 
@@ -738,7 +780,12 @@ test "text fast path compacts mixed input before pointer UI drain" {
 
 test "pointer UI drain keeps PTY publication separate from host visual mutation" {
     const FakeContext = struct {
-        geometry: struct { render_px_w: c_int = 80, render_px_h: c_int = 25 } = .{},
+        geometry: struct { content_px_w: c_int = 80, content_px_h: c_int = 25 } = .{},
+        term: struct {
+            render: struct {
+                surface_layout: render_retained.SurfaceLayout = .{ .render_px = .{ .width = 80, .height = 25 }, .grid_px = .{ .width = 80, .height = 25 }, .cols = 80, .rows = 25, .cell_px = .{ .width = 1, .height = 1 } },
+            } = .{},
+        } = .{},
         publish_mouse_ok: bool = false,
         blink_changed: bool = false,
         clear_hover_changed: bool = false,
@@ -791,6 +838,70 @@ test "pointer UI drain keeps PTY publication separate from host visual mutation"
     } }, 0, 0, 80, 25, FakeOps);
     try std.testing.expect(!wheel_outcome.published_to_pty);
     try std.testing.expect(wheel_outcome.host_visual_changed);
+}
+
+test "pointer input rejects raw leftover strip below snapped terminal" {
+    const FakeContext = struct {
+        geometry: struct { content_px_w: c_int = 960, content_px_h: c_int = 570 } = .{},
+        term: struct {
+            render: struct {
+                surface_layout: render_retained.SurfaceLayout = .{ .render_px = .{ .width = 960, .height = 560 }, .grid_px = .{ .width = 960, .height = 560 }, .cols = 120, .rows = 35, .cell_px = .{ .width = 8, .height = 16 } },
+            } = .{},
+        } = .{},
+        publish_calls: u8 = 0,
+    };
+
+    const FakeOps = struct {
+        pub fn resetCursorBlinkActivity(_: *FakeContext, _: u64) bool {
+            unreachable;
+        }
+
+        pub fn publishTerminalMouse(self: *FakeContext, _: HostInput.Mouse.Event) bool {
+            self.publish_calls += 1;
+            return true;
+        }
+
+        pub fn handleScrollMouse(_: *FakeContext, _: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) terminal_input.ScrollMouseOutcome {
+            return .{ .consumed = false, .host_visual_changed = false };
+        }
+
+        pub fn contentRelativeEvent(mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, render_px_w: c_int, render_px_h: c_int) ?HostInput.Mouse.Event {
+            std.testing.expectEqual(@as(c_int, 960), render_px_w) catch unreachable;
+            std.testing.expectEqual(@as(c_int, 560), render_px_h) catch unreachable;
+            return terminal_input.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);
+        }
+
+        pub fn clearHoveredLinkOp(_: *FakeContext) bool {
+            return false;
+        }
+
+        pub fn handleWheelFallback(_: *FakeContext, _: HostInput.Mouse.Event) bool {
+            unreachable;
+        }
+
+        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
+            unreachable;
+        }
+
+        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
+            unreachable;
+        }
+    };
+
+    var context = FakeContext{};
+    const outcome = terminal_input.handlePointerAndUiInputEvent(&context, .{ .mouse = .{
+        .kind = .move,
+        .button = .none,
+        .pixel_x = 8,
+        .pixel_y = 565,
+        .mods = .{},
+        .buttons_down = .{},
+        .host_only = false,
+    } }, 0, 0, 960, 560, FakeOps);
+
+    try std.testing.expect(!outcome.published_to_pty);
+    try std.testing.expect(!outcome.host_visual_changed);
+    try std.testing.expectEqual(@as(u8, 0), context.publish_calls);
 }
 
 test "present pending blocks submit path until host present ack" {
@@ -919,11 +1030,11 @@ const TestSubmitRender = struct {
     }
 
     fn syncTestGeometry(self: *@This(), request: SurfaceLayoutRequest) void {
-        std.debug.assert(request.render_px.width > 0);
-        std.debug.assert(request.render_px.height > 0);
+        std.debug.assert(request.content_px.width > 0);
+        std.debug.assert(request.content_px.height > 0);
         self.record(.geometry_sync);
         self.geometry_epoch += 1;
-        self.render_px = request.render_px;
+        self.render_px = request.content_px;
     }
 
     fn prepareTestSurface(self: *@This()) void {
@@ -1031,8 +1142,8 @@ const TestSubmitContext = struct {
     fn commitGeometryForTest(self: *@This()) SurfaceLayoutRequest {
         self.record(.geometry_commit);
         const request = blk: {
-            self.geometry.grid_px_w = self.geometry.pending_grid_px_w;
-            self.geometry.grid_px_h = self.geometry.pending_grid_px_h;
+            self.geometry.content_px_w = self.geometry.pending_content_px_w;
+            self.geometry.content_px_h = self.geometry.pending_content_px_h;
             self.geometry.last_resize_ns = 0;
             break :blk surface_layout.snapshotSurfaceLayoutLocked(&self.geometry);
         };
@@ -1136,8 +1247,8 @@ test "resize success path submits full surface and acks matching present token" 
     try std.testing.expectEqual(@as(u64, 2), surface.term.render.geometry_epoch);
     const request = try resizeSubmitSurface(&surface, 4, 2);
 
-    try std.testing.expectEqual(@as(u16, 4), request.render_px.width);
-    try std.testing.expectEqual(@as(u16, 2), request.render_px.height);
+    try std.testing.expectEqual(@as(u16, 4), request.content_px.width);
+    try std.testing.expectEqual(@as(u16, 2), request.content_px.height);
     try std.testing.expectEqual(@as(u64, 3), surface.term.render.geometry_epoch);
 
     try prepareSubmitSurface(&surface, 52);
@@ -1199,8 +1310,8 @@ test "resize upload failure zeros host dimensions and retry submits same full fr
     try std.testing.expectEqual(@as(u16, 2), surface.term_texture.width);
     try std.testing.expectEqual(@as(u16, 1), surface.term_texture.height);
     const request = try resizeSubmitSurface(&surface, 4, 2);
-    try std.testing.expectEqual(@as(u16, 4), request.render_px.width);
-    try std.testing.expectEqual(@as(u16, 2), request.render_px.height);
+    try std.testing.expectEqual(@as(u16, 4), request.content_px.width);
+    try std.testing.expectEqual(@as(u16, 2), request.content_px.height);
 
     try prepareSubmitSurface(&surface, 52);
     const info = submit_hook_state.expected_info;
@@ -1261,8 +1372,8 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expect(surface.term.render.presentPending());
 
     const request = try resizeSubmitSurface(&surface, 4, 2);
-    try std.testing.expectEqual(@as(u16, 4), request.render_px.width);
-    try std.testing.expectEqual(@as(u16, 2), request.render_px.height);
+    try std.testing.expectEqual(@as(u16, 4), request.content_px.width);
+    try std.testing.expectEqual(@as(u16, 2), request.content_px.height);
     try std.testing.expectEqual(@as(u64, 3), surface.term.render.geometry_epoch);
 
     try prepareSubmitSurface(&surface, 52);
@@ -1301,8 +1412,8 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
     try std.testing.expect(!submit_hook_state.host_upload_had_matching_surface);
-    try std.testing.expectEqual(@as(u16, 4), surface.term_texture.width);
-    try std.testing.expectEqual(@as(u16, 2), surface.term_texture.height);
+    try std.testing.expectEqual(@as(u16, 6), surface.term_texture.width);
+    try std.testing.expectEqual(@as(u16, 12), surface.term_texture.height);
 }
 
 test "cursor visibility change while present pending submits latest snapshot after stale completion retires" {

@@ -323,9 +323,12 @@ pub const Processor = struct {
 
     fn forwardTerminalInput(self: *Self) TerminalSurface.DrainInputOutcome {
         const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
+        const content_px = DisplayLayout.contentPixelSize(self.window, self.conf.tab_bar.height);
         const content_logical = DisplayLayout.contentLogicalSize(self.window, self.conf.tab_bar.height);
+        const terminal_px = tab.textureSize();
+        const terminal_logical = DisplayLayout.terminalLogicalSize(content_logical, content_px, terminal_px);
         const origin_y = DisplayLayout.tabBarHeightLogical(self.window, self.conf.tab_bar.height);
-        const outcome = forwardTerminalInputFlow(tab, self.input, 0, origin_y, content_logical.width, content_logical.height);
+        const outcome = forwardTerminalInputFlow(tab, self.input, 0, origin_y, terminal_logical.width, terminal_logical.height);
         self.terminal_input_admitted = self.terminal_input_admitted or outcome.published_to_pty;
         return outcome;
     }
@@ -436,7 +439,9 @@ pub const Processor = struct {
     }
 
     fn renderSnapshot(self: *Self, tab: *TerminalSurface) RenderSnapshot {
-        const texture_rect = DisplayLayout.contentRect(self.window, self.conf.tab_bar.height);
+        const content_rect = DisplayLayout.contentRect(self.window, self.conf.tab_bar.height);
+        const texture_size = tab.textureSize();
+        const texture_rect = DisplayLayout.terminalRect(content_rect, texture_size);
         const overlay = tab.overlaySnapshot(texture_rect);
         var title_buf: [TabBar.max_tabs][]const u8 = undefined;
         const tabs = self.tabs.items();
