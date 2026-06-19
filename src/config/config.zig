@@ -111,7 +111,7 @@ test "ui config propagates Kitty cursor config fields" {
         \\    fallback_emoji = {},
         \\    bindings = {},
         \\  },
-        \\  tab_bar = { height = 30, bindings = {} },
+        \\  tab_bar = { height = 30, min_tabs_for_bar = 2, bindings = {} },
         \\}
     });
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, "assets/default_config/init.lua", std.testing.allocator);
@@ -133,4 +133,5 @@ test "ui config propagates Kitty cursor config fields" {
     try std.testing.expectEqual(@as(f64, 0.45), config.term.cursor_trail_decay_slow);
     try std.testing.expectEqual(@as(u16, 3), config.term.cursor_trail_start_threshold);
     try std.testing.expectEqual(term_config.CursorColor{ .kind = .default, .value = 0 }, config.term.cursor_trail_color);
+    try std.testing.expectEqual(@as(u16, 2), config.tab_bar.min_tabs_for_bar);
 }

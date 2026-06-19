@@ -84,6 +84,7 @@ return {
   },
   tab_bar = {
     height = 30,
+    min_tabs_for_bar = 2,
     bindings = {
       new_tab = { "ctrl+shift+t" },
       close_tab = { "ctrl+shift+w" },
