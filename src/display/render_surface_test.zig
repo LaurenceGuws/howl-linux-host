@@ -38,7 +38,7 @@ fn testSurface() render_c.HowlRenderSurfaceFrame {
         .token = .{
             .snapshot_seq = 1,
             .frame_seq = 1,
-            .geometry_epoch = 1,
+            .layout_epoch = 1,
             .resource_epoch = 1,
         },
         .render_px = .{ .width = 1, .height = 1 },

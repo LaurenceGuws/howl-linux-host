@@ -76,14 +76,14 @@ pub const State = struct {
             const logical_w = @max(logical_width, 1);
             const logical_h = @max(logical_height, 1);
             const focus_t = self.focusT(0, 0, logical_w, logical_h, window_focused);
-            const geometry = track(0, 0, logical_w, logical_h, focus_t);
-            const thumb_rect = thumb(geometry.y, geometry.height, model.rows, model.total_lines, model.scrollback_offset);
+            const track_layout = track(0, 0, logical_w, logical_h, focus_t);
+            const thumb_rect = thumb(track_layout.y, track_layout.height, model.rows, model.total_lines, model.scrollback_offset);
             break :blk Layout.ScrollbarLayout{
                 .visible = true,
-                .x = texture_rect.x + Layout.scaleLogicalToPixel(geometry.x, logical_w, texture_rect.width),
-                .y = texture_rect.y + Layout.scaleLogicalToPixel(geometry.y, logical_h, texture_rect.height),
-                .width = Layout.scaleLogicalSpan(geometry.width, logical_w, texture_rect.width),
-                .height = Layout.scaleLogicalSpan(geometry.height, logical_h, texture_rect.height),
+                .x = texture_rect.x + Layout.scaleLogicalToPixel(track_layout.x, logical_w, texture_rect.width),
+                .y = texture_rect.y + Layout.scaleLogicalToPixel(track_layout.y, logical_h, texture_rect.height),
+                .width = Layout.scaleLogicalSpan(track_layout.width, logical_w, texture_rect.width),
+                .height = Layout.scaleLogicalSpan(track_layout.height, logical_h, texture_rect.height),
                 .thumb_y = texture_rect.y + Layout.scaleLogicalToPixel(thumb_rect.y, logical_h, texture_rect.height),
                 .thumb_height = Layout.scaleLogicalSpan(thumb_rect.height, logical_h, texture_rect.height),
             };
@@ -117,23 +117,23 @@ pub const State = struct {
             return .{};
         }
 
-        const geometry = track(origin_x, origin_y, logical_width, logical_height, self.focusT(origin_x, origin_y, logical_width, logical_height, window_focused));
-        const over_track = pointInTrack(mouse_event.pixel_x, mouse_event.pixel_y, geometry);
-        const over_thumb = pointInThumb(mouse_event.pixel_x, mouse_event.pixel_y, geometry, model);
+        const track_layout = track(origin_x, origin_y, logical_width, logical_height, self.focusT(origin_x, origin_y, logical_width, logical_height, window_focused));
+        const over_track = pointInTrack(mouse_event.pixel_x, mouse_event.pixel_y, track_layout);
+        const over_thumb = pointInThumb(mouse_event.pixel_x, mouse_event.pixel_y, track_layout, model);
 
         switch (mouse_event.kind) {
             .move => {
                 if (!self.dragging) return .{};
-                return .{ .consumed = true, .target_offset = self.offsetFromMouse(mouse_event.pixel_y, geometry, model) };
+                return .{ .consumed = true, .target_offset = self.offsetFromMouse(mouse_event.pixel_y, track_layout, model) };
             },
             .press => {
                 if (mouse_event.button != .left or !over_track) return .{};
                 self.dragging = true;
                 self.grab_offset = if (over_thumb)
-                    @as(f32, @floatFromInt(mouse_event.pixel_y - geometry.thumbY(model)))
+                    @as(f32, @floatFromInt(mouse_event.pixel_y - track_layout.thumbY(model)))
                 else
-                    @as(f32, @floatFromInt(geometry.thumbHeight(model))) * 0.5;
-                return .{ .consumed = true, .target_offset = self.offsetFromMouse(mouse_event.pixel_y, geometry, model) };
+                    @as(f32, @floatFromInt(track_layout.thumbHeight(model))) * 0.5;
+                return .{ .consumed = true, .target_offset = self.offsetFromMouse(mouse_event.pixel_y, track_layout, model) };
             },
             .release => {
                 if (mouse_event.button != .left or !self.dragging) return .{};
@@ -156,14 +156,14 @@ pub const State = struct {
         return false;
     }
 
-    fn offsetFromMouse(self: *State, mouse_y: i32, geometry: Geometry, model: Model) u32 {
-        const available = geometry.thumbAvailable(model);
+    fn offsetFromMouse(self: *State, mouse_y: i32, track_layout: TrackLayout, model: Model) u32 {
+        const available = track_layout.thumbAvailable(model);
         const clamped_mouse = std.math.clamp(
             @as(f32, @floatFromInt(mouse_y)) - self.grab_offset,
-            @as(f32, @floatFromInt(geometry.y)),
-            @as(f32, @floatFromInt(geometry.y)) + available,
+            @as(f32, @floatFromInt(track_layout.y)),
+            @as(f32, @floatFromInt(track_layout.y)) + available,
         );
-        const ratio_from_top = if (available > 0) (clamped_mouse - @as(f32, @floatFromInt(geometry.y))) / available else 1.0;
+        const ratio_from_top = if (available > 0) (clamped_mouse - @as(f32, @floatFromInt(track_layout.y))) / available else 1.0;
         const max_offset = model.total_lines - model.rows;
         return if (max_offset == 0)
             0
@@ -176,23 +176,23 @@ pub const State = struct {
     }
 };
 
-pub const Geometry = struct {
+pub const TrackLayout = struct {
     x: c_int,
     y: c_int,
     width: c_int,
     height: c_int,
 
-    pub fn thumbHeight(self: Geometry, model: Model) c_int {
+    pub fn thumbHeight(self: TrackLayout, model: Model) c_int {
         if (model.total_lines == 0) return min_thumb_h_logical;
         const proportional = @divTrunc(@as(i64, self.height) * @as(i64, @intCast(model.rows)), @as(i64, @intCast(model.total_lines)));
         return @intCast(@max(@as(i64, min_thumb_h_logical), @min(proportional, @as(i64, self.height))));
     }
 
-    pub fn thumbAvailable(self: Geometry, model: Model) f32 {
+    pub fn thumbAvailable(self: TrackLayout, model: Model) f32 {
         return @as(f32, @floatFromInt(@max(self.height - self.thumbHeight(model), 0)));
     }
 
-    pub fn thumbY(self: Geometry, model: Model) c_int {
+    pub fn thumbY(self: TrackLayout, model: Model) c_int {
         const max_offset = model.total_lines - model.rows;
         if (max_offset == 0) return self.y;
         const ratio_from_top = 1.0 - (@as(f32, @floatFromInt(model.scrollback_offset)) / @as(f32, @floatFromInt(max_offset)));
@@ -222,7 +222,7 @@ pub fn followLiveBottom(term: anytype) bool {
     return terminal_term.followLiveBottomLocked(term);
 }
 
-fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, focus_t: f32) Geometry {
+fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, focus_t: f32) TrackLayout {
     const width_delta = max_width_logical - min_width_logical;
     const width = min_width_logical + @as(c_int, @intFromFloat(@round(@as(f32, @floatFromInt(width_delta)) * focus_t)));
     return .{
@@ -234,24 +234,24 @@ fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_i
 }
 
 fn thumb(y: c_int, height: c_int, rows: u32, total_lines: u32, scrollback_offset: u32) struct { y: c_int, height: c_int } {
-    const geometry = Geometry{ .x = 0, .y = y, .width = max_width_logical, .height = height };
+    const track_layout = TrackLayout{ .x = 0, .y = y, .width = max_width_logical, .height = height };
     const model = Model{ .visible = true, .rows = rows, .total_lines = total_lines, .scrollback_offset = scrollback_offset };
-    return .{ .y = geometry.thumbY(model), .height = geometry.thumbHeight(model) };
+    return .{ .y = track_layout.thumbY(model), .height = track_layout.thumbHeight(model) };
 }
 
-fn pointInTrack(mouse_x: i32, mouse_y: i32, geometry: Geometry) bool {
-    return mouse_x >= geometry.x - hit_margin_logical and
-        mouse_x <= geometry.x + geometry.width + hit_margin_logical and
-        mouse_y >= geometry.y and
-        mouse_y <= geometry.y + geometry.height;
+fn pointInTrack(mouse_x: i32, mouse_y: i32, track_layout: TrackLayout) bool {
+    return mouse_x >= track_layout.x - hit_margin_logical and
+        mouse_x <= track_layout.x + track_layout.width + hit_margin_logical and
+        mouse_y >= track_layout.y and
+        mouse_y <= track_layout.y + track_layout.height;
 }
 
-fn pointInThumb(mouse_x: i32, mouse_y: i32, geometry: Geometry, model: Model) bool {
-    const thumb_y = geometry.thumbY(model);
-    return mouse_x >= geometry.x - hit_margin_logical and
-        mouse_x <= geometry.x + geometry.width + hit_margin_logical and
+fn pointInThumb(mouse_x: i32, mouse_y: i32, track_layout: TrackLayout, model: Model) bool {
+    const thumb_y = track_layout.thumbY(model);
+    return mouse_x >= track_layout.x - hit_margin_logical and
+        mouse_x <= track_layout.x + track_layout.width + hit_margin_logical and
         mouse_y >= thumb_y and
-        mouse_y <= thumb_y + geometry.thumbHeight(model);
+        mouse_y <= thumb_y + track_layout.thumbHeight(model);
 }
 
 pub fn focus(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, mouse_x: i32, mouse_y: i32, dragging: bool, window_focused: bool) f32 {
@@ -352,8 +352,8 @@ pub fn layout(self: anytype, texture_rect: Layout.Rect) Layout.ScrollbarLayout {
     return self.scrollbar.layout(
         texture_rect,
         viewFromTerm(scrollState(&self.term)),
-        self.geometry.logical_w,
-        self.geometry.logical_h,
+        self.surface_layout.logical_w,
+        self.surface_layout.logical_h,
         self.window_focused,
         EventLoop.nowNs(),
     );

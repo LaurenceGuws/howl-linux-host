@@ -143,7 +143,7 @@ pub const Surface = struct {
     title_buf: [128]u8,
     title_len: u8,
     title_generation_seen: u64,
-    geometry: surface_layout.State,
+    surface_layout: surface_layout.State,
     font_size_px: u16,
     default_font_size_px: u16,
     window_focused: bool,
@@ -214,7 +214,7 @@ pub const Surface = struct {
         self.title_buf = undefined;
         self.title_len = 0;
         self.title_generation_seen = 0;
-        self.geometry = surface_layout.init(request.render_width, request.render_height, request.logical_width, request.logical_height);
+        self.surface_layout = surface_layout.init(request.render_width, request.render_height, request.logical_width, request.logical_height);
         self.font_size_px = start_font_px;
         self.default_font_size_px = start_font_px;
         self.window_focused = true;
@@ -1645,7 +1645,7 @@ fn testSurfaceBase() Surface {
         .title_buf = undefined,
         .title_len = 0,
         .title_generation_seen = 0,
-        .geometry = undefined,
+        .surface_layout = undefined,
         .font_size_px = 0,
         .default_font_size_px = 0,
         .window_focused = true,

@@ -54,42 +54,42 @@ pub fn resize(context: anytype, render_width: c_int, render_height: c_int, logic
     const content_h = @max(render_height, 1);
     const lw = @max(logical_width, 1);
     const lh = @max(logical_height, 1);
-    context.geometry.mutex.lock();
-    defer context.geometry.mutex.unlock();
-    const content_size_same = content_w == context.geometry.content_px_w and content_h == context.geometry.content_px_h;
-    const pending_content_size_same = content_w == context.geometry.pending_content_px_w and content_h == context.geometry.pending_content_px_h;
-    const logical_size_same = lw == context.geometry.logical_w and lh == context.geometry.logical_h;
+    context.surface_layout.mutex.lock();
+    defer context.surface_layout.mutex.unlock();
+    const content_size_same = content_w == context.surface_layout.content_px_w and content_h == context.surface_layout.content_px_h;
+    const pending_content_size_same = content_w == context.surface_layout.pending_content_px_w and content_h == context.surface_layout.pending_content_px_h;
+    const logical_size_same = lw == context.surface_layout.logical_w and lh == context.surface_layout.logical_h;
     if (content_size_same and pending_content_size_same and logical_size_same) return;
-    context.geometry.logical_w = lw;
-    context.geometry.logical_h = lh;
-    context.geometry.pending_content_px_w = content_w;
-    context.geometry.pending_content_px_h = content_h;
-    context.geometry.last_resize_ns = EventLoop.nowNs();
+    context.surface_layout.logical_w = lw;
+    context.surface_layout.logical_h = lh;
+    context.surface_layout.pending_content_px_w = content_w;
+    context.surface_layout.pending_content_px_h = content_h;
+    context.surface_layout.last_resize_ns = EventLoop.nowNs();
     terminal_scrollbar.invalidate(context);
 }
 
 pub fn maybeCommitGridResize(context: anytype) void {
     const surface_layout = blk: {
-        context.geometry.mutex.lock();
-        defer context.geometry.mutex.unlock();
-        if (context.geometry.pending_content_px_w == context.geometry.content_px_w and context.geometry.pending_content_px_h == context.geometry.content_px_h) return;
-        context.geometry.content_px_w = context.geometry.pending_content_px_w;
-        context.geometry.content_px_h = context.geometry.pending_content_px_h;
-        context.geometry.last_resize_ns = 0;
-        break :blk snapshotSurfaceLayoutLocked(&context.geometry);
+        context.surface_layout.mutex.lock();
+        defer context.surface_layout.mutex.unlock();
+        if (context.surface_layout.pending_content_px_w == context.surface_layout.content_px_w and context.surface_layout.pending_content_px_h == context.surface_layout.content_px_h) return;
+        context.surface_layout.content_px_w = context.surface_layout.pending_content_px_w;
+        context.surface_layout.content_px_h = context.surface_layout.pending_content_px_h;
+        context.surface_layout.last_resize_ns = 0;
+        break :blk snapshotSurfaceLayoutLocked(&context.surface_layout);
     };
     syncSurfaceLayout(context, surface_layout) catch return;
 }
 
 pub fn maybeCommitGridResizeLocked(context: anytype) void {
     const surface_layout = blk: {
-        context.geometry.mutex.lock();
-        defer context.geometry.mutex.unlock();
-        if (context.geometry.pending_content_px_w == context.geometry.content_px_w and context.geometry.pending_content_px_h == context.geometry.content_px_h) return;
-        context.geometry.content_px_w = context.geometry.pending_content_px_w;
-        context.geometry.content_px_h = context.geometry.pending_content_px_h;
-        context.geometry.last_resize_ns = 0;
-        break :blk snapshotSurfaceLayoutLocked(&context.geometry);
+        context.surface_layout.mutex.lock();
+        defer context.surface_layout.mutex.unlock();
+        if (context.surface_layout.pending_content_px_w == context.surface_layout.content_px_w and context.surface_layout.pending_content_px_h == context.surface_layout.content_px_h) return;
+        context.surface_layout.content_px_w = context.surface_layout.pending_content_px_w;
+        context.surface_layout.content_px_h = context.surface_layout.pending_content_px_h;
+        context.surface_layout.last_resize_ns = 0;
+        break :blk snapshotSurfaceLayoutLocked(&context.surface_layout);
     };
     syncSurfaceLayoutLocked(context, surface_layout) catch return;
 }
@@ -117,9 +117,9 @@ pub fn syncSurfaceLayoutLocked(context: anytype, request: SurfaceLayoutRequest) 
 }
 
 pub fn surfaceLayoutSnapshot(context: anytype) SurfaceLayoutRequest {
-    context.geometry.mutex.lock();
-    defer context.geometry.mutex.unlock();
-    return snapshotSurfaceLayoutLocked(&context.geometry);
+    context.surface_layout.mutex.lock();
+    defer context.surface_layout.mutex.unlock();
+    return snapshotSurfaceLayoutLocked(&context.surface_layout);
 }
 
 pub fn syncCurrentSurfaceLayout(context: anytype) bool {
@@ -128,9 +128,9 @@ pub fn syncCurrentSurfaceLayout(context: anytype) bool {
     return true;
 }
 
-pub fn snapshotSurfaceLayoutLocked(geometry: *const State) SurfaceLayoutRequest {
+pub fn snapshotSurfaceLayoutLocked(surface_layout: *const State) SurfaceLayoutRequest {
     return .{
-        .content_px = .{ .width = @as(u16, @intCast(@max(geometry.content_px_w, 1))), .height = @as(u16, @intCast(@max(geometry.content_px_h, 1))) },
+        .content_px = .{ .width = @as(u16, @intCast(@max(surface_layout.content_px_w, 1))), .height = @as(u16, @intCast(@max(surface_layout.content_px_h, 1))) },
     };
 }
 

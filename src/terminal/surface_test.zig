@@ -102,7 +102,7 @@ fn testSurfaceBase() Surface {
         .title_buf = undefined,
         .title_len = 0,
         .title_generation_seen = 0,
-        .geometry = surface_layout.init(100, 80, 100, 80),
+        .surface_layout = surface_layout.init(100, 80, 100, 80),
         .font_size_px = 12,
         .default_font_size_px = 12,
         .window_focused = true,
@@ -176,7 +176,7 @@ fn uploadRenderSurfaceHook(surface: *Surface, surface_frame: *const render_c.How
     if (submit_hook_state.saw_unlocked) surface.term.mutex.unlock();
     std.debug.assert(surface_frame.token.snapshot_seq == submit_hook_state.expected_info.snapshot_seq);
     std.debug.assert(surface_frame.token.frame_seq == submit_hook_state.expected_surface.token.frame_seq);
-    std.debug.assert(surface_frame.token.geometry_epoch == submit_hook_state.expected_surface.token.geometry_epoch);
+    std.debug.assert(surface_frame.token.layout_epoch == submit_hook_state.expected_surface.token.layout_epoch);
     std.debug.assert(surface_frame.render_px.width == submit_hook_state.expected_info.render_px.width);
     std.debug.assert(surface_frame.render_px.height == submit_hook_state.expected_info.render_px.height);
     submit_hook_state.host_upload_calls += 1;
@@ -243,7 +243,7 @@ fn makeSubmitSurface() !Surface {
     const layout = surface_layout.snapSurfaceLayout(.{ .content_px = .{ .width = 100, .height = 80 } }, surface.font_size_px);
     surface.term.render = render_retained.State.init(layout);
     surface.term.render.syncSurfaceLayout(layout);
-    surface.geometry = surface_layout.init(100, 80, 100, 80);
+    surface.surface_layout = surface_layout.init(100, 80, 100, 80);
     return surface;
 }
 
@@ -277,7 +277,7 @@ test "retained prepare emits visible full clear surface" {
     try std.testing.expectEqual(@as(u16, 2), upload.info.render_px.height);
     try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.snapshot_seq);
     try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.frame_seq);
-    try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.layout_epoch);
     try std.testing.expectEqual(@as(u64, 0), prepared_surface.token.resource_epoch);
     try std.testing.expectEqual(@as(u16, 4), prepared_surface.render_px.width);
     try std.testing.expectEqual(@as(u16, 2), prepared_surface.render_px.height);
@@ -316,10 +316,10 @@ fn prepareSubmitSurfaceWithCursor(surface: *Surface, snapshot_seq: u64, cursor_v
 
 fn resizeSubmitSurface(surface: *Surface, render_width: c_int, render_height: c_int) !SurfaceLayoutRequest {
     surface_layout.resize(surface, render_width, render_height, render_width, render_height);
-    surface.geometry.content_px_w = surface.geometry.pending_content_px_w;
-    surface.geometry.content_px_h = surface.geometry.pending_content_px_h;
-    surface.geometry.last_resize_ns = 0;
-    const request = surface_layout.snapshotSurfaceLayoutLocked(&surface.geometry);
+    surface.surface_layout.content_px_w = surface.surface_layout.pending_content_px_w;
+    surface.surface_layout.content_px_h = surface.surface_layout.pending_content_px_h;
+    surface.surface_layout.last_resize_ns = 0;
+    const request = surface_layout.snapshotSurfaceLayoutLocked(&surface.surface_layout);
     const layout = surface_layout.snapSurfaceLayout(request, surface.font_size_px);
     surface.term.render.syncSurfaceLayout(layout);
     return request;
@@ -440,7 +440,7 @@ test "cursor activity pushes blink deadline while visible" {
         .title_buf = undefined,
         .title_len = 0,
         .title_generation_seen = 0,
-        .geometry = undefined,
+        .surface_layout = undefined,
         .font_size_px = 0,
         .default_font_size_px = 0,
         .window_focused = true,
@@ -548,7 +548,6 @@ test "inactive tab wake acknowledges without host transport drive" {
 
 test "text input fast path publishes text without pointer or UI operations" {
     const FakeContext = struct {
-        geometry: struct { content_px_w: c_int = 80, content_px_h: c_int = 25 } = .{},
         publish_bytes_ok: bool = false,
         publish_key_ok: bool = false,
         publish_mouse_ok: bool = false,
@@ -676,7 +675,6 @@ test "text input fast path publishes text without pointer or UI operations" {
 
 test "text fast path compacts mixed input before pointer UI drain" {
     const FakeContext = struct {
-        geometry: struct { content_px_w: c_int = 80, content_px_h: c_int = 25 } = .{},
         term: struct {
             render: struct {
                 surface_layout: render_retained.SurfaceLayout = .{ .render_px = .{ .width = 80, .height = 25 }, .grid_px = .{ .width = 80, .height = 25 }, .cols = 80, .rows = 25, .cell_px = .{ .width = 1, .height = 1 } },
@@ -780,7 +778,6 @@ test "text fast path compacts mixed input before pointer UI drain" {
 
 test "pointer UI drain keeps PTY publication separate from host visual mutation" {
     const FakeContext = struct {
-        geometry: struct { content_px_w: c_int = 80, content_px_h: c_int = 25 } = .{},
         term: struct {
             render: struct {
                 surface_layout: render_retained.SurfaceLayout = .{ .render_px = .{ .width = 80, .height = 25 }, .grid_px = .{ .width = 80, .height = 25 }, .cols = 80, .rows = 25, .cell_px = .{ .width = 1, .height = 1 } },
@@ -842,7 +839,6 @@ test "pointer UI drain keeps PTY publication separate from host visual mutation"
 
 test "pointer input rejects raw leftover strip below snapped terminal" {
     const FakeContext = struct {
-        geometry: struct { content_px_w: c_int = 960, content_px_h: c_int = 570 } = .{},
         term: struct {
             render: struct {
                 surface_layout: render_retained.SurfaceLayout = .{ .render_px = .{ .width = 960, .height = 560 }, .grid_px = .{ .width = 960, .height = 560 }, .cols = 120, .rows = 35, .cell_px = .{ .width = 8, .height = 16 } },
@@ -993,7 +989,7 @@ fn testPreparedUploadInfo() render_retained.PreparedInfo {
 
 const TestResizeOperation = enum {
     resize,
-    geometry_commit,
+    layout_commit,
     host_upload,
     host_present_submit,
     wrong_present_complete,
@@ -1001,7 +997,7 @@ const TestResizeOperation = enum {
 };
 
 const TestRenderOperation = enum {
-    geometry_sync,
+    layout_sync,
     prepare,
     prepared_upload,
     submit,
@@ -1015,7 +1011,7 @@ const TestSubmitRender = struct {
     last_execution: render_retained.SubmitExecution = std.mem.zeroes(render_retained.SubmitExecution),
     mutex: ?*terminal_term.Mutex = null,
     prepared_surface: render_retained.PreparedHandle = null,
-    geometry_epoch: u64 = 1,
+    layout_epoch: u64 = 1,
     present_in_flight: ?struct { snapshot_seq: u64, token: u64 } = null,
     render_px: render_c.HowlRenderPixelSize = .{ .width = 2, .height = 1 },
     prepared_info: render_retained.PreparedInfo = testPreparedUploadInfo(),
@@ -1029,11 +1025,11 @@ const TestSubmitRender = struct {
         self.operation_count += 1;
     }
 
-    fn syncTestGeometry(self: *@This(), request: SurfaceLayoutRequest) void {
+    fn syncTestLayout(self: *@This(), request: SurfaceLayoutRequest) void {
         std.debug.assert(request.content_px.width > 0);
         std.debug.assert(request.content_px.height > 0);
-        self.record(.geometry_sync);
-        self.geometry_epoch += 1;
+        self.record(.layout_sync);
+        self.layout_epoch += 1;
         self.render_px = request.content_px;
     }
 
@@ -1098,7 +1094,7 @@ fn testRenderSurface(info: render_retained.PreparedInfo) render_c.HowlRenderSurf
     surface.token = .{
         .snapshot_seq = info.snapshot_seq,
         .frame_seq = info.snapshot_seq,
-        .geometry_epoch = 1,
+        .layout_epoch = 1,
         .resource_epoch = 0,
     };
     surface.render_px = info.render_px;
@@ -1119,7 +1115,7 @@ const TestSubmitContext = struct {
         .width = 2,
         .height = 1,
     },
-    geometry: surface_layout.State = surface_layout.init(2, 1, 2, 1),
+    surface_layout: surface_layout.State = surface_layout.init(2, 1, 2, 1),
     scrollbar: terminal_scrollbar.State = .{},
     host_upload_calls: u8 = 0,
     host_upload_had_matching_surface: bool = false,
@@ -1139,15 +1135,15 @@ const TestSubmitContext = struct {
         surface_layout.resize(self, render_width, render_height, logical_width, logical_height);
     }
 
-    fn commitGeometryForTest(self: *@This()) SurfaceLayoutRequest {
-        self.record(.geometry_commit);
+    fn commitLayoutForTest(self: *@This()) SurfaceLayoutRequest {
+        self.record(.layout_commit);
         const request = blk: {
-            self.geometry.content_px_w = self.geometry.pending_content_px_w;
-            self.geometry.content_px_h = self.geometry.pending_content_px_h;
-            self.geometry.last_resize_ns = 0;
-            break :blk surface_layout.snapshotSurfaceLayoutLocked(&self.geometry);
+            self.surface_layout.content_px_w = self.surface_layout.pending_content_px_w;
+            self.surface_layout.content_px_h = self.surface_layout.pending_content_px_h;
+            self.surface_layout.last_resize_ns = 0;
+            break :blk surface_layout.snapshotSurfaceLayoutLocked(&self.surface_layout);
         };
-        self.term.render.syncTestGeometry(request);
+        self.term.render.syncTestLayout(request);
         return request;
     }
 };
@@ -1244,12 +1240,12 @@ test "resize success path submits full surface and acks matching present token" 
     installSubmitHooks(.success);
     defer surface_testing.resetHooks();
 
-    try std.testing.expectEqual(@as(u64, 2), surface.term.render.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 2), surface.term.render.layout_epoch);
     const request = try resizeSubmitSurface(&surface, 4, 2);
 
     try std.testing.expectEqual(@as(u16, 4), request.content_px.width);
     try std.testing.expectEqual(@as(u16, 2), request.content_px.height);
-    try std.testing.expectEqual(@as(u64, 3), surface.term.render.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 3), surface.term.render.layout_epoch);
 
     try prepareSubmitSurface(&surface, 52);
     const info = submit_hook_state.expected_info;
@@ -1257,7 +1253,7 @@ test "resize success path submits full surface and acks matching present token" 
     try std.testing.expect(info.snapshot_seq != 0);
     try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.snapshot_seq);
     try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.frame_seq);
-    try std.testing.expectEqual(surface.term.render.geometry_epoch, prepared_surface.token.geometry_epoch);
+    try std.testing.expectEqual(surface.term.render.layout_epoch, prepared_surface.token.layout_epoch);
     try std.testing.expectEqual(@as(u64, 0), prepared_surface.token.resource_epoch);
     try std.testing.expectEqual(info.render_px.width, prepared_surface.render_px.width);
     try std.testing.expectEqual(info.render_px.height, prepared_surface.render_px.height);
@@ -1319,7 +1315,7 @@ test "resize upload failure zeros host dimensions and retry submits same full fr
     try std.testing.expectEqual(@as(u64, 1), info.snapshot_seq);
     try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.snapshot_seq);
     try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.frame_seq);
-    try std.testing.expectEqual(@as(u64, 3), prepared_surface.token.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 3), prepared_surface.token.layout_epoch);
     try std.testing.expectEqual(@as(u32, 1), prepared_surface.damage.count);
     try std.testing.expectEqual(render_c.HOWL_RENDER_SURFACE_FRAME_DAMAGE_FULL, prepared_surface.damage.ptr[0].kind);
 
@@ -1374,11 +1370,11 @@ test "resize while present pending waits for matching ack before resized submit"
     const request = try resizeSubmitSurface(&surface, 4, 2);
     try std.testing.expectEqual(@as(u16, 4), request.content_px.width);
     try std.testing.expectEqual(@as(u16, 2), request.content_px.height);
-    try std.testing.expectEqual(@as(u64, 3), surface.term.render.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 3), surface.term.render.layout_epoch);
 
     try prepareSubmitSurface(&surface, 52);
     try std.testing.expectEqual(@as(u64, 2), submit_hook_state.expected_info.snapshot_seq);
-    try std.testing.expectEqual(@as(u64, 3), submit_hook_state.expected_surface.token.geometry_epoch);
+    try std.testing.expectEqual(@as(u64, 3), submit_hook_state.expected_surface.token.layout_epoch);
 
     try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.admitRenderTurn(false).state);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);

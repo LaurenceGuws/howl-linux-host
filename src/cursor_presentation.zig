@@ -1,6 +1,5 @@
 const std = @import("std");
 const c = @import("howl_render_c");
-const geometry = @import("geometry.zig");
 const render = @import("libhowl_render.zig");
 const text_cursor_trail = @import("cursor/trail.zig");
 
@@ -58,7 +57,7 @@ pub const CursorPresentation = struct {
     trail_trigger_pending: bool = false,
     trail_trigger_rect: HostCursorCadenceRect = .{},
 
-    pub fn setHostCursorCadence(self: *CursorPresentation, cadence: HostCursorCadence, cursor_target: ?CursorTrailTarget, cell_px: geometry.CellSize) bool {
+    pub fn setHostCursorCadence(self: *CursorPresentation, cadence: HostCursorCadence, cursor_target: ?CursorTrailTarget, cell_px: c.HowlRenderCellSize) bool {
         var changed = false;
         changed = updateBool(&self.focused, cadence.focused) or changed;
         changed = updateByte(&self.cursor_opacity, cadence.cursor_opacity) or changed;
@@ -114,7 +113,7 @@ pub const CursorPresentation = struct {
         return true;
     }
 
-    fn updateCursorTrail(self: *CursorPresentation, source: CursorTrailTarget, new_trigger: bool, cell_px: geometry.CellSize) bool {
+    fn updateCursorTrail(self: *CursorPresentation, source: CursorTrailTarget, new_trigger: bool, cell_px: c.HowlRenderCellSize) bool {
         const before_count = self.cursor_trail_count;
         const before_rects = self.cursor_trail_rects;
         const target = self.cursorTrailTarget(source, cell_px) orelse {
@@ -142,7 +141,7 @@ pub const CursorPresentation = struct {
         return before_count != self.cursor_trail_count or !std.mem.eql(u8, std.mem.asBytes(&before_rects), std.mem.asBytes(&self.cursor_trail_rects));
     }
 
-    fn cursorTrailTarget(self: *const CursorPresentation, source: CursorTrailTarget, cell_px: geometry.CellSize) ?text_cursor_trail.Target {
+    fn cursorTrailTarget(self: *const CursorPresentation, source: CursorTrailTarget, cell_px: c.HowlRenderCellSize) ?text_cursor_trail.Target {
         if (cell_px.width == 0) return null;
         if (cell_px.height == 0) return null;
         return text_cursor_trail.targetFromCursor(.{
@@ -201,7 +200,7 @@ fn sameTrailTriggerRect(a: c.HowlRenderHostCursorTrailRect, b: c.HowlRenderHostC
     return a.row == b.row and a.col == b.col and a.rows == b.rows and a.cols == b.cols;
 }
 
-fn targetFromTriggerRect(rect: c.HowlRenderHostCursorTrailRect, cell_px: geometry.CellSize) text_cursor_trail.Target {
+fn targetFromTriggerRect(rect: c.HowlRenderHostCursorTrailRect, cell_px: c.HowlRenderCellSize) text_cursor_trail.Target {
     std.debug.assert(cell_px.width != 0);
     std.debug.assert(cell_px.height != 0);
     const left_px: f32 = @floatFromInt(@as(u32, rect.col) * @as(u32, cell_px.width));

@@ -991,7 +991,7 @@ test "redraw-only pending does not count as pending events" {
     try std.testing.expectEqual(@as(i32, 0), input.scroll_pages);
 }
 
-test "queued input focus geometry and bindings count as pending events" {
+test "queued input focus window geometry and bindings count as pending events" {
     var input: Input = undefined;
     input.init();
 

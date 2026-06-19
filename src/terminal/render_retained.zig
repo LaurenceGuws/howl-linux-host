@@ -116,7 +116,7 @@ pub const PreparedHandle = ?*const c.HowlRenderSurfaceFrame;
 
 pub const State = struct {
     surface_layout: SurfaceLayout,
-    geometry_epoch: u64 = 1,
+    layout_epoch: u64 = 1,
     prepared_surface: PreparedHandle = null,
     text_handle: c.HowlRenderTextHandle = null,
     surface: c.HowlRenderSurfaceFrame = emptySurface(),
@@ -160,8 +160,8 @@ pub const State = struct {
 
     pub fn syncSurfaceLayout(self: *State, layout: SurfaceLayout) void {
         self.commitSurfaceLayout(layout);
-        self.geometry_epoch +%= 1;
-        if (self.geometry_epoch == 0) self.geometry_epoch = 1;
+        self.layout_epoch +%= 1;
+        if (self.layout_epoch == 0) self.layout_epoch = 1;
     }
 
     pub fn admitRenderTurn(self: *State, bootstrap_surface: bool) RenderTurnAdmission {
@@ -211,9 +211,9 @@ pub const State = struct {
         return self.prepared_surface;
     }
 
-    pub fn setGeometryEpoch(self: *State, geometry_epoch: u64) void {
-        std.debug.assert(geometry_epoch != 0);
-        self.geometry_epoch = geometry_epoch;
+    pub fn setLayoutEpoch(self: *State, layout_epoch: u64) void {
+        std.debug.assert(layout_epoch != 0);
+        self.layout_epoch = layout_epoch;
     }
 
     pub fn setHostCursorCadence(self: *State, cadence: *const HostCursorCadence) bool {
@@ -288,7 +288,7 @@ pub const State = struct {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         };
         self.surface = emptySurface();
-        self.surface.token = .{ .snapshot_seq = snapshot_seq, .frame_seq = snapshot_seq, .geometry_epoch = self.geometry_epoch, .resource_epoch = 0 };
+        self.surface.token = .{ .snapshot_seq = snapshot_seq, .frame_seq = snapshot_seq, .layout_epoch = self.layout_epoch, .resource_epoch = 0 };
         self.surface.render_px = self.surface_layout.render_px;
         self.surface.cell_px = self.surface_layout.cell_px;
         self.surface.grid = .{ .cols = self.surface_layout.cols, .rows = self.surface_layout.rows };
@@ -307,7 +307,7 @@ pub const State = struct {
             .grid_px = self.surface_layout.grid_px,
             .cell_px = self.surface_layout.cell_px,
             .grid = .{ .cols = self.surface_layout.cols, .rows = self.surface_layout.rows },
-            .geometry_epoch = self.geometry_epoch,
+            .layout_epoch = self.layout_epoch,
             .focused = self.cursor_cadence.focused,
             .cursor_opacity = self.cursor_cadence.cursor_opacity,
             .text_blink_opacity = self.cursor_cadence.text_blink_opacity,
@@ -337,7 +337,7 @@ fn emptySurface() c.HowlRenderSurfaceFrame {
     return .{
         .frame_version = c.HOWL_RENDER_SURFACE_FRAME_VERSION,
         .reserved0 = 0,
-        .token = .{ .snapshot_seq = 0, .frame_seq = 0, .geometry_epoch = 0, .resource_epoch = 0 },
+        .token = .{ .snapshot_seq = 0, .frame_seq = 0, .layout_epoch = 0, .resource_epoch = 0 },
         .render_px = .{ .width = 0, .height = 0 },
         .cell_px = .{ .width = 0, .height = 0 },
         .grid = .{ .cols = 0, .rows = 0 },
