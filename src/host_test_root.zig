@@ -12,6 +12,7 @@ test {
     _ = @import("display/coordinates.zig");
     _ = @import("display/egl_present.zig");
     _ = @import("display/viewport.zig");
+    _ = @import("display/wayland_present.zig");
     _ = @import("display/render_surface_test.zig");
     _ = @import("terminal/surface_test.zig");
 }

@@ -174,6 +174,7 @@ fn linkHostWindow(module: *Module, deps: HostDeps) void {
     module.linkLibrary(deps.howl_pty_lib);
     module.linkLibrary(deps.howl_vt_lib);
     module.linkSystemLibrary("GL", .{});
+    module.linkSystemLibrary("wayland-client", .{});
     module.link_libc = true;
 }
 
