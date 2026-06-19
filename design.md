@@ -49,8 +49,8 @@ It owns platform UX, SDL input, the app event loop, wake policy, tab/window orch
 2. Each loop turn drains a bounded SDL input burst or waits according to wake/render/present state.
 3. Input is routed to tab/window policy or the active terminal context.
 4. The terminal context publishes host input through VT encoding and PTY handoff.
-5. The terminal context runs bounded PTY/VT progress and render prepare/submit/upload work.
-6. `main.zig` admits present only when frame pacing and work state allow it.
+5. The terminal context runs bounded PTY/VT progress and render prepare, submit, and upload turns.
+6. `main.zig` admits present only when frame pacing and render-turn admission allow it.
 7. Window/display modules present host chrome and the active terminal texture.
 8. The terminal context retires submitted render/VT snapshot state after presentation.
 
