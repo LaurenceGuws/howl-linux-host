@@ -107,7 +107,7 @@ pub const Surface = struct {
         }
 
         pub fn driveAdmitted(self: RuntimeFacts, active: bool) bool {
-            return self.wake_pending or self.runtime_due_now or (active and self.input_published);
+            return self.runtime_due_now or (active and self.input_published);
         }
     };
 
@@ -465,6 +465,12 @@ pub const Surface = struct {
         return self.driveProgressWithFacts(active, now_ns, self.runtimeFacts(active, now_ns, admission));
     }
 
+    pub fn acknowledgeProgressWake(self: *Context) bool {
+        if (!wakePendingHooked(self)) return false;
+        ackWakeHooked(self);
+        return true;
+    }
+
     pub fn driveProgressWithFacts(self: *Context, active: bool, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
         if (!facts.driveAdmitted(active)) {
             const cursor_redraw = if (active) self.driveCursor(now_ns) else false;
@@ -504,7 +510,7 @@ pub const Surface = struct {
         defer self.term.mutex.unlock();
         const snapshot_seq = self.term.render.completePresent(token) orelse return;
         std.debug.assert(snapshot_seq != 0);
-        vt_surface.ackPublishedSourceLocked(&self.term, snapshot_seq);
+        _ = vt_surface.ackPublishedSourceLocked(&self.term, snapshot_seq);
     }
 
     pub fn noteRenderTurn(self: *Context, turn: TurnResult) void {
@@ -544,7 +550,7 @@ pub const Surface = struct {
         if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
         self.refreshTitle();
         self.syncInputFocus();
-        try self.progress.init(self.event_loop);
+        self.progress.init(self.event_loop);
         self.progress.stop.store(false, .release);
         const progress_thread = try std.Thread.spawn(.{}, pty_wait_thread.progressThreadMain, .{self});
         if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(progress_thread.getHandle(), "howl-term-host");
@@ -1192,6 +1198,11 @@ test "active tab with admitted input does drive" {
                 return null;
             }
         }.hook,
+        .is_alive = struct {
+            fn hook(_: *Surface) bool {
+                return true;
+            }
+        }.hook,
         .drive_once = struct {
             fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
                 TestState.drive_calls += 1;
@@ -1227,7 +1238,7 @@ test "active tab with admitted input does drive" {
     try std.testing.expectEqual(@as(u8, 1), TestState.ack_calls);
 }
 
-test "wake drives without continuation" {
+test "wake alone does not drive host transport" {
     const TestState = struct {
         var drive_calls: u8 = 0;
     };
@@ -1248,6 +1259,11 @@ test "wake drives without continuation" {
                 return null;
             }
         }.hook,
+        .is_alive = struct {
+            fn hook(_: *Surface) bool {
+                return true;
+            }
+        }.hook,
         .drive_once = struct {
             fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
                 TestState.drive_calls += 1;
@@ -1266,9 +1282,9 @@ test "wake drives without continuation" {
     const facts = surface.runtimeFacts(false, 13, .{ .input_published = false });
     const result = surface.driveProgressWithFacts(false, 13, facts);
 
-    try std.testing.expect(facts.driveAdmitted(false));
-    try std.testing.expect(result.drove);
-    try std.testing.expectEqual(@as(u8, 1), TestState.drive_calls);
+    try std.testing.expect(!facts.driveAdmitted(false));
+    try std.testing.expect(!result.drove);
+    try std.testing.expectEqual(@as(u8, 0), TestState.drive_calls);
 }
 
 test "runtime due drives without new input" {

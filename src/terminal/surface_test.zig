@@ -434,69 +434,48 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(context.cursor_blink.visible);
 }
 
-test "drive progress follows explicit wake admission" {
-    drive_hook_state = .{
-        .outcomes = .{
-            .{ .keep = true, .should_redraw = false, .alive = true },
-            .{ .keep = false, .should_redraw = false, .alive = true },
-            undefined,
-            undefined,
-        },
-    };
+test "pty wake is acknowledged without host transport drive" {
+    drive_hook_state = .{};
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
 
     drive_hook_state.wake_pending = true;
-    const first_facts = surface.runtimeFacts(true, 1, .{ .input_published = false });
-    try std.testing.expect(first_facts.driveAdmitted(true));
+    const first_facts = surface.runtimeFacts(false, 1, .{ .input_published = false });
+    try std.testing.expect(!first_facts.driveAdmitted(false));
 
-    const first = surface.driveProgressWithFacts(true, 1, first_facts);
-    try std.testing.expect(first.drove);
-    try std.testing.expect(first.outcome.keep);
-    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.drive_calls);
+    const first = surface.driveProgressWithFacts(false, 1, first_facts);
+    try std.testing.expect(!first.drove);
+    try std.testing.expect(!first.outcome.keep);
+    try std.testing.expectEqual(@as(u8, 0), drive_hook_state.drive_calls);
+    try std.testing.expect(surface.acknowledgeProgressWake());
+    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
 
-    drive_hook_state.wake_pending = false;
-    const second_facts = surface.runtimeFacts(true, 2, .{ .input_published = false });
-    try std.testing.expect(!second_facts.driveAdmitted(true));
-    const second = surface.driveProgressWithFacts(true, 2, second_facts);
-    try std.testing.expect(!second.drove);
-    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.drive_calls);
-    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.clipboard_calls);
+    const second_facts = surface.runtimeFacts(false, 2, .{ .input_published = false });
+    try std.testing.expect(!second_facts.driveAdmitted(false));
     try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
 }
 
-test "pty redraw promotes retained render work after wake drive" {
-    drive_hook_state = .{
-        .outcomes = .{
-            .{ .keep = false, .should_redraw = true, .alive = true },
-            undefined,
-            undefined,
-            undefined,
-        },
-    };
+test "pty wake observes retained render work prepared by pty thread" {
+    drive_hook_state = .{};
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
 
+    drive_hook_state.wants_render_turn = true;
+    surface.term.render.notePrepareNeeded();
     drive_hook_state.wake_pending = true;
-    const facts = surface.runtimeFacts(true, 1, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(true, 1, facts);
+    const facts = surface.runtimeFacts(false, 1, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(false, 1, facts);
 
-    try std.testing.expect(result.drove);
-    try std.testing.expect(result.outcome.should_redraw);
+    try std.testing.expect(!result.drove);
+    try std.testing.expect(!result.outcome.should_redraw);
+    try std.testing.expect(facts.render_work_pending);
     try std.testing.expectEqual(render_retained.RetainedState.prepare_needed, surface.term.render.retainedState());
 }
 
-test "pty redraw does not reset cursor blink cadence" {
-    drive_hook_state = .{
-        .outcomes = .{
-            .{ .keep = false, .should_redraw = true, .alive = true },
-            undefined,
-            undefined,
-            undefined,
-        },
-    };
+test "pty wake does not reset cursor blink cadence" {
+    drive_hook_state = .{};
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
@@ -506,24 +485,17 @@ test "pty redraw does not reset cursor blink cadence" {
     surface.cursor_blink.deadline_ns = 10_000;
 
     drive_hook_state.wake_pending = true;
-    const facts = surface.runtimeFacts(true, 1, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(true, 1, facts);
+    const facts = surface.runtimeFacts(false, 1, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(false, 1, facts);
 
-    try std.testing.expect(result.drove);
-    try std.testing.expect(result.outcome.should_redraw);
-    try std.testing.expectEqual(@as(u8, 255), surface.cursor_blink.cursor_opacity);
-    try std.testing.expect(surface.cursor_blink.visible);
+    try std.testing.expect(!result.drove);
+    try std.testing.expect(!result.outcome.should_redraw);
+    try std.testing.expectEqual(@as(u8, 0), surface.cursor_blink.cursor_opacity);
+    try std.testing.expect(!surface.cursor_blink.visible);
 }
 
-test "inactive tab wake re-enters from explicit wake admission" {
-    drive_hook_state = .{
-        .outcomes = .{
-            .{ .keep = false, .should_redraw = false, .alive = true },
-            undefined,
-            undefined,
-            undefined,
-        },
-    };
+test "inactive tab wake acknowledges without host transport drive" {
+    drive_hook_state = .{};
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
@@ -531,8 +503,9 @@ test "inactive tab wake re-enters from explicit wake admission" {
 
     const result = surface.driveProgress(false, 4, .{ .input_published = false });
 
-    try std.testing.expect(result.drove);
-    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.drive_calls);
+    try std.testing.expect(!result.drove);
+    try std.testing.expectEqual(@as(u8, 0), drive_hook_state.drive_calls);
+    try std.testing.expect(surface.acknowledgeProgressWake());
     try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
 }
 

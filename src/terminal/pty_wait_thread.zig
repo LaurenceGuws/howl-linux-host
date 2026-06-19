@@ -1,4 +1,5 @@
 const pty_session = @import("pty_session.zig");
+const pty_pump = @import("pty_pump.zig");
 const terminal_term = @import("term.zig");
 const EventLoop = @import("../event_loop.zig");
 const std = @import("std");
@@ -8,20 +9,15 @@ const wait_slice_timeout_ms: i32 = 50;
 pub const WaitThread = struct {
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    wake_ack_sem: ?EventLoop.WakeSemaphore = null,
     thread: ?std.Thread = null,
     wake_event_loop: ?*EventLoop.EventLoop = null,
 
-    pub fn init(self: *WaitThread, wake_event_loop: *EventLoop.EventLoop) !void {
+    pub fn init(self: *WaitThread, wake_event_loop: *EventLoop.EventLoop) void {
         self.wake_pending.store(false, .release);
         self.wake_event_loop = wake_event_loop;
-        self.wake_ack_sem = EventLoop.createWakeSemaphore() orelse return error.ProgressSemaphoreUnavailable;
     }
 
     pub fn deinit(self: *WaitThread) void {
-        const sem = self.wake_ack_sem orelse return;
-        EventLoop.destroyWakeSemaphore(sem);
-        self.wake_ack_sem = null;
         self.wake_event_loop = null;
         self.wake_pending.store(false, .release);
     }
@@ -36,32 +32,24 @@ pub fn wakePending(self: anytype) bool {
 }
 
 pub fn ackWake(self: anytype) void {
-    if (self.progress.wake_pending.swap(false, .acq_rel)) {
-        signalWakeAck(self);
-    }
+    self.progress.wake_pending.store(false, .release);
 }
 
 fn progressThreadMainWith(self: anytype, comptime Ops: type) void {
     while (!self.progress.stop.load(.acquire)) {
-        waitForWakeAck(self, Ops);
-        if (self.progress.stop.load(.acquire)) break;
         if (!waitForTransport(self, Ops)) continue;
-        if (self.progress.stop.load(.acquire)) break;
-        signalWake(self, Ops);
-        if (!Ops.isAlive(termRef(self))) break;
-    }
-}
-
-fn waitForWakeAck(self: anytype, comptime Ops: type) void {
-    while (self.progress.wake_pending.load(.acquire) and !self.progress.stop.load(.acquire)) {
-        Ops.waitWakeAck(self, wait_slice_timeout_ms);
+        while (!self.progress.stop.load(.acquire)) {
+            const progress = Ops.driveProgress(self, EventLoop.nowNs());
+            if (progress.should_redraw or !progress.alive) signalWake(self, Ops);
+            if (!progress.alive) return;
+            if (!progress.keep) break;
+        }
     }
 }
 
 fn waitForTransport(self: anytype, comptime Ops: type) bool {
     while (true) {
         if (self.progress.stop.load(.acquire)) return false;
-        if (self.progress.wake_pending.load(.acquire)) return false;
         if (!Ops.isAlive(termRef(self))) {
             break;
         }
@@ -93,19 +81,13 @@ fn signalWake(self: anytype, comptime Ops: type) void {
     }
 }
 
-fn signalWakeAck(self: anytype) void {
-    const sem = self.progress.wake_ack_sem orelse return;
-    EventLoop.signalWakeSemaphore(sem);
-}
-
 const RealOps = struct {
-    fn waitTransport(term: *terminal_term.Term, timeout_ms: i32) bool {
-        return pty_session.waitTransport(term, timeout_ms);
+    fn driveProgress(self: anytype, now_ns: u64) pty_pump.Outcome {
+        return pty_pump.driveOnce(termRef(self), now_ns);
     }
 
-    fn waitWakeAck(self: anytype, timeout_ms: i32) void {
-        const sem = self.progress.wake_ack_sem orelse return;
-        EventLoop.waitWakeSemaphore(sem, timeout_ms);
+    fn waitTransport(term: *terminal_term.Term, timeout_ms: i32) bool {
+        return pty_session.waitTransport(term, timeout_ms);
     }
 
     fn isAlive(term: *const terminal_term.Term) bool {
@@ -118,14 +100,31 @@ const RealOps = struct {
     }
 };
 
-test "progress thread waits and wakes event loop once" {
+test "progress thread drives terminal before waking event loop" {
     fake_state = .{};
-    fake_state.is_alive = false;
     const term = FakeTerm.init();
     var ctx = FakeCtx{ .term = term };
     progressThreadMainWith(&ctx, FakeOps);
-    try std.testing.expectEqual(@as(u8, 0), fake_state.wait_calls);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.wait_calls);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.drive_calls);
     try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
+}
+
+test "progress thread drains kept work before waiting again" {
+    fake_state = .{};
+    fake_state.drive_alive_calls = 2;
+    fake_state.drive_keep_calls = 1;
+    fake_state.drive_should_redraw = true;
+    fake_state.set_stop_after_wait_call = 2;
+    var ctx = FakeCtx{ .term = FakeTerm.init() };
+    fake_ctx = &ctx;
+    defer fake_ctx = null;
+
+    progressThreadMainWith(&ctx, FakeOps);
+
+    try std.testing.expectEqual(@as(u8, 2), fake_state.drive_calls);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
+    try std.testing.expect(ctx.progress.stop.load(.acquire));
 }
 
 test "ack wake clears pending event-loop handoff state" {
@@ -163,28 +162,14 @@ test "wait for transport retries finite slices until readable" {
     try std.testing.expectEqual(@as(u8, 3), fake_state.wait_calls);
 }
 
-test "wait for transport rechecks wake handoff between slices" {
+test "wait for transport ignores pending wake handoff" {
     fake_state = .{};
-    fake_state.set_wake_pending_after_wait_call = 2;
-    fake_state.transport_ready_after = std.math.maxInt(u8);
-    var ctx = FakeCtx{ .term = FakeTerm.init() };
-    fake_ctx = &ctx;
-    defer fake_ctx = null;
-    try std.testing.expect(!waitForTransport(&ctx, FakeOps));
-    try std.testing.expectEqual(@as(u8, 2), fake_state.wait_calls);
-    try std.testing.expect(ctx.progress.wake_pending.load(.acquire));
-}
-
-test "wait for wake ack rechecks stop between slices" {
-    fake_state = .{};
-    fake_state.set_stop_after_wake_ack_call = 2;
+    fake_state.transport_ready_after = 2;
     var ctx = FakeCtx{ .term = FakeTerm.init() };
     ctx.progress.wake_pending.store(true, .release);
-    fake_ctx = &ctx;
-    defer fake_ctx = null;
-    waitForWakeAck(&ctx, FakeOps);
-    try std.testing.expectEqual(@as(u8, 2), fake_state.wait_wake_ack_calls);
-    try std.testing.expect(ctx.progress.stop.load(.acquire));
+    try std.testing.expect(waitForTransport(&ctx, FakeOps));
+    try std.testing.expectEqual(@as(u8, 2), fake_state.wait_calls);
+    try std.testing.expect(ctx.progress.wake_pending.load(.acquire));
 }
 
 const FakeTerm = struct {
@@ -198,46 +183,48 @@ const FakeCtx = struct {
     progress: struct {
         stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-        wake_ack_sem: ?EventLoop.WakeSemaphore = null,
         wake_event_loop: ?*EventLoop.EventLoop = null,
     } = .{},
 };
 
 var fake_state: struct {
     wait_calls: u8 = 0,
-    wait_wake_ack_calls: u8 = 0,
+    drive_calls: u8 = 0,
     wake_calls: u8 = 0,
     is_alive: bool = true,
     transport_ready_after: ?u8 = null,
-    set_wake_pending_after_wait_call: ?u8 = null,
-    set_stop_after_wake_ack_call: ?u8 = null,
+    set_stop_after_wait_call: ?u8 = null,
+    drive_alive_calls: u8 = 0,
+    drive_keep_calls: u8 = 0,
+    drive_should_redraw: bool = false,
 } = .{};
 
 var fake_ctx: ?*FakeCtx = null;
 
 const FakeOps = struct {
+    fn driveProgress(_: anytype, _: u64) pty_pump.Outcome {
+        const index = fake_state.drive_calls;
+        fake_state.drive_calls += 1;
+        return .{
+            .keep = index < fake_state.drive_keep_calls,
+            .should_redraw = fake_state.drive_should_redraw,
+            .alive = index < fake_state.drive_alive_calls,
+        };
+    }
+
     fn waitTransport(_: *FakeTerm, _: i32) bool {
         fake_state.wait_calls += 1;
-        if (fake_state.set_wake_pending_after_wait_call) |target| {
+        if (fake_state.set_stop_after_wait_call) |target| {
             if (fake_state.wait_calls == target) {
                 const ctx = fake_ctx orelse unreachable;
-                ctx.progress.wake_pending.store(true, .release);
+                ctx.progress.stop.store(true, .release);
+                return false;
             }
         }
         if (fake_state.transport_ready_after) |target| {
             return fake_state.wait_calls >= target;
         }
         return true;
-    }
-
-    fn waitWakeAck(_: anytype, _: i32) void {
-        fake_state.wait_wake_ack_calls += 1;
-        if (fake_state.set_stop_after_wake_ack_call) |target| {
-            if (fake_state.wait_wake_ack_calls == target) {
-                const ctx = fake_ctx orelse unreachable;
-                ctx.progress.stop.store(true, .release);
-            }
-        }
     }
 
     fn isAlive(_: *const FakeTerm) bool {

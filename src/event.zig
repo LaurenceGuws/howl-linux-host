@@ -170,6 +170,7 @@ pub const Processor = struct {
         if (input_outcome_opt) |input_outcome| {
             drainPresentComplete(self);
             const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
+            acknowledgeTerminalWakes(self.tabs.items());
             const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
@@ -352,6 +353,11 @@ pub const Processor = struct {
         if (!self.window.refreshGeometry()) return false;
         resizeTerminals(self.conf, self.window, self.tabs.items());
         return true;
+    }
+
+    fn acknowledgeTerminalWakes(tabs: []*TerminalSurface) void {
+        assert(tabs.len <= max_tabs);
+        for (tabs) |tab| _ = tab.acknowledgeProgressWake();
     }
 
     fn driveRuntimeProgress(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) TerminalProgress {

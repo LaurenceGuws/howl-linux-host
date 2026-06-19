@@ -55,11 +55,27 @@ const RealOps = struct {
     }
 };
 
-pub fn ackPublishedSourceLocked(term: *terminal_term.Term, snapshot_seq: u64) void {
-    if (snapshot_seq == 0) return;
-    const state = term.vt_state.render_state orelse return;
-    requireVtStructOk(vt_c.howl_vt_render_state_ack(state, term.vt));
+pub fn ackPublishedSourceLocked(term: *terminal_term.Term, snapshot_seq: u64) bool {
+    return ackPublishedSourceLockedWith(term, snapshot_seq, RealAckOps);
 }
+
+fn ackPublishedSourceLockedWith(term: anytype, snapshot_seq: u64, comptime Ops: type) bool {
+    if (snapshot_seq == 0) return false;
+    const state = term.vt_state.render_state orelse return false;
+    const current_snapshot_seq = Ops.snapshotSeq(state) catch return false;
+    if (current_snapshot_seq != snapshot_seq) return false;
+    return Ops.ack(state, term.vt) == vt_c.HOWL_VT_CALL_OK;
+}
+
+const RealAckOps = struct {
+    fn snapshotSeq(state: vt_c.HowlVtRenderStateHandle) !u64 {
+        return renderStateU64(state, vt_c.HOWL_VT_RENDER_STATE_DATA_SNAPSHOT_SEQ);
+    }
+
+    fn ack(state: vt_c.HowlVtRenderStateHandle, handle: vt_c.HowlVtHandle) i32 {
+        return vt_c.howl_vt_render_state_ack(state, handle);
+    }
+};
 
 pub fn vtVisibleInfo(handle: vt_c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
     const result = vt_c.howl_vt_terminal_query_visible_info(handle, scrollback_offset);
@@ -147,4 +163,46 @@ test "render-state capture update failure does not touch cursor facts" {
     try std.testing.expectEqual(@as(u8, 1), FakeOps.update_calls);
     try std.testing.expect(!term.vt_state.cursor_visible);
     try std.testing.expect(!term.vt_state.cursor_blink);
+}
+
+test "published source ack requires matching current snapshot" {
+    const FakeTerm = struct {
+        vt: vt_c.HowlVtHandle = @ptrFromInt(1),
+        vt_state: struct {
+            render_state: vt_c.HowlVtRenderStateHandle = @ptrFromInt(2),
+        } = .{},
+    };
+    const FakeOps = struct {
+        var snapshot_seq: u64 = 41;
+        var ack_status: i32 = vt_c.HOWL_VT_CALL_OK;
+        var ack_calls: u8 = 0;
+
+        fn snapshotSeq(_: vt_c.HowlVtRenderStateHandle) !u64 {
+            return snapshot_seq;
+        }
+
+        fn ack(_: vt_c.HowlVtRenderStateHandle, _: vt_c.HowlVtHandle) i32 {
+            ack_calls += 1;
+            return ack_status;
+        }
+    };
+
+    var term = FakeTerm{};
+
+    FakeOps.snapshot_seq = 41;
+    FakeOps.ack_status = vt_c.HOWL_VT_CALL_OK;
+    FakeOps.ack_calls = 0;
+    try std.testing.expect(ackPublishedSourceLockedWith(&term, 41, FakeOps));
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
+
+    FakeOps.snapshot_seq = 42;
+    FakeOps.ack_calls = 0;
+    try std.testing.expect(!ackPublishedSourceLockedWith(&term, 41, FakeOps));
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
+
+    FakeOps.snapshot_seq = 41;
+    FakeOps.ack_status = vt_c.HOWL_VT_CALL_INVALID_ARGUMENT;
+    FakeOps.ack_calls = 0;
+    try std.testing.expect(!ackPublishedSourceLockedWith(&term, 41, FakeOps));
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
 }
