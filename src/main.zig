@@ -93,7 +93,6 @@ noinline fn start(io: std.Io, options: Args) !void {
         .input = input,
         .event_loop = event_loop,
         .terminal_input_admitted = false,
-        .pending_terminal_present = null,
         .frame_timer = Processor.FrameTimerState.init(),
         .frame_deadline_ns = null,
     };

@@ -27,7 +27,6 @@ pub const Processor = struct {
     input: *Input,
     event_loop: *EventLoop.EventLoop,
     terminal_input_admitted: bool,
-    pending_terminal_present: ?Display.PresentToken,
     frame_timer: FrameTiming.FrameTimer,
     frame_deadline_ns: ?u64,
 
@@ -468,8 +467,7 @@ pub const Processor = struct {
     }
 
     fn drainPresentComplete(self: *Self) void {
-        const completed = AppPresent.lifecycle(self).drain();
-        if (completed) assert(self.pending_terminal_present == null);
+        _ = self;
     }
 
     fn resizeTerminals(conf: *const Config.UiConfig, app_window: *window.Window, tabs: []*TerminalSurface) void {

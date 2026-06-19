@@ -1051,56 +1051,6 @@ fn executionFromContext(context: *TestSubmitContext, prepared_upload: *const ren
     };
 }
 
-fn completeTestPresent(term: *TestSubmitTerm, token: u64, ack_calls: *u8, last_snapshot_seq: *u64) void {
-    const snapshot_seq = term.render.completePresent(token) orelse return;
-    ack_calls.* += 1;
-    last_snapshot_seq.* = snapshot_seq;
-}
-
-const TestPresentOwner = struct {
-    pending_terminal_present: ?u64 = null,
-    next_token: u64 = 900,
-    submit_count: u8 = 0,
-
-    fn submitTerminalFrame(self: *@This(), context: *TestSubmitContext, snapshot_seq: u64) u64 {
-        std.debug.assert(snapshot_seq != 0);
-        std.debug.assert(self.pending_terminal_present == null);
-        context.record(.host_present_submit);
-        const token = self.next_token;
-        self.next_token += 1;
-        self.submit_count += 1;
-        context.term.render.notePresentSubmitted(snapshot_seq, token);
-        self.pending_terminal_present = token;
-        return token;
-    }
-
-    fn drainComplete(self: *@This(), context: *TestSubmitContext, token: u64) void {
-        const pending = self.pending_terminal_present orelse return;
-        if (pending != token) {
-            context.record(.wrong_present_complete);
-            return;
-        }
-        context.record(.matching_present_complete);
-        completeTestPresent(&context.term, token, &TestPresentAckOps.ack_calls, &TestPresentAckOps.last_snapshot_seq);
-        self.pending_terminal_present = null;
-    }
-};
-
-const TestPresentAckOps = struct {
-    var ack_calls: u8 = 0;
-    var last_snapshot_seq: u64 = 0;
-
-    fn reset() void {
-        ack_calls = 0;
-        last_snapshot_seq = 0;
-    }
-
-    pub fn ack(_: *TestSubmitTerm, snapshot_seq: u64) void {
-        ack_calls += 1;
-        last_snapshot_seq = snapshot_seq;
-    }
-};
-
 test "submit backend upload observes terminal mutex unlocked" {
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
@@ -1439,7 +1389,6 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     const FakeApp = struct {
         display: *FakeDisplay,
         tabs: *FakeTabs,
-        pending_terminal_present: ?u64,
     };
     const snapshot = AppPresent.Snapshot{
         .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
@@ -1456,7 +1405,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     var tab = PresentTab{ .surface = &surface };
     var display = FakeDisplay{};
     var tabs = FakeTabs{ .items_buf = .{&tab} };
-    var app = FakeApp{ .display = &display, .tabs = &tabs, .pending_terminal_present = null };
+    var app = FakeApp{ .display = &display, .tabs = &tabs };
 
     try prepareSubmitSurface(&surface, 51);
     const wake_wait = event_mod.testing.computeLoopWaitFromFacts(1_000, false, true, false, null, .{

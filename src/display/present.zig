@@ -76,25 +76,23 @@ pub fn submitWith(display: anytype, tab: anytype, snapshot: Snapshot, reason: Re
 }
 
 pub fn recordSubmissionFor(app: anytype, tab: anytype, step: TerminalSurface.TurnStep, present_snapshot_seq: u64, submission: Submission) void {
+    _ = app;
     switch (submission.reason) {
         .none => assert(!submission.submitted),
         .host_damage => assert(submission.submitted),
         .terminal_frame => {
             assert(submission.submitted);
             const token = submission.token.?;
-            assert(app.pending_terminal_present == null);
             assert(step == .rendered);
             assert(present_snapshot_seq != 0);
             tab.notePresentSubmitted(present_snapshot_seq, token);
             tab.completePresent(token);
-            app.pending_terminal_present = null;
         },
         .terminal_retire => {
             assert(!submission.submitted);
             assert(submission.token == null);
             assert(step == .blocked_present);
             assert(present_snapshot_seq == 0);
-            assert(app.pending_terminal_present == null);
         },
     }
 }
@@ -179,7 +177,6 @@ test "terminal frame completes immediately after synchronous submit" {
     };
     const FakeApp = struct {
         display: *FakeDisplay,
-        pending_terminal_present: ?PresentToken = null,
     };
     const snapshot = Snapshot{
         .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
@@ -200,7 +197,6 @@ test "terminal frame completes immediately after synchronous submit" {
     try std.testing.expectEqual(@as(u8, 1), tab.complete_count);
     try std.testing.expectEqual(@as(u64, 55), tab.noted_snapshot_seq);
     try std.testing.expectEqual(@as(PresentToken, 77), tab.completed_token);
-    try std.testing.expectEqual(@as(?PresentToken, null), app.pending_terminal_present);
 }
 
 test "terminal retire has no async completion side effect" {
@@ -217,12 +213,6 @@ test "terminal retire has no async completion side effect" {
             unreachable;
         }
     };
-    const FakeApp = struct {
-        pending_terminal_present: ?PresentToken = null,
-    };
-
     var tab = FakeTab{};
-    var app = FakeApp{};
-    recordSubmissionFor(&app, &tab, .blocked_present, 0, .{ .reason = .terminal_retire, .submitted = false, .token = null });
-    try std.testing.expectEqual(@as(?PresentToken, null), app.pending_terminal_present);
+    recordSubmissionFor({}, &tab, .blocked_present, 0, .{ .reason = .terminal_retire, .submitted = false, .token = null });
 }
