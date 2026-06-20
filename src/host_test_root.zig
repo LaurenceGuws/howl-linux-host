@@ -26,7 +26,7 @@ test {
     _ = @import("render/gl_quad.zig");
     _ = @import("texture/frame.zig");
     _ = @import("texture/egl_swap.zig");
-    _ = @import("scroll_bar/presentation.zig");
+    _ = @import("texture/scroll_bar.zig");
     _ = @import("texture/tab_bar.zig");
     _ = @import("tab_bar/cell_surface.zig");
     _ = @import("tab_bar/surface.zig");
@@ -34,7 +34,7 @@ test {
     _ = @import("cursor/cadence.zig");
     _ = @import("cursor/source.zig");
     _ = @import("cursor/trail.zig");
-    _ = @import("texture/surface_test.zig");
+    _ = @import("texture/term_test.zig");
     _ = @import("buckets that must die/bucekt2_test.zig");
 }
 

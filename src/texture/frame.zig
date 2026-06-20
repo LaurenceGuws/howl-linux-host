@@ -5,7 +5,7 @@ const render_c = @import("howl_render_c");
 const gl_quad = @import("../render/gl_quad.zig");
 const frame_commands = @import("frame_commands.zig");
 const frame_resources = @import("frame_resources.zig");
-const scroll_bar_presentation = @import("../scroll_bar/presentation.zig");
+const texture_scroll_bar = @import("scroll_bar.zig");
 const sdl_c = @import("sdl_c");
 const std = @import("std");
 const tab_cell_surface = @import("../tab_bar/cell_surface.zig");
@@ -159,7 +159,7 @@ pub fn submitFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.
         frame.term_texture_rect.width,
         frame.term_texture_rect.height,
     );
-    scroll_bar_presentation.draw(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
+    texture_scroll_bar.draw(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
     _ = egl_swap.swapDamaged(c, handle, frame.damage.rects[0..frame.damage.count], @max(fb_w, 1), @max(fb_h, 1), frame.damage.full, false);
     return token;
 }

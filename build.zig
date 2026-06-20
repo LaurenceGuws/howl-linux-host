@@ -112,7 +112,7 @@ fn resolveHostDeps(b: *Build, target: Build.ResolvedTarget, optimize: std.builti
         .howl_vt_c = translateCModule(b, b.path("src/vt/howl_vt_c.h"), target, optimize, &.{howl_vt_include}),
         .howl_render_c = translateCModule(b, b.path("src/render/howl_render_c.h"), target, optimize, &.{ howl_render_include, howl_vt_include }),
         .sdl_c = translateCModule(b, b.path("src/window/sdl_c.h"), target, optimize, &.{sdl_include}),
-        .gl_c = translateCModule(b, b.path("src/render/gl_c.h"), target, optimize, &.{sdl_include}),
+        .gl_c = translateCModule(b, b.path("src/texture/gl_c.h"), target, optimize, &.{sdl_include}),
         .sdl_include = sdl_include,
         .sdl_lib = sdl_dep.artifact("SDL3"),
         .stb_image = b.path("src/window/stb_image.c"),
@@ -349,7 +349,7 @@ fn retainedRenderTestModule(b: *Build, deps: HostDeps) *Module {
 
 fn renderSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
     const module = b.createModule(.{
-        .root_source_file = b.path("src/texture/surface.zig"),
+        .root_source_file = b.path("src/texture/term.zig"),
         .target = deps.target,
         .optimize = deps.optimize,
     });
