@@ -1,9 +1,11 @@
 const gl_c = @import("gl_c");
 const Layout = @import("../layout/layout.zig");
 const Present = @import("present.zig");
-const Rects = @import("../buckets that must die/bucket.zig");
+const gl_quad = @import("gl_quad.zig");
+const scroll_bar_presentation = @import("../scroll_bar/presentation.zig");
 const sdl_c = @import("sdl_c");
 const std = @import("std");
+const tab_bar_presentation = @import("../tab_bar/presentation.zig");
 
 pub const C = struct {
     pub const SDL_GL_CONTEXT_MAJOR_VERSION = sdl_c.SDL_GL_CONTEXT_MAJOR_VERSION;
@@ -132,7 +134,7 @@ pub fn displaySubmitPresentSync(comptime c: type, state: *GenericState(c), frame
     c.glClearColor(0.06, 0.09, 0.14, 1.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.term_texture_rect.y);
-    Rects.textureRect(
+    gl_quad.textureRect(
         c,
         @max(fb_w, 1),
         @max(fb_h, 1),
@@ -142,7 +144,7 @@ pub fn displaySubmitPresentSync(comptime c: type, state: *GenericState(c), frame
         frame.term_texture_rect.width,
         frame.term_texture_rect.height,
     );
-    Rects.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
+    scroll_bar_presentation.draw(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
     _ = Present.swapDamaged(c, handle, frame.damage.rects[0..frame.damage.count], @max(fb_w, 1), @max(fb_h, 1), frame.damage.full, false);
     return token;
 }
@@ -162,7 +164,7 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int
     c.glViewport(0, 0, fb_w, fb_h);
     c.glClearColor(0.0, 0.0, 0.0, 0.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
-    Rects.tabBar(c, fb_w, fb_h, frame);
+    tab_bar_presentation.draw(c, fb_w, fb_h, frame);
     c.glBindTexture(c.GL_TEXTURE_2D, state.tab_texture_id);
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
     setTextureParams(c);
@@ -179,7 +181,7 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int
 
 fn drawCachedTabBar(comptime c: type, state: *GenericState(c), fb_w: c_int, fb_h: c_int, bar_h: c_int) void {
     if (!state.tab_cache_valid or state.tab_texture_id == 0 or bar_h <= 0) return;
-    Rects.textureRect(c, fb_w, fb_h, state.tab_texture_id, 0, 0, fb_w, bar_h);
+    gl_quad.textureRect(c, fb_w, fb_h, state.tab_texture_id, 0, 0, fb_w, bar_h);
 }
 
 fn ensureTabTexture(comptime c: type, state: *GenericState(c)) void {

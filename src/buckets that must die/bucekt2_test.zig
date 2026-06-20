@@ -17,7 +17,9 @@ const terminal_config = @import("../config/terminal.zig");
 
 const Surface = surface_mod.Surface;
 const HostInput = @import("../input/input.zig").Input;
+const MouseEvent = HostInput.Mouse.Event;
 const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
+const SurfaceLayout = render_retained.SurfaceLayout;
 const surface_testing = surface_mod.testing;
 
 const test_terminal_conf = terminal_config.Config{
@@ -88,7 +90,7 @@ fn testSurfaceBase() Surface {
             .pty = .{ .launch = .{ .shell = "", .command = null, .start_path = null } },
             .session = null,
             .vt = null,
-            .render = render_retained.State.init(.{ .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cols = 1, .rows = 1, .cell_px = .{ .width = 1, .height = 1 } }),
+            .render = render_retained.State.init(testSurfaceLayout(0, 0, 0, 0, 1, 1, 1, 1)),
             .vt_state = .{},
             .mutex = .{},
         },
@@ -117,6 +119,16 @@ fn testSurfaceBase() Surface {
         .cursor_trail = .{},
         .cursor_text_blinking = false,
         .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
+    };
+}
+
+fn testSurfaceLayout(render_width: u16, render_height: u16, grid_width: u16, grid_height: u16, cols: u16, rows: u16, cell_width: u16, cell_height: u16) SurfaceLayout {
+    return .{
+        .render_px = .{ .width = render_width, .height = render_height },
+        .grid_px = .{ .width = grid_width, .height = grid_height },
+        .cols = cols,
+        .rows = rows,
+        .cell_px = .{ .width = cell_width, .height = cell_height },
     };
 }
 
@@ -661,7 +673,7 @@ test "text fast path compacts mixed input before pointer UI drain" {
     const FakeContext = struct {
         term: struct {
             render: struct {
-                surface_layout: render_retained.SurfaceLayout = .{ .render_px = .{ .width = 80, .height = 25 }, .grid_px = .{ .width = 80, .height = 25 }, .cols = 80, .rows = 25, .cell_px = .{ .width = 1, .height = 1 } },
+                surface_layout: SurfaceLayout = testSurfaceLayout(80, 25, 80, 25, 80, 25, 1, 1),
             } = .{},
         } = .{},
         order: *[8]u8,
@@ -764,7 +776,7 @@ test "pointer UI drain keeps PTY publication separate from host visual mutation"
     const FakeContext = struct {
         term: struct {
             render: struct {
-                surface_layout: render_retained.SurfaceLayout = .{ .render_px = .{ .width = 80, .height = 25 }, .grid_px = .{ .width = 80, .height = 25 }, .cols = 80, .rows = 25, .cell_px = .{ .width = 1, .height = 1 } },
+                surface_layout: SurfaceLayout = testSurfaceLayout(80, 25, 80, 25, 80, 25, 1, 1),
             } = .{},
         } = .{},
         publish_mouse_ok: bool = false,
@@ -825,7 +837,7 @@ test "pointer input rejects raw leftover strip below snapped terminal" {
     const FakeContext = struct {
         term: struct {
             render: struct {
-                surface_layout: render_retained.SurfaceLayout = .{ .render_px = .{ .width = 960, .height = 560 }, .grid_px = .{ .width = 960, .height = 560 }, .cols = 120, .rows = 35, .cell_px = .{ .width = 8, .height = 16 } },
+                surface_layout: SurfaceLayout = testSurfaceLayout(960, 560, 960, 560, 120, 35, 8, 16),
             } = .{},
         } = .{},
         publish_calls: u8 = 0,
@@ -845,7 +857,7 @@ test "pointer input rejects raw leftover strip below snapped terminal" {
             return .{ .consumed = false, .host_visual_changed = false };
         }
 
-        pub fn contentRelativeEvent(mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, render_px_w: c_int, render_px_h: c_int) ?HostInput.Mouse.Event {
+        pub fn contentRelativeEvent(mouse_event: MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, render_px_w: c_int, render_px_h: c_int) ?MouseEvent {
             std.testing.expectEqual(@as(c_int, 960), render_px_w) catch unreachable;
             std.testing.expectEqual(@as(c_int, 560), render_px_h) catch unreachable;
             return terminal_input.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);

@@ -10,8 +10,11 @@ test {
     _ = EventLoop;
     _ = PtyWaitThread;
     _ = @import("layout/layout.zig");
+    _ = @import("render/gl_quad.zig");
     _ = @import("render/gl_present.zig");
     _ = @import("render/present.zig");
+    _ = @import("scroll_bar/presentation.zig");
+    _ = @import("tab_bar/presentation.zig");
     _ = @import("layout/viewport.zig");
     _ = @import("cursor/cadence.zig");
     _ = @import("cursor/source.zig");

@@ -11,6 +11,7 @@ const TabBar = @import("../tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("../tab_bar/tab_slots.zig").Slots;
 const Present = @import("../render/present.zig");
 const Terminal = @import("../buckets that must die/bucket2.zig").Surface;
+const TerminalTurnStep = Terminal.TurnStep;
 const FrameTimer = @import("frame_timer.zig");
 const window = @import("window.zig");
 
@@ -143,7 +144,15 @@ pub const Processor = struct {
         const slot = self.tabs.acquireSlot() orelse return;
         errdefer self.tabs.releaseSlot(slot.slot_idx);
 
-        try slot.tab.init(self.input, self.event_loop, &self.conf.term, next_viewport.content_px.width, next_viewport.content_px.height, next_viewport.content_logical.width, next_viewport.content_logical.height);
+        try slot.tab.init(
+            self.input,
+            self.event_loop,
+            &self.conf.term,
+            next_viewport.content_px.width,
+            next_viewport.content_px.height,
+            next_viewport.content_logical.width,
+            next_viewport.content_logical.height,
+        );
         errdefer slot.tab.deinit();
         self.window.requestRedraw();
 
@@ -641,7 +650,7 @@ pub const testing = struct {
         return Processor.computeLoopWaitWithPendingEvents(pending_events, frame_ready, redraw_requested, frame_deadline_ns, now_ns, runtime_facts);
     }
 
-    pub fn derivePresentReasonFromFacts(host_redraw_requested: bool, host_visual_changed: bool, step: @import("../buckets that must die/bucket2.zig").Surface.TurnStep) Processor.PresentReason {
+    pub fn derivePresentReasonFromFacts(host_redraw_requested: bool, host_visual_changed: bool, step: TerminalTurnStep) Processor.PresentReason {
         return Processor.derivePresentReason(host_redraw_requested or host_visual_changed, step);
     }
 };

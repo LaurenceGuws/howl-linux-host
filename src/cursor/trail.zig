@@ -147,7 +147,9 @@ pub const CursorTrail = struct {
                 dot[index] = 0;
                 continue;
             }
-            dot[index] = (dx[index] * (self.cursor_edge_x[corner_index_x[index]] - cursor_center_x) + dy[index] * (self.cursor_edge_y[corner_index_y[index]] - cursor_center_y)) / cursor_diag_2 / norm(dx[index], dy[index]);
+            const x_offset = self.cursor_edge_x[corner_index_x[index]] - cursor_center_x;
+            const y_offset = self.cursor_edge_y[corner_index_y[index]] - cursor_center_y;
+            dot[index] = (dx[index] * x_offset + dy[index] * y_offset) / cursor_diag_2 / norm(dx[index], dy[index]);
         }
 
         var min_dot = std.math.floatMax(f32);
@@ -256,7 +258,10 @@ fn assertGrid(grid: Grid) void {
 
 test "cursor trail target computes block edges" {
     var trail = CursorTrail{};
-    trail.updateTarget(.{ .x = 2, .y = 3, .shape = .block, .visible = true, .beam_thickness = 1, .underline_thickness = 1 }, .{ .xstart = 0, .ystart = 0, .dx = 1, .dy = 1, .cell_width = 8, .cell_height = 16 });
+    trail.updateTarget(
+        .{ .x = 2, .y = 3, .shape = .block, .visible = true, .beam_thickness = 1, .underline_thickness = 1 },
+        .{ .xstart = 0, .ystart = 0, .dx = 1, .dy = 1, .cell_width = 8, .cell_height = 16 },
+    );
     try std.testing.expectEqual(@as(f32, 2), trail.cursor_edge_x[0]);
     try std.testing.expectEqual(@as(f32, 3), trail.cursor_edge_x[1]);
     try std.testing.expectEqual(@as(f32, -3), trail.cursor_edge_y[0]);

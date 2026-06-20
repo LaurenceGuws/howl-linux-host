@@ -21,6 +21,8 @@ const glyph_atlas_height_px = 1024;
 const c_uchar_bool = u8;
 
 const RenderResourceTextures = render_surface_resources.RenderResourceTextures;
+const HostTexture = render_c.HowlRenderHostTexture;
+const SurfaceRect = render_c.HowlRenderSurfaceRect;
 const rectFitsResource = render_surface_resources.rectFitsResource;
 const sameResource = render_surface_resources.sameResource;
 const bytesPerPixel = render_surface_resources.bytesPerPixel;
@@ -537,13 +539,13 @@ fn emitQuadVerticesWithTex(left: f32, right: f32, top: f32, bottom: f32, tex_lef
     gl_c.glVertex2f(left, bottom);
 }
 
-fn drawTexturedQuad(surface: render_c.HowlRenderHostTexture, rect: render_c.HowlRenderSurfaceRect, texture_rect: render_c.HowlRenderSurfaceRect, texture_width: u32, texture_height: u32) void {
+fn drawTexturedQuad(surface: HostTexture, rect: SurfaceRect, texture_rect: SurfaceRect, texture_width: u32, texture_height: u32) void {
     gl_c.glBegin(gl_c.GL_QUADS);
     emitTexturedQuadVertices(surface, rect, texture_rect, texture_width, texture_height);
     gl_c.glEnd();
 }
 
-fn emitTexturedQuadVertices(surface: render_c.HowlRenderHostTexture, rect: render_c.HowlRenderSurfaceRect, texture_rect: render_c.HowlRenderSurfaceRect, texture_width: u32, texture_height: u32) void {
+fn emitTexturedQuadVertices(surface: HostTexture, rect: SurfaceRect, texture_rect: SurfaceRect, texture_width: u32, texture_height: u32) void {
     const left = ndcX(rect.x_px, surface.width);
     const right = ndcX(rect.x_px + rect.width_px, surface.width);
     const top = ndcY(rect.y_px, surface.height);

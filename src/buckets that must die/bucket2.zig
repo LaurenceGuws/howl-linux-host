@@ -1490,7 +1490,14 @@ test "cursor trail intermediate sample changes pixel rect before settling" {
 
     try std.testing.expectEqual(@as(u16, 1), second.render.cursor_trail_count);
     try std.testing.expect(second.cadence.wait_ms != null);
-    try std.testing.expect(first.render.cursor_trail_rects[0].x_px != second.render.cursor_trail_rects[0].x_px or first.render.cursor_trail_rects[0].y_px != second.render.cursor_trail_rects[0].y_px or first.render.cursor_trail_rects[0].width_px != second.render.cursor_trail_rects[0].width_px or first.render.cursor_trail_rects[0].height_px != second.render.cursor_trail_rects[0].height_px);
+    const first_rect = first.render.cursor_trail_rects[0];
+    const second_rect = second.render.cursor_trail_rects[0];
+    try std.testing.expect(
+        first_rect.x_px != second_rect.x_px or
+            first_rect.y_px != second_rect.y_px or
+            first_rect.width_px != second_rect.width_px or
+            first_rect.height_px != second_rect.height_px,
+    );
 }
 
 const test_terminal_conf: TerminalConfig = .{
@@ -1529,7 +1536,13 @@ fn testSurfaceBase() Surface {
             .pty = .{ .launch = .{ .shell = "", .command = null, .start_path = null } },
             .session = null,
             .vt = null,
-            .render = render_retained.State.init(.{ .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cols = 1, .rows = 1, .cell_px = .{ .width = 1, .height = 1 } }),
+            .render = render_retained.State.init(.{
+                .render_px = .{ .width = 0, .height = 0 },
+                .grid_px = .{ .width = 0, .height = 0 },
+                .cols = 1,
+                .rows = 1,
+                .cell_px = .{ .width = 1, .height = 1 },
+            }),
             .vt_state = .{},
             .mutex = .{},
         },

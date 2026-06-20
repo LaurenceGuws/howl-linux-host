@@ -11,6 +11,7 @@ const pty_session = @import("../pty/session.zig");
 
 const Self = @This();
 const HowlTerm = terminal_term.Term;
+const MouseEvent = HostInput.Mouse.Event;
 
 pub const DrainInputOutcome = struct {
     published_to_pty: bool,
@@ -256,7 +257,7 @@ const ContextOps = struct {
         return .{ .consumed = consumed, .host_visual_changed = !std.meta.eql(before, after) };
     }
 
-    pub fn contentRelativeEvent(mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, render_px_w: c_int, render_px_h: c_int) ?HostInput.Mouse.Event {
+    pub fn contentRelativeEvent(mouse_event: MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, render_px_w: c_int, render_px_h: c_int) ?MouseEvent {
         return Self.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);
     }
 

@@ -22,6 +22,9 @@ pub const EglC = struct {
 
 pub const DamageProc = *const fn (display: sdl_c.EGLDisplay, surface: sdl_c.EGLSurface, rects: [*c]const sdl_c.EGLint, count: sdl_c.EGLint) callconv(.c) sdl_c.EGLBoolean;
 pub const PlainProc = *const fn (display: sdl_c.EGLDisplay, surface: sdl_c.EGLSurface) callconv(.c) sdl_c.EGLBoolean;
+const EglSurface = sdl_c.EGLSurface;
+const EglBool = sdl_c.EGLBoolean;
+const EglDamage = []const EglRect;
 
 pub const Rect = struct {
     x: i32,
@@ -63,14 +66,14 @@ fn callPlainProc(comptime c: type, surface: c.EGLSurface) c.EGLBoolean {
     return proc(c.SDL_EGL_GetCurrentDisplay().?, surface);
 }
 
-fn callDamageProc(comptime c: type, name: [:0]const u8, surface: c.EGLSurface, damage: []const EglRect, framebuffer_width: i32, framebuffer_height: i32, full_damage: bool, resized: bool) c.EGLBoolean {
+fn callDamageProc(comptime c: type, name: [:0]const u8, surface: EglSurface, damage: EglDamage, fb_width: i32, fb_height: i32, full_damage: bool, resized: bool) EglBool {
     const raw = c.SDL_EGL_GetProcAddress(name.ptr).?;
     const proc: DamageProc = @ptrCast(raw);
     var rects: [max_rects * 4]c.EGLint = undefined;
     const count = eglDamageRectCount(damage, full_damage, resized);
     if (count > 0) {
         for (damage[0..@intCast(count)], 0..) |rect, index| {
-            const egl_rect = eglDamageRect(rect, framebuffer_width, framebuffer_height);
+            const egl_rect = eglDamageRect(rect, fb_width, fb_height);
             rects[index * 4 + 0] = egl_rect[0];
             rects[index * 4 + 1] = egl_rect[1];
             rects[index * 4 + 2] = egl_rect[2];
@@ -180,7 +183,10 @@ test "damaged present decision blocks invalid damage" {
 
     try std.testing.expectEqual(EglDecision.blocked_invalid_damage, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{.{ .x = 1, .y = 20, .width = 4, .height = 8 }}, 80, 25));
     try std.testing.expectEqual(EglDecision.blocked_invalid_damage, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{.{ .x = 78, .y = 1, .width = 4, .height = 8 }}, 80, 25));
-    try std.testing.expectEqual(EglDecision.blocked_invalid_damage, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{.{ .x = std.math.maxInt(i32), .y = 1, .width = 4, .height = 8 }}, 80, 25));
+    try std.testing.expectEqual(
+        EglDecision.blocked_invalid_damage,
+        damagedPresentDecision(EglFakeC, EglFakeC.window, &.{.{ .x = std.math.maxInt(i32), .y = 1, .width = 4, .height = 8 }}, 80, 25),
+    );
 }
 
 test "damaged present decision blocks missing current window" {

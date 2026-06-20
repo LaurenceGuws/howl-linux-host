@@ -872,7 +872,19 @@ test "sdl alt text table covers all digit mappings" {
 }
 
 test "sdl alt text table covers all punctuation mappings" {
-    const punctuation_keys = [_]c_uint{ c.SDLK_MINUS, c.SDLK_EQUALS, c.SDLK_LEFTBRACKET, c.SDLK_RIGHTBRACKET, c.SDLK_BACKSLASH, c.SDLK_SEMICOLON, c.SDLK_APOSTROPHE, c.SDLK_GRAVE, c.SDLK_COMMA, c.SDLK_PERIOD, c.SDLK_SLASH };
+    const punctuation_keys = [_]c_uint{
+        c.SDLK_MINUS,
+        c.SDLK_EQUALS,
+        c.SDLK_LEFTBRACKET,
+        c.SDLK_RIGHTBRACKET,
+        c.SDLK_BACKSLASH,
+        c.SDLK_SEMICOLON,
+        c.SDLK_APOSTROPHE,
+        c.SDLK_GRAVE,
+        c.SDLK_COMMA,
+        c.SDLK_PERIOD,
+        c.SDLK_SLASH,
+    };
     const unshifted = "-=[]\\;'`,./";
     const shifted = "_+{}|:\"~<>?";
     comptime std.debug.assert(punctuation_keys.len == unshifted.len);
