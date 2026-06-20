@@ -13,6 +13,7 @@ const terminal_fonts = @import("../render/fonts.zig");
 const pty_session = @import("../pty/session.zig");
 const render_retained = @import("../render/surface_retained.zig");
 const vt_surface = @import("../vt/surface.zig");
+const vt_title = @import("../vt/title.zig");
 const terminal_term = @import("bucket4.zig");
 const vt_retained = @import("../vt/surface_retained.zig");
 const HowlTerm = terminal_term.Term;
@@ -349,19 +350,21 @@ pub const Surface = struct {
     }
 
     pub fn titleSlice(self: *Context) []const u8 {
-        if (terminal_term.titleGeneration(&self.term) != self.title_generation_seen) {
+        if (vt_title.generation(&self.term.vt_state.title) != self.title_generation_seen) {
             self.refreshTitle();
         }
         return self.title_buf[0..self.title_len];
     }
 
     pub fn titleGeneration(self: *const Context) u64 {
-        return terminal_term.titleGeneration(&self.term);
+        return vt_title.generation(&self.term.vt_state.title);
     }
 
     pub fn refreshTitle(self: *Context) void {
-        self.title_len = @intCast(terminal_term.copyCurrentTitle(&self.term, self.title_buf[0..]));
-        self.title_generation_seen = terminal_term.titleGeneration(&self.term);
+        self.term.mutex.lock();
+        defer self.term.mutex.unlock();
+        self.title_len = @intCast(vt_title.copy(&self.term.vt_state.title, self.title_buf[0..]));
+        self.title_generation_seen = vt_title.generation(&self.term.vt_state.title);
         if (self.title_len != 0) return;
         const fallback = self.conf.command orelse self.conf.shell;
         self.title_len = @intCast(@min(fallback.len, self.title_buf.len));
@@ -559,7 +562,7 @@ pub const Surface = struct {
     }
 
     fn startRuntime(self: *Context) !void {
-        terminal_term.resetTitleFromLaunch(&self.term);
+        vt_title.set(&self.term.vt_state.title, titleFromLaunch(self.term.pty.launch));
         try pty_session.start(&self.term);
         if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
         self.refreshTitle();
@@ -1042,6 +1045,14 @@ pub const Surface = struct {
         };
     }
 };
+
+fn titleFromLaunch(launch: pty_session.Launch) []const u8 {
+    if (launch.command) |command| {
+        const trimmed = std.mem.trim(u8, command, " \t\r\n");
+        if (trimmed.len > 0) return trimmed;
+    }
+    return std.mem.trim(u8, std.fs.path.basename(launch.shell), " \t\r\n");
+}
 
 fn initRenderState(vt_state: *terminal_term.VtState) !void {
     std.debug.assert(vt_state.render_state == null);

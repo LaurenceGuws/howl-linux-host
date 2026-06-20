@@ -2,6 +2,7 @@ const pty_session = @import("../pty/session.zig");
 const vt_c = @import("howl_vt_c");
 const terminal_term = @import("../buckets that must die/bucket4.zig");
 const vt_retained = @import("../vt/surface_retained.zig");
+const vt_title = @import("../vt/title.zig");
 const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
 const std = @import("std");
 
@@ -245,7 +246,7 @@ fn feedTermDataLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u
         _ = chunk_len;
         return false;
     }
-    const title = if (result.title_changed != 0) terminal_term.copyTitleLocked(term) catch null else null;
+    const title = if (result.title_changed != 0) vt_title.copyFromVt(&term.vt_state.title, term.vt) catch null else null;
     drainTerminalReplyLocked(term);
     const history_after = if (result.state_changed != 0)
         visibleHistoryCount(term)

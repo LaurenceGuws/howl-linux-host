@@ -1,6 +1,8 @@
 const std = @import("std");
 const c = @import("howl_vt_c");
 const terminal_term = @import("../buckets that must die/bucket4.zig");
+const vt_output_buffer = @import("../vt/output_buffer.zig");
+const vt_title = @import("../vt/title.zig");
 
 pub const RuntimeObligation = struct {
     pending_now: bool,
@@ -66,7 +68,7 @@ pub fn progressRuntimeLocked(term: anytype, now_ns: u64) !RuntimeProgress {
 }
 
 pub fn copyPendingOutputLocked(term: anytype) ![]const u8 {
-    const out = term.vt_state.output_scratch[0..];
+    const out = vt_output_buffer.slice(&term.vt_state.output_buffer);
     const result = c.howl_vt_terminal_copy_pending_output(term.vt, out.ptr, out.len);
     return copyBoundedBytes(out, result);
 }
@@ -76,7 +78,7 @@ pub fn clearPendingOutputLocked(term: anytype) void {
 }
 
 pub fn drainPendingClipboardLocked(term: anytype) !?[]const u8 {
-    const out = term.vt_state.output_scratch[0..];
+    const out = vt_output_buffer.slice(&term.vt_state.output_buffer);
     const result = c.howl_vt_terminal_drain_pending_clipboard(term.vt, out.ptr, out.len);
     if (result.status == callShortBuffer()) return error.HostBufferTooSmall;
     try requireOk(result.status);
@@ -96,7 +98,7 @@ pub fn copySelection(term: anytype) ![]const u8 {
     const mut = mutableTerm(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    const out = term.vt_state.output_scratch[0..];
+    const out = vt_output_buffer.slice(&term.vt_state.output_buffer);
     const result = c.howl_vt_terminal_copy_selection(term.vt, out.ptr, out.len);
     return copyBoundedBytes(out, result);
 }
@@ -123,7 +125,7 @@ fn repairScrollback(term: anytype, history_before: u32, history_after: u32, any_
 }
 
 pub fn finishFeed(term: anytype, history_before: u32, history_after: u32, state_changed: bool, title: ?[]const u8) void {
-    if (title) |current| terminal_term.setCurrentTitle(term, current);
+    if (title) |current| vt_title.set(&term.vt_state.title, current);
     if (!state_changed) return;
     repairScrollback(term, history_before, history_after, true);
 }

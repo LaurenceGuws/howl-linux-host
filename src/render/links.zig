@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("howl_vt_c");
+const vt_output_buffer = @import("../vt/output_buffer.zig");
 const terminal_selection = @import("../selection/selection.zig");
 const vt_retained = @import("../vt/surface_retained.zig");
 const window = @import("../window/window2.zig");
@@ -147,7 +148,7 @@ fn copyVisibleHyperlinkAt(term: anytype, row: u16, col: u16) !?[]const u8 {
 }
 
 fn copyVisibleHyperlinkAtLocked(term: anytype, row: u16, col: u16) !?[]const u8 {
-    const out = term.vt_state.output_scratch[0..];
+    const out = vt_output_buffer.slice(&term.vt_state.output_buffer);
     const result = c.howl_vt_terminal_copy_visible_hyperlink(
         term.vt,
         term.vt_state.scrollback_offset,

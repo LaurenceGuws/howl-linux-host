@@ -2,6 +2,7 @@ const Input = @import("../input/input.zig").Input;
 const pty_session = @import("../pty/session.zig");
 const std = @import("std");
 const c = @import("howl_vt_c");
+const vt_input_buffer = @import("input_buffer.zig");
 const terminal_term = @import("../buckets that must die/bucket4.zig");
 
 const Term = terminal_term.Term;
@@ -127,7 +128,7 @@ pub fn publishFocus(term: *Term, focused: bool) !bool {
 pub fn wouldReportUnpressedMouseMotion(term: *Term) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    const out = terminal_term.inputScratch(term);
+    const out = vt_input_buffer.slice(&term.vt_state.input_buffer);
     const result = c.howl_vt_terminal_encode_mouse(
         term.vt,
         c.HOWL_VT_MOUSE_MOVE,
@@ -150,7 +151,7 @@ pub fn wouldReportUnpressedMouseMotion(term: *Term) bool {
 pub fn wouldReportMouse(term: *Term, mouse: TermInput.MouseEvent) bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    const out = terminal_term.inputScratch(term);
+    const out = vt_input_buffer.slice(&term.vt_state.input_buffer);
     const result = c.howl_vt_terminal_encode_mouse(
         term.vt,
         mouse.kind,
@@ -171,19 +172,19 @@ pub fn wouldReportMouse(term: *Term, mouse: TermInput.MouseEvent) bool {
 }
 
 fn encodeFocusBytes(term: *Term, focused: bool) ![]const u8 {
-    const out = terminal_term.inputScratch(term);
+    const out = vt_input_buffer.slice(&term.vt_state.input_buffer);
     const result = c.howl_vt_terminal_encode_focus(term.vt, if (focused) 1 else 0, out.ptr, out.len);
     return encodedBytes(out, result);
 }
 
 fn encodeKeyBytes(term: *Term, key_event: TermInput.KeyEvent) ![]const u8 {
-    const out = terminal_term.inputScratch(term);
+    const out = vt_input_buffer.slice(&term.vt_state.input_buffer);
     const result = c.howl_vt_terminal_encode_key(term.vt, key_event.key, @intCast(key_event.mods), out.ptr, out.len);
     return encodedBytes(out, result);
 }
 
 fn encodeMouseBytes(term: *Term, mouse: TermInput.MouseEvent) ![]const u8 {
-    const out = terminal_term.inputScratch(term);
+    const out = vt_input_buffer.slice(&term.vt_state.input_buffer);
     const result = c.howl_vt_terminal_encode_mouse(
         term.vt,
         mouse.kind,
@@ -203,13 +204,13 @@ fn encodeMouseBytes(term: *Term, mouse: TermInput.MouseEvent) ![]const u8 {
 }
 
 fn encodePasteStartBytes(term: *Term) ![]const u8 {
-    const out = terminal_term.inputScratch(term);
+    const out = vt_input_buffer.slice(&term.vt_state.input_buffer);
     const result = c.howl_vt_terminal_encode_paste_start(term.vt, out.ptr, out.len);
     return encodedBytes(out, result);
 }
 
 fn encodePasteEndBytes(term: *Term) ![]const u8 {
-    const out = terminal_term.inputScratch(term);
+    const out = vt_input_buffer.slice(&term.vt_state.input_buffer);
     const result = c.howl_vt_terminal_encode_paste_end(term.vt, out.ptr, out.len);
     return encodedBytes(out, result);
 }
