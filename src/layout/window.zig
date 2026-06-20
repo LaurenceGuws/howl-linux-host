@@ -1,3 +1,6 @@
+//! Temporary Stage 1 host window-structure owner.
+//! Owns the geometry moved out of the old viewport path until later stages split behavior further.
+
 const std = @import("std");
 
 const Events = @import("../events.zig");
@@ -49,7 +52,7 @@ pub fn tabBarHeight(tab_bar: *const TabBarConfig, tab_count: u8) u32 {
     return if (tab_count >= tab_bar.min_tabs_for_bar) tab_bar.height else 0;
 }
 
-test "viewport regions hide tab bar until configured tab count" {
+test "window regions hide tab bar until configured tab count" {
     const window = testWindow();
     const tab_bar = testTabBarConfig();
 
@@ -64,7 +67,7 @@ test "viewport regions hide tab bar until configured tab count" {
     try std.testing.expectEqual(@as(c_int, 30), two.content_rect.y);
 }
 
-test "terminal viewport derives placed texture and logical input size" {
+test "terminal window geometry derives placed texture and logical input size" {
     const window = testWindow();
     const tab_bar = testTabBarConfig();
 

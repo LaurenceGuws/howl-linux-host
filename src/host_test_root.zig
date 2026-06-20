@@ -35,7 +35,7 @@ test {
     _ = Texture.tab_bar;
     _ = @import("tab_bar.zig").cell_surface;
     _ = @import("tab_bar.zig").surface;
-    _ = @import("layout.zig").viewport;
+    _ = @import("layout.zig").window;
     _ = @import("cursor.zig").cadence;
     _ = @import("cursor.zig").source;
     _ = @import("cursor.zig").trail;

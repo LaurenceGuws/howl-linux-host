@@ -4,7 +4,7 @@ const PresentDamage = @import("texture/egl_swap.zig").Damage;
 const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 const HostInput = @import("input.zig").Input;
 
-pub const viewport = @import("layout/viewport.zig");
+pub const window = @import("layout/window.zig");
 
 pub const Rect = struct {
     x: c_int,
@@ -40,25 +40,25 @@ pub const Frame = struct {
     damage: PresentDamage,
 };
 
-pub fn contentPixelSize(window: anytype, tab_bar_height: u32) Size {
+pub fn contentPixelSize(app_window: anytype, tab_bar_height: u32) Size {
     return .{
-        .width = @max(window.px_w, 1),
-        .height = @max(window.px_h - tabBarHeight(window, tab_bar_height), 1),
+        .width = @max(app_window.px_w, 1),
+        .height = @max(app_window.px_h - tabBarHeight(app_window, tab_bar_height), 1),
     };
 }
 
-pub fn contentLogicalSize(window: anytype, tab_bar_height: u32) Size {
+pub fn contentLogicalSize(app_window: anytype, tab_bar_height: u32) Size {
     return .{
-        .width = @max(window.logical_w, 1),
-        .height = @max(window.logical_h - tabBarHeightLogical(window, tab_bar_height), 1),
+        .width = @max(app_window.logical_w, 1),
+        .height = @max(app_window.logical_h - tabBarHeightLogical(app_window, tab_bar_height), 1),
     };
 }
 
-pub fn contentRect(window: anytype, tab_bar_height: u32) Rect {
-    const size = contentPixelSize(window, tab_bar_height);
+pub fn contentRect(app_window: anytype, tab_bar_height: u32) Rect {
+    const size = contentPixelSize(app_window, tab_bar_height);
     return .{
         .x = 0,
-        .y = tabBarHeight(window, tab_bar_height),
+        .y = tabBarHeight(app_window, tab_bar_height),
         .width = size.width,
         .height = size.height,
     };
@@ -97,14 +97,14 @@ pub fn terminalLogicalSize(content_logical: Size, content_px: Size, terminal_px:
     return size;
 }
 
-pub fn tabBarHeight(window: anytype, configured_height: u32) c_int {
-    if (window.px_h <= 1) return 0;
-    return @min(@as(c_int, @intCast(configured_height)), window.px_h - 1);
+pub fn tabBarHeight(app_window: anytype, configured_height: u32) c_int {
+    if (app_window.px_h <= 1) return 0;
+    return @min(@as(c_int, @intCast(configured_height)), app_window.px_h - 1);
 }
 
-pub fn tabBarHeightLogical(window: anytype, configured_height: u32) c_int {
-    if (window.logical_h <= 1) return 0;
-    return @min(@as(c_int, @intCast(configured_height)), window.logical_h - 1);
+pub fn tabBarHeightLogical(app_window: anytype, configured_height: u32) c_int {
+    if (app_window.logical_h <= 1) return 0;
+    return @min(@as(c_int, @intCast(configured_height)), app_window.logical_h - 1);
 }
 
 pub fn mouseEventInsideContent(mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, pixel_width: c_int, pixel_height: c_int) ?HostInput.Mouse.Event {
