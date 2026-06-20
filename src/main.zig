@@ -1,16 +1,21 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const Config = @import("config.zig");
-const TextureFrame = @import("texture/frame.zig");
-const render_fonts = @import("render/fonts.zig");
-const tab_cell_surface = @import("tab_bar/cell_surface.zig");
-const EventLoop = @import("events/event_loop.zig");
+const Events = @import("events.zig");
 const Input = @import("input.zig").Input;
-const Processor = @import("events/event.zig").Processor;
-const TabBar = @import("tab_bar.zig").TabBar;
-const TabSlots = @import("tab_bar/tab_slots.zig").Slots;
+const Render = @import("render.zig");
+const TabBarUnit = @import("tab_bar.zig");
+const Texture = @import("texture.zig");
 const window_icon = @import("window_icon.zig");
-const window = @import("events/window.zig");
+const window = Events.window;
+
+const EventLoop = Events.event_loop;
+const Processor = Events.Processor;
+const TabBar = TabBarUnit.TabBar;
+const TabSlots = TabBarUnit.tab_slots.Slots;
+const TextureFrame = Texture.frame;
+const render_fonts = Render.fonts;
+const tab_cell_surface = TabBarUnit.cell_surface;
 
 pub const Args = cli.Args;
 const child_term_value: [*:0]const u8 = "xterm-256color";

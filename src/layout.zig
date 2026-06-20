@@ -4,6 +4,8 @@ const PresentDamage = @import("texture/egl_swap.zig").Damage;
 const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 const HostInput = @import("input.zig").Input;
 
+pub const viewport = @import("layout/viewport.zig");
+
 pub const Rect = struct {
     x: c_int,
     y: c_int,

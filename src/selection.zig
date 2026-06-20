@@ -1,7 +1,9 @@
 const std = @import("std");
 const c = @import("howl_vt_c");
-const vt_retained = @import("vt/surface_retained.zig");
+const Vt = @import("vt.zig");
 const HostInput = @import("input.zig").Input;
+
+const vt_retained = Vt.surface_retained;
 
 pub const MouseHandlingOutcome = struct {
     consumed: bool,

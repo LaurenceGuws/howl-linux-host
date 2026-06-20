@@ -4,6 +4,8 @@ const mouse = @import("input/mouse.zig");
 const window = @import("events/window.zig");
 const sdl_c = @import("sdl_c");
 
+pub const processor = @import("input/processor.zig");
+
 const c = sdl_c;
 const max_input_events = 256;
 const ascii_byte_slices = makeAsciiByteSlices();

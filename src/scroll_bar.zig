@@ -1,8 +1,10 @@
 const std = @import("std");
-const EventLoop = @import("events/event_loop.zig");
+const Events = @import("events.zig");
 const Layout = @import("layout.zig");
 const HostInput = @import("input.zig").Input;
 const vt_c = @import("howl_vt_c");
+
+const EventLoop = Events.event_loop;
 
 const min_width_logical: c_int = 3;
 const max_width_logical: c_int = 11;
