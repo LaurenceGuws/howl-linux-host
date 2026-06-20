@@ -94,7 +94,7 @@ fn testSurfaceBase() Surface {
         },
         .progress = .{},
         .live = false,
-        .term_texture = .{ .host_texture_id = 1, .width = 2, .height = 1 },
+        .term_texture = .{ .host_surface_id = 1, .width = 2, .height = 1 },
         .render_surface_textures = .{},
         .conf = &test_terminal_conf,
         .input = undefined,
@@ -182,7 +182,7 @@ fn uploadRenderSurfaceHook(surface: *Surface, surface_frame: *const render_c.How
     std.debug.assert(surface_frame.render_px.width == submit_hook_state.expected_info.render_px.width);
     std.debug.assert(surface_frame.render_px.height == submit_hook_state.expected_info.render_px.height);
     submit_hook_state.host_upload_calls += 1;
-    submit_hook_state.host_upload_had_matching_surface = surface.term_texture.host_texture_id != 0 and
+    submit_hook_state.host_upload_had_matching_surface = surface.term_texture.host_surface_id != 0 and
         surface.term_texture.width == submit_hook_state.expected_info.render_px.width and
         surface.term_texture.height == submit_hook_state.expected_info.render_px.height;
     submit_hook_state.host_upload_render_px = submit_hook_state.expected_info.render_px;
@@ -191,7 +191,7 @@ fn uploadRenderSurfaceHook(surface: *Surface, surface_frame: *const render_c.How
     switch (submit_hook_state.mode) {
         .success => {
             surface.term_texture = .{
-                .host_texture_id = 2,
+                .host_surface_id = 2,
                 .width = submit_hook_state.expected_info.render_px.width,
                 .height = submit_hook_state.expected_info.render_px.height,
             };
@@ -448,7 +448,7 @@ test "cursor activity pushes blink deadline while visible" {
         .term = undefined,
         .progress = .{},
         .live = false,
-        .term_texture = .{ .host_texture_id = 0, .width = 0, .height = 0 },
+        .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
         .render_surface_textures = .{},
         .conf = undefined,
         .input = undefined,
@@ -722,7 +722,7 @@ const TestSubmitRender = struct {
             if (relock_probe) mutex.unlock();
             self.submit_observed_locked = !relock_probe;
         }
-        result.* = .{ .host_texture = execution.host_texture };
+        result.* = .{ .host_surface = execution.host_surface };
         return .rendered;
     }
 
@@ -764,8 +764,8 @@ const TestSubmitTerm = struct {
 
 const TestSubmitContext = struct {
     term: TestSubmitTerm = .{},
-    term_texture: render_c.HowlRenderHostTexture = .{
-        .host_texture_id = 1,
+    term_texture: render_c.HowlRenderHostSurface = .{
+        .host_surface_id = 1,
         .width = 2,
         .height = 1,
     },
@@ -804,8 +804,8 @@ const TestSubmitContext = struct {
 
 fn executionFromContext(context: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_retained.SubmitExecution {
     return .{
-        .host_texture = .{
-            .host_texture_id = context.term_texture.host_texture_id,
+        .host_surface = .{
+            .host_surface_id = context.term_texture.host_surface_id,
             .width = prepared_upload.info.render_px.width,
             .height = prepared_upload.info.render_px.height,
         },
@@ -850,9 +850,9 @@ test "context submit backend reports prepared upload count after upload succeeds
     const result = surface_testing.submitPrepared(&surface);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
-    try std.testing.expectEqual(surface.term_texture.host_texture_id, submit_hook_state.last_execution.host_texture.host_texture_id);
-    try std.testing.expectEqual(surface.term_texture.width, submit_hook_state.last_execution.host_texture.width);
-    try std.testing.expectEqual(surface.term_texture.height, submit_hook_state.last_execution.host_texture.height);
+    try std.testing.expectEqual(surface.term_texture.host_surface_id, submit_hook_state.last_execution.host_surface.host_surface_id);
+    try std.testing.expectEqual(surface.term_texture.width, submit_hook_state.last_execution.host_surface.width);
+    try std.testing.expectEqual(surface.term_texture.height, submit_hook_state.last_execution.host_surface.height);
 }
 
 test "host upload failure returns failed submit without render submit" {
@@ -925,8 +925,8 @@ test "resize success path submits full surface and acks matching present token" 
     try std.testing.expectEqual(info.render_px.height, submit_hook_state.host_upload_surface_px.height);
     try std.testing.expectEqual(info.render_px.width, surface.term_texture.width);
     try std.testing.expectEqual(info.render_px.height, surface.term_texture.height);
-    try std.testing.expectEqual(info.render_px.width, submit_hook_state.last_execution.host_texture.width);
-    try std.testing.expectEqual(info.render_px.height, submit_hook_state.last_execution.host_texture.height);
+    try std.testing.expectEqual(info.render_px.width, submit_hook_state.last_execution.host_surface.width);
+    try std.testing.expectEqual(info.render_px.height, submit_hook_state.last_execution.host_surface.height);
 
     const token: u64 = 900;
     surface.notePresentSubmitted(submit.snapshot_seq, token);
@@ -998,8 +998,8 @@ test "resize upload failure zeros host dimensions and retry submits same full fr
     try std.testing.expect(!submit_hook_state.host_upload_had_matching_surface);
     try std.testing.expectEqual(info.render_px.width, surface.term_texture.width);
     try std.testing.expectEqual(info.render_px.height, surface.term_texture.height);
-    try std.testing.expectEqual(info.render_px.width, submit_hook_state.last_execution.host_texture.width);
-    try std.testing.expectEqual(info.render_px.height, submit_hook_state.last_execution.host_texture.height);
+    try std.testing.expectEqual(info.render_px.width, submit_hook_state.last_execution.host_surface.width);
+    try std.testing.expectEqual(info.render_px.height, submit_hook_state.last_execution.host_surface.height);
 }
 
 test "resize while present pending waits for matching ack before resized submit" {

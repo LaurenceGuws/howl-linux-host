@@ -13,8 +13,8 @@ test {
     _ = PtyWaitThread;
     _ = @import("layout/layout.zig");
     _ = @import("render/gl_quad.zig");
-    _ = @import("render/gl_present.zig");
-    _ = @import("render/present.zig");
+    _ = @import("texture/frame.zig");
+    _ = @import("texture/egl_swap.zig");
     _ = @import("scroll_bar/presentation.zig");
     _ = @import("tab_bar/presentation.zig");
     _ = @import("tab_bar/cell_surface.zig");
@@ -23,7 +23,7 @@ test {
     _ = @import("cursor/cadence.zig");
     _ = @import("cursor/source.zig");
     _ = @import("cursor/trail.zig");
-    _ = @import("render/surface_test.zig");
+    _ = @import("texture/surface_test.zig");
     _ = @import("buckets that must die/bucekt2_test.zig");
 }
 

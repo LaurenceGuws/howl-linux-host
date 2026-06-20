@@ -162,9 +162,9 @@ fn hasInputFocus(handle: Ptr) bool {
 }
 
 fn currentRefreshIntervalNsFor(handle: Ptr) !u64 {
-    const display_id = sdl_c.SDL_GetDisplayForWindow(handle);
-    if (display_id == 0) return error.WindowDisplayUnavailable;
-    const mode = sdl_c.SDL_GetCurrentDisplayMode(display_id) orelse return error.WindowDisplayModeUnavailable;
+    const platform_id = sdl_c.SDL_GetDisplayForWindow(handle);
+    if (platform_id == 0) return error.WindowPlatformUnavailable;
+    const mode = sdl_c.SDL_GetCurrentDisplayMode(platform_id) orelse return error.WindowPlatformModeUnavailable;
     const value = mode.*;
     if (value.refresh_rate_numerator > 0 and value.refresh_rate_denominator > 0) {
         const numerator: u64 = @intCast(value.refresh_rate_numerator);

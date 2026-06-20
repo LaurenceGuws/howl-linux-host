@@ -93,14 +93,14 @@ pub const HostCursorCadence = extern struct {
     now_ns: u64,
 };
 
-pub const HostTexture = c.HowlRenderHostTexture;
+pub const HostSurface = c.HowlRenderHostSurface;
 
 pub const SubmitExecution = struct {
-    host_texture: HostTexture,
+    host_surface: HostSurface,
 };
 
 pub const SubmitOutput = struct {
-    host_texture: HostTexture = .{ .host_texture_id = 0, .width = 0, .height = 0 },
+    host_surface: HostSurface = .{ .host_surface_id = 0, .width = 0, .height = 0 },
 };
 
 pub const PreparedHandle = ?*const c.HowlRenderSurfaceFrame;
@@ -232,12 +232,12 @@ pub const State = struct {
 
     pub fn submit(self: *State, execution: *const SubmitExecution, result: *SubmitOutput) SubmitResult {
         if (self.text_handle) |handle| {
-            if (c.howl_render_text_submit(handle, execution.host_texture, &result.host_texture) != c.HOWL_RENDER_CALL_OK) return .failed;
+            if (c.howl_render_text_submit(handle, execution.host_surface, &result.host_surface) != c.HOWL_RENDER_CALL_OK) return .failed;
             self.prepared_surface = null;
             self.retained_state = .idle;
             return .rendered;
         }
-        result.host_texture = execution.host_texture;
+        result.host_surface = execution.host_surface;
         self.prepared_surface = null;
         self.retained_state = .idle;
         return .rendered;

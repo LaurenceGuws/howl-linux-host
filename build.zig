@@ -349,7 +349,7 @@ fn retainedRenderTestModule(b: *Build, deps: HostDeps) *Module {
 
 fn renderSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
     const module = b.createModule(.{
-        .root_source_file = b.path("src/render/surface.zig"),
+        .root_source_file = b.path("src/texture/surface.zig"),
         .target = deps.target,
         .optimize = deps.optimize,
     });

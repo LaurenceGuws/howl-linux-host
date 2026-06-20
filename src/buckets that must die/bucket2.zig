@@ -2,7 +2,7 @@ const std = @import("std");
 const EventLoop = @import("../events/event_loop.zig");
 const window = @import("../events/window.zig");
 const Layout = @import("../layout/layout.zig");
-const term_texture = @import("../render/surface.zig");
+const term_texture = @import("../texture/surface.zig");
 const HostInput = @import("../input/input.zig").Input;
 const pty_c = @import("howl_pty_c");
 const render_c = @import("howl_render_c");
@@ -73,7 +73,7 @@ const VtInitConf = struct {
 pub const Surface = struct {
     const Term = @This();
 
-    pub const PresentDamage = @import("../render/present.zig").Damage;
+    pub const PresentDamage = @import("../texture/egl_swap.zig").Damage;
 
     pub const OverlaySnapshot = struct {
         scrollbar: Layout.ScrollbarLayout,
@@ -140,7 +140,7 @@ pub const Surface = struct {
     term: HowlTerm,
     progress: pty_wait_thread.WaitThread = .{},
     live: bool,
-    term_texture: render_c.HowlRenderHostTexture,
+    term_texture: render_c.HowlRenderHostSurface,
     render_surface_textures: term_texture.RenderResourceTextures,
     conf: *const TerminalConfig,
     input: *HostInput,
@@ -203,7 +203,7 @@ pub const Surface = struct {
         self.term = undefined;
         self.progress = .{};
         self.live = false;
-        self.term_texture = .{ .host_texture_id = 0, .width = 0, .height = 0 };
+        self.term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 };
         self.render_surface_textures = .{};
         self.conf = request.conf;
         self.input = request.input;
@@ -236,7 +236,7 @@ pub const Surface = struct {
     pub fn deinit(self: *Term) void {
         if (self.links.cursor_active) window.useDefaultCursor();
         self.links.cursor_active = false;
-        term_texture.deleteTexture(&self.term_texture.host_texture_id);
+        term_texture.deleteTexture(&self.term_texture.host_surface_id);
         self.render_surface_textures.deinit();
         self.term_texture.width = 0;
         self.term_texture.height = 0;
@@ -503,7 +503,7 @@ pub const Surface = struct {
     pub fn renderTurn(self: *Term) TurnResult {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
-        const bootstrap_surface = self.term_texture.host_texture_id == 0;
+        const bootstrap_surface = self.term_texture.host_surface_id == 0;
         const admission_before = self.term.render.admitRenderTurn(bootstrap_surface);
         const drive_result = self.driveRenderLocked(admission_before);
         return .{
@@ -536,7 +536,7 @@ pub const Surface = struct {
     }
 
     pub fn termTextureId(self: *const Term) u64 {
-        return self.term_texture.host_texture_id;
+        return self.term_texture.host_surface_id;
     }
 
     fn initTerm(self: *Term) !void {
@@ -592,7 +592,7 @@ pub const Surface = struct {
         const mut: *Term = @constCast(self);
         mut.term.mutex.lockFair();
         defer mut.term.mutex.unlock();
-        return mut.term.render.admitRenderTurn(mut.term_texture.host_texture_id == 0);
+        return mut.term.render.admitRenderTurn(mut.term_texture.host_surface_id == 0);
     }
 
     const DriveResult = struct {
@@ -681,8 +681,8 @@ pub const Surface = struct {
         const present_damage = PresentDamage.fromRenderFrame(render_surface);
         var submit_result = std.mem.zeroes(render_retained.SubmitOutput);
         const execution: render_retained.SubmitExecution = .{
-            .host_texture = .{
-                .host_texture_id = self.term_texture.host_texture_id,
+            .host_surface = .{
+                .host_surface_id = self.term_texture.host_surface_id,
                 .width = upload.info.render_px.width,
                 .height = upload.info.render_px.height,
             },
@@ -691,7 +691,7 @@ pub const Surface = struct {
         if (testing_hooks.observe_submit_execution) |hook| hook(self, &execution);
         const result = self.term.render.submit(&execution, &submit_result);
         if (result == .rendered) {
-            self.term_texture = submit_result.host_texture;
+            self.term_texture = submit_result.host_surface;
         }
         return .{ .result = result, .snapshot_seq = upload.info.snapshot_seq, .damage = present_damage };
     }
@@ -1684,7 +1684,7 @@ fn testSurfaceBase() Surface {
         },
         .progress = .{},
         .live = false,
-        .term_texture = .{ .host_texture_id = 0, .width = 0, .height = 0 },
+        .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
         .render_surface_textures = .{},
         .conf = &test_terminal_conf,
         .input = undefined,

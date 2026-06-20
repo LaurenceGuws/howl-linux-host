@@ -1,10 +1,10 @@
 const gl_c = @import("gl_c");
 const Layout = @import("../layout/layout.zig");
-const Present = @import("present.zig");
+const egl_swap = @import("egl_swap.zig");
 const render_c = @import("howl_render_c");
-const gl_quad = @import("gl_quad.zig");
-const surface_commands = @import("surface_commands.zig");
-const surface_resources = @import("surface_resources.zig");
+const gl_quad = @import("../render/gl_quad.zig");
+const frame_commands = @import("frame_commands.zig");
+const frame_resources = @import("frame_resources.zig");
 const scroll_bar_presentation = @import("../scroll_bar/presentation.zig");
 const sdl_c = @import("sdl_c");
 const std = @import("std");
@@ -81,12 +81,12 @@ pub fn GenericState(comptime c: type) type {
         tab_cache_h: c_int,
         tab_cache_revision: u64,
         tab_text_handle: render_c.HowlRenderTextHandle,
-        tab_resources: surface_resources.RenderResourceTextures,
+        tab_resources: frame_resources.RenderResourceTextures,
         tab_screen: tab_bar_screen.Screen,
         next_present_token: PresentToken,
 
         pub fn submitPresentSync(self: *@This(), frame: Layout.Frame) PresentToken {
-            return displaySubmitPresentSync(C, self, frame);
+            return submitFrameSync(C, self, frame);
         }
     };
 }
@@ -134,7 +134,7 @@ pub fn deinit(comptime c: type, state: *GenericState(c)) void {
     state.window = null;
 }
 
-pub fn displaySubmitPresentSync(comptime c: type, state: *GenericState(c), frame: Layout.Frame) PresentToken {
+pub fn submitFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.Frame) PresentToken {
     const token = state.next_present_token;
     std.debug.assert(token != 0);
     state.next_present_token +%= 1;
@@ -160,7 +160,7 @@ pub fn displaySubmitPresentSync(comptime c: type, state: *GenericState(c), frame
         frame.term_texture_rect.height,
     );
     scroll_bar_presentation.draw(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
-    _ = Present.swapDamaged(c, handle, frame.damage.rects[0..frame.damage.count], @max(fb_w, 1), @max(fb_h, 1), frame.damage.full, false);
+    _ = egl_swap.swapDamaged(c, handle, frame.damage.rects[0..frame.damage.count], @max(fb_w, 1), @max(fb_h, 1), frame.damage.full, false);
     return token;
 }
 
@@ -218,9 +218,9 @@ fn uploadTabTextSurface(state: anytype, fb_w: c_int, bar_h: c_int, frame: Layout
     if (status != render_c.HOWL_RENDER_CALL_OK) std.debug.panic("trusted tab cell surface prepare failed: status={}", .{status});
     const surface = upload.surface_frame orelse std.debug.panic("trusted tab cell surface prepare returned no frame", .{});
     state.tab_resources.realizeSurface(surface);
-    surface_commands.uploadRenderSurfaceCommands(
+    frame_commands.uploadRenderSurfaceCommands(
         &state.tab_resources,
-        .{ .host_texture_id = state.tab_texture_id, .width = prepare.render_px.width, .height = prepare.render_px.height },
+        .{ .host_surface_id = state.tab_texture_id, .width = prepare.render_px.width, .height = prepare.render_px.height },
         surface,
     );
 }
@@ -380,18 +380,18 @@ fn testFrame() Layout.Frame {
 
 test "submit present returns monotonic nonzero tokens" {
     var state = testState();
-    const first = displaySubmitPresentSync(FakeC, &state, testFrame());
+    const first = submitFrameSync(FakeC, &state, testFrame());
     try std.testing.expect(first != 0);
 
-    const second = displaySubmitPresentSync(FakeC, &state, testFrame());
+    const second = submitFrameSync(FakeC, &state, testFrame());
     try std.testing.expect(second != 0);
     try std.testing.expect(second > first);
 }
 
 test "submit present has no deferred in-flight state" {
     var state = testState();
-    _ = displaySubmitPresentSync(FakeC, &state, testFrame());
-    _ = displaySubmitPresentSync(FakeC, &state, testFrame());
+    _ = submitFrameSync(FakeC, &state, testFrame());
+    _ = submitFrameSync(FakeC, &state, testFrame());
 }
 
 test "tab cache refreshes only on revision change" {
@@ -406,15 +406,15 @@ test "tab cache refreshes only on revision change" {
     frame.tab_count = 1;
     frame.tab_labels = &.{"shell"};
 
-    const first = displaySubmitPresentSync(FakeC, &state, frame);
+    const first = submitFrameSync(FakeC, &state, frame);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
 
-    const second = displaySubmitPresentSync(FakeC, &state, frame);
+    const second = submitFrameSync(FakeC, &state, frame);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
     try std.testing.expect(second > first);
 
     frame.tab_bar_revision = 2;
-    const third = displaySubmitPresentSync(FakeC, &state, frame);
+    const third = submitFrameSync(FakeC, &state, frame);
     try std.testing.expectEqual(@as(u32, 2), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
     try std.testing.expect(third > second);
     try std.testing.expectEqual(@as(u32, 3), FakeC.egl_swap_calls);
@@ -423,7 +423,7 @@ test "tab cache refreshes only on revision change" {
 test "submit present completion is synchronous" {
     var state = testState();
 
-    const token = displaySubmitPresentSync(FakeC, &state, testFrame());
+    const token = submitFrameSync(FakeC, &state, testFrame());
 
     try std.testing.expect(token != 0);
 }

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const PresentDamage = @import("../render/present.zig").Damage;
+const PresentDamage = @import("../texture/egl_swap.zig").Damage;
 const TabIndex = @import("../tab_bar/tab_bar.zig").TabBar.TabIndex;
 const HostInput = @import("../input/input.zig").Input;
 

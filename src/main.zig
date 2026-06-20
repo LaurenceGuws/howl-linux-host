@@ -1,7 +1,7 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const Config = @import("config/config.zig");
-const GlPresent = @import("render/gl_present.zig");
+const TextureFrame = @import("texture/frame.zig");
 const render_fonts = @import("render/fonts.zig");
 const tab_cell_surface = @import("tab_bar/cell_surface.zig");
 const EventLoop = @import("events/event_loop.zig");
@@ -48,18 +48,18 @@ noinline fn start(io: std.Io, options: Args) !void {
     app_window.* = try createWindow(conf);
     window_created = true;
 
-    const gl_present = try std.heap.c_allocator.create(GlPresent.State);
-    var gl_present_created = false;
+    const texture_frame = try std.heap.c_allocator.create(TextureFrame.State);
+    var texture_frame_created = false;
     var resolved_fonts = try render_fonts.resolve(std.heap.c_allocator, conf.term.fonts);
     defer resolved_fonts.deinit(std.heap.c_allocator);
     var tab_text_config: tab_cell_surface.TextConfig = undefined;
     tab_cell_surface.initTextConfig(&tab_text_config, @max(conf.term.font_size, 1), resolved_fonts.primary, resolved_fonts.fallbacks);
     defer {
-        if (gl_present_created) GlPresent.deinit(GlPresent.C, gl_present);
-        std.heap.c_allocator.destroy(gl_present);
+        if (texture_frame_created) TextureFrame.deinit(TextureFrame.C, texture_frame);
+        std.heap.c_allocator.destroy(texture_frame);
     }
-    try GlPresent.init(GlPresent.C, gl_present, app_window.handle, &tab_text_config.config);
-    gl_present_created = true;
+    try TextureFrame.init(TextureFrame.C, texture_frame, app_window.handle, &tab_text_config.config);
+    texture_frame_created = true;
 
     const tab_bar = try std.heap.c_allocator.create(TabBar);
     tab_bar.* = .{};
@@ -93,7 +93,7 @@ noinline fn start(io: std.Io, options: Args) !void {
         .conf = conf,
         .io = io,
         .window = app_window,
-        .gl_present = gl_present,
+        .texture_frame = texture_frame,
         .tab_bar = tab_bar,
         .tabs = tabs,
         .active_tab_idx = active_tab_idx,
@@ -124,7 +124,7 @@ fn loadConfig(options: Args) !Config.UiConfig {
 }
 
 fn createWindow(conf: *const Config.UiConfig) !window.Window {
-    var app_window = try window.Window.create(conf.window.title.ptr, conf.window.width, conf.window.height, GlPresent.flags(GlPresent.C));
+    var app_window = try window.Window.create(conf.window.title.ptr, conf.window.width, conf.window.height, TextureFrame.flags(TextureFrame.C));
     errdefer app_window.deinit();
     window_icon.apply(app_window.handle);
     return app_window;

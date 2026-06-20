@@ -20,8 +20,8 @@ pub const EglC = struct {
     pub const SDL_IsMainThread = sdl_c.SDL_IsMainThread;
 };
 
-pub const DamageProc = *const fn (display: sdl_c.EGLDisplay, surface: sdl_c.EGLSurface, rects: [*c]const sdl_c.EGLint, count: sdl_c.EGLint) callconv(.c) sdl_c.EGLBoolean;
-pub const PlainProc = *const fn (display: sdl_c.EGLDisplay, surface: sdl_c.EGLSurface) callconv(.c) sdl_c.EGLBoolean;
+pub const DamageProc = *const fn (egl_handle: sdl_c.EGLDisplay, surface: sdl_c.EGLSurface, rects: [*c]const sdl_c.EGLint, count: sdl_c.EGLint) callconv(.c) sdl_c.EGLBoolean;
+pub const PlainProc = *const fn (egl_handle: sdl_c.EGLDisplay, surface: sdl_c.EGLSurface) callconv(.c) sdl_c.EGLBoolean;
 const EglSurface = sdl_c.EGLSurface;
 const EglBool = sdl_c.EGLBoolean;
 const EglDamage = []const EglRect;
@@ -35,7 +35,7 @@ pub const Rect = struct {
 
 pub const EglRect = Rect;
 
-pub const EglDecision = enum {
+pub const SwapDecision = enum {
     khr,
     ext,
     plain_swap_extension_unavailable,
@@ -46,8 +46,8 @@ pub const EglDecision = enum {
     blocked_invalid_damage,
 };
 
-pub fn swapDamaged(comptime c: type, window: *c.SDL_Window, damage: []const EglRect, framebuffer_width: i32, framebuffer_height: i32, full_damage: bool, resized: bool) EglDecision {
-    const decision = damagedPresentDecision(c, window, damage, framebuffer_width, framebuffer_height);
+pub fn swapDamaged(comptime c: type, window: *c.SDL_Window, damage: []const EglRect, framebuffer_width: i32, framebuffer_height: i32, full_damage: bool, resized: bool) SwapDecision {
+    const decision = damagedSwapDecision(c, window, damage, framebuffer_width, framebuffer_height);
     std.debug.assert(decision == .khr or decision == .ext or decision == .plain_swap_extension_unavailable);
 
     const surface = c.SDL_EGL_GetWindowSurface(window).?;
@@ -83,7 +83,7 @@ fn callDamageProc(comptime c: type, name: [:0]const u8, surface: EglSurface, dam
     return proc(c.SDL_EGL_GetCurrentDisplay().?, surface, if (count == 0) null else &rects, count);
 }
 
-pub fn damagedPresentDecision(comptime c: type, window: *c.SDL_Window, damage: []const EglRect, framebuffer_width: i32, framebuffer_height: i32) EglDecision {
+pub fn damagedSwapDecision(comptime c: type, window: *c.SDL_Window, damage: []const EglRect, framebuffer_width: i32, framebuffer_height: i32) SwapDecision {
     std.debug.assert(framebuffer_width > 0);
     std.debug.assert(framebuffer_height > 0);
 
@@ -98,7 +98,7 @@ pub fn damagedPresentDecision(comptime c: type, window: *c.SDL_Window, damage: [
     return .plain_swap_extension_unavailable;
 }
 
-fn preflightDecision(comptime c: type, window: *c.SDL_Window, damage: []const EglRect, framebuffer_width: i32, framebuffer_height: i32) EglDecision {
+fn preflightDecision(comptime c: type, window: *c.SDL_Window, damage: []const EglRect, framebuffer_width: i32, framebuffer_height: i32) SwapDecision {
     std.debug.assert(framebuffer_width > 0);
     std.debug.assert(framebuffer_height > 0);
     if (!c.SDL_IsMainThread()) return .blocked_not_main_thread;
@@ -146,25 +146,25 @@ pub fn eglDamageRectCount(damage: []const EglRect, full_damage: bool, resized: b
     return @intCast(damage.len);
 }
 
-test "damaged present decision prefers KHR over EXT" {
+test "damaged swap decision prefers KHR over EXT" {
     EglFakeC.reset();
     EglFakeC.khr_proc = true;
     EglFakeC.ext_proc = true;
 
-    try std.testing.expectEqual(EglDecision.khr, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
+    try std.testing.expectEqual(SwapDecision.khr, damagedSwapDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
 }
 
-test "damaged present decision falls back to EXT" {
+test "damaged swap decision falls back to EXT" {
     EglFakeC.reset();
     EglFakeC.ext_proc = true;
 
-    try std.testing.expectEqual(EglDecision.ext, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
+    try std.testing.expectEqual(SwapDecision.ext, damagedSwapDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
 }
 
-test "damaged present decision uses plain swap only without damage extension" {
+test "damaged swap decision uses plain swap only without damage extension" {
     EglFakeC.reset();
 
-    try std.testing.expectEqual(EglDecision.plain_swap_extension_unavailable, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
+    try std.testing.expectEqual(SwapDecision.plain_swap_extension_unavailable, damagedSwapDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
 }
 
 test "full damage and resize use zero EGL damage rect count" {
@@ -177,47 +177,47 @@ test "damage rect conversion uses EGL bottom-left origin" {
     try std.testing.expectEqual([4]c_int{ 3, 15, 5, 7 }, eglDamageRect(.{ .x = 3, .y = 8, .width = 5, .height = 7 }, 80, 30));
 }
 
-test "damaged present decision blocks invalid damage" {
+test "damaged swap decision blocks invalid damage" {
     EglFakeC.reset();
     EglFakeC.khr_proc = true;
 
-    try std.testing.expectEqual(EglDecision.blocked_invalid_damage, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{.{ .x = 1, .y = 20, .width = 4, .height = 8 }}, 80, 25));
-    try std.testing.expectEqual(EglDecision.blocked_invalid_damage, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{.{ .x = 78, .y = 1, .width = 4, .height = 8 }}, 80, 25));
+    try std.testing.expectEqual(SwapDecision.blocked_invalid_damage, damagedSwapDecision(EglFakeC, EglFakeC.window, &.{.{ .x = 1, .y = 20, .width = 4, .height = 8 }}, 80, 25));
+    try std.testing.expectEqual(SwapDecision.blocked_invalid_damage, damagedSwapDecision(EglFakeC, EglFakeC.window, &.{.{ .x = 78, .y = 1, .width = 4, .height = 8 }}, 80, 25));
     try std.testing.expectEqual(
-        EglDecision.blocked_invalid_damage,
-        damagedPresentDecision(EglFakeC, EglFakeC.window, &.{.{ .x = std.math.maxInt(i32), .y = 1, .width = 4, .height = 8 }}, 80, 25),
+        SwapDecision.blocked_invalid_damage,
+        damagedSwapDecision(EglFakeC, EglFakeC.window, &.{.{ .x = std.math.maxInt(i32), .y = 1, .width = 4, .height = 8 }}, 80, 25),
     );
 }
 
-test "damaged present decision blocks missing current window" {
+test "damaged swap decision blocks missing current window" {
     EglFakeC.reset();
     EglFakeC.current_window = EglFakeC.other_window;
     EglFakeC.khr_proc = true;
 
-    try std.testing.expectEqual(EglDecision.blocked_window_not_current, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
+    try std.testing.expectEqual(SwapDecision.blocked_window_not_current, damagedSwapDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
 }
 
-test "damaged present decision blocks missing current context" {
+test "damaged swap decision blocks missing current context" {
     EglFakeC.reset();
     EglFakeC.current_context = null;
     EglFakeC.khr_proc = true;
 
-    try std.testing.expectEqual(EglDecision.blocked_context_not_current, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
+    try std.testing.expectEqual(SwapDecision.blocked_context_not_current, damagedSwapDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
 }
 
-test "damaged present decision blocks non main thread" {
+test "damaged swap decision blocks non main thread" {
     EglFakeC.reset();
     EglFakeC.main_thread = false;
     EglFakeC.khr_proc = true;
 
-    try std.testing.expectEqual(EglDecision.blocked_not_main_thread, damagedPresentDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
+    try std.testing.expectEqual(SwapDecision.blocked_not_main_thread, damagedSwapDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
 }
 
-test "damaged present decision blocks missing EGL handles" {
+test "damaged swap decision blocks missing EGL handles" {
     EglFakeC.reset();
     EglFakeC.egl_surface = null;
     EglFakeC.khr_proc = true;
-    try std.testing.expectEqual(EglDecision.blocked_missing_egl_surface, preflightDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
+    try std.testing.expectEqual(SwapDecision.blocked_missing_egl_surface, preflightDecision(EglFakeC, EglFakeC.window, &.{validRect()}, 80, 25));
 }
 
 fn validRect() EglRect {
@@ -234,19 +234,19 @@ const EglFakeC = struct {
     var window_storage: u8 = 0;
     var other_window_storage: u8 = 0;
     var context_storage: u8 = 0;
-    var display_storage: u8 = 0;
+    var egl_handle_storage: u8 = 0;
     var surface_storage: u8 = 0;
 
     const window: *SDL_Window = @ptrCast(&window_storage);
     const other_window: *SDL_Window = @ptrCast(&other_window_storage);
     const context: SDL_GLContext = @ptrCast(&context_storage);
-    const display: SDL_EGLDisplay = @ptrCast(&display_storage);
+    const egl_handle: SDL_EGLDisplay = @ptrCast(&egl_handle_storage);
     const surface: SDL_EGLSurface = @ptrCast(&surface_storage);
 
     var main_thread: bool = true;
     var current_window: *SDL_Window = window;
     var current_context: SDL_GLContext = context;
-    var egl_display: SDL_EGLDisplay = display;
+    var current_egl_handle: SDL_EGLDisplay = egl_handle;
     var egl_surface: SDL_EGLSurface = surface;
     var khr_proc: bool = false;
     var ext_proc: bool = false;
@@ -255,7 +255,7 @@ const EglFakeC = struct {
         main_thread = true;
         current_window = window;
         current_context = context;
-        egl_display = display;
+        current_egl_handle = egl_handle;
         egl_surface = surface;
         khr_proc = false;
         ext_proc = false;
@@ -274,7 +274,7 @@ const EglFakeC = struct {
     }
 
     fn SDL_EGL_GetCurrentDisplay() SDL_EGLDisplay {
-        return egl_display;
+        return current_egl_handle;
     }
 
     fn SDL_EGL_GetWindowSurface(_: *SDL_Window) SDL_EGLSurface {
