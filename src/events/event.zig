@@ -107,7 +107,7 @@ pub const Processor = struct {
         snapshot: RenderSnapshot,
     };
 
-    const PresentReason = Present.Reason;
+    const PresentReason = enum { none, host_damage, terminal_frame, terminal_retire };
 
     const ActiveTabProblem = enum {
         exited,
@@ -454,20 +454,42 @@ pub const Processor = struct {
     }
 
     fn derivePresentReason(host_redraw: bool, step: Terminal.TurnStep) PresentReason {
-        return Present.deriveReason(host_redraw, step);
+        return switch (step) {
+            .rendered => .terminal_frame,
+            .blocked_present => .terminal_retire,
+            .surface_idle, .idle_prepare, .idle_submit, .failed => if (host_redraw) .host_damage else .none,
+        };
     }
 
     fn submitPresent(self: *Self, frame: RenderFrame, reason: PresentReason) void {
-        const present = Present.lifecycle(self);
-        const outcome = present.submit(frame.tab, frame.turn.step, frame.turn.present_snapshot_seq, .{
-            .texture_rect = frame.snapshot.texture_rect,
+        switch (reason) {
+            .none => {},
+            .host_damage => _ = self.display.submitPresentSync(presentFrame(frame)),
+            .terminal_frame => {
+                assert(frame.turn.step == .rendered);
+                assert(frame.turn.present_snapshot_seq != 0);
+                const token = self.display.submitPresentSync(presentFrame(frame));
+                frame.tab.notePresentSubmitted(frame.turn.present_snapshot_seq, token);
+                frame.tab.completePresent(token);
+            },
+            .terminal_retire => {
+                assert(frame.turn.step == .blocked_present);
+                assert(frame.turn.present_snapshot_seq == 0);
+            },
+        }
+    }
+
+    fn presentFrame(frame: RenderFrame) Layout.Frame {
+        return .{
+            .term_texture_id = @intCast(frame.tab.termTextureId()),
+            .term_texture_rect = frame.snapshot.texture_rect,
             .scrollbar = frame.snapshot.scrollbar,
+            .tab_count = @intCast(frame.snapshot.labels.len),
             .active_tab = frame.snapshot.active_tab,
             .tab_bar_revision = frame.snapshot.tab_bar_revision,
-            .labels = frame.snapshot.labels,
+            .tab_labels = frame.snapshot.labels,
             .damage = frame.turn.present_damage,
-        }, reason);
-        assert(outcome.submission.reason == reason);
+        };
     }
 
     fn drainPresentComplete(self: *Self) void {
@@ -619,7 +641,7 @@ pub const testing = struct {
         return Processor.computeLoopWaitWithPendingEvents(pending_events, frame_ready, redraw_requested, frame_deadline_ns, now_ns, runtime_facts);
     }
 
-    pub fn derivePresentReasonFromFacts(host_redraw_requested: bool, host_visual_changed: bool, step: @import("../buckets that must die/bucket2.zig").Surface.TurnStep) @import("../render/present.zig").Reason {
+    pub fn derivePresentReasonFromFacts(host_redraw_requested: bool, host_visual_changed: bool, step: @import("../buckets that must die/bucket2.zig").Surface.TurnStep) Processor.PresentReason {
         return Processor.derivePresentReason(host_redraw_requested or host_visual_changed, step);
     }
 };
@@ -783,7 +805,7 @@ test "blocked render turn waits until frame deadline" {
     try std.testing.expectEqual(@as(?u32, null), first_wait.wait_ms);
 
     const first_reason = testing.derivePresentReasonFromFacts(false, false, .rendered);
-    try std.testing.expectEqual(Present.Reason.terminal_frame, first_reason);
+    try std.testing.expectEqual(Processor.PresentReason.terminal_frame, first_reason);
 
     const followup_runtime = testing.RuntimeFactsInput{
         .runtime_admitted = false,
@@ -831,5 +853,5 @@ test "blocked frame still drives runtime progress for pending events" {
 }
 
 test "latched host redraw remains a present reason after event pump" {
-    try std.testing.expectEqual(Present.Reason.host_damage, Processor.derivePresentReason(true, .surface_idle));
+    try std.testing.expectEqual(Processor.PresentReason.host_damage, Processor.derivePresentReason(true, .surface_idle));
 }

@@ -8,7 +8,6 @@ const surface_mod = @import("bucket2.zig");
 const cursor_blink = @import("../cursor/blink.zig");
 const pty_pump = @import("../pty/pump.zig");
 const terminal_input = @import("bucket3.zig");
-const AppPresent = @import("../render/present.zig");
 const render_retained = @import("../render/surface_retained.zig");
 const surface_layout = @import("../render/surface_layout.zig");
 const terminal_scrollbar = @import("../scroll_bar/scrollbar.zig");
@@ -1486,34 +1485,12 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
             return self.next_token;
         }
     };
-    const FakeTabs = struct {
-        items_buf: [1]*PresentTab,
-
-        pub fn items(self: *@This()) []*PresentTab {
-            return self.items_buf[0..];
-        }
-    };
-    const FakeApp = struct {
-        display: *FakeDisplay,
-        tabs: *FakeTabs,
-    };
-    const snapshot = AppPresent.Snapshot{
-        .texture_rect = .{ .x = 0, .y = 0, .width = 10, .height = 10 },
-        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
-        .active_tab = 0,
-        .tab_bar_revision = 1,
-        .labels = &.{"shell"},
-        .damage = .fullFrame(),
-    };
-
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
     installSubmitHooks(.success);
     defer surface_testing.resetHooks();
     var tab = PresentTab{ .surface = &surface };
     var display = FakeDisplay{};
-    var tabs = FakeTabs{ .items_buf = .{&tab} };
-    var app = FakeApp{ .display = &display, .tabs = &tabs };
 
     try prepareSubmitSurface(&surface, 51);
     const wake_wait = event_mod.testing.computeLoopWaitFromFacts(1_000, false, true, false, null, .{
@@ -1528,10 +1505,10 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     const first_turn = surface.renderTurn();
     try std.testing.expectEqual(Surface.TurnStep.rendered, first_turn.step);
     const first_reason = event_mod.testing.derivePresentReasonFromFacts(false, false, first_turn.step);
-    try std.testing.expectEqual(AppPresent.Reason.terminal_frame, first_reason);
-    const first_submit = AppPresent.lifecycle(&app).submit(&tab, first_turn.step, first_turn.present_snapshot_seq, snapshot, first_reason);
-    try std.testing.expect(first_submit.submission.submitted);
-    try std.testing.expect(first_submit.completed_terminal_present);
+    try std.testing.expectEqual(@as(@TypeOf(first_reason), .terminal_frame), first_reason);
+    const first_token = display.submitPresentSync(.{});
+    tab.notePresentSubmitted(first_turn.present_snapshot_seq, first_token);
+    tab.completePresent(first_token);
     try std.testing.expect(!surface.term.render.presentPending());
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
@@ -1550,9 +1527,10 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     const second_turn = surface.renderTurn();
     try std.testing.expectEqual(Surface.TurnStep.rendered, second_turn.step);
     const second_reason = event_mod.testing.derivePresentReasonFromFacts(false, false, second_turn.step);
-    const second_submit = AppPresent.lifecycle(&app).submit(&tab, second_turn.step, second_turn.present_snapshot_seq, snapshot, second_reason);
-    try std.testing.expect(second_submit.submission.submitted);
-    try std.testing.expect(second_submit.completed_terminal_present);
+    try std.testing.expectEqual(@as(@TypeOf(second_reason), .terminal_frame), second_reason);
+    const second_token = display.submitPresentSync(.{});
+    tab.notePresentSubmitted(second_turn.present_snapshot_seq, second_token);
+    tab.completePresent(second_token);
     try std.testing.expectEqual(@as(u8, 2), submit_hook_state.submit_calls);
 }
 
@@ -1560,10 +1538,10 @@ test "autonomous cursor-only rendered snapshot plans terminal frame through even
     const processor_testing = event_mod.testing;
 
     const keydown_reason = processor_testing.derivePresentReasonFromFacts(false, false, .rendered);
-    try std.testing.expectEqual(AppPresent.Reason.terminal_frame, keydown_reason);
+    try std.testing.expectEqual(@as(@TypeOf(keydown_reason), .terminal_frame), keydown_reason);
 
     const autonomous_reason = processor_testing.derivePresentReasonFromFacts(false, true, .rendered);
-    try std.testing.expectEqual(AppPresent.Reason.terminal_frame, autonomous_reason);
+    try std.testing.expectEqual(@as(@TypeOf(autonomous_reason), .terminal_frame), autonomous_reason);
 }
 
 test "complete present acks matching host-owned token once and clears" {

@@ -1,5 +1,6 @@
 const gl_c = @import("gl_c");
 const Layout = @import("../layout/layout.zig");
+const Present = @import("../render/present.zig");
 const Rects = @import("../buckets that must die/bucket.zig");
 const sdl_c = @import("sdl_c");
 const std = @import("std");
@@ -10,6 +11,10 @@ pub const C = struct {
     pub const SDL_GL_CONTEXT_PROFILE_COMPATIBILITY = sdl_c.SDL_GL_CONTEXT_PROFILE_COMPATIBILITY;
     pub const SDL_GL_CONTEXT_PROFILE_MASK = sdl_c.SDL_GL_CONTEXT_PROFILE_MASK;
     pub const SDL_GLContext = sdl_c.SDL_GLContext;
+    pub const EGLBoolean = sdl_c.EGLBoolean;
+    pub const EGLDisplay = sdl_c.EGLDisplay;
+    pub const EGLint = sdl_c.EGLint;
+    pub const EGLSurface = sdl_c.EGLSurface;
     pub const SDL_WINDOW_OPENGL = sdl_c.SDL_WINDOW_OPENGL;
     pub const SDL_WINDOW_RESIZABLE = sdl_c.SDL_WINDOW_RESIZABLE;
     pub const SDL_Window = sdl_c.SDL_Window;
@@ -31,11 +36,12 @@ pub const C = struct {
     pub const SDL_GL_MakeCurrent = sdl_c.SDL_GL_MakeCurrent;
     pub const SDL_GL_SetAttribute = sdl_c.SDL_GL_SetAttribute;
     pub const SDL_GL_SetSwapInterval = sdl_c.SDL_GL_SetSwapInterval;
-    pub const SDL_GL_SwapWindow = sdl_c.SDL_GL_SwapWindow;
+    pub const SDL_EGL_GetCurrentDisplay = sdl_c.SDL_EGL_GetCurrentDisplay;
+    pub const SDL_EGL_GetProcAddress = sdl_c.SDL_EGL_GetProcAddress;
+    pub const SDL_EGL_GetWindowSurface = sdl_c.SDL_EGL_GetWindowSurface;
     pub const SDL_GetWindowSizeInPixels = sdl_c.SDL_GetWindowSizeInPixels;
     pub const SDL_GetTicksNS = sdl_c.SDL_GetTicksNS;
     pub const SDL_IsMainThread = sdl_c.SDL_IsMainThread;
-
     pub const glBegin = gl_c.glBegin;
     pub const glBindTexture = gl_c.glBindTexture;
     pub const glClear = gl_c.glClear;
@@ -137,7 +143,7 @@ pub fn displaySubmitPresentSync(comptime c: type, state: *GenericState(c), frame
         frame.term_texture_rect.height,
     );
     Rects.scrollbar(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
-    _ = c.SDL_GL_SwapWindow(handle);
+    _ = Present.swapDamaged(c, handle, frame.damage.rects[0..frame.damage.count], @max(fb_w, 1), @max(fb_h, 1), frame.damage.full, false);
     return token;
 }
 
@@ -205,12 +211,18 @@ fn setTextureParams(comptime c: type) void {
 const FakeC = struct {
     const SDL_Window = opaque {};
     const SDL_GLContext = ?*anyopaque;
+    const SDL_FunctionPointer = ?*const fn () callconv(.c) void;
+    const EGLBoolean = c_uint;
+    const EGLDisplay = ?*anyopaque;
+    const EGLint = c_int;
+    const EGLSurface = ?*anyopaque;
     const SDL_WINDOW_RESIZABLE = 1;
     const SDL_WINDOW_OPENGL = 2;
     const GL_COLOR_BUFFER_BIT = 0x4000;
 
     var copy_tex_image_calls: u32 = 0;
     var copy_tex_subimage_calls: u32 = 0;
+    var egl_swap_calls: u32 = 0;
 
     fn SDL_GetWindowSizeInPixels(_: *SDL_Window, width: *c_int, height: *c_int) bool {
         width.* = 80;
@@ -231,20 +243,35 @@ const FakeC = struct {
     fn glClearColor(_: f32, _: f32, _: f32, _: f32) void {}
     fn glClear(_: c_uint) void {}
     fn glTexParameteri(_: c_uint, _: c_uint, _: c_int) void {}
-    fn SDL_GL_SwapWindow(_: *SDL_Window) bool {
-        return true;
-    }
 
     fn SDL_IsMainThread() bool {
         return true;
     }
 
     fn SDL_GL_GetCurrentContext() SDL_GLContext {
-        return null;
+        return @ptrFromInt(2);
     }
 
     fn SDL_GL_GetCurrentWindow() *SDL_Window {
         return @ptrFromInt(1);
+    }
+
+    fn SDL_EGL_GetCurrentDisplay() EGLDisplay {
+        return @ptrFromInt(3);
+    }
+
+    fn SDL_EGL_GetWindowSurface(_: *SDL_Window) EGLSurface {
+        return @ptrFromInt(4);
+    }
+
+    fn SDL_EGL_GetProcAddress(name: [*:0]const u8) SDL_FunctionPointer {
+        if (std.mem.orderZ(u8, name, "eglSwapBuffers") == .eq) return @ptrCast(&fakeEglSwapBuffers);
+        return null;
+    }
+
+    fn fakeEglSwapBuffers(_: EGLDisplay, _: EGLSurface) callconv(.c) EGLBoolean {
+        egl_swap_calls += 1;
+        return 1;
     }
 
     fn SDL_GetTicksNS() u64 {
@@ -297,6 +324,7 @@ test "submit present has no deferred in-flight state" {
 test "tab cache refreshes only on revision change" {
     FakeC.copy_tex_image_calls = 0;
     FakeC.copy_tex_subimage_calls = 0;
+    FakeC.egl_swap_calls = 0;
 
     var state = testState();
     var frame = testFrame();
@@ -312,6 +340,7 @@ test "tab cache refreshes only on revision change" {
     const third = displaySubmitPresentSync(FakeC, &state, frame);
     try std.testing.expectEqual(@as(u32, 2), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
     try std.testing.expect(third > second);
+    try std.testing.expectEqual(@as(u32, 3), FakeC.egl_swap_calls);
 }
 
 test "submit present completion is synchronous" {
