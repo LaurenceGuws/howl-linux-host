@@ -39,8 +39,6 @@ fn captureRenderStateLockedWith(term: anytype, hover: ?HyperlinkHover, comptime 
     try requireVtOk(Ops.update(state, term.vt));
     if (hover) |value| try requireVtOk(Ops.updateHover(state, value));
     const info = try renderStateInfo(state);
-    term.vt_state.cursor_visible = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VISIBLE) != 0;
-    term.vt_state.cursor_blink = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_BLINKING) != 0;
     return .{ .state = state, .info = info };
 }
 
@@ -134,8 +132,6 @@ test "render-state capture update failure does not touch cursor facts" {
         vt: vt_c.HowlVtHandle = @ptrFromInt(1),
         vt_state: struct {
             render_state: vt_c.HowlVtRenderStateHandle = @ptrFromInt(2),
-            cursor_visible: bool = false,
-            cursor_blink: bool = false,
         } = .{},
         mutex: struct {
             fn lock(_: *@This()) void {}
@@ -159,8 +155,6 @@ test "render-state capture update failure does not touch cursor facts" {
     var term = FakeTerm{};
     try std.testing.expectError(error.VtCallFailed, captureRenderStateLockedWith(&term, null, FakeOps));
     try std.testing.expectEqual(@as(u8, 1), FakeOps.update_calls);
-    try std.testing.expect(!term.vt_state.cursor_visible);
-    try std.testing.expect(!term.vt_state.cursor_blink);
 }
 
 test "published source ack requires matching current snapshot" {

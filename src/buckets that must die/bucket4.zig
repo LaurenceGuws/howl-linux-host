@@ -15,8 +15,6 @@ pub const VtState = struct {
     input_buffer: vt_input_buffer.Buffer = .{},
     render_state: vt_c.HowlVtRenderStateHandle = null,
     focus: vt_focus.Focus = .{},
-    cursor_visible: bool = true,
-    cursor_blink: bool = false,
 
     pub fn deinit(self: *VtState, allocator: std.mem.Allocator) void {
         _ = allocator;

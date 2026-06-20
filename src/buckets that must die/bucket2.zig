@@ -1422,8 +1422,8 @@ test "surface activity reset restores visible and refreshes deadline" {
 
 test "focus loss disables animation and restores visible" {
     var surface = testSurfaceBase();
-    surface.term.vt_state.cursor_visible = true;
-    surface.term.vt_state.cursor_blink = true;
+    surface.cursor_source_visible = true;
+    surface.cursor_source_blink = true;
     surface.cursor_blink.visible = false;
     surface.cursor_blink.deadline_ns = 777;
     surface.window_focused = false;
