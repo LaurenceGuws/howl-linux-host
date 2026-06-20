@@ -18,7 +18,6 @@ const HowlTerm = @import("../term.zig").Term;
 const VtState = @import("../term.zig").VtState;
 const vt_retained = @import("../vt/surface_retained.zig");
 const LifecycleState = pty_session.LifecycleState;
-const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
 const Config = @import("../config.zig");
 const TerminalConfig = Config.Terminal;
 const CursorStyle = @import("../config/term.zig").CursorStyle;
@@ -57,7 +56,7 @@ const TestingHooks = struct {
 var testing_hooks: TestingHooks = .{};
 
 const RenderInit = struct {
-    content_px: render_c.HowlRenderPixelSize,
+    surface_px: render_c.HowlRenderPixelSize,
     font_size_px: u16,
     primary_font_path: ?[:0]const u8 = null,
     fallback_font_paths: []const [:0]const u8 = &.{},
@@ -148,7 +147,7 @@ pub const Surface = struct {
     title_buf: [128]u8,
     title_len: u8,
     title_generation_seen: u64,
-    surface_layout: surface_layout.State,
+    surface_layout: surface_layout.SurfaceResize,
     font_size_px: u16,
     default_font_size_px: u16,
     window_focused: bool,
@@ -257,19 +256,19 @@ pub const Surface = struct {
     }
 
     pub fn resize(self: *Term, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
-        surface_layout.resize(self, render_width, render_height, logical_width, logical_height);
+        surface_layout.resize(&self.surface_layout, &self.scrollbar, render_width, render_height, logical_width, logical_height);
     }
 
-    pub fn maybeCommitGridResize(self: *Term) void {
-        surface_layout.maybeCommitGridResize(self);
+    pub fn syncPendingSurfacePixels(self: *Term) void {
+        surface_layout.syncPendingSurfacePixels(&self.surface_layout, &self.term);
     }
 
-    pub fn syncSurfaceLayout(self: *Term, request: SurfaceLayoutRequest) !void {
-        try surface_layout.syncSurfaceLayout(self, request);
+    pub fn syncSurfaceLayout(self: *Term, surface_px: render_c.HowlRenderPixelSize) !void {
+        try surface_layout.syncSurfaceLayout(&self.term, surface_px);
     }
 
-    pub fn surfaceLayoutSnapshot(self: *Term) SurfaceLayoutRequest {
-        return surface_layout.surfaceLayoutSnapshot(self);
+    pub fn readSurfacePixels(self: *Term) render_c.HowlRenderPixelSize {
+        return surface_layout.readSurfacePixels(&self.surface_layout);
     }
 
     pub fn paste(self: *Term, payload: []const u8) void {
@@ -383,17 +382,17 @@ pub const Surface = struct {
 
     pub fn adjustFontSize(self: *Term, delta: i16) bool {
         if (!font_size.adjust(self, delta)) return false;
-        return surface_layout.syncCurrentSurfaceLayout(self);
+        return surface_layout.syncCurrentSurfaceLayout(&self.surface_layout, &self.term);
     }
 
     pub fn toggleStressFontSize(self: *Term) bool {
         if (!font_size.toggleStress(self)) return false;
-        return surface_layout.syncCurrentSurfaceLayout(self);
+        return surface_layout.syncCurrentSurfaceLayout(&self.surface_layout, &self.term);
     }
 
     pub fn resetFontSize(self: *Term) bool {
         if (!font_size.reset(self)) return false;
-        return surface_layout.syncCurrentSurfaceLayout(self);
+        return surface_layout.syncCurrentSurfaceLayout(&self.surface_layout, &self.term);
     }
 
     pub fn wantsRenderTurn(self: *const Term) bool {
@@ -540,12 +539,12 @@ pub const Surface = struct {
     }
 
     fn initTerm(self: *Term) !void {
-        const surface_request = self.surfaceLayoutSnapshot();
+        const surface_px = self.readSurfacePixels();
         var resolved_fonts = try terminal_fonts.resolve(std.heap.c_allocator, self.conf.fonts);
         defer resolved_fonts.deinit(std.heap.c_allocator);
 
         const launch = launchConfig(self.conf);
-        const render_init = renderInit(self, surface_request, &resolved_fonts);
+        const render_init = renderInit(self, surface_px, &resolved_fonts);
         const term_init = try initTermState(self.conf, launch, render_init);
         self.term.allocator = std.heap.c_allocator;
         self.term.pty = .{ .launch = launch };
@@ -610,7 +609,7 @@ pub const Surface = struct {
             .submit_ready => self.submitDriveResult(false, self.submitPreparedLocked()),
             .failed => idleDrive(.failed, .failed),
             .prepare_needed => blk: {
-                self.maybeCommitGridResizeLocked();
+                self.syncPendingSurfacePixelsLocked();
                 var visible = vt_surface.captureRenderStateLocked(&self.term, terminal_links.hoverDecoration(self)) catch {
                     self.links.hover_publish_pending = false;
                     self.term.render.noteRetainedFailure();
@@ -632,8 +631,8 @@ pub const Surface = struct {
         };
     }
 
-    fn maybeCommitGridResizeLocked(self: *Term) void {
-        surface_layout.maybeCommitGridResizeLocked(self);
+    fn syncPendingSurfacePixelsLocked(self: *Term) void {
+        surface_layout.syncPendingSurfacePixelsLocked(&self.surface_layout, &self.term);
     }
 
     fn submitPrepared(self: *Term) SubmitPreparedResult {
@@ -1024,9 +1023,9 @@ pub const Surface = struct {
         };
     }
 
-    fn renderInit(self: *Term, surface_request: SurfaceLayoutRequest, resolved_fonts: *const terminal_fonts.ResolvedFonts) RenderInit {
+    fn renderInit(self: *Term, surface_px: render_c.HowlRenderPixelSize, resolved_fonts: *const terminal_fonts.ResolvedFonts) RenderInit {
         return .{
-            .content_px = surface_request.content_px,
+            .surface_px = surface_px,
             .font_size_px = @max(self.conf.font_size, 1),
             .primary_font_path = resolved_fonts.primary,
             .fallback_font_paths = resolved_fonts.fallbacks,
@@ -1082,7 +1081,7 @@ fn initSurfaceLayout(render_init: RenderInit) !render_retained.SurfaceLayout {
     var handle: render_c.HowlRenderTextHandle = null;
     if (render_c.howl_render_text_init(&handle, &config) != render_c.HOWL_RENDER_CALL_OK) return error.RenderInitFailed;
     defer render_c.howl_render_text_deinit(handle);
-    return try surface_layout.querySurfaceLayout(handle, .{ .content_px = render_init.content_px });
+    return try surface_layout.querySurfaceLayout(handle, render_init.surface_px);
 }
 
 fn initRenderText(render: *render_retained.State, render_init: RenderInit) !void {
@@ -1122,8 +1121,8 @@ fn deinitVt(handle: vt_c.HowlVtHandle) void {
 }
 
 fn assertRenderInit(render_init: RenderInit) void {
-    std.debug.assert(render_init.content_px.width > 0);
-    std.debug.assert(render_init.content_px.height > 0);
+    std.debug.assert(render_init.surface_px.width > 0);
+    std.debug.assert(render_init.surface_px.height > 0);
     std.debug.assert(render_init.font_size_px > 0);
     std.debug.assert(render_init.fallback_font_paths.len <= max_fallback_font_paths);
 }

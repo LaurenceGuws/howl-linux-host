@@ -2,6 +2,7 @@ const std = @import("std");
 const Events = @import("events.zig");
 const Layout = @import("layout.zig");
 const HostInput = @import("input.zig").Input;
+const Term = @import("term.zig").Term;
 const vt_c = @import("howl_vt_c");
 
 const EventLoop = Events.event_loop;
@@ -201,24 +202,21 @@ pub const TrackLayout = struct {
     }
 };
 
-pub fn scrollState(term: anytype) ScrollState {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
+pub fn scrollState(term: *Term) ScrollState {
+    term.mutex.lock();
+    defer term.mutex.unlock();
     return scrollStateLocked(term);
 }
 
-pub fn setScrollbackOffset(term: anytype, offset: u32) bool {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
+pub fn setScrollbackOffset(term: *Term, offset: u32) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
     return scrollViewport(term.vt, vt_c.HOWL_VT_SCROLL_VIEWPORT_ABSOLUTE, offset);
 }
 
-pub fn scrollViewportToBottom(term: anytype) bool {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
+pub fn scrollViewportToBottom(term: *Term) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
     return scrollViewport(term.vt, vt_c.HOWL_VT_SCROLL_VIEWPORT_BOTTOM, 0);
 }
 
@@ -372,11 +370,7 @@ fn viewFromTerm(term_view: ScrollState) View {
     };
 }
 
-fn mutableTerm(term: anytype) *@TypeOf(term.*) {
-    return @constCast(term);
-}
-
-fn scrollStateLocked(term: anytype) ScrollState {
+fn scrollStateLocked(term: *const Term) ScrollState {
     const info = visibleInfo(term.vt);
     return .{
         .visible_rows = term.render.surface_layout.rows,
@@ -396,10 +390,9 @@ fn visibleInfo(handle: vt_c.HowlVtHandle) struct { history_count: u32, scrollbac
     };
 }
 
-fn scrollByRows(term: anytype, delta_rows: i32) bool {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
+fn scrollByRows(term: *Term, delta_rows: i32) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
     return scrollViewport(term.vt, vt_c.HOWL_VT_SCROLL_VIEWPORT_DELTA, delta_rows);
 }
 

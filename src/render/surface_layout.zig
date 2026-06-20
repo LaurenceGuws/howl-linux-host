@@ -4,20 +4,17 @@ const c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 const pty_session = @import("../pty/session.zig");
 const retained = @import("surface_retained.zig");
+const Term = @import("../term.zig").Term;
 const vt_retained = @import("../vt/surface_retained.zig");
 const terminal_scrollbar = @import("../scroll_bar.zig");
 
-pub const SurfaceLayoutRequest = struct {
-    content_px: c.HowlRenderPixelSize,
-};
-
-pub const State = struct {
-    content_px_w: c_int,
-    content_px_h: c_int,
+pub const SurfaceResize = struct {
+    surface_px_w: c_int,
+    surface_px_h: c_int,
     logical_w: c_int,
     logical_h: c_int,
-    pending_content_px_w: c_int,
-    pending_content_px_h: c_int,
+    pending_surface_px_w: c_int,
+    pending_surface_px_h: c_int,
     mutex: Mutex = .{},
     last_resize_ns: u64 = 0,
 };
@@ -34,131 +31,129 @@ const Mutex = struct {
     }
 };
 
-pub fn init(render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) State {
-    const content_w = @max(render_width, 1);
-    const content_h = @max(render_height, 1);
+pub fn init(render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) SurfaceResize {
+    const surface_w = @max(render_width, 1);
+    const surface_h = @max(render_height, 1);
     const logical_w = @max(logical_width, 1);
     const logical_h = @max(logical_height, 1);
     return .{
-        .content_px_w = content_w,
-        .content_px_h = content_h,
+        .surface_px_w = surface_w,
+        .surface_px_h = surface_h,
         .logical_w = logical_w,
         .logical_h = logical_h,
-        .pending_content_px_w = content_w,
-        .pending_content_px_h = content_h,
+        .pending_surface_px_w = surface_w,
+        .pending_surface_px_h = surface_h,
     };
 }
 
-pub fn resize(context: anytype, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
-    const content_w = @max(render_width, 1);
-    const content_h = @max(render_height, 1);
+pub fn resize(surface_resize: *SurfaceResize, scrollbar: *terminal_scrollbar.State, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
+    const surface_w = @max(render_width, 1);
+    const surface_h = @max(render_height, 1);
     const lw = @max(logical_width, 1);
     const lh = @max(logical_height, 1);
-    context.surface_layout.mutex.lock();
-    defer context.surface_layout.mutex.unlock();
-    const content_size_same = content_w == context.surface_layout.content_px_w and content_h == context.surface_layout.content_px_h;
-    const pending_content_size_same = content_w == context.surface_layout.pending_content_px_w and content_h == context.surface_layout.pending_content_px_h;
-    const logical_size_same = lw == context.surface_layout.logical_w and lh == context.surface_layout.logical_h;
-    if (content_size_same and pending_content_size_same and logical_size_same) return;
-    context.surface_layout.logical_w = lw;
-    context.surface_layout.logical_h = lh;
-    context.surface_layout.pending_content_px_w = content_w;
-    context.surface_layout.pending_content_px_h = content_h;
-    context.surface_layout.last_resize_ns = EventLoop.nowNs();
-    terminal_scrollbar.invalidate(context);
+    surface_resize.mutex.lock();
+    defer surface_resize.mutex.unlock();
+    const surface_size_same = surface_w == surface_resize.surface_px_w and surface_h == surface_resize.surface_px_h;
+    const pending_surface_size_same = surface_w == surface_resize.pending_surface_px_w and surface_h == surface_resize.pending_surface_px_h;
+    const logical_size_same = lw == surface_resize.logical_w and lh == surface_resize.logical_h;
+    if (surface_size_same and pending_surface_size_same and logical_size_same) return;
+    surface_resize.logical_w = lw;
+    surface_resize.logical_h = lh;
+    surface_resize.pending_surface_px_w = surface_w;
+    surface_resize.pending_surface_px_h = surface_h;
+    surface_resize.last_resize_ns = EventLoop.nowNs();
+    scrollbar.invalidate();
 }
 
-pub fn maybeCommitGridResize(context: anytype) void {
-    const surface_layout = blk: {
-        context.surface_layout.mutex.lock();
-        defer context.surface_layout.mutex.unlock();
-        if (context.surface_layout.pending_content_px_w == context.surface_layout.content_px_w and context.surface_layout.pending_content_px_h == context.surface_layout.content_px_h) return;
-        context.surface_layout.content_px_w = context.surface_layout.pending_content_px_w;
-        context.surface_layout.content_px_h = context.surface_layout.pending_content_px_h;
-        context.surface_layout.last_resize_ns = 0;
-        break :blk snapshotSurfaceLayoutLocked(&context.surface_layout);
+pub fn syncPendingSurfacePixels(surface_resize: *SurfaceResize, term: *Term) void {
+    const surface_px = blk: {
+        surface_resize.mutex.lock();
+        defer surface_resize.mutex.unlock();
+        if (surface_resize.pending_surface_px_w == surface_resize.surface_px_w and surface_resize.pending_surface_px_h == surface_resize.surface_px_h) return;
+        surface_resize.surface_px_w = surface_resize.pending_surface_px_w;
+        surface_resize.surface_px_h = surface_resize.pending_surface_px_h;
+        surface_resize.last_resize_ns = 0;
+        break :blk readSurfacePixelsLocked(surface_resize);
     };
-    syncSurfaceLayout(context, surface_layout) catch return;
+    syncSurfaceLayout(term, surface_px) catch return;
 }
 
-pub fn maybeCommitGridResizeLocked(context: anytype) void {
-    const surface_layout = blk: {
-        context.surface_layout.mutex.lock();
-        defer context.surface_layout.mutex.unlock();
-        if (context.surface_layout.pending_content_px_w == context.surface_layout.content_px_w and context.surface_layout.pending_content_px_h == context.surface_layout.content_px_h) return;
-        context.surface_layout.content_px_w = context.surface_layout.pending_content_px_w;
-        context.surface_layout.content_px_h = context.surface_layout.pending_content_px_h;
-        context.surface_layout.last_resize_ns = 0;
-        break :blk snapshotSurfaceLayoutLocked(&context.surface_layout);
+pub fn syncPendingSurfacePixelsLocked(surface_resize: *SurfaceResize, term: *Term) void {
+    const surface_px = blk: {
+        surface_resize.mutex.lock();
+        defer surface_resize.mutex.unlock();
+        if (surface_resize.pending_surface_px_w == surface_resize.surface_px_w and surface_resize.pending_surface_px_h == surface_resize.surface_px_h) return;
+        surface_resize.surface_px_w = surface_resize.pending_surface_px_w;
+        surface_resize.surface_px_h = surface_resize.pending_surface_px_h;
+        surface_resize.last_resize_ns = 0;
+        break :blk readSurfacePixelsLocked(surface_resize);
     };
-    syncSurfaceLayoutLocked(context, surface_layout) catch return;
+    syncSurfaceLayoutLocked(term, surface_px) catch return;
 }
 
-pub fn syncSurfaceLayout(context: anytype, request: SurfaceLayoutRequest) !void {
-    const sync = try deriveSurfaceLayout(&context.term, request);
+pub fn syncSurfaceLayout(term: *Term, surface_px: c.HowlRenderPixelSize) !void {
+    const sync = try deriveSurfaceLayout(term, surface_px);
     if (!sync.changed) return;
     if (sync.grid_changed) {
-        try pty_session.resize(&context.term, sync.layout.cols, sync.layout.rows);
-        try resizeTermVt(&context.term, sync.layout.rows, sync.layout.cols);
+        try pty_session.resize(term, sync.layout.cols, sync.layout.rows);
+        try resizeTermVt(term, sync.layout.rows, sync.layout.cols);
     }
-    try setTermCellPixelSize(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
-    commitSurfaceLayout(&context.term, sync.layout);
+    try setTermCellPixelSize(term, sync.layout.cell_px.width, sync.layout.cell_px.height);
+    commitSurfaceLayout(term, sync.layout);
 }
 
-pub fn syncSurfaceLayoutLocked(context: anytype, request: SurfaceLayoutRequest) !void {
-    const sync = try deriveSurfaceLayoutLocked(&context.term, request);
+pub fn syncSurfaceLayoutLocked(term: *Term, surface_px: c.HowlRenderPixelSize) !void {
+    const sync = try deriveSurfaceLayoutLocked(term, surface_px);
     if (!sync.changed) return;
     if (sync.grid_changed) {
-        try pty_session.resizeLocked(&context.term, sync.layout.cols, sync.layout.rows);
-        try resizeTermVtLocked(&context.term, sync.layout.rows, sync.layout.cols);
+        try pty_session.resizeLocked(term, sync.layout.cols, sync.layout.rows);
+        try resizeTermVtLocked(term, sync.layout.rows, sync.layout.cols);
     }
-    try setTermCellPixelSizeLocked(&context.term, sync.layout.cell_px.width, sync.layout.cell_px.height);
-    commitSurfaceLayoutLocked(&context.term, sync.layout);
+    try setTermCellPixelSizeLocked(term, sync.layout.cell_px.width, sync.layout.cell_px.height);
+    commitSurfaceLayoutLocked(term, sync.layout);
 }
 
-pub fn surfaceLayoutSnapshot(context: anytype) SurfaceLayoutRequest {
-    context.surface_layout.mutex.lock();
-    defer context.surface_layout.mutex.unlock();
-    return snapshotSurfaceLayoutLocked(&context.surface_layout);
+pub fn readSurfacePixels(surface_resize: *SurfaceResize) c.HowlRenderPixelSize {
+    surface_resize.mutex.lock();
+    defer surface_resize.mutex.unlock();
+    return readSurfacePixelsLocked(surface_resize);
 }
 
-pub fn syncCurrentSurfaceLayout(context: anytype) bool {
-    const request = surfaceLayoutSnapshot(context);
-    syncSurfaceLayout(context, request) catch return false;
+pub fn syncCurrentSurfaceLayout(surface_resize: *SurfaceResize, term: *Term) bool {
+    const surface_px = readSurfacePixels(surface_resize);
+    syncSurfaceLayout(term, surface_px) catch return false;
     return true;
 }
 
-pub fn snapshotSurfaceLayoutLocked(surface_layout: *const State) SurfaceLayoutRequest {
-    return .{
-        .content_px = .{ .width = @as(u16, @intCast(@max(surface_layout.content_px_w, 1))), .height = @as(u16, @intCast(@max(surface_layout.content_px_h, 1))) },
-    };
+pub fn readSurfacePixelsLocked(surface_resize: *const SurfaceResize) c.HowlRenderPixelSize {
+    return .{ .width = @as(u16, @intCast(@max(surface_resize.surface_px_w, 1))), .height = @as(u16, @intCast(@max(surface_resize.surface_px_h, 1))) };
 }
 
-fn deriveSurfaceLayout(term: anytype, request: SurfaceLayoutRequest) !retained.SurfaceLayoutSync {
-    std.debug.assert(request.content_px.width > 0);
-    std.debug.assert(request.content_px.height > 0);
+fn deriveSurfaceLayout(term: *Term, surface_px: c.HowlRenderPixelSize) !retained.SurfaceLayoutSync {
+    std.debug.assert(surface_px.width > 0);
+    std.debug.assert(surface_px.height > 0);
 
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const next = try querySurfaceLayout(term.render.text_handle, request);
+    const next = try querySurfaceLayout(term.render.text_handle, surface_px);
     return term.render.surfaceLayoutSync(next);
 }
 
-fn deriveSurfaceLayoutLocked(term: anytype, request: SurfaceLayoutRequest) !retained.SurfaceLayoutSync {
-    std.debug.assert(request.content_px.width > 0);
-    std.debug.assert(request.content_px.height > 0);
+fn deriveSurfaceLayoutLocked(term: *Term, surface_px: c.HowlRenderPixelSize) !retained.SurfaceLayoutSync {
+    std.debug.assert(surface_px.width > 0);
+    std.debug.assert(surface_px.height > 0);
 
-    const next = try querySurfaceLayout(term.render.text_handle, request);
+    const next = try querySurfaceLayout(term.render.text_handle, surface_px);
     return term.render.surfaceLayoutSync(next);
 }
 
-pub fn querySurfaceLayout(handle: c.HowlRenderTextHandle, request: SurfaceLayoutRequest) !retained.SurfaceLayout {
-    std.debug.assert(request.content_px.width > 0);
-    std.debug.assert(request.content_px.height > 0);
+pub fn querySurfaceLayout(handle: c.HowlRenderTextHandle, surface_px: c.HowlRenderPixelSize) !retained.SurfaceLayout {
+    std.debug.assert(surface_px.width > 0);
+    std.debug.assert(surface_px.height > 0);
     if (handle == null) return error.MissingRenderTextHandle;
     var response = std.mem.zeroes(c.HowlRenderLayoutResponse);
-    if (c.howl_render_surface_layout(handle, request.content_px, &response) != c.HOWL_RENDER_CALL_OK) return error.RenderLayoutFailed;
+    if (c.howl_render_surface_layout(handle, surface_px, &response) != c.HOWL_RENDER_CALL_OK) return error.RenderLayoutFailed;
     if (response.status != c.HOWL_RENDER_CALL_OK) return error.RenderLayoutFailed;
     const layout = retained.SurfaceLayout{
         .render_px = response.render_px,
@@ -183,14 +178,14 @@ pub fn querySurfacePointCell(handle: c.HowlRenderTextHandle, layout: retained.Su
     return response;
 }
 
-fn commitSurfaceLayout(term: anytype, layout: retained.SurfaceLayout) void {
+fn commitSurfaceLayout(term: *Term, layout: retained.SurfaceLayout) void {
     assertSurfaceLayout(layout);
     term.mutex.lock();
     defer term.mutex.unlock();
     term.render.syncSurfaceLayout(layout);
 }
 
-fn commitSurfaceLayoutLocked(term: anytype, layout: retained.SurfaceLayout) void {
+fn commitSurfaceLayoutLocked(term: *Term, layout: retained.SurfaceLayout) void {
     assertSurfaceLayout(layout);
     term.render.syncSurfaceLayout(layout);
 }
@@ -206,23 +201,23 @@ fn assertSurfaceLayout(layout: retained.SurfaceLayout) void {
     std.debug.assert(layout.render_px.height == layout.grid_px.height);
 }
 
-pub fn resizeTermVt(term: anytype, rows: u16, cols: u16) !void {
+pub fn resizeTermVt(term: *Term, rows: u16, cols: u16) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
     try resizeTermVtLocked(term, rows, cols);
 }
 
-pub fn resizeTermVtLocked(term: anytype, rows: u16, cols: u16) !void {
+pub fn resizeTermVtLocked(term: *Term, rows: u16, cols: u16) !void {
     try requireResizeOk(vt_c.howl_vt_terminal_resize(term.vt, rows, cols));
 }
 
-pub fn setTermCellPixelSize(term: anytype, width: u16, height: u16) !void {
+pub fn setTermCellPixelSize(term: *Term, width: u16, height: u16) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
     try setTermCellPixelSizeLocked(term, width, height);
 }
 
-pub fn setTermCellPixelSizeLocked(term: anytype, width: u16, height: u16) !void {
+pub fn setTermCellPixelSizeLocked(term: *Term, width: u16, height: u16) !void {
     try requireOk(vt_c.howl_vt_terminal_set_cell_pixel_size(term.vt, width, height));
 }
 

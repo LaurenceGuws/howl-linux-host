@@ -16,7 +16,6 @@ const term_config = @import("../config/term.zig");
 
 const Surface = surface_mod.Surface;
 const HostInput = @import("../input.zig").Input;
-const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
 const SurfaceLayout = render_retained.SurfaceLayout;
 const surface_testing = surface_mod.testing;
 
@@ -249,7 +248,7 @@ fn makeSubmitSurface() !Surface {
     return surface;
 }
 
-fn queryTestSurfaceLayout(content_px: render_c.HowlRenderPixelSize, font_size_px: u16) !SurfaceLayout {
+fn queryTestSurfaceLayout(surface_px: render_c.HowlRenderPixelSize, font_size_px: u16) !SurfaceLayout {
     var handle: render_c.HowlRenderTextHandle = null;
     const config = render_c.HowlRenderTextConfig{
         .font_size_px = font_size_px,
@@ -260,7 +259,7 @@ fn queryTestSurfaceLayout(content_px: render_c.HowlRenderPixelSize, font_size_px
     };
     if (render_c.howl_render_text_init(&handle, &config) != render_c.HOWL_RENDER_CALL_OK) return error.RenderInitFailed;
     defer render_c.howl_render_text_deinit(handle);
-    return try surface_layout.querySurfaceLayout(handle, .{ .content_px = content_px });
+    return try surface_layout.querySurfaceLayout(handle, surface_px);
 }
 
 fn recordExpectedPreparedUpload(surface: *Surface) !void {
@@ -330,15 +329,15 @@ fn prepareSubmitSurfaceWithCursor(surface: *Surface, snapshot_seq: u64, cursor_v
     try recordExpectedPreparedUpload(surface);
 }
 
-fn resizeSubmitSurface(surface: *Surface, render_width: c_int, render_height: c_int) !SurfaceLayoutRequest {
-    surface_layout.resize(surface, render_width, render_height, render_width, render_height);
-    surface.surface_layout.content_px_w = surface.surface_layout.pending_content_px_w;
-    surface.surface_layout.content_px_h = surface.surface_layout.pending_content_px_h;
+fn resizeSubmitSurface(surface: *Surface, render_width: c_int, render_height: c_int) !render_c.HowlRenderPixelSize {
+    surface_layout.resize(&surface.surface_layout, &surface.scrollbar, render_width, render_height, render_width, render_height);
+    surface.surface_layout.surface_px_w = surface.surface_layout.pending_surface_px_w;
+    surface.surface_layout.surface_px_h = surface.surface_layout.pending_surface_px_h;
     surface.surface_layout.last_resize_ns = 0;
-    const request = surface_layout.snapshotSurfaceLayoutLocked(&surface.surface_layout);
-    const layout = try queryTestSurfaceLayout(request.content_px, surface.font_size_px);
+    const surface_px = surface_layout.readSurfacePixelsLocked(&surface.surface_layout);
+    const layout = try queryTestSurfaceLayout(surface_px, surface.font_size_px);
     surface.term.render.syncSurfaceLayout(layout);
-    return request;
+    return surface_px;
 }
 
 const ClipboardCase = struct {
@@ -368,19 +367,19 @@ const ClipboardCase = struct {
     }
 };
 
-test "surface layout request snapshots content size and ignores logical size" {
-    var state = surface_layout.State{
-        .content_px_w = 640,
-        .content_px_h = 480,
+test "surface layout reads surface pixels and ignores logical size" {
+    var surface_resize = surface_layout.SurfaceResize{
+        .surface_px_w = 640,
+        .surface_px_h = 480,
         .logical_w = 321,
         .logical_h = 123,
-        .pending_content_px_w = 640,
-        .pending_content_px_h = 480,
+        .pending_surface_px_w = 640,
+        .pending_surface_px_h = 480,
     };
 
-    const request = surface_layout.snapshotSurfaceLayoutLocked(&state);
-    try std.testing.expectEqual(@as(u16, 640), request.content_px.width);
-    try std.testing.expectEqual(@as(u16, 480), request.content_px.height);
+    const surface_px = surface_layout.readSurfacePixelsLocked(&surface_resize);
+    try std.testing.expectEqual(@as(u16, 640), surface_px.width);
+    try std.testing.expectEqual(@as(u16, 480), surface_px.height);
 }
 
 test "render surface layout truncates content to whole terminal cells" {
@@ -679,12 +678,12 @@ const TestSubmitRender = struct {
         self.operation_count += 1;
     }
 
-    fn syncTestLayout(self: *@This(), request: SurfaceLayoutRequest) void {
-        std.debug.assert(request.content_px.width > 0);
-        std.debug.assert(request.content_px.height > 0);
+    fn syncTestLayout(self: *@This(), surface_px: render_c.HowlRenderPixelSize) void {
+        std.debug.assert(surface_px.width > 0);
+        std.debug.assert(surface_px.height > 0);
         self.record(.layout_sync);
         self.layout_epoch += 1;
-        self.render_px = request.content_px;
+        self.render_px = surface_px;
     }
 
     fn prepareTestSurface(self: *@This()) void {
@@ -769,7 +768,7 @@ const TestSubmitContext = struct {
         .width = 2,
         .height = 1,
     },
-    surface_layout: surface_layout.State = surface_layout.init(2, 1, 2, 1),
+    surface_layout: surface_layout.SurfaceResize = surface_layout.init(2, 1, 2, 1),
     scrollbar: terminal_scrollbar.State = .{},
     host_upload_calls: u8 = 0,
     host_upload_had_matching_surface: bool = false,
@@ -786,19 +785,19 @@ const TestSubmitContext = struct {
 
     fn resizeForTest(self: *@This(), render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
         self.record(.resize);
-        surface_layout.resize(self, render_width, render_height, logical_width, logical_height);
+        surface_layout.resize(&self.surface_layout, &self.scrollbar, render_width, render_height, logical_width, logical_height);
     }
 
-    fn commitLayoutForTest(self: *@This()) SurfaceLayoutRequest {
+    fn commitLayoutForTest(self: *@This()) render_c.HowlRenderPixelSize {
         self.record(.layout_commit);
-        const request = blk: {
-            self.surface_layout.content_px_w = self.surface_layout.pending_content_px_w;
-            self.surface_layout.content_px_h = self.surface_layout.pending_content_px_h;
+        const surface_px = blk: {
+            self.surface_layout.surface_px_w = self.surface_layout.pending_surface_px_w;
+            self.surface_layout.surface_px_h = self.surface_layout.pending_surface_px_h;
             self.surface_layout.last_resize_ns = 0;
-            break :blk surface_layout.snapshotSurfaceLayoutLocked(&self.surface_layout);
+            break :blk surface_layout.readSurfacePixelsLocked(&self.surface_layout);
         };
-        self.term.render.syncTestLayout(request);
-        return request;
+        self.term.render.syncTestLayout(surface_px);
+        return surface_px;
     }
 };
 
@@ -895,10 +894,10 @@ test "resize success path submits full surface and acks matching present token" 
     defer surface_testing.resetHooks();
 
     try std.testing.expectEqual(@as(u64, 2), surface.term.render.layout_epoch);
-    const request = try resizeSubmitSurface(&surface, 4, 2);
+    const surface_px = try resizeSubmitSurface(&surface, 4, 2);
 
-    try std.testing.expectEqual(@as(u16, 4), request.content_px.width);
-    try std.testing.expectEqual(@as(u16, 2), request.content_px.height);
+    try std.testing.expectEqual(@as(u16, 4), surface_px.width);
+    try std.testing.expectEqual(@as(u16, 2), surface_px.height);
     try std.testing.expectEqual(@as(u64, 3), surface.term.render.layout_epoch);
 
     try prepareSubmitSurface(&surface, 52);
@@ -959,9 +958,9 @@ test "resize upload failure zeros host dimensions and retry submits same full fr
 
     try std.testing.expectEqual(@as(u16, 2), surface.term_texture.width);
     try std.testing.expectEqual(@as(u16, 1), surface.term_texture.height);
-    const request = try resizeSubmitSurface(&surface, 4, 2);
-    try std.testing.expectEqual(@as(u16, 4), request.content_px.width);
-    try std.testing.expectEqual(@as(u16, 2), request.content_px.height);
+    const surface_px = try resizeSubmitSurface(&surface, 4, 2);
+    try std.testing.expectEqual(@as(u16, 4), surface_px.width);
+    try std.testing.expectEqual(@as(u16, 2), surface_px.height);
 
     try prepareSubmitSurface(&surface, 52);
     const info = submit_hook_state.expected_info;
@@ -1021,9 +1020,9 @@ test "resize while present pending waits for matching ack before resized submit"
     surface.notePresentSubmitted(prior_submit.snapshot_seq, prior_token);
     try std.testing.expect(surface.term.render.presentPending());
 
-    const request = try resizeSubmitSurface(&surface, 4, 2);
-    try std.testing.expectEqual(@as(u16, 4), request.content_px.width);
-    try std.testing.expectEqual(@as(u16, 2), request.content_px.height);
+    const surface_px = try resizeSubmitSurface(&surface, 4, 2);
+    try std.testing.expectEqual(@as(u16, 4), surface_px.width);
+    try std.testing.expectEqual(@as(u16, 2), surface_px.height);
     try std.testing.expectEqual(@as(u64, 3), surface.term.render.layout_epoch);
 
     try prepareSubmitSurface(&surface, 52);
