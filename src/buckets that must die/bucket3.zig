@@ -1,6 +1,7 @@
 const std = @import("std");
 const EventLoop = @import("../events/event_loop.zig");
 const Layout = @import("../layout/layout.zig");
+const layout_cells = @import("../layout/cells.zig");
 const HostInput = @import("../input/input.zig").Input;
 const terminal_links = @import("../render/links.zig");
 const terminal_selection = @import("../selection/selection.zig");
@@ -294,19 +295,9 @@ fn noteRenderScrollbackChanged(self: anytype) void {
 }
 
 fn pixelToCol(term: *const HowlTerm, pixel_x: i32) u16 {
-    const current_layout = term.render.surface_layout;
-    if (current_layout.cols == 0 or current_layout.cell_px.width == 0) return 0;
-    if (pixel_x <= 0) return 0;
-    const x: u32 = @intCast(pixel_x);
-    const col = x / @as(u32, current_layout.cell_px.width);
-    return @min(@as(u16, @intCast(col)), current_layout.cols -| 1);
+    return layout_cells.col(term.render.surface_layout, pixel_x);
 }
 
 fn pixelToRow(term: *const HowlTerm, pixel_y: i32) i32 {
-    const current_layout = term.render.surface_layout;
-    if (current_layout.rows == 0 or current_layout.cell_px.height == 0) return 0;
-    if (pixel_y <= 0) return 0;
-    const y: u32 = @intCast(pixel_y);
-    const row = y / @as(u32, current_layout.cell_px.height);
-    return @min(@as(i32, @intCast(row)), @as(i32, current_layout.rows -| 1));
+    return layout_cells.row(term.render.surface_layout, pixel_y);
 }

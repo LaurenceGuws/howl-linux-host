@@ -9,6 +9,7 @@ pub const Window = @import("events/window.zig");
 test {
     _ = EventLoop;
     _ = PtyWaitThread;
+    _ = @import("layout/cells.zig");
     _ = @import("layout/layout.zig");
     _ = @import("render/gl_quad.zig");
     _ = @import("render/gl_present.zig");
