@@ -1,6 +1,6 @@
 const std = @import("std");
 const c = @import("howl_vt_c");
-const terminal_term = @import("../buckets that must die/bucket4.zig");
+const terminal_term = @import("../terminal/term.zig");
 const vt_output_buffer = @import("../vt/output_buffer.zig");
 const vt_title = @import("../vt/title.zig");
 

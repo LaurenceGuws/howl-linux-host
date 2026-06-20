@@ -12,7 +12,7 @@ const render_retained = @import("../render/surface_retained.zig");
 const surface_layout = @import("../render/surface_layout.zig");
 const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
 const terminal_scrollbar = @import("../scroll_bar/scrollbar.zig");
-const terminal_term = @import("bucket4.zig");
+const terminal_term = @import("../terminal/term.zig");
 const terminal_config = @import("../config/terminal.zig");
 
 const Surface = surface_mod.Surface;

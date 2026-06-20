@@ -1,6 +1,6 @@
 const std = @import("std");
 const vt_c = @import("howl_vt_c");
-const terminal_term = @import("../buckets that must die/bucket4.zig");
+const terminal_term = @import("../terminal/term.zig");
 const terminal_links = @import("../render/links.zig");
 
 pub const HyperlinkHover = terminal_links.HyperlinkHover;

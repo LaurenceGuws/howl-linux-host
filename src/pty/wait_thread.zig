@@ -1,6 +1,6 @@
 const pty_session = @import("../pty/session.zig");
 const pty_pump = @import("../pty/pump.zig");
-const terminal_term = @import("../buckets that must die/bucket4.zig");
+const terminal_term = @import("../terminal/term.zig");
 const EventLoop = @import("../events/event_loop.zig");
 const std = @import("std");
 

@@ -1,6 +1,6 @@
 const pty_session = @import("../pty/session.zig");
 const vt_c = @import("howl_vt_c");
-const terminal_term = @import("../buckets that must die/bucket4.zig");
+const terminal_term = @import("../terminal/term.zig");
 const vt_retained = @import("../vt/surface_retained.zig");
 const vt_title = @import("../vt/title.zig");
 const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;

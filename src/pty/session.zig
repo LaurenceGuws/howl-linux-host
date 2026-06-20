@@ -1,6 +1,6 @@
 const std = @import("std");
 const c = @import("howl_pty_c");
-const terminal_term = @import("../buckets that must die/bucket4.zig");
+const terminal_term = @import("../terminal/term.zig");
 
 const default_pending_capacity: u32 = 4096;
 

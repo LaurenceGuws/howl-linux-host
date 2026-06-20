@@ -5,7 +5,7 @@ const HostInput = @import("../input/input.zig").Input;
 const terminal_links = @import("../render/links.zig");
 const terminal_selection = @import("../selection/selection.zig");
 const terminal_scrollbar = @import("../scroll_bar/scrollbar.zig");
-const terminal_term = @import("bucket4.zig");
+const terminal_term = @import("../terminal/term.zig");
 const term_input = @import("../vt/input.zig");
 const pty_session = @import("../pty/session.zig");
 
