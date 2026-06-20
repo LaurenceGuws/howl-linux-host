@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("howl_vt_c");
+const Term = @import("../term.zig").Term;
 const vt_output_buffer = @import("../vt/output_buffer.zig");
 const vt_title = @import("../vt/title.zig");
 
@@ -26,7 +27,7 @@ fn requireOk(status: i32) !void {
     return error.VtCallFailed;
 }
 
-pub fn feedLocked(term: anytype, bytes: []const u8) c.HowlVtFeedResult {
+pub fn feedLocked(term: *Term, bytes: []const u8) c.HowlVtFeedResult {
     if (bytes.len == 0) {
         return .{
             .status = callOk(),
@@ -38,14 +39,13 @@ pub fn feedLocked(term: anytype, bytes: []const u8) c.HowlVtFeedResult {
     return c.howl_vt_terminal_feed(term.vt, bytes.ptr, bytes.len);
 }
 
-pub fn queryRuntimeObligation(term: anytype, now_ns: u64) !RuntimeObligation {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
+pub fn queryRuntimeObligation(term: *Term, now_ns: u64) !RuntimeObligation {
+    term.mutex.lock();
+    defer term.mutex.unlock();
     return queryRuntimeObligationLocked(term, now_ns);
 }
 
-pub fn queryRuntimeObligationLocked(term: anytype, now_ns: u64) !RuntimeObligation {
+pub fn queryRuntimeObligationLocked(term: *Term, now_ns: u64) !RuntimeObligation {
     const result = c.howl_vt_terminal_query_runtime_obligation(term.vt, now_ns);
     try requireOk(result.status);
     return .{
@@ -54,7 +54,7 @@ pub fn queryRuntimeObligationLocked(term: anytype, now_ns: u64) !RuntimeObligati
     };
 }
 
-pub fn progressRuntimeLocked(term: anytype, now_ns: u64) !RuntimeProgress {
+pub fn progressRuntimeLocked(term: *Term, now_ns: u64) !RuntimeProgress {
     const result = c.howl_vt_terminal_progress_runtime(term.vt, now_ns);
     try requireOk(result.status);
     return .{
@@ -66,17 +66,17 @@ pub fn progressRuntimeLocked(term: anytype, now_ns: u64) !RuntimeProgress {
     };
 }
 
-pub fn copyPendingOutputLocked(term: anytype) ![]const u8 {
+pub fn copyPendingOutputLocked(term: *Term) ![]const u8 {
     const out = vt_output_buffer.slice(&term.vt_state.output_buffer);
     const result = c.howl_vt_terminal_copy_pending_output(term.vt, out.ptr, out.len);
     return copyBoundedBytes(out, result);
 }
 
-pub fn clearPendingOutputLocked(term: anytype) void {
+pub fn clearPendingOutputLocked(term: *Term) void {
     c.howl_vt_terminal_clear_pending_output(term.vt);
 }
 
-pub fn drainPendingClipboardLocked(term: anytype) !?[]const u8 {
+pub fn drainPendingClipboardLocked(term: *Term) !?[]const u8 {
     const out = vt_output_buffer.slice(&term.vt_state.output_buffer);
     const result = c.howl_vt_terminal_drain_pending_clipboard(term.vt, out.ptr, out.len);
     if (result.status == callShortBuffer()) return error.HostBufferTooSmall;
@@ -86,27 +86,21 @@ pub fn drainPendingClipboardLocked(term: anytype) !?[]const u8 {
     return out[0..@intCast(result.written)];
 }
 
-pub fn clearSelection(term: anytype) !void {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
+pub fn clearSelection(term: *Term) !void {
+    term.mutex.lock();
+    defer term.mutex.unlock();
     try requireOk(c.howl_vt_terminal_clear_selection(term.vt));
 }
 
-pub fn copySelection(term: anytype) ![]const u8 {
-    const mut = mutableTerm(term);
-    mut.mutex.lock();
-    defer mut.mutex.unlock();
+pub fn copySelection(term: *Term) ![]const u8 {
+    term.mutex.lock();
+    defer term.mutex.unlock();
     const out = vt_output_buffer.slice(&term.vt_state.output_buffer);
     const result = c.howl_vt_terminal_copy_selection(term.vt, out.ptr, out.len);
     return copyBoundedBytes(out, result);
 }
 
-fn mutableTerm(term: anytype) *@TypeOf(term.*) {
-    return @constCast(term);
-}
-
-pub fn finishFeed(term: anytype, state_changed: bool, title: ?[]const u8) void {
+pub fn finishFeed(term: *Term, state_changed: bool, title: ?[]const u8) void {
     if (title) |current| vt_title.set(&term.vt_state.title, current);
     if (!state_changed) return;
 }
