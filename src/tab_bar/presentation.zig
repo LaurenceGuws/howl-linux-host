@@ -1,9 +1,10 @@
-const Font = @import("../config/tab_bar.zig");
 const Layout = @import("../layout/layout.zig");
+const Screen = @import("screen.zig").Screen;
+const Style = @import("style.zig").Colors;
 const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 const gl_quad = @import("../render/gl_quad.zig");
 
-pub fn draw(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: Layout.Frame) void {
+pub fn drawBackground(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: Layout.Frame) void {
     const bar_h = @max(frame_value.term_texture_rect.y, 0);
     if (bar_h <= 0) return;
 
@@ -30,45 +31,28 @@ pub fn draw(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: Layout.Fram
             1.0,
         );
         if (is_active) gl_quad.solidRect(c, fb_w, fb_h, x + inset, bar_h - 4, @max(next_x - x - inset * 2, 1), 3, 0.53, 0.67, 0.97, 1.0);
-        if (@as(usize, i) < frame_value.tab_labels.len) {
-            drawLabel(
-                c,
-                fb_w,
-                fb_h,
-                x + inset + 8,
-                inset + 7,
-                next_x - x - inset * 2 - 16,
-                frame_value.tab_labels[@intCast(i)],
-                if (is_active) 0.94 else 0.76,
-                if (is_active) 0.96 else 0.80,
-                if (is_active) 0.99 else 0.86,
-            );
-        }
     }
     gl_quad.solidRect(c, fb_w, fb_h, 0, bar_h - 1, fb_w, 1, 0.23, 0.27, 0.35, 1.0);
 }
 
-fn drawLabel(comptime c: type, fb_w: c_int, fb_h: c_int, x: c_int, y: c_int, max_width: c_int, text: []const u8, r: f32, g: f32, b: f32) void {
-    if (max_width <= 0) return;
-    const scale: c_int = 2;
-    const advance = (Font.glyph_w + 1) * scale;
-    var cursor_x = x;
-    for (text) |ch| {
-        if (cursor_x + advance > x + max_width) break;
-        drawGlyph(c, fb_w, fb_h, cursor_x, y, scale, ch, r, g, b);
-        cursor_x += advance;
-    }
-}
+pub fn writeCells(screen: *Screen, frame_value: Layout.Frame, cells_visible: u16) void {
+    screen.clear(cells_visible);
+    if (frame_value.tab_count == 0) return;
 
-fn drawGlyph(comptime c: type, fb_w: c_int, fb_h: c_int, x: c_int, y: c_int, scale: c_int, ch: u8, r: f32, g: f32, b: f32) void {
-    var row: usize = 0;
-    while (row < Font.glyph_h) : (row += 1) {
-        const bits = Font.rowBits(ch, row);
-        var col: c_int = 0;
-        while (col < Font.glyph_w) : (col += 1) {
-            const shift: u3 = @intCast(Font.glyph_w - 1 - col);
-            if (((bits >> shift) & 1) == 0) continue;
-            gl_quad.solidRect(c, fb_w, fb_h, x + col * scale, y + @as(c_int, @intCast(row)) * scale, scale, scale, r, g, b, 1.0);
+    const tab_count = @as(u16, frame_value.tab_count);
+    const tab_cells = @max(@divTrunc(cells_visible, tab_count), 1);
+    var i: TabIndex = 0;
+    while (i < frame_value.tab_count) : (i += 1) {
+        const tab_start = screen.cursor_col;
+        const tab_end = if (i + 1 == frame_value.tab_count) cells_visible else @min(cells_visible, tab_start + tab_cells);
+        if (tab_start >= tab_end) break;
+        screen.setStyle(if (i == frame_value.active_tab) Style.active() else Style.inactive());
+        screen.drawUtf8(" ");
+        if (@as(usize, i) < frame_value.tab_labels.len and screen.cursor_col < tab_end) screen.drawUtf8Until(frame_value.tab_labels[@intCast(i)], tab_end - 1);
+        while (screen.cursor_col + 1 < tab_end) screen.drawUtf8(" ");
+        if (i + 1 < frame_value.tab_count and screen.cursor_col < tab_end) {
+            screen.setStyle(Style.separator());
+            screen.drawSeparator();
         }
     }
 }

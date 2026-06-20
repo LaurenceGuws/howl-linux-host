@@ -1,10 +1,15 @@
 const gl_c = @import("gl_c");
 const Layout = @import("../layout/layout.zig");
 const Present = @import("present.zig");
+const render_c = @import("howl_render_c");
 const gl_quad = @import("gl_quad.zig");
+const surface_commands = @import("surface_commands.zig");
+const surface_resources = @import("surface_resources.zig");
 const scroll_bar_presentation = @import("../scroll_bar/presentation.zig");
 const sdl_c = @import("sdl_c");
 const std = @import("std");
+const tab_cell_surface = @import("../tab_bar/cell_surface.zig");
+const tab_bar_screen = @import("../tab_bar/screen.zig");
 const tab_bar_presentation = @import("../tab_bar/presentation.zig");
 
 pub const C = struct {
@@ -75,6 +80,9 @@ pub fn GenericState(comptime c: type) type {
         tab_cache_w: c_int,
         tab_cache_h: c_int,
         tab_cache_revision: u64,
+        tab_text_handle: render_c.HowlRenderTextHandle,
+        tab_resources: surface_resources.RenderResourceTextures,
+        tab_screen: tab_bar_screen.Screen,
         next_present_token: PresentToken,
 
         pub fn submitPresentSync(self: *@This(), frame: Layout.Frame) PresentToken {
@@ -87,7 +95,7 @@ pub fn flags(comptime c: type) c_uint {
     return @intCast(c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_OPENGL);
 }
 
-pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) !void {
+pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window, tab_text_config: *const render_c.HowlRenderTextConfig) !void {
     state.* = .{
         .window = handle,
         .gl_context = null,
@@ -96,6 +104,9 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) !v
         .tab_cache_w = 0,
         .tab_cache_h = 0,
         .tab_cache_revision = 0,
+        .tab_text_handle = null,
+        .tab_resources = .{},
+        .tab_screen = .{},
         .next_present_token = 1,
     };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
@@ -106,9 +117,13 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window) !v
     state.gl_context = ctx;
     _ = c.SDL_GL_MakeCurrent(handle, ctx);
     _ = c.SDL_GL_SetSwapInterval(0);
+    try initTabText(state, tab_text_config);
 }
 
 pub fn deinit(comptime c: type, state: *GenericState(c)) void {
+    if (state.tab_text_handle) |handle| render_c.howl_render_text_deinit(handle);
+    state.tab_text_handle = null;
+    state.tab_resources.deinit();
     releaseTabCache(c, state);
     if (state.gl_context) |ctx| {
         _ = ctx;
@@ -164,7 +179,7 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int
     c.glViewport(0, 0, fb_w, fb_h);
     c.glClearColor(0.0, 0.0, 0.0, 0.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
-    tab_bar_presentation.draw(c, fb_w, fb_h, frame);
+    tab_bar_presentation.drawBackground(c, fb_w, fb_h, frame);
     c.glBindTexture(c.GL_TEXTURE_2D, state.tab_texture_id);
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);
     setTextureParams(c);
@@ -173,10 +188,41 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int
     } else {
         c.glCopyTexSubImage2D(c.GL_TEXTURE_2D, 0, 0, 0, 0, fb_h - bar_h, fb_w, bar_h);
     }
+    uploadTabTextSurface(state, fb_w, bar_h, frame);
     state.tab_cache_valid = true;
     state.tab_cache_w = fb_w;
     state.tab_cache_h = bar_h;
     state.tab_cache_revision = frame.tab_bar_revision;
+}
+
+fn initTabText(state: anytype, config: *const render_c.HowlRenderTextConfig) !void {
+    var handle: render_c.HowlRenderTextHandle = null;
+    if (render_c.howl_render_text_init(&handle, config) != render_c.HOWL_RENDER_CALL_OK) return error.TabTextInitFailed;
+    state.tab_text_handle = handle;
+}
+
+fn uploadTabTextSurface(state: anytype, fb_w: c_int, bar_h: c_int, frame: Layout.Frame) void {
+    const handle = state.tab_text_handle orelse return;
+    const tab_metrics = tab_cell_surface.metrics(frame.tab_bar_font_size_px, fb_w, bar_h);
+    tab_bar_presentation.writeCells(&state.tab_screen, frame, tab_metrics.visible_cells);
+    var upload = std.mem.zeroes(render_c.HowlRenderCellSurfacePreparedUpload);
+    const prepare = render_c.HowlRenderCellSurfacePrepare{
+        .render_px = .{ .width = @intCast(@max(fb_w, 1)), .height = @intCast(@max(bar_h, 1)) },
+        .grid_px = .{ .width = tab_metrics.visible_cells * tab_metrics.cell_px.width, .height = tab_metrics.cell_px.height },
+        .cell_px = tab_metrics.cell_px,
+        .grid = .{ .cols = tab_metrics.visible_cells, .rows = 1 },
+        .layout_epoch = frame.tab_bar_revision,
+        .cells = state.tab_screen.span(),
+    };
+    const status = render_c.howl_render_cell_surface_prepare(handle, &prepare, &upload);
+    if (status != render_c.HOWL_RENDER_CALL_OK) std.debug.panic("trusted tab cell surface prepare failed: status={}", .{status});
+    const surface = upload.surface_frame orelse std.debug.panic("trusted tab cell surface prepare returned no frame", .{});
+    state.tab_resources.realizeSurface(surface);
+    surface_commands.uploadRenderSurfaceCommands(
+        &state.tab_resources,
+        .{ .host_texture_id = state.tab_texture_id, .width = prepare.render_px.width, .height = prepare.render_px.height },
+        surface,
+    );
 }
 
 fn drawCachedTabBar(comptime c: type, state: *GenericState(c), fb_w: c_int, fb_h: c_int, bar_h: c_int) void {
@@ -311,6 +357,9 @@ fn testState() GenericState(FakeC) {
         .tab_cache_w = 0,
         .tab_cache_h = 0,
         .tab_cache_revision = 0,
+        .tab_text_handle = null,
+        .tab_resources = .{},
+        .tab_screen = .{},
         .next_present_token = 1,
     };
 }
@@ -323,6 +372,7 @@ fn testFrame() Layout.Frame {
         .tab_count = 0,
         .active_tab = 0,
         .tab_bar_revision = 1,
+        .tab_bar_font_size_px = 16,
         .tab_labels = &.{},
         .damage = .fullFrame(),
     };

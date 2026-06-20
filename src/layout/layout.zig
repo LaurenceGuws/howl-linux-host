@@ -32,6 +32,7 @@ pub const Frame = struct {
     tab_count: TabIndex,
     active_tab: TabIndex,
     tab_bar_revision: u64,
+    tab_bar_font_size_px: u16,
     tab_labels: []const []const u8,
     damage: PresentDamage,
 };

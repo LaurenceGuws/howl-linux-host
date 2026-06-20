@@ -193,7 +193,7 @@ pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_textu
                 if (glyphCommandHasFutureUpload(render_surface, command, @intCast(command_index))) {
                     std.debug.panic("trusted glyph command used before final upload", .{});
                 }
-                drawGlyphCommand(textures, host_texture, command);
+                uploadGlyphRunCommand(textures, host_texture, command);
             },
             else => std.debug.panic("trusted render surface has unknown command kind={}", .{command.kind}),
         }
@@ -495,7 +495,7 @@ fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderSurfaceFrame, 
     return false;
 }
 
-fn drawGlyphCommand(textures: *RenderResourceTextures, surface: render_c.HowlRenderHostTexture, command: render_c.HowlRenderSurfaceFrameCommand) void {
+fn uploadGlyphRunCommand(textures: *RenderResourceTextures, surface: render_c.HowlRenderHostTexture, command: render_c.HowlRenderSurfaceFrameCommand) void {
     const glyphs = spanSlice(render_c.HowlRenderGlyphRef, command.glyphs.ptr, command.glyphs.count);
     gl_c.glEnable(gl_c.GL_TEXTURE_2D);
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);

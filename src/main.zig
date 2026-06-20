@@ -2,6 +2,8 @@ const std = @import("std");
 const cli = @import("cli.zig");
 const Config = @import("config/config.zig");
 const GlPresent = @import("render/gl_present.zig");
+const render_fonts = @import("render/fonts.zig");
+const tab_cell_surface = @import("tab_bar/cell_surface.zig");
 const EventLoop = @import("events/event_loop.zig");
 const Input = @import("input/input.zig").Input;
 const Processor = @import("events/event.zig").Processor;
@@ -48,11 +50,15 @@ noinline fn start(io: std.Io, options: Args) !void {
 
     const gl_present = try std.heap.c_allocator.create(GlPresent.State);
     var gl_present_created = false;
+    var resolved_fonts = try render_fonts.resolve(std.heap.c_allocator, conf.term.fonts);
+    defer resolved_fonts.deinit(std.heap.c_allocator);
+    var tab_text_config: tab_cell_surface.TextConfig = undefined;
+    tab_cell_surface.initTextConfig(&tab_text_config, @max(conf.term.font_size, 1), resolved_fonts.primary, resolved_fonts.fallbacks);
     defer {
         if (gl_present_created) GlPresent.deinit(GlPresent.C, gl_present);
         std.heap.c_allocator.destroy(gl_present);
     }
-    try GlPresent.init(GlPresent.C, gl_present, app_window.handle);
+    try GlPresent.init(GlPresent.C, gl_present, app_window.handle, &tab_text_config.config);
     gl_present_created = true;
 
     const tab_bar = try std.heap.c_allocator.create(TabBar);

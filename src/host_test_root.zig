@@ -15,6 +15,8 @@ test {
     _ = @import("render/present.zig");
     _ = @import("scroll_bar/presentation.zig");
     _ = @import("tab_bar/presentation.zig");
+    _ = @import("tab_bar/cell_surface.zig");
+    _ = @import("tab_bar/screen.zig");
     _ = @import("layout/viewport.zig");
     _ = @import("cursor/cadence.zig");
     _ = @import("cursor/source.zig");

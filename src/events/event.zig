@@ -496,6 +496,7 @@ pub const Processor = struct {
             .tab_count = @intCast(frame.snapshot.labels.len),
             .active_tab = frame.snapshot.active_tab,
             .tab_bar_revision = frame.snapshot.tab_bar_revision,
+            .tab_bar_font_size_px = @max(frame.tab.font_size_px, 1),
             .tab_labels = frame.snapshot.labels,
             .damage = frame.turn.present_damage,
         };
