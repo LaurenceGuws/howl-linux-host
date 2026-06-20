@@ -2,6 +2,7 @@ const std = @import("std");
 
 const PresentDamage = @import("../render/present.zig").Damage;
 const TabIndex = @import("../tab_bar/tab_bar.zig").TabBar.TabIndex;
+const HostInput = @import("../input/input.zig").Input;
 
 pub const Rect = struct {
     x: c_int,
@@ -104,7 +105,7 @@ pub fn tabBarHeightLogical(window: anytype, configured_height: u32) c_int {
     return @min(@as(c_int, @intCast(configured_height)), window.logical_h - 1);
 }
 
-pub fn contentRelativeEvent(mouse_event: anytype, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, pixel_width: c_int, pixel_height: c_int) ?@TypeOf(mouse_event) {
+pub fn mouseEventInsideContent(mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, pixel_width: c_int, pixel_height: c_int) ?HostInput.Mouse.Event {
     const local_x = mouse_event.pixel_x - origin_x;
     const local_y = mouse_event.pixel_y - origin_y;
     if (local_x < 0 or local_y < 0) return null;

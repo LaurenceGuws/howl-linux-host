@@ -26,7 +26,8 @@ const CursorStyle = @import("../config/term.zig").CursorStyle;
 const ClipboardOsc52Policy = @import("../config/term.zig").ClipboardOsc52Policy;
 const font_size = terminal_fonts;
 const surface_layout = @import("../render/surface_layout.zig");
-const terminal_input = @import("bucket3.zig");
+const input_processor = @import("../input/processor.zig");
+const TermInput = input_processor.TermInput;
 const term_input = @import("../vt/input.zig");
 const terminal_links = @import("../render/links.zig");
 const cursor_blink = @import("../cursor/blink.zig");
@@ -36,7 +37,8 @@ const cursor_trail = @import("../cursor/trail.zig");
 const terminal_scrollbar = @import("../scroll_bar/scrollbar.zig");
 const terminal_selection = @import("../selection/selection.zig");
 
-const default_history_capacity: u16 = 4096;
+// TODO move capacity limit to config
+const history_capacity: u16 = 4096;
 const max_fallback_font_paths: u8 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
 const TestingHooks = struct {
@@ -62,7 +64,7 @@ const RenderInit = struct {
     fallback_font_paths: []const [:0]const u8 = &.{},
 };
 
-const VtInitOptions = struct {
+const VtInitConf = struct {
     default_cursor_style: struct {
         shape: CursorStyle,
         blink: bool,
@@ -70,9 +72,8 @@ const VtInitOptions = struct {
 };
 
 pub const Surface = struct {
-    const Context = @This();
+    const Term = @This();
 
-    pub const DrainInputOutcome = terminal_input.DrainInputOutcome;
     pub const PresentDamage = @import("../render/present.zig").Damage;
 
     pub const OverlaySnapshot = struct {
@@ -135,7 +136,7 @@ pub const Surface = struct {
         outcome: pty_pump.Outcome,
     };
 
-    pub const MouseHandlingOutcome = terminal_input.MouseHandlingOutcome;
+    pub const MouseHandlingOutcome = input_processor.MouseHandlingOutcome;
 
     term: HowlTerm,
     progress: pty_wait_thread.WaitThread = .{},
@@ -175,7 +176,7 @@ pub const Surface = struct {
     };
 
     pub noinline fn init(
-        self: *Context,
+        self: *Term,
         input: *HostInput,
         event_loop: *EventLoop.EventLoop,
         conf: *const TerminalConfig,
@@ -198,7 +199,7 @@ pub const Surface = struct {
         try self.startRuntime();
     }
 
-    noinline fn initial(self: *Context, request: InitialRequest) void {
+    noinline fn initial(self: *Term, request: InitialRequest) void {
         const start_font_px = @max(request.conf.font_size, 1);
         self.term = undefined;
         self.progress = .{};
@@ -233,7 +234,7 @@ pub const Surface = struct {
         self.cursor_render = std.mem.zeroes(render_retained.HostCursorCadence);
     }
 
-    pub fn deinit(self: *Context) void {
+    pub fn deinit(self: *Term) void {
         if (self.links.cursor_active) window.useDefaultCursor();
         self.links.cursor_active = false;
         term_texture.deleteTexture(&self.term_texture.host_texture_id);
@@ -256,60 +257,62 @@ pub const Surface = struct {
         self.progress.deinit();
     }
 
-    pub fn resize(self: *Context, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
+    pub fn resize(self: *Term, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
         surface_layout.resize(self, render_width, render_height, logical_width, logical_height);
     }
 
-    pub fn maybeCommitGridResize(self: *Context) void {
+    pub fn maybeCommitGridResize(self: *Term) void {
         surface_layout.maybeCommitGridResize(self);
     }
 
-    pub fn syncSurfaceLayout(self: *Context, request: SurfaceLayoutRequest) !void {
+    pub fn syncSurfaceLayout(self: *Term, request: SurfaceLayoutRequest) !void {
         try surface_layout.syncSurfaceLayout(self, request);
     }
 
-    pub fn surfaceLayoutSnapshot(self: *Context) SurfaceLayoutRequest {
+    pub fn surfaceLayoutSnapshot(self: *Term) SurfaceLayoutRequest {
         return surface_layout.surfaceLayoutSnapshot(self);
     }
 
-    pub fn paste(self: *Context, payload: []const u8) void {
+    pub fn paste(self: *Term, payload: []const u8) void {
         term_input.publishPaste(&self.term, payload) catch return;
         _ = self.resetCursorBlinkActivity(EventLoop.nowNs());
     }
 
-    pub fn drainTextInputFastPath(self: *Context, input_events: *HostInput) DrainInputOutcome {
-        return terminal_input.drainTextInputFastPath(self, input_events);
+    pub fn drainTextInputFastPath(self: *Term, input_events: *HostInput, input_published: *bool, host_visual_changed: *bool) void {
+        var selected = self.termInput();
+        input_processor.drainTextInputFastPath(&selected, input_events, input_published, host_visual_changed);
     }
 
-    pub fn drainPointerAndUiInput(self: *Context, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) DrainInputOutcome {
-        return terminal_input.drainPointerAndUiInput(self, input_events, origin_x, origin_y, logical_width, logical_height);
+    pub fn drainPointerInput(self: *Term, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, input_published: *bool, host_visual_changed: *bool) void {
+        var selected = self.termInput();
+        input_processor.drainPointerInput(&selected, input_events, origin_x, origin_y, logical_width, logical_height, input_published, host_visual_changed);
     }
 
-    pub fn handleScrollInput(self: *Context, input_events: *HostInput) void {
+    pub fn handleScrollInput(self: *Term, input_events: *HostInput) void {
         terminal_scrollbar.handlePages(self, input_events);
     }
 
-    pub fn wantsPassiveHoverWake(self: *const Context, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
+    pub fn wantsPassiveHoverWake(self: *const Term, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
         return terminal_scrollbar.wantsPassiveHoverWake(self, origin_x, origin_y, logical_width, logical_height);
     }
 
     /// Report whether this term needs unpressed mouse motion for link hover.
-    pub fn wantsLinkHover(self: *const Context) bool {
+    pub fn wantsLinkHover(self: *const Term) bool {
         return self.conf.link_hover != .off;
     }
 
-    pub fn wantsTerminalHoverReporting(self: *Context) bool {
+    pub fn wantsTerminalHoverReporting(self: *Term) bool {
         if (!self.live) return false;
         return term_input.wouldReportUnpressedMouseMotion(&self.term);
     }
 
-    pub fn overlaySnapshot(self: *const Context, texture_rect: Layout.Rect) OverlaySnapshot {
+    pub fn overlaySnapshot(self: *const Term, texture_rect: Layout.Rect) OverlaySnapshot {
         return .{
             .scrollbar = terminal_scrollbar.layout(@constCast(self), texture_rect),
         };
     }
 
-    pub fn textureSize(self: *const Context) Layout.Size {
+    pub fn textureSize(self: *const Term) Layout.Size {
         const render_px = self.term.render.surface_layout.render_px;
         const width = @as(c_int, @intCast(render_px.width));
         const height = @as(c_int, @intCast(render_px.height));
@@ -321,34 +324,34 @@ pub const Surface = struct {
         };
     }
 
-    pub fn lifecycleState(self: *const Context) LifecycleState {
+    pub fn lifecycleState(self: *const Term) LifecycleState {
         return pty_session.lifecycleState(&self.term);
     }
 
-    pub fn isAlive(self: *const Context) bool {
+    pub fn isAlive(self: *const Term) bool {
         return pty_session.isAlive(&self.term);
     }
 
-    pub fn ptySnapshot(self: *const Context) pty_session.Snapshot {
+    pub fn ptySnapshot(self: *const Term) pty_session.Snapshot {
         return pty_session.snapshot(&self.term);
     }
 
-    pub fn sessionOutcome(self: *const Context) pty_session.SessionOutcome {
+    pub fn sessionOutcome(self: *const Term) pty_session.SessionOutcome {
         return pty_session.outcome(&self.term);
     }
 
-    pub fn titleSlice(self: *Context) []const u8 {
+    pub fn titleSlice(self: *Term) []const u8 {
         if (vt_title.generation(&self.term.vt_state.title) != self.title_generation_seen) {
             self.refreshTitle();
         }
         return self.title_buf[0..self.title_len];
     }
 
-    pub fn titleGeneration(self: *const Context) u64 {
+    pub fn titleGeneration(self: *const Term) u64 {
         return vt_title.generation(&self.term.vt_state.title);
     }
 
-    pub fn refreshTitle(self: *Context) void {
+    pub fn refreshTitle(self: *Term) void {
         self.term.mutex.lock();
         defer self.term.mutex.unlock();
         self.title_len = @intCast(vt_title.copy(&self.term.vt_state.title, self.title_buf[0..]));
@@ -359,7 +362,7 @@ pub const Surface = struct {
         if (self.title_len != 0) @memcpy(self.title_buf[0..self.title_len], fallback[0..self.title_len]);
     }
 
-    pub fn setWindowFocused(self: *Context, focused: bool) void {
+    pub fn setWindowFocused(self: *Term, focused: bool) void {
         if (self.window_focused == focused) return;
         self.window_focused = focused;
         if (!focused and terminal_links.clearHoveredLink(self)) self.input.requestRedraw();
@@ -367,7 +370,7 @@ pub const Surface = struct {
         self.syncInputFocus();
     }
 
-    pub fn setWidgetFocused(self: *Context, focused: bool) void {
+    pub fn setWidgetFocused(self: *Term, focused: bool) void {
         if (self.widget_focused == focused) return;
         self.widget_focused = focused;
         if (!focused and terminal_links.clearHoveredLink(self)) self.input.requestRedraw();
@@ -375,31 +378,31 @@ pub const Surface = struct {
         self.syncInputFocus();
     }
 
-    pub fn syncInputFocus(self: *Context) void {
+    pub fn syncInputFocus(self: *Term) void {
         _ = term_input.publishFocus(&self.term, self.window_focused and self.widget_focused) catch return;
     }
 
-    pub fn adjustFontSize(self: *Context, delta: i16) bool {
+    pub fn adjustFontSize(self: *Term, delta: i16) bool {
         if (!font_size.adjust(self, delta)) return false;
         return surface_layout.syncCurrentSurfaceLayout(self);
     }
 
-    pub fn toggleStressFontSize(self: *Context) bool {
+    pub fn toggleStressFontSize(self: *Term) bool {
         if (!font_size.toggleStress(self)) return false;
         return surface_layout.syncCurrentSurfaceLayout(self);
     }
 
-    pub fn resetFontSize(self: *Context) bool {
+    pub fn resetFontSize(self: *Term) bool {
         if (!font_size.reset(self)) return false;
         return surface_layout.syncCurrentSurfaceLayout(self);
     }
 
-    pub fn wantsRenderTurn(self: *const Context) bool {
+    pub fn wantsRenderTurn(self: *const Term) bool {
         if (testing_hooks.wants_render_turn) |hook| return hook(@constCast(self));
         return self.renderTurnAdmission().needsRenderTurn();
     }
 
-    pub fn cursorFacts(self: *Context, now_ns: u64) CursorFacts {
+    pub fn cursorFacts(self: *Term, now_ns: u64) CursorFacts {
         const focused = self.window_focused and self.widget_focused;
         const animate = self.cursor_render_info.shouldAnimate(focused, self.conf.cursor_blink);
         const animation_valid = self.cursorAnimationValid();
@@ -433,7 +436,7 @@ pub const Surface = struct {
         };
     }
 
-    pub fn consumeCursorFacts(self: *Context, facts: CursorFacts) bool {
+    pub fn consumeCursorFacts(self: *Term, facts: CursorFacts) bool {
         const upload_ok = self.term.render.setHostCursorCadence(&facts.render);
         if (!upload_ok) return false;
         self.cursor_render = facts.render;
@@ -441,22 +444,22 @@ pub const Surface = struct {
         return facts.redraw();
     }
 
-    pub fn resetCursorBlinkActivity(self: *Context, now_ns: u64) bool {
+    pub fn resetCursorBlinkActivity(self: *Term, now_ns: u64) bool {
         const changed = self.cursor_blink.resetActivity(now_ns);
         const redraw = self.driveCursor(now_ns) or changed;
         return redraw;
     }
 
-    pub fn cursorWaitMs(self: *Context, now_ns: u64) ?u32 {
+    pub fn cursorWaitMs(self: *Term, now_ns: u64) ?u32 {
         return self.cursorFacts(now_ns).waitMs();
     }
 
-    pub fn runtimeObligationDueNow(self: *Context, now_ns: u64) bool {
+    pub fn runtimeObligationDueNow(self: *Term, now_ns: u64) bool {
         const obligation = vt_retained.queryRuntimeObligation(&self.term, now_ns) catch return false;
         return obligation.pending_now;
     }
 
-    pub fn nextRuntimeObligationWaitMs(self: *Context, now_ns: u64) ?u32 {
+    pub fn nextRuntimeObligationWaitMs(self: *Term, now_ns: u64) ?u32 {
         if (testing_hooks.next_runtime_obligation_wait_ms) |hook| return hook(self, now_ns);
         const obligation = vt_retained.queryRuntimeObligation(&self.term, now_ns) catch return null;
         if (obligation.pending_now or obligation.deadline_ns == 0) return null;
@@ -465,7 +468,7 @@ pub const Surface = struct {
         return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
     }
 
-    pub fn runtimeFacts(self: *Context, active: bool, now_ns: u64, admission: DriveAdmission) RuntimeFacts {
+    pub fn runtimeFacts(self: *Term, active: bool, now_ns: u64, admission: DriveAdmission) RuntimeFacts {
         return .{
             .wake_pending = wakePendingHooked(self),
             .runtime_due_now = runtimeObligationDueNowHooked(self, now_ns),
@@ -475,17 +478,17 @@ pub const Surface = struct {
         };
     }
 
-    pub fn driveProgress(self: *Context, active: bool, now_ns: u64, admission: DriveAdmission) DriveProgressResult {
+    pub fn driveProgress(self: *Term, active: bool, now_ns: u64, admission: DriveAdmission) DriveProgressResult {
         return self.driveProgressWithFacts(active, now_ns, self.runtimeFacts(active, now_ns, admission));
     }
 
-    pub fn acknowledgeProgressWake(self: *Context) bool {
+    pub fn acknowledgeProgressWake(self: *Term) bool {
         if (!wakePendingHooked(self)) return false;
         ackWakeHooked(self);
         return true;
     }
 
-    pub fn driveProgressWithFacts(self: *Context, active: bool, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
+    pub fn driveProgressWithFacts(self: *Term, active: bool, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
         if (!facts.driveAdmitted(active)) {
             const cursor_redraw = if (active) self.driveCursor(now_ns) else false;
             return .{
@@ -498,7 +501,7 @@ pub const Surface = struct {
         return driveProgressConsequences(self, active, now_ns, outcome);
     }
 
-    pub fn renderTurn(self: *Context) TurnResult {
+    pub fn renderTurn(self: *Term) TurnResult {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         const bootstrap_surface = self.term_texture.host_texture_id == 0;
@@ -514,13 +517,13 @@ pub const Surface = struct {
         };
     }
 
-    pub fn notePresentSubmitted(self: *Context, snapshot_seq: u64, token: u64) void {
+    pub fn notePresentSubmitted(self: *Term, snapshot_seq: u64, token: u64) void {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         self.term.render.notePresentSubmitted(snapshot_seq, token);
     }
 
-    pub fn completePresent(self: *Context, token: u64) void {
+    pub fn completePresent(self: *Term, token: u64) void {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         const snapshot_seq = self.term.render.completePresent(token) orelse return;
@@ -528,16 +531,16 @@ pub const Surface = struct {
         _ = vt_surface.ackPublishedSourceLocked(&self.term, snapshot_seq);
     }
 
-    pub fn noteRenderTurn(self: *Context, turn: TurnResult) void {
+    pub fn noteRenderTurn(self: *Term, turn: TurnResult) void {
         if (turn.step == .surface_idle) return;
         if (turn.prepared and turn.state_after == .submit_ready) self.notePreparedStep(turn.state_after);
     }
 
-    pub fn termTextureId(self: *const Context) u64 {
+    pub fn termTextureId(self: *const Term) u64 {
         return self.term_texture.host_texture_id;
     }
 
-    fn initTerm(self: *Context) !void {
+    fn initTerm(self: *Term) !void {
         const surface_request = self.surfaceLayoutSnapshot();
         var resolved_fonts = try terminal_fonts.resolve(std.heap.c_allocator, self.conf.fonts);
         defer resolved_fonts.deinit(std.heap.c_allocator);
@@ -559,7 +562,7 @@ pub const Surface = struct {
         self.term.render.syncSurfaceLayout(term_init.surface_layout);
     }
 
-    fn startRuntime(self: *Context) !void {
+    fn startRuntime(self: *Term) !void {
         vt_title.set(&self.term.vt_state.title, titleFromLaunch(self.term.pty.launch));
         try pty_session.start(&self.term);
         if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
@@ -572,7 +575,7 @@ pub const Surface = struct {
         self.progress.thread = progress_thread;
     }
 
-    fn applyPendingClipboardWrites(self: *Context) void {
+    fn applyPendingClipboardWrites(self: *Term) void {
         if (testing_hooks.apply_pending_clipboard_writes) |hook| {
             hook(self);
             return;
@@ -586,8 +589,8 @@ pub const Surface = struct {
         _ = window.setClipboardText(text);
     }
 
-    fn renderTurnAdmission(self: *const Context) render_retained.RenderTurnAdmission {
-        const mut: *Context = @constCast(self);
+    fn renderTurnAdmission(self: *const Term) render_retained.RenderTurnAdmission {
+        const mut: *Term = @constCast(self);
         mut.term.mutex.lockFair();
         defer mut.term.mutex.unlock();
         return mut.term.render.admitRenderTurn(mut.term_texture.host_texture_id == 0);
@@ -601,7 +604,7 @@ pub const Surface = struct {
         present_damage: PresentDamage,
     };
 
-    fn driveRenderLocked(self: *Context, admission: render_retained.RenderTurnAdmission) DriveResult {
+    fn driveRenderLocked(self: *Term, admission: render_retained.RenderTurnAdmission) DriveResult {
         return switch (admission.state) {
             .idle => idleDrive(.idle, .surface_idle),
             .present_in_flight => idleDrive(.present_in_flight, .blocked_present),
@@ -630,17 +633,17 @@ pub const Surface = struct {
         };
     }
 
-    fn maybeCommitGridResizeLocked(self: *Context) void {
+    fn maybeCommitGridResizeLocked(self: *Term) void {
         surface_layout.maybeCommitGridResizeLocked(self);
     }
 
-    fn submitPrepared(self: *Context) SubmitPreparedResult {
+    fn submitPrepared(self: *Term) SubmitPreparedResult {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         return self.submitPreparedLocked();
     }
 
-    fn submitPreparedLocked(self: *Context) SubmitPreparedResult {
+    fn submitPreparedLocked(self: *Term) SubmitPreparedResult {
         var upload = std.mem.zeroes(render_retained.PreparedUpload);
         if (!self.term.render.preparedUpload(&upload)) {
             self.term.render.noteRetainedFailure();
@@ -719,17 +722,17 @@ pub const Surface = struct {
         return .{ .result = .stale, .snapshot_seq = snapshot_seq };
     }
 
-    fn wakePendingHooked(self: *Context) bool {
+    fn wakePendingHooked(self: *Term) bool {
         if (testing_hooks.wake_pending) |hook| return hook(self);
         return pty_wait_thread.wakePending(self);
     }
 
-    fn runtimeObligationDueNowHooked(self: *Context, now_ns: u64) bool {
+    fn runtimeObligationDueNowHooked(self: *Term, now_ns: u64) bool {
         if (testing_hooks.runtime_obligation_due_now) |hook| return hook(self, now_ns);
         return self.runtimeObligationDueNow(now_ns);
     }
 
-    fn isAliveHooked(self: *Context) bool {
+    fn isAliveHooked(self: *Term) bool {
         if (testing_hooks.is_alive) |hook| return hook(self);
         return pty_session.isAlive(&self.term);
     }
@@ -739,17 +742,17 @@ pub const Surface = struct {
         return pty_pump.driveOnce(term, now_ns);
     }
 
-    fn driveProgressBounded(self: *Context, now_ns: u64) pty_pump.Outcome {
+    fn driveProgressBounded(self: *Term, now_ns: u64) pty_pump.Outcome {
         return driveOnceHooked(&self.term, now_ns);
     }
 
-    fn noteTerminalSourceChanged(self: *Context) void {
+    fn noteTerminalSourceChanged(self: *Term) void {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         self.term.render.notePrepareNeeded();
     }
 
-    fn driveProgressConsequences(self: *Context, active: bool, now_ns: u64, outcome_input: pty_pump.Outcome) DriveProgressResult {
+    fn driveProgressConsequences(self: *Term, active: bool, now_ns: u64, outcome_input: pty_pump.Outcome) DriveProgressResult {
         var outcome = outcome_input;
         if (active and outcome.should_redraw) {
             self.noteTerminalSourceChanged();
@@ -763,7 +766,7 @@ pub const Surface = struct {
         return .{ .drove = true, .outcome = outcome };
     }
 
-    fn ackWakeHooked(self: *Context) void {
+    fn ackWakeHooked(self: *Term) void {
         if (testing_hooks.ack_wake) |hook| {
             hook(self);
             return;
@@ -771,7 +774,7 @@ pub const Surface = struct {
         pty_wait_thread.ackWake(self);
     }
 
-    fn uploadRenderSurface(self: *Context, surface_frame: *const render_c.HowlRenderSurfaceFrame) bool {
+    fn uploadRenderSurface(self: *Term, surface_frame: *const render_c.HowlRenderSurfaceFrame) bool {
         if (testing_hooks.upload_render_surface) |hook| return hook(self, surface_frame);
         return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, surface_frame);
     }
@@ -784,7 +787,7 @@ pub const Surface = struct {
         };
     }
 
-    fn submitDriveResult(self: *Context, prepared: bool, submit_result: SubmitPreparedResult) DriveResult {
+    fn submitDriveResult(self: *Term, prepared: bool, submit_result: SubmitPreparedResult) DriveResult {
         const step = submitStep(submit_result.result);
         return .{
             .prepared = prepared,
@@ -795,16 +798,16 @@ pub const Surface = struct {
         };
     }
 
-    fn notePreparedStep(self: *Context, state: render_retained.RetainedState) void {
+    fn notePreparedStep(self: *Term, state: render_retained.RetainedState) void {
         _ = self;
         std.debug.assert(state == .submit_ready or state == .present_in_flight);
     }
 
-    fn driveCursor(self: *Context, now_ns: u64) bool {
+    fn driveCursor(self: *Term, now_ns: u64) bool {
         return self.consumeCursorFacts(self.cursorFacts(now_ns));
     }
 
-    fn cursorAnimationValid(self: *const Context) bool {
+    fn cursorAnimationValid(self: *const Term) bool {
         return self.live and
             self.term.render.surface_layout.cell_px.width > 0 and
             self.term.render.surface_layout.cell_px.height > 0 and
@@ -812,11 +815,11 @@ pub const Surface = struct {
             self.default_font_size_px > 0;
     }
 
-    fn cursorTrailGeometryValid(self: *const Context) bool {
+    fn cursorTrailGeometryValid(self: *const Term) bool {
         return self.term.render.surface_layout.cell_px.width > 0 and self.term.render.surface_layout.cell_px.height > 0;
     }
 
-    fn publishCursorInfo(self: *Context, state: vt_c.HowlVtRenderStateHandle, now_ns: u64) !void {
+    fn publishCursorInfo(self: *Term, state: vt_c.HowlVtRenderStateHandle, now_ns: u64) !void {
         const collected = try cursor_source.collectCursorInfo(state);
         const position_sequence = collected.info.positionSequence();
         if (self.cursor_position_sequence != position_sequence) {
@@ -828,7 +831,7 @@ pub const Surface = struct {
         self.cursor_text_blinking = collected.text_blinking;
     }
 
-    fn cursorTrailCursor(self: *const Context) cursor_trail.Cursor {
+    fn cursorTrailCursor(self: *const Term) cursor_trail.Cursor {
         return .{
             .x = self.cursor_render_info.col,
             .y = self.cursor_render_info.row,
@@ -839,7 +842,7 @@ pub const Surface = struct {
         };
     }
 
-    fn cursorTrailOptions(self: *const Context) cursor_trail.Options {
+    fn cursorTrailOptions(self: *const Term) cursor_trail.Options {
         return .{
             .delay_ns = @as(u64, self.conf.cursor_trail) * std.time.ns_per_ms,
             .decay_fast = secondsFromNs(self.cursor_blink.config.trail_decay_fast_ns),
@@ -848,7 +851,7 @@ pub const Surface = struct {
         };
     }
 
-    fn cursorTrailGrid(self: *const Context) cursor_trail.Grid {
+    fn cursorTrailGrid(self: *const Term) cursor_trail.Grid {
         const cell_width: f32 = @floatFromInt(self.term.render.surface_layout.cell_px.width);
         const cell_height: f32 = @floatFromInt(self.term.render.surface_layout.cell_px.height);
         std.debug.assert(cell_width > 0);
@@ -875,15 +878,130 @@ pub const Surface = struct {
         return if (current_wait_ms) |current| @min(current, next) else next;
     }
 
-    pub fn terminalOwnsMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
-        return terminal_input.terminalOwnsMouse(self, mouse_event);
+    pub fn terminalOwnsMouse(self: *Term, mouse_event: HostInput.Mouse.Event) bool {
+        var selected = self.termInput();
+        return input_processor.terminalOwnsMouse(&selected, mouse_event);
     }
 
-    pub fn pixelToTerminalCol(self: *const Context, pixel_x: i32) u16 {
+    fn termInput(self: *Term) TermInput {
+        return .{
+            .surface = self,
+            .term = &self.term,
+            .surface_layout = &self.term.render.surface_layout,
+            .reset_cursor_blink_activity = resetCursorBlinkActivitySelected,
+            .write_bytes_to_pty = writeBytesToPtySelected,
+            .write_key_to_pty = writeKeyToPtySelected,
+            .write_mouse_to_pty = writeMouseToPtySelected,
+            .process_scrollbar_mouse = processScrollBarMouseSelected,
+            .clear_hovered_link = clearHoveredLinkSelected,
+            .scroll_viewport_by_wheel = scrollViewportByWheelSelected,
+            .process_selection_mouse = processSelectionMouseSelected,
+            .process_link_mouse = processLinkMouseSelected,
+        };
+    }
+
+    fn selectedSurface(surface: *anyopaque) *Term {
+        return @ptrCast(@alignCast(surface));
+    }
+
+    fn resetCursorBlinkActivitySelected(surface: *anyopaque, now_ns: u64) bool {
+        return selectedSurface(surface).resetCursorBlinkActivity(now_ns);
+    }
+
+    fn writeBytesToPtySelected(surface: *anyopaque, bytes: []const u8) bool {
+        const self = selectedSurface(surface);
+        _ = terminal_scrollbar.scrollViewportToBottom(&self.term);
+        pty_session.publishInputBytes(&self.term, bytes) catch return false;
+        return true;
+    }
+
+    fn writeKeyToPtySelected(surface: *anyopaque, key: HostInput.Keys.Event) bool {
+        const self = selectedSurface(surface);
+        const terminal_key = term_input.key(key.key) orelse return false;
+        term_input.publishKey(&self.term, terminal_key, term_input.mods(key.mods)) catch return false;
+        return true;
+    }
+
+    fn writeMouseToPtySelected(surface: *anyopaque, mouse_event: HostInput.Mouse.Event) bool {
+        const self = selectedSurface(surface);
+        const current_layout = self.term.render.surface_layout;
+        return term_input.publishMouse(&self.term, .{
+            .kind = term_input.mouseKind(mouse_event.kind),
+            .button = term_input.mouseButton(mouse_event.button),
+            .row = layout_cells.row(current_layout, mouse_event.pixel_y),
+            .col = layout_cells.col(current_layout, mouse_event.pixel_x),
+            .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
+            .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
+            .mods = term_input.mods(mouse_event.mods),
+            .buttons_down = term_input.buttons(mouse_event.buttons_down),
+        }) catch false;
+    }
+
+    const ScrollVisualState = struct {
+        mouse_logical_x: i32,
+        mouse_logical_y: i32,
+        dragging: bool,
+        grab_offset: f32,
+        scrollback_offset: u32,
+
+        fn capture(self: *Term) ScrollVisualState {
+            return .{
+                .mouse_logical_x = self.scrollbar.mouse_logical_x,
+                .mouse_logical_y = self.scrollbar.mouse_logical_y,
+                .dragging = self.scrollbar.dragging,
+                .grab_offset = self.scrollbar.grab_offset,
+                .scrollback_offset = terminal_scrollbar.scrollState(&self.term).scrollback_offset,
+            };
+        }
+    };
+
+    fn processScrollBarMouseSelected(surface: *anyopaque, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) input_processor.ScrollMouseOutcome {
+        const self = selectedSurface(surface);
+        const before = ScrollVisualState.capture(self);
+        const consumed = terminal_scrollbar.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
+        const after = ScrollVisualState.capture(self);
+        if (before.scrollback_offset != after.scrollback_offset) self.noteRenderScrollbackChanged();
+        return .{ .consumed = consumed, .host_visual_changed = !std.meta.eql(before, after) };
+    }
+
+    fn clearHoveredLinkSelected(surface: *anyopaque) bool {
+        return terminal_links.clearHoveredLink(selectedSurface(surface));
+    }
+
+    fn scrollViewportByWheelSelected(surface: *anyopaque, local_mouse: HostInput.Mouse.Event) bool {
+        const self = selectedSurface(surface);
+        const before = terminal_scrollbar.scrollState(&self.term).scrollback_offset;
+        const delta: i32 = switch (local_mouse.button) {
+            .wheel_up => 3,
+            .wheel_down => -3,
+            else => 0,
+        };
+        if (delta == 0) return false;
+        terminal_scrollbar.byRows(self, delta);
+        const after = terminal_scrollbar.scrollState(&self.term).scrollback_offset;
+        if (before != after) self.noteRenderScrollbackChanged();
+        return before != after;
+    }
+
+    fn processSelectionMouseSelected(surface: *anyopaque, mouse_event: HostInput.Mouse.Event) input_processor.MouseHandlingOutcome {
+        return terminal_selection.handleMouse(selectedSurface(surface), mouse_event);
+    }
+
+    fn processLinkMouseSelected(surface: *anyopaque, mouse_event: HostInput.Mouse.Event) input_processor.MouseHandlingOutcome {
+        return terminal_links.handleMouse(selectedSurface(surface), mouse_event);
+    }
+
+    fn noteRenderScrollbackChanged(self: *Term) void {
+        self.term.mutex.lockFair();
+        defer self.term.mutex.unlock();
+        self.term.render.notePrepareNeeded();
+    }
+
+    pub fn pixelToTerminalCol(self: *const Term, pixel_x: i32) u16 {
         return layout_cells.col(self.term.render.surface_layout, pixel_x);
     }
 
-    pub fn pixelToTerminalRow(self: *const Context, pixel_y: i32) i32 {
+    pub fn pixelToTerminalRow(self: *const Term, pixel_y: i32) i32 {
         return layout_cells.row(self.term.render.surface_layout, pixel_y);
     }
 
@@ -901,7 +1019,7 @@ pub const Surface = struct {
         };
     }
 
-    fn renderInit(self: *Context, surface_request: SurfaceLayoutRequest, resolved_fonts: *const terminal_fonts.ResolvedFonts) RenderInit {
+    fn renderInit(self: *Term, surface_request: SurfaceLayoutRequest, resolved_fonts: *const terminal_fonts.ResolvedFonts) RenderInit {
         return .{
             .content_px = surface_request.content_px,
             .font_size_px = @max(self.conf.font_size, 1),
@@ -964,10 +1082,10 @@ fn initRenderText(render: *render_retained.State, render_init: RenderInit) !void
     if (!render.initText(&config)) return error.RenderInitFailed;
 }
 
-fn initVt(rows: u16, cols: u16, options: VtInitOptions) !vt_c.HowlVtHandle {
+fn initVt(rows: u16, cols: u16, options: VtInitConf) !vt_c.HowlVtHandle {
     std.debug.assert(rows > 0);
     std.debug.assert(cols > 0);
-    const handle = vt_c.howl_vt_terminal_init_with_options(rows, cols, default_history_capacity, .{
+    const handle = vt_c.howl_vt_terminal_init_with_options(rows, cols, history_capacity, .{
         .default_cursor_style = .{
             .shape = switch (options.default_cursor_style.shape) {
                 .block => 0,

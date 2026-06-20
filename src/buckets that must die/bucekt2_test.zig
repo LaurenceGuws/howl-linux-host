@@ -3,11 +3,10 @@ const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 
 const event_mod = @import("../events/event.zig");
-const display_layout = @import("../layout/layout.zig");
+const host_layout = @import("../layout/layout.zig");
 const surface_mod = @import("bucket2.zig");
 const cursor_blink = @import("../cursor/blink.zig");
 const pty_pump = @import("../pty/pump.zig");
-const terminal_input = @import("bucket3.zig");
 const render_retained = @import("../render/surface_retained.zig");
 const surface_layout = @import("../render/surface_layout.zig");
 const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
@@ -17,7 +16,6 @@ const term_config = @import("../config/term.zig");
 
 const Surface = surface_mod.Surface;
 const HostInput = @import("../input/input.zig").Input;
-const MouseEvent = HostInput.Mouse.Event;
 const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
 const SurfaceLayout = render_retained.SurfaceLayout;
 const surface_testing = surface_mod.testing;
@@ -384,8 +382,8 @@ test "snap surface layout truncates content to whole terminal cells" {
     try std.testing.expectEqual(layout.grid_px.height, layout.render_px.height);
 }
 
-test "display terminal rect places snapped terminal texture size" {
-    const rect = display_layout.terminalRect(.{ .x = 7, .y = 19, .width = 960, .height = 570 }, .{ .width = 960, .height = 560 });
+test "terminal rect places snapped terminal texture size" {
+    const rect = host_layout.terminalRect(.{ .x = 7, .y = 19, .width = 960, .height = 570 }, .{ .width = 960, .height = 560 });
 
     try std.testing.expectEqual(@as(c_int, 7), rect.x);
     try std.testing.expectEqual(@as(c_int, 19), rect.y);
@@ -393,8 +391,8 @@ test "display terminal rect places snapped terminal texture size" {
     try std.testing.expectEqual(@as(c_int, 560), rect.height);
 }
 
-test "display terminal logical size follows snapped terminal pixels" {
-    const size = display_layout.terminalLogicalSize(.{ .width = 960, .height = 570 }, .{ .width = 960, .height = 570 }, .{ .width = 960, .height = 560 });
+test "terminal logical size follows snapped terminal pixels" {
+    const size = host_layout.terminalLogicalSize(.{ .width = 960, .height = 570 }, .{ .width = 960, .height = 570 }, .{ .width = 960, .height = 560 });
 
     try std.testing.expectEqual(@as(c_int, 960), size.width);
     try std.testing.expectEqual(@as(c_int, 560), size.height);
@@ -540,360 +538,6 @@ test "inactive tab wake acknowledges without host transport drive" {
     try std.testing.expectEqual(@as(u8, 0), drive_hook_state.drive_calls);
     try std.testing.expect(surface.acknowledgeProgressWake());
     try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
-}
-
-test "text input fast path publishes text without pointer or UI operations" {
-    const FakeContext = struct {
-        publish_bytes_ok: bool = false,
-        publish_key_ok: bool = false,
-        publish_mouse_ok: bool = false,
-        blink_changed: bool = false,
-        clear_hover_changed: bool = false,
-        wheel_changed: bool = false,
-    };
-
-    const FakeOps = struct {
-        var bytes_calls: u8 = 0;
-        var key_calls: u8 = 0;
-        var blink_calls: u8 = 0;
-        var mouse_calls: u8 = 0;
-        var scroll_calls: u8 = 0;
-        var hover_calls: u8 = 0;
-        var selection_calls: u8 = 0;
-
-        fn reset() void {
-            bytes_calls = 0;
-            key_calls = 0;
-            blink_calls = 0;
-            mouse_calls = 0;
-            scroll_calls = 0;
-            hover_calls = 0;
-            selection_calls = 0;
-        }
-
-        pub fn resetCursorBlinkActivity(self: *FakeContext, _: u64) bool {
-            blink_calls += 1;
-            return self.blink_changed;
-        }
-
-        pub fn publishTerminalBytes(self: *FakeContext, _: []const u8) bool {
-            bytes_calls += 1;
-            return self.publish_bytes_ok;
-        }
-
-        pub fn publishTerminalKey(self: *FakeContext, _: HostInput.Keys.Event) bool {
-            key_calls += 1;
-            return self.publish_key_ok;
-        }
-
-        pub fn publishTerminalMouse(self: *FakeContext, _: HostInput.Mouse.Event) bool {
-            mouse_calls += 1;
-            return self.publish_mouse_ok;
-        }
-
-        pub fn handleScrollMouse(_: *FakeContext, _: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) terminal_input.ScrollMouseOutcome {
-            scroll_calls += 1;
-            return .{ .consumed = false, .host_visual_changed = false };
-        }
-
-        pub fn contentRelativeEvent(mouse_event: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int, _: c_int, _: c_int) ?HostInput.Mouse.Event {
-            return mouse_event;
-        }
-
-        pub fn clearHoveredLinkOp(self: *FakeContext) bool {
-            hover_calls += 1;
-            return self.clear_hover_changed;
-        }
-
-        pub fn handleWheelFallback(self: *FakeContext, _: HostInput.Mouse.Event) bool {
-            return self.wheel_changed;
-        }
-
-        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
-            selection_calls += 1;
-            return .{ .consumed = false, .host_visual_changed = false };
-        }
-
-        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
-            hover_calls += 1;
-            return .{ .consumed = false, .host_visual_changed = false };
-        }
-    };
-
-    FakeOps.reset();
-    var bytes = std.mem.zeroes(HostInput.Keys.ByteInput);
-    bytes.len = 1;
-    bytes.buf[0] = 'a';
-    var bytes_context = FakeContext{ .publish_bytes_ok = true, .blink_changed = true };
-    const bytes_outcome = terminal_input.handleTextInputFastPathEvent(&bytes_context, .{ .bytes = bytes }, FakeOps);
-    try std.testing.expect(bytes_outcome.published_to_pty);
-    try std.testing.expect(bytes_outcome.host_visual_changed);
-    try std.testing.expectEqual(@as(u8, 1), FakeOps.bytes_calls);
-    try std.testing.expectEqual(@as(u8, 1), FakeOps.blink_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.mouse_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.scroll_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.hover_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.selection_calls);
-
-    FakeOps.reset();
-    var key_only = FakeContext{ .publish_key_ok = true };
-    const key_outcome = terminal_input.handleTextInputFastPathEvent(&key_only, .{ .key = .{ .key = .up, .mods = .{} } }, FakeOps);
-    try std.testing.expect(key_outcome.published_to_pty);
-    try std.testing.expect(!key_outcome.host_visual_changed);
-    try std.testing.expectEqual(@as(u8, 1), FakeOps.key_calls);
-    try std.testing.expectEqual(@as(u8, 1), FakeOps.blink_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.mouse_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.scroll_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.hover_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.selection_calls);
-
-    FakeOps.reset();
-    var mouse_context = FakeContext{};
-    const mouse_outcome = terminal_input.handleTextInputFastPathEvent(&mouse_context, .{ .mouse = .{
-        .kind = .move,
-        .button = .none,
-        .pixel_x = 2,
-        .pixel_y = 3,
-        .mods = .{},
-        .buttons_down = .{},
-        .host_only = true,
-    } }, FakeOps);
-    try std.testing.expect(!mouse_outcome.published_to_pty);
-    try std.testing.expect(!mouse_outcome.host_visual_changed);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.bytes_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.key_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.blink_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.mouse_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.scroll_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.hover_calls);
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.selection_calls);
-}
-
-test "text fast path compacts mixed input before pointer UI drain" {
-    const FakeContext = struct {
-        term: struct {
-            render: struct {
-                surface_layout: SurfaceLayout = testSurfaceLayout(80, 25, 80, 25, 80, 25, 1, 1),
-            } = .{},
-        } = .{},
-        order: *[8]u8,
-        order_len: *u8,
-
-        fn append(self: *@This(), value: u8) void {
-            self.order[self.order_len.*] = value;
-            self.order_len.* += 1;
-        }
-    };
-
-    const FakeOps = struct {
-        pub fn resetCursorBlinkActivity(self: *FakeContext, _: u64) bool {
-            self.append('r');
-            return false;
-        }
-
-        pub fn publishTerminalBytes(self: *FakeContext, bytes: []const u8) bool {
-            std.testing.expectEqualStrings("a", bytes) catch unreachable;
-            self.append('b');
-            return true;
-        }
-
-        pub fn publishTerminalKey(self: *FakeContext, key: HostInput.Keys.Event) bool {
-            std.testing.expectEqual(HostInput.Keys.Key.up, key.key) catch unreachable;
-            self.append('k');
-            return true;
-        }
-
-        pub fn publishTerminalMouse(_: *FakeContext, _: HostInput.Mouse.Event) bool {
-            unreachable;
-        }
-
-        pub fn handleScrollMouse(self: *FakeContext, mouse_event: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) terminal_input.ScrollMouseOutcome {
-            std.testing.expectEqual(HostInput.Mouse.Kind.move, mouse_event.kind) catch unreachable;
-            self.append('p');
-            return .{ .consumed = true, .host_visual_changed = false };
-        }
-
-        pub fn contentRelativeEvent(_: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int, _: c_int, _: c_int) ?HostInput.Mouse.Event {
-            unreachable;
-        }
-
-        pub fn clearHoveredLinkOp(_: *FakeContext) bool {
-            unreachable;
-        }
-
-        pub fn handleWheelFallback(_: *FakeContext, _: HostInput.Mouse.Event) bool {
-            unreachable;
-        }
-
-        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
-            unreachable;
-        }
-
-        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
-            unreachable;
-        }
-    };
-
-    var input: HostInput = undefined;
-    input.init();
-    var bytes = std.mem.zeroes(HostInput.Keys.ByteInput);
-    bytes.len = 1;
-    bytes.buf[0] = 'a';
-    const mouse_event = HostInput.Event{ .mouse = .{
-        .kind = .move,
-        .button = .none,
-        .pixel_x = 2,
-        .pixel_y = 3,
-        .mods = .{},
-        .buttons_down = .{},
-        .host_only = true,
-    } };
-    input.input_events.buf[0] = .{ .bytes = bytes };
-    input.input_events.buf[1] = mouse_event;
-    input.input_events.buf[2] = .{ .key = .{ .key = .up, .mods = .{} } };
-    input.input_events.len = 3;
-
-    var order: [8]u8 = undefined;
-    var order_len: u8 = 0;
-    var context = FakeContext{ .order = &order, .order_len = &order_len };
-    const text_outcome = terminal_input.drainTextInputFastPathWith(&context, &input, FakeOps);
-    try std.testing.expect(text_outcome.published_to_pty);
-    try std.testing.expect(!text_outcome.host_visual_changed);
-    try std.testing.expectEqual(@as(u16, 1), input.input_events.len);
-    switch (input.input_events.buf[input.input_events.head]) {
-        .mouse => {},
-        else => return error.UnexpectedEvent,
-    }
-
-    const pointer_outcome = terminal_input.drainPointerAndUiInputWith(&context, &input, 0, 0, 80, 25, FakeOps);
-    try std.testing.expect(!pointer_outcome.published_to_pty);
-    try std.testing.expect(!pointer_outcome.host_visual_changed);
-    try std.testing.expectEqual(@as(u16, 0), input.input_events.len);
-    try std.testing.expectEqualStrings("brkrp", order[0..order_len]);
-}
-
-test "pointer UI drain keeps PTY publication separate from host visual mutation" {
-    const FakeContext = struct {
-        term: struct {
-            render: struct {
-                surface_layout: SurfaceLayout = testSurfaceLayout(80, 25, 80, 25, 80, 25, 1, 1),
-            } = .{},
-        } = .{},
-        publish_mouse_ok: bool = false,
-        blink_changed: bool = false,
-        clear_hover_changed: bool = false,
-        wheel_changed: bool = false,
-    };
-
-    const FakeOps = struct {
-        pub fn resetCursorBlinkActivity(self: *FakeContext, _: u64) bool {
-            return self.blink_changed;
-        }
-
-        pub fn publishTerminalMouse(self: *FakeContext, _: HostInput.Mouse.Event) bool {
-            return self.publish_mouse_ok;
-        }
-
-        pub fn handleScrollMouse(_: *FakeContext, _: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) terminal_input.ScrollMouseOutcome {
-            return .{ .consumed = false, .host_visual_changed = false };
-        }
-
-        pub fn contentRelativeEvent(mouse_event: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int, _: c_int, _: c_int) ?HostInput.Mouse.Event {
-            return mouse_event;
-        }
-
-        pub fn clearHoveredLinkOp(self: *FakeContext) bool {
-            return self.clear_hover_changed;
-        }
-
-        pub fn handleWheelFallback(self: *FakeContext, _: HostInput.Mouse.Event) bool {
-            return self.wheel_changed;
-        }
-
-        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
-            return .{ .consumed = false, .host_visual_changed = false };
-        }
-
-        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
-            return .{ .consumed = false, .host_visual_changed = false };
-        }
-    };
-
-    var wheel_only = FakeContext{ .wheel_changed = true };
-    const wheel_outcome = terminal_input.handlePointerAndUiInputEvent(&wheel_only, .{ .mouse = .{
-        .kind = .wheel,
-        .button = .wheel_up,
-        .pixel_x = 2,
-        .pixel_y = 3,
-        .mods = .{},
-        .buttons_down = .{},
-        .host_only = false,
-    } }, 0, 0, 80, 25, FakeOps);
-    try std.testing.expect(!wheel_outcome.published_to_pty);
-    try std.testing.expect(wheel_outcome.host_visual_changed);
-}
-
-test "pointer input rejects raw leftover strip below snapped terminal" {
-    const FakeContext = struct {
-        term: struct {
-            render: struct {
-                surface_layout: SurfaceLayout = testSurfaceLayout(960, 560, 960, 560, 120, 35, 8, 16),
-            } = .{},
-        } = .{},
-        publish_calls: u8 = 0,
-    };
-
-    const FakeOps = struct {
-        pub fn resetCursorBlinkActivity(_: *FakeContext, _: u64) bool {
-            unreachable;
-        }
-
-        pub fn publishTerminalMouse(self: *FakeContext, _: HostInput.Mouse.Event) bool {
-            self.publish_calls += 1;
-            return true;
-        }
-
-        pub fn handleScrollMouse(_: *FakeContext, _: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) terminal_input.ScrollMouseOutcome {
-            return .{ .consumed = false, .host_visual_changed = false };
-        }
-
-        pub fn contentRelativeEvent(mouse_event: MouseEvent, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, render_px_w: c_int, render_px_h: c_int) ?MouseEvent {
-            std.testing.expectEqual(@as(c_int, 960), render_px_w) catch unreachable;
-            std.testing.expectEqual(@as(c_int, 560), render_px_h) catch unreachable;
-            return terminal_input.contentRelativeEvent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);
-        }
-
-        pub fn clearHoveredLinkOp(_: *FakeContext) bool {
-            return false;
-        }
-
-        pub fn handleWheelFallback(_: *FakeContext, _: HostInput.Mouse.Event) bool {
-            unreachable;
-        }
-
-        pub fn handleHostSelectionMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
-            unreachable;
-        }
-
-        pub fn handleHostLinkMouse(_: *FakeContext, _: HostInput.Mouse.Event) Surface.MouseHandlingOutcome {
-            unreachable;
-        }
-    };
-
-    var context = FakeContext{};
-    const outcome = terminal_input.handlePointerAndUiInputEvent(&context, .{ .mouse = .{
-        .kind = .move,
-        .button = .none,
-        .pixel_x = 8,
-        .pixel_y = 565,
-        .mods = .{},
-        .buttons_down = .{},
-        .host_only = false,
-    } }, 0, 0, 960, 560, FakeOps);
-
-    try std.testing.expect(!outcome.published_to_pty);
-    try std.testing.expect(!outcome.host_visual_changed);
-    try std.testing.expectEqual(@as(u8, 0), context.publish_calls);
 }
 
 test "present pending blocks submit path until host present ack" {
@@ -1474,7 +1118,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
             _ = self.surface.term.render.completePresent(token);
         }
     };
-    const FakeDisplay = struct {
+    const FakePresenter = struct {
         next_token: u64 = 900,
 
         pub fn submitPresentSync(self: *@This(), _: anytype) u64 {
@@ -1487,7 +1131,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     installSubmitHooks(.success);
     defer surface_testing.resetHooks();
     var tab = PresentTab{ .surface = &surface };
-    var display = FakeDisplay{};
+    var presenter = FakePresenter{};
 
     try prepareSubmitSurface(&surface, 51);
     const wake_wait = event_mod.testing.computeLoopWaitFromFacts(1_000, false, true, false, null, .{
@@ -1503,7 +1147,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     try std.testing.expectEqual(Surface.TurnStep.rendered, first_turn.step);
     const first_reason = event_mod.testing.derivePresentReasonFromFacts(false, false, first_turn.step);
     try std.testing.expectEqual(@as(@TypeOf(first_reason), .terminal_frame), first_reason);
-    const first_token = display.submitPresentSync(.{});
+    const first_token = presenter.submitPresentSync(.{});
     tab.notePresentSubmitted(first_turn.present_snapshot_seq, first_token);
     tab.completePresent(first_token);
     try std.testing.expect(!surface.term.render.presentPending());
@@ -1525,7 +1169,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     try std.testing.expectEqual(Surface.TurnStep.rendered, second_turn.step);
     const second_reason = event_mod.testing.derivePresentReasonFromFacts(false, false, second_turn.step);
     try std.testing.expectEqual(@as(@TypeOf(second_reason), .terminal_frame), second_reason);
-    const second_token = display.submitPresentSync(.{});
+    const second_token = presenter.submitPresentSync(.{});
     tab.notePresentSubmitted(second_turn.present_snapshot_seq, second_token);
     tab.completePresent(second_token);
     try std.testing.expectEqual(@as(u8, 2), submit_hook_state.submit_calls);

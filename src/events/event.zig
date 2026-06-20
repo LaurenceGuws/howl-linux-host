@@ -28,7 +28,7 @@ pub const Processor = struct {
     active_tab_idx: *TabIndex,
     input: *Input,
     event_loop: *EventLoop.EventLoop,
-    terminal_input_admitted: bool,
+    term_input_admitted: bool,
     frame_timer: FrameTimer.FrameTimer,
     frame_deadline_ns: ?u64,
 
@@ -172,23 +172,23 @@ pub const Processor = struct {
 
         const now_ns = EventLoop.nowNs();
         self.noteFrameDeadline(now_ns);
-        const wait_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
+        const wait_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.term_input_admitted);
         const wait = computeLoopWait(self, now_ns, wait_runtime_facts);
         const event_action = pumpWindowEvents(self, wait);
         if (event_action == .quit) return .quit;
 
-        const input_outcome_opt = try applyHostOwnedMutations(self);
-        if (input_outcome_opt) |input_outcome| {
+        const host_visual_changed_opt = try applyHostOwnedMutations(self);
+        if (host_visual_changed_opt) |host_visual_changed| {
             drainPresentComplete(self);
-            const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.terminal_input_admitted);
+            const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.term_input_admitted);
             acknowledgeTerminalWakes(self.tabs.items());
             const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
-            if (input_outcome.host_visual_changed) self.window.requestRedraw();
+            if (host_visual_changed) self.window.requestRedraw();
             if (terminal_progress.should_redraw) self.window.requestRedraw();
 
-            const host_redraw = self.window.hasRequestedRedraw() or input_outcome.host_visual_changed;
+            const host_redraw = self.window.hasRequestedRedraw() or host_visual_changed;
             const visual_present_pending = host_redraw or terminal_progress.should_redraw or drive_runtime_facts.render_turn_pending;
             if (!self.window.hasFrame() or !visual_present_pending) {
                 return .continue_running;
@@ -268,7 +268,7 @@ pub const Processor = struct {
         return @intCast(@max(@as(u64, 1), std.math.divCeil(u64, remaining_ns, std.time.ns_per_ms) catch 1));
     }
 
-    fn collectLoopRuntimeFacts(self: *Self, now_ns: u64, terminal_input_admitted: bool) LoopRuntimeFacts {
+    fn collectLoopRuntimeFacts(self: *Self, now_ns: u64, term_input_admitted: bool) LoopRuntimeFacts {
         const tabs = self.tabs.items();
         assert(tabs.len <= max_tabs);
         assert(tabIndexInRange(tabs, self.active_tab_idx.*));
@@ -282,7 +282,7 @@ pub const Processor = struct {
         };
         for (tabs, 0..) |tab, i| {
             const active = @as(TabIndex, @intCast(i)) == self.active_tab_idx.*;
-            const tab_facts = tab.runtimeFacts(active, now_ns, .{ .input_published = terminal_input_admitted });
+            const tab_facts = tab.runtimeFacts(active, now_ns, .{ .input_published = term_input_admitted });
             facts.tabs[i] = tab_facts;
             noteLoopRuntimeFacts(&facts, tab_facts, active);
         }
@@ -311,13 +311,14 @@ pub const Processor = struct {
         };
     }
 
-    fn applyHostOwnedMutations(self: *Self) !?Terminal.DrainInputOutcome {
+    fn applyHostOwnedMutations(self: *Self) !?bool {
         applyFocusChange(self);
         try drainBindingActions(self);
         if (quitRequested(self) != null) return null;
-        const input_outcome = forwardTerminalInput(self);
+        var host_visual_changed = false;
+        forwardTerminalInput(self, &host_visual_changed);
         _ = applyWindowResize(self);
-        return input_outcome;
+        return host_visual_changed;
     }
 
     fn applyFocusChange(self: *Self) void {
@@ -333,24 +334,16 @@ pub const Processor = struct {
         }
     }
 
-    fn forwardTerminalInput(self: *Self) Terminal.DrainInputOutcome {
+    fn forwardTerminalInput(self: *Self, host_visual_changed: *bool) void {
         const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
         const viewport = Viewport.terminal(self.window, self.conf.tab_bar, self.tabs.items().len, tab.textureSize());
-        const outcome = forwardTerminalInputFlow(tab, self.input, 0, @intCast(viewport.regions.tab_bar_logical), viewport.logical_size.width, viewport.logical_size.height);
-        self.terminal_input_admitted = self.terminal_input_admitted or outcome.published_to_pty;
-        return outcome;
+        forwardTerminalInputFlow(tab, self.input, 0, @intCast(viewport.regions.tab_bar_logical), viewport.logical_size.width, viewport.logical_size.height, &self.term_input_admitted, host_visual_changed);
     }
 
-    fn forwardTerminalInputFlow(tab: *Terminal, input: *Input, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) Terminal.DrainInputOutcome {
-        var outcome = tab.drainTextInputFastPath(input);
-        mergeDrainInputOutcome(&outcome, tab.drainPointerAndUiInput(input, origin_x, origin_y, logical_width, logical_height));
+    fn forwardTerminalInputFlow(tab: *Terminal, input: *Input, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, input_published: *bool, host_visual_changed: *bool) void {
+        tab.drainTextInputFastPath(input, input_published, host_visual_changed);
+        tab.drainPointerInput(input, origin_x, origin_y, logical_width, logical_height, input_published, host_visual_changed);
         tab.handleScrollInput(input);
-        return outcome;
-    }
-
-    fn mergeDrainInputOutcome(total: *Terminal.DrainInputOutcome, next: Terminal.DrainInputOutcome) void {
-        total.published_to_pty = total.published_to_pty or next.published_to_pty;
-        total.host_visual_changed = total.host_visual_changed or next.host_visual_changed;
     }
 
     fn clearTerminalInputAdmissionOnDrive(admitted: *bool, drove: bool) void {
@@ -372,7 +365,7 @@ pub const Processor = struct {
 
     fn driveRuntimeProgress(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) TerminalProgress {
         const progress = driveTerminalProgress(self.tabs.items(), self.active_tab_idx.*, runtime_facts, now_ns);
-        clearTerminalInputAdmissionOnDrive(&self.terminal_input_admitted, progress.drive_performed);
+        clearTerminalInputAdmissionOnDrive(&self.term_input_admitted, progress.drive_performed);
         return progress;
     }
 

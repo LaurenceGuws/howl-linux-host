@@ -99,7 +99,7 @@ noinline fn start(io: std.Io, options: Args) !void {
         .active_tab_idx = active_tab_idx,
         .input = input,
         .event_loop = event_loop,
-        .terminal_input_admitted = false,
+        .term_input_admitted = false,
         .frame_timer = Processor.FrameTimerState.init(),
         .frame_deadline_ns = null,
     };
