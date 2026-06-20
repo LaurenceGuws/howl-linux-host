@@ -1,8 +1,8 @@
 const std = @import("std");
 const howl_lua = @import("howl_lua");
-const term_config = @import("term.zig");
-const window_config = @import("window.zig");
-const tab_bar_config = @import("tab_bar.zig");
+const term_config = @import("config/term.zig");
+const window_config = @import("config/window.zig");
+const tab_bar_config = @import("config/tab_bar.zig");
 const assert = std.debug.assert;
 
 const Lua = howl_lua;
@@ -82,9 +82,7 @@ test "ui config propagates Kitty cursor config fields" {
     defer tmp.cleanup();
 
     try tmp.dir.createDirPath(std.testing.io, "assets/default_config");
-    try tmp.dir.writeFile(std.testing.io, .{
-        .sub_path = "assets/default_config/init.lua",
-        .data =
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "assets/default_config/init.lua", .data =
         \\return {
         \\  window = { title = "Howl", width = 800, height = 600, mouse = { listen_always = false }, bindings = {} },
         \\  term = {

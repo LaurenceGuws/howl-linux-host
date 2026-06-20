@@ -1,7 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const TabBar = @import("tab_bar.zig").TabBar;
+const TabBar = @import("../tab_bar.zig").TabBar;
 const TerminalSurface = @import("../buckets that must die/bucket2.zig").Surface;
 
 const TabIndex = TabBar.TabIndex;

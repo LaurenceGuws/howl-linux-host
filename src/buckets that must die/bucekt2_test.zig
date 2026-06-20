@@ -3,19 +3,19 @@ const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 
 const event_mod = @import("../events/event.zig");
-const host_layout = @import("../layout/layout.zig");
+const host_layout = @import("../layout.zig");
 const surface_mod = @import("bucket2.zig");
 const cursor_blink = @import("../cursor/blink.zig");
 const pty_pump = @import("../pty/pump.zig");
 const render_retained = @import("../render/surface_retained.zig");
 const surface_layout = @import("../render/surface_layout.zig");
 const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
-const terminal_scrollbar = @import("../scroll_bar/scrollbar.zig");
+const terminal_scrollbar = @import("../scroll_bar.zig");
 const Term = @import("../term.zig").Term;
 const term_config = @import("../config/term.zig");
 
 const Surface = surface_mod.Surface;
-const HostInput = @import("../input/input.zig").Input;
+const HostInput = @import("../input.zig").Input;
 const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
 const SurfaceLayout = render_retained.SurfaceLayout;
 const surface_testing = surface_mod.testing;

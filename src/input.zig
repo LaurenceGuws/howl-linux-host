@@ -1,7 +1,7 @@
 const std = @import("std");
-const keys = @import("keys.zig");
-const mouse = @import("mouse.zig");
-const window = @import("../events/window.zig");
+const keys = @import("input/keys.zig");
+const mouse = @import("input/mouse.zig");
+const window = @import("events/window.zig");
 const sdl_c = @import("sdl_c");
 
 const c = sdl_c;

@@ -1,4 +1,4 @@
-const Input = @import("../input/input.zig").Input;
+const Input = @import("../input.zig").Input;
 const pty_session = @import("../pty/session.zig");
 const std = @import("std");
 const c = @import("howl_vt_c");

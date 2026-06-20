@@ -260,7 +260,7 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     const tab_bar_tests = b.addTest(.{
         .name = "test-tab-bar",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tab_bar/tab_bar.zig"),
+            .root_source_file = b.path("src/tab_bar.zig"),
             .target = target,
             .optimize = optimize,
         }),

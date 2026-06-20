@@ -1,7 +1,7 @@
 const std = @import("std");
 const render_c = @import("howl_render_c");
 
-const Screen = @import("screen.zig").Screen;
+const Surface = @import("surface.zig").Surface;
 const fallback_font_paths_max: u16 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
 pub const TextConfig = struct {
@@ -34,7 +34,7 @@ pub fn layout(font_size_px: u16, width_px: c_int, height_px: c_int) CellSurfaceL
     std.debug.assert(height_px > 0);
     const cell_w: u16 = @max(@divFloor(font_size_px, 2), 1);
     const cell_h: u16 = @intCast(@max(height_px, 1));
-    const cells: u16 = @intCast(@max(@min(@divTrunc(width_px, cell_w), Screen.max_cells), 1));
+    const cells: u16 = @intCast(@max(@min(@divTrunc(width_px, cell_w), Surface.max_cells), 1));
     return .{ .cell_px = .{ .width = cell_w, .height = cell_h }, .visible_cells = cells };
 }
 
@@ -57,5 +57,5 @@ test "tab cell surface layout are bounded by screen capacity" {
 
     try std.testing.expectEqual(@as(u16, 8), value.cell_px.width);
     try std.testing.expectEqual(@as(u16, 30), value.cell_px.height);
-    try std.testing.expectEqual(Screen.max_cells, value.visible_cells);
+    try std.testing.expectEqual(Surface.max_cells, value.visible_cells);
 }

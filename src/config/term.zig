@@ -1,7 +1,7 @@
 const std = @import("std");
 const howl_lua = @import("howl_lua");
 const env = @import("env.zig");
-const Input = @import("../input/input.zig").Input;
+const Input = @import("../input.zig").Input;
 
 const Lua = howl_lua;
 

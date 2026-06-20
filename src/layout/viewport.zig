@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const Layout = @import("layout.zig");
+const Layout = @import("../layout.zig");
 
 pub const Regions = struct {
     tab_bar_px: u32,

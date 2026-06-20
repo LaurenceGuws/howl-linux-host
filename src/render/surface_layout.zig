@@ -5,7 +5,7 @@ const vt_c = @import("howl_vt_c");
 const pty_session = @import("../pty/session.zig");
 const retained = @import("surface_retained.zig");
 const vt_retained = @import("../vt/surface_retained.zig");
-const terminal_scrollbar = @import("../scroll_bar/scrollbar.zig");
+const terminal_scrollbar = @import("../scroll_bar.zig");
 
 pub const SurfaceLayoutRequest = struct {
     content_px: c.HowlRenderPixelSize,

@@ -1,9 +1,9 @@
 const std = @import("std");
 const EventLoop = @import("../events/event_loop.zig");
 const window = @import("../events/window.zig");
-const Layout = @import("../layout/layout.zig");
+const Layout = @import("../layout.zig");
 const term_texture = @import("../texture/surface.zig");
-const HostInput = @import("../input/input.zig").Input;
+const HostInput = @import("../input.zig").Input;
 const pty_c = @import("howl_pty_c");
 const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
@@ -19,7 +19,7 @@ const VtState = @import("../term.zig").VtState;
 const vt_retained = @import("../vt/surface_retained.zig");
 const LifecycleState = pty_session.LifecycleState;
 const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
-const Config = @import("../config/config.zig");
+const Config = @import("../config.zig");
 const TerminalConfig = Config.Terminal;
 const CursorStyle = @import("../config/term.zig").CursorStyle;
 const ClipboardOsc52Policy = @import("../config/term.zig").ClipboardOsc52Policy;
@@ -33,8 +33,8 @@ const cursor_blink = @import("../cursor/blink.zig");
 const cursor_cadence = @import("../cursor/cadence.zig");
 const cursor_source = @import("../cursor/source.zig");
 const cursor_trail = @import("../cursor/trail.zig");
-const terminal_scrollbar = @import("../scroll_bar/scrollbar.zig");
-const terminal_selection = @import("../selection/selection.zig");
+const terminal_scrollbar = @import("../scroll_bar.zig");
+const terminal_selection = @import("../selection.zig");
 
 // TODO move capacity limit to config
 const history_capacity: u16 = 4096;

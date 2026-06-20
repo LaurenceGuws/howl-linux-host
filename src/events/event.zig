@@ -1,13 +1,13 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-const Config = @import("../config/config.zig");
+const Config = @import("../config.zig");
 const TextureFrame = @import("../texture/frame.zig");
-const Layout = @import("../layout/layout.zig");
+const Layout = @import("../layout.zig");
 const Viewport = @import("../layout/viewport.zig");
 const EventLoop = @import("event_loop.zig");
-const Input = @import("../input/input.zig").Input;
-const TabBar = @import("../tab_bar/tab_bar.zig").TabBar;
+const Input = @import("../input.zig").Input;
+const TabBar = @import("../tab_bar.zig").TabBar;
 const TabSlots = @import("../tab_bar/tab_slots.zig").Slots;
 const Terminal = @import("../buckets that must die/bucket2.zig").Surface;
 const TerminalTurnStep = Terminal.TurnStep;

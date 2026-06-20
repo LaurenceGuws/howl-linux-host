@@ -1,8 +1,8 @@
 const std = @import("std");
 
-const PresentDamage = @import("../texture/egl_swap.zig").Damage;
-const TabIndex = @import("../tab_bar/tab_bar.zig").TabBar.TabIndex;
-const HostInput = @import("../input/input.zig").Input;
+const PresentDamage = @import("texture/egl_swap.zig").Damage;
+const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
+const HostInput = @import("input.zig").Input;
 
 pub const Rect = struct {
     x: c_int,

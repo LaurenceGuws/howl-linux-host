@@ -1,7 +1,7 @@
-const Layout = @import("../layout/layout.zig");
-const Screen = @import("screen.zig").Screen;
-const Style = @import("style.zig").Colors;
-const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
+const Layout = @import("../layout.zig");
+const Surface = @import("../tab_bar/surface.zig").Surface;
+const Style = @import("../tab_bar/style.zig").Colors;
+const TabIndex = @import("../tab_bar.zig").TabBar.TabIndex;
 const gl_quad = @import("../render/gl_quad.zig");
 
 pub fn drawBackground(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: Layout.Frame) void {
@@ -35,24 +35,24 @@ pub fn drawBackground(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: L
     gl_quad.solidRect(c, fb_w, fb_h, 0, bar_h - 1, fb_w, 1, 0.23, 0.27, 0.35, 1.0);
 }
 
-pub fn writeCells(screen: *Screen, frame_value: Layout.Frame, cells_visible: u16) void {
-    screen.clear(cells_visible);
+pub fn writeCells(surface: *Surface, frame_value: Layout.Frame, cells_visible: u16) void {
+    surface.clear(cells_visible);
     if (frame_value.tab_count == 0) return;
 
     const tab_count = @as(u16, frame_value.tab_count);
     const tab_cells = @max(@divTrunc(cells_visible, tab_count), 1);
     var i: TabIndex = 0;
     while (i < frame_value.tab_count) : (i += 1) {
-        const tab_start = screen.cursor_col;
+        const tab_start = surface.cursor_col;
         const tab_end = if (i + 1 == frame_value.tab_count) cells_visible else @min(cells_visible, tab_start + tab_cells);
         if (tab_start >= tab_end) break;
-        screen.setStyle(if (i == frame_value.active_tab) Style.active() else Style.inactive());
-        screen.drawUtf8(" ");
-        if (@as(usize, i) < frame_value.tab_labels.len and screen.cursor_col < tab_end) screen.drawUtf8Until(frame_value.tab_labels[@intCast(i)], tab_end - 1);
-        while (screen.cursor_col + 1 < tab_end) screen.drawUtf8(" ");
-        if (i + 1 < frame_value.tab_count and screen.cursor_col < tab_end) {
-            screen.setStyle(Style.separator());
-            screen.drawSeparator();
+        surface.setStyle(if (i == frame_value.active_tab) Style.active() else Style.inactive());
+        surface.drawUtf8(" ");
+        if (@as(usize, i) < frame_value.tab_labels.len and surface.cursor_col < tab_end) surface.drawUtf8Until(frame_value.tab_labels[@intCast(i)], tab_end - 1);
+        while (surface.cursor_col + 1 < tab_end) surface.drawUtf8(" ");
+        if (i + 1 < frame_value.tab_count and surface.cursor_col < tab_end) {
+            surface.setStyle(Style.separator());
+            surface.drawSeparator();
         }
     }
 }
