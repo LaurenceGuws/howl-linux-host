@@ -6,6 +6,24 @@ const default_pending_capacity: u32 = 4096;
 
 pub const transport_chunk_bytes = c.HOWL_PTY_TRANSPORT_CHUNK_BYTES;
 
+pub const Launch = struct {
+    shell: []const u8,
+    command: ?[]const u8 = null,
+    start_path: ?[]const u8 = null,
+};
+
+pub const LifecycleState = enum(u8) {
+    stopped,
+    starting,
+    ready,
+    failed,
+};
+
+pub const State = struct {
+    launch: Launch,
+    lifecycle: LifecycleState = .stopped,
+};
+
 pub const SessionStatus = enum(u8) {
     idle = c.HOWL_PTY_SESSION_IDLE,
     active = c.HOWL_PTY_SESSION_ACTIVE,
@@ -56,7 +74,7 @@ pub const OutboundProgress = struct {
     pending_input_bytes: u64,
 };
 
-pub fn initHandle(launch: terminal_term.PtyLaunch, cols: u16, rows: u16) !c.HowlPtySessionHandle {
+pub fn initHandle(launch: Launch, cols: u16, rows: u16) !c.HowlPtySessionHandle {
     const command_len: c_ulong = if (launch.command) |value| @intCast(value.len) else 0;
     const start_path_len: c_ulong = if (launch.start_path) |value| @intCast(value.len) else 0;
     const handle = c.howl_pty_session_init(
@@ -108,7 +126,7 @@ pub fn resizeLocked(term: *terminal_term.Term, cols: u16, rows: u16) !void {
     try requireResizeOk(c.howl_pty_session_resize(term.session, cols, rows));
 }
 
-pub fn lifecycleState(term: *const terminal_term.Term) terminal_term.LifecycleState {
+pub fn lifecycleState(term: *const terminal_term.Term) LifecycleState {
     const mut: *terminal_term.Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
@@ -243,7 +261,7 @@ fn ptyCallOk() i32 {
     return c.HOWL_PTY_CALL_OK;
 }
 
-fn classifyOutcome(lifecycle: terminal_term.LifecycleState, snap: Snapshot) SessionOutcome {
+fn classifyOutcome(lifecycle: LifecycleState, snap: Snapshot) SessionOutcome {
     if (lifecycle == .failed) return .runtime_failed;
     if (snap.status == .active) return .active;
     return switch (snap.terminal_reason) {

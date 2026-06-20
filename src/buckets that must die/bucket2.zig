@@ -16,7 +16,7 @@ const vt_surface = @import("../vt/surface.zig");
 const terminal_term = @import("bucket4.zig");
 const vt_retained = @import("../vt/surface_retained.zig");
 const HowlTerm = terminal_term.Term;
-const LifecycleState = terminal_term.LifecycleState;
+const LifecycleState = pty_session.LifecycleState;
 const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
@@ -1007,7 +1007,7 @@ pub const Surface = struct {
         vt: vt_c.HowlVtHandle,
     };
 
-    fn launchConfig(conf: *const TerminalConfig) terminal_term.PtyLaunch {
+    fn launchConfig(conf: *const TerminalConfig) pty_session.Launch {
         return .{
             .shell = conf.shell,
             .start_path = conf.start_path,
@@ -1024,7 +1024,7 @@ pub const Surface = struct {
         };
     }
 
-    fn initTermState(conf: *const TerminalConfig, launch: terminal_term.PtyLaunch, render_init: RenderInit) !TermInit {
+    fn initTermState(conf: *const TerminalConfig, launch: pty_session.Launch, render_init: RenderInit) !TermInit {
         const layout = initSurfaceLayout(render_init);
         const session_handle = try pty_session.initHandle(launch, layout.cols, layout.rows);
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);

@@ -1,6 +1,7 @@
 const std = @import("std");
 const pty_c = @import("howl_pty_c");
 const vt_c = @import("howl_vt_c");
+const pty_session = @import("../pty/session.zig");
 const render_retained = @import("../render/surface_retained.zig");
 const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
 
@@ -14,24 +15,6 @@ comptime {
     std.debug.assert(vt_input_max_bytes > 0);
     std.debug.assert(vt_output_max_bytes >= vt_c.HOWL_VT_CLIPBOARD_SCRATCH_MAX_BYTES);
 }
-
-pub const PtyLaunch = struct {
-    shell: []const u8,
-    command: ?[]const u8 = null,
-    start_path: ?[]const u8 = null,
-};
-
-pub const LifecycleState = enum(u8) {
-    stopped,
-    starting,
-    ready,
-    failed,
-};
-
-pub const PtyState = struct {
-    launch: PtyLaunch,
-    lifecycle: LifecycleState = .stopped,
-};
 
 pub const VtState = struct {
     title_buf: [vt_title_max_bytes]u8 = undefined,
@@ -54,7 +37,7 @@ pub const VtState = struct {
 
 pub const Term = struct {
     allocator: std.mem.Allocator,
-    pty: PtyState,
+    pty: pty_session.State,
     session: pty_c.HowlPtySessionHandle,
     vt: vt_c.HowlVtHandle,
     render: render_retained.State,
