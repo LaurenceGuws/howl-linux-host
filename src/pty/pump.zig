@@ -2,6 +2,7 @@ const pty_session = @import("../pty/session.zig");
 const vt_c = @import("howl_vt_c");
 const terminal_term = @import("../buckets that must die/bucket4.zig");
 const vt_retained = @import("../vt/surface_retained.zig");
+const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
 const std = @import("std");
 
 const transport_mode: pty_session.TransportPumpMode = .normal;
@@ -203,11 +204,11 @@ const RealTransportOps = struct {
         return limits;
     }
 
-    fn lease(term: *terminal_term.Term) terminal_term.Mutex.Lease {
+    fn lease(term: *terminal_term.Term) FairMutex.Lease {
         return term.mutex.lease();
     }
 
-    fn releaseLease(_: *terminal_term.Term, lease_value: terminal_term.Mutex.Lease) void {
+    fn releaseLease(_: *terminal_term.Term, lease_value: FairMutex.Lease) void {
         lease_value.release();
     }
 

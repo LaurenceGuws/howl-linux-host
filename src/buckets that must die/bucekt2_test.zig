@@ -10,6 +10,7 @@ const pty_pump = @import("../pty/pump.zig");
 const terminal_input = @import("bucket3.zig");
 const render_retained = @import("../render/surface_retained.zig");
 const surface_layout = @import("../render/surface_layout.zig");
+const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
 const terminal_scrollbar = @import("../scroll_bar/scrollbar.zig");
 const terminal_term = @import("bucket4.zig");
 const terminal_config = @import("../config/terminal.zig");
@@ -326,7 +327,7 @@ fn resizeSubmitSurface(surface: *Surface, render_width: c_int, render_height: c_
 
 const ClipboardCase = struct {
     term: struct {
-        mutex: terminal_term.Mutex = .{},
+        mutex: FairMutex = .{},
     } = .{},
     pending: ?[]const u8 = null,
     drain_calls: usize = 0,
@@ -1008,7 +1009,7 @@ const TestSubmitRender = struct {
     submit_calls: u8 = 0,
     submit_observed_locked: bool = false,
     last_execution: render_retained.SubmitExecution = std.mem.zeroes(render_retained.SubmitExecution),
-    mutex: ?*terminal_term.Mutex = null,
+    mutex: ?*FairMutex = null,
     prepared_surface: render_retained.PreparedHandle = null,
     layout_epoch: u64 = 1,
     present_in_flight: ?struct { snapshot_seq: u64, token: u64 } = null,
@@ -1103,7 +1104,7 @@ fn testRenderSurface(info: render_retained.PreparedInfo) render_c.HowlRenderSurf
 }
 
 const TestSubmitTerm = struct {
-    mutex: terminal_term.Mutex = .{},
+    mutex: FairMutex = .{},
     render: TestSubmitRender = .{},
 };
 

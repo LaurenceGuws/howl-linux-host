@@ -2,6 +2,7 @@ const std = @import("std");
 const pty_c = @import("howl_pty_c");
 const vt_c = @import("howl_vt_c");
 const render_retained = @import("../render/surface_retained.zig");
+const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
 
 pub const vt_title_max_bytes = @as(usize, vt_c.HOWL_VT_TITLE_MAX_BYTES);
 pub const vt_output_max_bytes = @as(usize, vt_c.HOWL_VT_PENDING_OUTPUT_MAX_BYTES);
@@ -51,46 +52,6 @@ pub const VtState = struct {
     }
 };
 
-pub const Mutex = struct {
-    data: std.Io.Mutex = .init,
-    next: std.Io.Mutex = .init,
-
-    pub const Lease = struct {
-        mutex: *Mutex,
-
-        pub fn release(self: Lease) void {
-            std.Io.Threaded.mutexUnlock(&self.mutex.next);
-        }
-    };
-
-    pub fn lease(self: *Mutex) Lease {
-        std.Io.Threaded.mutexLock(&self.next);
-        return .{ .mutex = self };
-    }
-
-    pub fn lock(self: *Mutex) void {
-        self.lockFair();
-    }
-
-    pub fn lockFair(self: *Mutex) void {
-        const ticket = self.lease();
-        defer ticket.release();
-        self.lockUnfair();
-    }
-
-    pub fn unlock(self: *Mutex) void {
-        std.Io.Threaded.mutexUnlock(&self.data);
-    }
-
-    pub fn lockUnfair(self: *Mutex) void {
-        std.Io.Threaded.mutexLock(&self.data);
-    }
-
-    pub fn tryLockUnfair(self: *Mutex) bool {
-        return self.data.tryLock();
-    }
-};
-
 pub const Term = struct {
     allocator: std.mem.Allocator,
     pty: PtyState,
@@ -98,7 +59,7 @@ pub const Term = struct {
     vt: vt_c.HowlVtHandle,
     render: render_retained.State,
     vt_state: VtState = .{},
-    mutex: Mutex = .{},
+    mutex: FairMutex = .{},
 };
 
 pub fn resetTitleFromLaunch(term: anytype) void {
