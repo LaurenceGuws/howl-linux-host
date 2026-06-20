@@ -9,7 +9,7 @@ pub const TextConfig = struct {
     config: render_c.HowlRenderTextConfig = std.mem.zeroes(render_c.HowlRenderTextConfig),
 };
 
-pub const Metrics = struct {
+pub const CellSurfaceLayout = struct {
     cell_px: render_c.HowlRenderCellSize,
     visible_cells: u16,
 };
@@ -28,7 +28,7 @@ pub fn initTextConfig(out: *TextConfig, font_size_px: u16, primary: ?[:0]u8, fal
     };
 }
 
-pub fn metrics(font_size_px: u16, width_px: c_int, height_px: c_int) Metrics {
+pub fn layout(font_size_px: u16, width_px: c_int, height_px: c_int) CellSurfaceLayout {
     std.debug.assert(font_size_px > 0);
     std.debug.assert(width_px > 0);
     std.debug.assert(height_px > 0);
@@ -52,8 +52,8 @@ test "tab cell surface text config uses resolved font inputs" {
     try std.testing.expectEqual(@as(u16, 1), text_config.config.fallback_font_path_count);
 }
 
-test "tab cell surface metrics are bounded by screen capacity" {
-    const value = metrics(16, 10000, 30);
+test "tab cell surface layout are bounded by screen capacity" {
+    const value = layout(16, 10000, 30);
 
     try std.testing.expectEqual(@as(u16, 8), value.cell_px.width);
     try std.testing.expectEqual(@as(u16, 30), value.cell_px.height);

@@ -203,14 +203,14 @@ fn initTabText(state: anytype, config: *const render_c.HowlRenderTextConfig) !vo
 
 fn uploadTabTextSurface(state: anytype, fb_w: c_int, bar_h: c_int, frame: Layout.Frame) void {
     const handle = state.tab_text_handle orelse return;
-    const tab_metrics = tab_cell_surface.metrics(frame.tab_bar_font_size_px, fb_w, bar_h);
-    tab_bar_presentation.writeCells(&state.tab_screen, frame, tab_metrics.visible_cells);
+    const tab_layout = tab_cell_surface.layout(frame.tab_bar_font_size_px, fb_w, bar_h);
+    tab_bar_presentation.writeCells(&state.tab_screen, frame, tab_layout.visible_cells);
     var upload = std.mem.zeroes(render_c.HowlRenderCellSurfacePreparedUpload);
     const prepare = render_c.HowlRenderCellSurfacePrepare{
         .render_px = .{ .width = @intCast(@max(fb_w, 1)), .height = @intCast(@max(bar_h, 1)) },
-        .grid_px = .{ .width = tab_metrics.visible_cells * tab_metrics.cell_px.width, .height = tab_metrics.cell_px.height },
-        .cell_px = tab_metrics.cell_px,
-        .grid = .{ .cols = tab_metrics.visible_cells, .rows = 1 },
+        .grid_px = .{ .width = tab_layout.visible_cells * tab_layout.cell_px.width, .height = tab_layout.cell_px.height },
+        .cell_px = tab_layout.cell_px,
+        .grid = .{ .cols = tab_layout.visible_cells, .rows = 1 },
         .layout_epoch = frame.tab_bar_revision,
         .cells = state.tab_screen.span(),
     };
