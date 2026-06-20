@@ -34,24 +34,17 @@ pub fn drainPointerAndUiInput(self: anytype, input_events: *HostInput, origin_x:
 }
 
 pub fn terminalOwnsMouse(self: anytype, mouse_event: HostInput.Mouse.Event) bool {
+    const surface_layout = self.term.render.surface_layout;
     return term_input.wouldReportMouse(&self.term, .{
         .kind = term_input.mouseKind(mouse_event.kind),
         .button = term_input.mouseButton(mouse_event.button),
-        .row = pixelToRow(&self.term, mouse_event.pixel_y),
-        .col = pixelToCol(&self.term, mouse_event.pixel_x),
+        .row = layout_cells.row(surface_layout, mouse_event.pixel_y),
+        .col = layout_cells.col(surface_layout, mouse_event.pixel_x),
         .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
         .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
         .mods = term_input.mods(mouse_event.mods),
         .buttons_down = term_input.buttons(mouse_event.buttons_down),
     });
-}
-
-pub fn pixelToTerminalCol(self: anytype, pixel_x: i32) u16 {
-    return pixelToCol(&self.term, pixel_x);
-}
-
-pub fn pixelToTerminalRow(self: anytype, pixel_y: i32) i32 {
-    return pixelToRow(&self.term, pixel_y);
 }
 
 pub fn drainTextInputFastPathWith(self: anytype, input_events: *HostInput, comptime Ops: type) DrainInputOutcome {
@@ -202,11 +195,12 @@ fn publishTerminalKey(self: anytype, key: HostInput.Keys.Event) bool {
 }
 
 fn publishTerminalMouse(self: anytype, mouse_event: HostInput.Mouse.Event) bool {
+    const surface_layout = self.term.render.surface_layout;
     return term_input.publishMouse(&self.term, .{
         .kind = term_input.mouseKind(mouse_event.kind),
         .button = term_input.mouseButton(mouse_event.button),
-        .row = pixelToRow(&self.term, mouse_event.pixel_y),
-        .col = pixelToCol(&self.term, mouse_event.pixel_x),
+        .row = layout_cells.row(surface_layout, mouse_event.pixel_y),
+        .col = layout_cells.col(surface_layout, mouse_event.pixel_x),
         .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
         .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
         .mods = term_input.mods(mouse_event.mods),
@@ -292,12 +286,4 @@ fn noteRenderScrollbackChanged(self: anytype) void {
     self.term.mutex.lockFair();
     defer self.term.mutex.unlock();
     self.term.render.notePrepareNeeded();
-}
-
-fn pixelToCol(term: *const HowlTerm, pixel_x: i32) u16 {
-    return layout_cells.col(term.render.surface_layout, pixel_x);
-}
-
-fn pixelToRow(term: *const HowlTerm, pixel_y: i32) i32 {
-    return layout_cells.row(term.render.surface_layout, pixel_y);
 }

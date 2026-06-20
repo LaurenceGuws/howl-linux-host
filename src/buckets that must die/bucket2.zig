@@ -2,6 +2,7 @@ const std = @import("std");
 const EventLoop = @import("../events/event_loop.zig");
 const window = @import("../events/window.zig");
 const Layout = @import("../layout/layout.zig");
+const layout_cells = @import("../layout/cells.zig");
 const term_texture = @import("../render/surface.zig");
 const HostInput = @import("../input/input.zig").Input;
 const pty_c = @import("howl_pty_c");
@@ -879,11 +880,11 @@ pub const Surface = struct {
     }
 
     pub fn pixelToTerminalCol(self: *const Context, pixel_x: i32) u16 {
-        return terminal_input.pixelToTerminalCol(self, pixel_x);
+        return layout_cells.col(self.term.render.surface_layout, pixel_x);
     }
 
     pub fn pixelToTerminalRow(self: *const Context, pixel_y: i32) i32 {
-        return terminal_input.pixelToTerminalRow(self, pixel_y);
+        return layout_cells.row(self.term.render.surface_layout, pixel_y);
     }
 
     const TermInit = struct {
