@@ -185,7 +185,7 @@ pub fn contentRelativeEvent(
 }
 
 fn publishTerminalBytes(self: anytype, bytes: []const u8) bool {
-    _ = terminal_scrollbar.followLiveBottom(&self.term);
+    _ = terminal_scrollbar.scrollViewportToBottom(&self.term);
     pty_session.publishInputBytes(&self.term, bytes) catch {
         return false;
     };

@@ -107,27 +107,9 @@ fn mutableTerm(term: anytype) *@TypeOf(term.*) {
     return @constCast(term);
 }
 
-fn repairScrollback(term: anytype, history_before: u32, history_after: u32, any_read: bool) void {
-    if (history_after > history_before) {
-        if (term.vt_state.scrollback_offset > 0) {
-            const delta = history_after - history_before;
-            term.vt_state.scrollback_offset = @min(history_after, term.vt_state.scrollback_offset + delta);
-            std.debug.assert(term.vt_state.scrollback_offset <= history_after);
-        }
-        return;
-    }
-    if (history_after < history_before) {
-        term.vt_state.scrollback_offset = @min(term.vt_state.scrollback_offset, history_after);
-        std.debug.assert(term.vt_state.scrollback_offset <= history_after);
-        return;
-    }
-    _ = any_read;
-}
-
-pub fn finishFeed(term: anytype, history_before: u32, history_after: u32, state_changed: bool, title: ?[]const u8) void {
+pub fn finishFeed(term: anytype, state_changed: bool, title: ?[]const u8) void {
     if (title) |current| vt_title.set(&term.vt_state.title, current);
     if (!state_changed) return;
-    repairScrollback(term, history_before, history_after, true);
 }
 
 fn copyBoundedBytes(out: []u8, result: c.HowlVtBytesResult) ![]const u8 {

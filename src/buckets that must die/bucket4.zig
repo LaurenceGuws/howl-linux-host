@@ -4,6 +4,7 @@ const vt_c = @import("howl_vt_c");
 const pty_session = @import("../pty/session.zig");
 const render_retained = @import("../render/surface_retained.zig");
 const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
+const vt_focus = @import("../vt/focus.zig");
 const vt_input_buffer = @import("../vt/input_buffer.zig");
 const vt_output_buffer = @import("../vt/output_buffer.zig");
 const vt_title = @import("../vt/title.zig");
@@ -13,8 +14,7 @@ pub const VtState = struct {
     output_buffer: vt_output_buffer.Buffer = .{},
     input_buffer: vt_input_buffer.Buffer = .{},
     render_state: vt_c.HowlVtRenderStateHandle = null,
-    scrollback_offset: u32 = 0,
-    focused: bool = true,
+    focus: vt_focus.Focus = .{},
     cursor_visible: bool = true,
     cursor_blink: bool = false,
 
@@ -34,15 +34,3 @@ pub const Term = struct {
     vt_state: VtState = .{},
     mutex: FairMutex = .{},
 };
-
-pub fn followLiveBottomLocked(term: anytype) bool {
-    if (term.vt_state.scrollback_offset == 0) return false;
-    term.vt_state.scrollback_offset = 0;
-    return true;
-}
-
-pub fn setFocused(term: anytype, focused: bool) bool {
-    if (term.vt_state.focused == focused) return false;
-    term.vt_state.focused = focused;
-    return true;
-}

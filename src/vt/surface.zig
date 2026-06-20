@@ -36,18 +36,17 @@ pub fn captureRenderStateLocked(term: *terminal_term.Term, hover: ?HyperlinkHove
 
 fn captureRenderStateLockedWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) !RenderStateCapture {
     const state = term.vt_state.render_state orelse return error.MissingRenderState;
-    try requireVtOk(Ops.update(state, term.vt, term.vt_state.scrollback_offset));
+    try requireVtOk(Ops.update(state, term.vt));
     if (hover) |value| try requireVtOk(Ops.updateHover(state, value));
     const info = try renderStateInfo(state);
-    std.debug.assert(term.vt_state.scrollback_offset <= info.history_count);
     term.vt_state.cursor_visible = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VISIBLE) != 0;
     term.vt_state.cursor_blink = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_BLINKING) != 0;
     return .{ .state = state, .info = info };
 }
 
 const RenderStateCaptureOps = struct {
-    fn update(state: vt_c.HowlVtRenderStateHandle, handle: vt_c.HowlVtHandle, scrollback_offset: u32) i32 {
-        return vt_c.howl_vt_render_state_update(state, handle, scrollback_offset);
+    fn update(state: vt_c.HowlVtRenderStateHandle, handle: vt_c.HowlVtHandle) i32 {
+        return vt_c.howl_vt_render_state_update(state, handle);
     }
 
     fn updateHover(state: vt_c.HowlVtRenderStateHandle, hover: HyperlinkHover) i32 {
@@ -77,11 +76,11 @@ const RealAckOps = struct {
     }
 };
 
-pub fn vtVisibleInfo(handle: vt_c.HowlVtHandle, scrollback_offset: u32) VisibleInfo {
-    const result = vt_c.howl_vt_terminal_query_visible_info(handle, scrollback_offset);
+pub fn vtVisibleInfo(handle: vt_c.HowlVtHandle) VisibleInfo {
+    const result = vt_c.howl_vt_terminal_query_visible_info(handle);
     requireVtStructOk(result.status);
     const meta = result.info;
-    std.debug.assert(scrollback_offset <= meta.history_count);
+    std.debug.assert(meta.scrollback_offset <= meta.history_count);
     return .{
         .rows = @intCast(meta.rows),
         .cols = @intCast(meta.cols),
@@ -135,7 +134,6 @@ test "render-state capture update failure does not touch cursor facts" {
         vt: vt_c.HowlVtHandle = @ptrFromInt(1),
         vt_state: struct {
             render_state: vt_c.HowlVtRenderStateHandle = @ptrFromInt(2),
-            scrollback_offset: u32 = 0,
             cursor_visible: bool = false,
             cursor_blink: bool = false,
         } = .{},
@@ -148,7 +146,7 @@ test "render-state capture update failure does not touch cursor facts" {
     const FakeOps = struct {
         var update_calls: u8 = 0;
 
-        fn update(_: vt_c.HowlVtRenderStateHandle, _: vt_c.HowlVtHandle, _: u32) i32 {
+        fn update(_: vt_c.HowlVtRenderStateHandle, _: vt_c.HowlVtHandle) i32 {
             update_calls += 1;
             return vt_c.HOWL_VT_CALL_FAILED;
         }

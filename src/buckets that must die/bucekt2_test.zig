@@ -309,7 +309,7 @@ fn prepareSubmitSurfaceWithCursor(surface: *Surface, snapshot_seq: u64, cursor_v
     var render_state: vt_c.HowlVtRenderStateHandle = null;
     try std.testing.expectEqual(vt_c.HOWL_VT_CALL_OK, vt_c.howl_vt_render_state_init(&render_state));
     defer vt_c.howl_vt_render_state_deinit(render_state);
-    try std.testing.expectEqual(vt_c.HOWL_VT_CALL_OK, vt_c.howl_vt_render_state_update(render_state, terminal, 0));
+    try std.testing.expectEqual(vt_c.HOWL_VT_CALL_OK, vt_c.howl_vt_render_state_update(render_state, terminal));
     try std.testing.expectEqual(render_retained.PrepareResult.prepared, surface.term.render.prepare(render_state));
     try recordExpectedPreparedUpload(surface);
 }

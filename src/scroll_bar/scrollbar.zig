@@ -2,7 +2,6 @@ const std = @import("std");
 const EventLoop = @import("../events/event_loop.zig");
 const Layout = @import("../layout/layout.zig");
 const HostInput = @import("../input/input.zig").Input;
-const terminal_term = @import("../buckets that must die/bucket4.zig");
 const vt_c = @import("howl_vt_c");
 
 const min_width_logical: c_int = 3;
@@ -211,15 +210,14 @@ pub fn setScrollbackOffset(term: anytype, offset: u32) bool {
     const mut = mutableTerm(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    const history_count = visibleInfo(term.vt, term.vt_state.scrollback_offset).history_count;
-    return setScrollbackOffsetLocked(term, history_count, offset);
+    return scrollViewport(term.vt, vt_c.HOWL_VT_SCROLL_VIEWPORT_ABSOLUTE, offset);
 }
 
-pub fn followLiveBottom(term: anytype) bool {
+pub fn scrollViewportToBottom(term: anytype) bool {
     const mut = mutableTerm(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
-    return terminal_term.followLiveBottomLocked(term);
+    return scrollViewport(term.vt, vt_c.HOWL_VT_SCROLL_VIEWPORT_BOTTOM, 0);
 }
 
 fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, focus_t: f32) TrackLayout {
@@ -325,13 +323,8 @@ pub fn handlePages(self: anytype, input_events: *HostInput) void {
 }
 
 pub fn byRows(self: anytype, delta_rows: i32) void {
-    const term_view = scrollState(&self.term);
-    if (term_view.alternate_screen) return;
-    const history_count: i32 = cappedI32(term_view.scrollback_count);
-    const current: i32 = cappedI32(term_view.scrollback_offset);
-    const target = std.math.clamp(current + delta_rows, 0, history_count);
-    if (target == current) return;
-    _ = setOffset(self, @intCast(target));
+    const changed = scrollByRows(&self.term, delta_rows);
+    if (changed) self.scrollbar.invalidate();
 }
 
 pub fn handleMouse(self: anytype, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
@@ -361,7 +354,7 @@ pub fn layout(self: anytype, texture_rect: Layout.Rect) Layout.ScrollbarLayout {
 
 fn setOffset(self: anytype, offset: u32) bool {
     const changed = if (offset == 0)
-        followLiveBottom(&self.term)
+        scrollViewportToBottom(&self.term)
     else
         setScrollbackOffset(&self.term, offset);
     if (changed) self.scrollbar.invalidate();
@@ -377,35 +370,39 @@ fn viewFromTerm(term_view: ScrollState) View {
     };
 }
 
-fn cappedI32(value: u32) i32 {
-    if (value > @as(u32, @intCast(std.math.maxInt(i32)))) return std.math.maxInt(i32);
-    return @intCast(value);
-}
-
 fn mutableTerm(term: anytype) *@TypeOf(term.*) {
     return @constCast(term);
 }
 
 fn scrollStateLocked(term: anytype) ScrollState {
-    const info = visibleInfo(term.vt, term.vt_state.scrollback_offset);
+    const info = visibleInfo(term.vt);
     return .{
         .visible_rows = term.render.surface_layout.rows,
         .scrollback_count = info.history_count,
-        .scrollback_offset = term.vt_state.scrollback_offset,
+        .scrollback_offset = info.scrollback_offset,
         .alternate_screen = info.is_alternate_screen,
     };
 }
 
-fn visibleInfo(handle: vt_c.HowlVtHandle, scrollback_offset: u32) struct { history_count: u32, is_alternate_screen: bool } {
-    const result = vt_c.howl_vt_terminal_query_visible_info(handle, scrollback_offset);
+fn visibleInfo(handle: vt_c.HowlVtHandle) struct { history_count: u32, scrollback_offset: u32, is_alternate_screen: bool } {
+    const result = vt_c.howl_vt_terminal_query_visible_info(handle);
     std.debug.assert(result.status == vt_c.HOWL_VT_CALL_OK);
-    return .{ .history_count = @intCast(result.info.history_count), .is_alternate_screen = result.info.is_alternate_screen != 0 };
+    return .{
+        .history_count = @intCast(result.info.history_count),
+        .scrollback_offset = @intCast(result.info.scrollback_offset),
+        .is_alternate_screen = result.info.is_alternate_screen != 0,
+    };
 }
 
-fn setScrollbackOffsetLocked(term: anytype, history_count: u32, offset: u32) bool {
-    const clamped = @min(offset, history_count);
-    std.debug.assert(clamped <= history_count);
-    if (clamped == term.vt_state.scrollback_offset) return false;
-    term.vt_state.scrollback_offset = clamped;
-    return true;
+fn scrollByRows(term: anytype, delta_rows: i32) bool {
+    const mut = mutableTerm(term);
+    mut.mutex.lock();
+    defer mut.mutex.unlock();
+    return scrollViewport(term.vt, vt_c.HOWL_VT_SCROLL_VIEWPORT_DELTA, delta_rows);
+}
+
+fn scrollViewport(handle: vt_c.HowlVtHandle, kind: u8, value: i64) bool {
+    const result = vt_c.howl_vt_terminal_scroll_viewport(handle, kind, value);
+    std.debug.assert(result.status == vt_c.HOWL_VT_CALL_OK);
+    return result.changed != 0;
 }

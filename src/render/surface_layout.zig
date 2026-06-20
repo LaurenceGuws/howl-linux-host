@@ -206,9 +206,6 @@ pub fn resizeTermVt(term: anytype, rows: u16, cols: u16) !void {
 
 pub fn resizeTermVtLocked(term: anytype, rows: u16, cols: u16) !void {
     try requireResizeOk(vt_c.howl_vt_terminal_resize(term.vt, rows, cols));
-    const info = vt_c.howl_vt_terminal_query_visible_info(term.vt, term.vt_state.scrollback_offset);
-    try requireOk(info.status);
-    clampScrollbackOffset(term, @intCast(info.info.history_count));
 }
 
 pub fn setTermCellPixelSize(term: anytype, width: u16, height: u16) !void {
@@ -230,9 +227,4 @@ fn requireResizeOk(status: i32) !void {
     if (status == vt_c.HOWL_VT_CALL_OK) return;
     if (status == vt_c.HOWL_VT_CALL_INVALID_ARGUMENT) return error.InvalidDimensions;
     return error.VtCallFailed;
-}
-
-fn clampScrollbackOffset(term: anytype, history_count: u32) void {
-    term.vt_state.scrollback_offset = @min(term.vt_state.scrollback_offset, history_count);
-    std.debug.assert(term.vt_state.scrollback_offset <= history_count);
 }

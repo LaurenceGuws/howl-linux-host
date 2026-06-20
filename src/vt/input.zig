@@ -2,6 +2,7 @@ const Input = @import("../input/input.zig").Input;
 const pty_session = @import("../pty/session.zig");
 const std = @import("std");
 const c = @import("howl_vt_c");
+const vt_focus = @import("focus.zig");
 const vt_input_buffer = @import("input_buffer.zig");
 const terminal_term = @import("../buckets that must die/bucket4.zig");
 
@@ -96,7 +97,7 @@ pub fn publishPaste(term: *Term, text: []const u8) !void {
     if (text.len == 0) return;
     term.mutex.lock();
     defer term.mutex.unlock();
-    _ = terminal_term.followLiveBottomLocked(term);
+    _ = scrollViewportToBottomLocked(term);
     const start = try encodePasteStartBytes(term);
     if (start.len != 0) _ = try pty_session.publishInputBytesLocked(term, start);
     _ = try pty_session.publishInputBytesLocked(term, text);
@@ -107,7 +108,7 @@ pub fn publishPaste(term: *Term, text: []const u8) !void {
 pub fn publishKey(term: *Term, key_code: TermInput.Key, modifiers: TermInput.Modifier) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
-    _ = terminal_term.followLiveBottomLocked(term);
+    _ = scrollViewportToBottomLocked(term);
     _ = try pty_session.publishInputBytesLocked(term, try encodeKeyBytes(term, .{ .key = key_code, .mods = modifiers }));
 }
 
@@ -120,9 +121,15 @@ pub fn publishMouse(term: *Term, mouse: TermInput.MouseEvent) !bool {
 pub fn publishFocus(term: *Term, focused: bool) !bool {
     term.mutex.lock();
     defer term.mutex.unlock();
-    if (!terminal_term.setFocused(term, focused)) return false;
-    _ = terminal_term.followLiveBottomLocked(term);
+    if (!vt_focus.set(&term.vt_state.focus, focused)) return false;
+    _ = scrollViewportToBottomLocked(term);
     return try pty_session.publishInputBytesLocked(term, try encodeFocusBytes(term, focused));
+}
+
+fn scrollViewportToBottomLocked(term: *Term) bool {
+    const result = c.howl_vt_terminal_scroll_viewport(term.vt, c.HOWL_VT_SCROLL_VIEWPORT_BOTTOM, 0);
+    std.debug.assert(result.status == c.HOWL_VT_CALL_OK);
+    return result.changed != 0;
 }
 
 pub fn wouldReportUnpressedMouseMotion(term: *Term) bool {
