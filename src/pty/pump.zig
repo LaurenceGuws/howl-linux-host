@@ -1,6 +1,6 @@
 const pty_session = @import("../pty/session.zig");
 const vt_c = @import("howl_vt_c");
-const terminal_term = @import("../terminal/term.zig");
+const Term = @import("../term.zig").Term;
 const vt_retained = @import("../vt/surface_retained.zig");
 const vt_title = @import("../vt/title.zig");
 const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
@@ -41,7 +41,7 @@ const TransportProgress = struct {
     hit_limit: bool,
 };
 
-pub fn driveOnce(term: *terminal_term.Term, now_ns: u64) Outcome {
+pub fn driveOnce(term: *Term, now_ns: u64) Outcome {
     return driveOnceWith(term, now_ns, TerminalProgressOps);
 }
 
@@ -56,24 +56,24 @@ fn driveOnceWith(term: anytype, now_ns: u64, comptime Ops: type) Outcome {
 }
 
 const TerminalProgressOps = struct {
-    fn pumpTransport(term: *terminal_term.Term, mode: pty_session.TransportPumpMode) TransportProgress {
+    fn pumpTransport(term: *Term, mode: pty_session.TransportPumpMode) TransportProgress {
         return pumpTransportSlice(term, mode);
     }
 
-    fn hasOutboundInputBacklog(term: *const terminal_term.Term) bool {
+    fn hasOutboundInputBacklog(term: *const Term) bool {
         return pty_session.hasOutboundInputBacklog(term);
     }
 
-    fn progressRuntime(term: *terminal_term.Term, now_ns: u64) RuntimeProgress {
+    fn progressRuntime(term: *Term, now_ns: u64) RuntimeProgress {
         return progressRuntimeLocked(term, now_ns);
     }
 
-    fn isAlive(term: *const terminal_term.Term) bool {
+    fn isAlive(term: *const Term) bool {
         return pty_session.isAlive(term);
     }
 };
 
-fn progressRuntimeLocked(term: *terminal_term.Term, now_ns: u64) RuntimeProgress {
+fn progressRuntimeLocked(term: *Term, now_ns: u64) RuntimeProgress {
     term.mutex.lockFair();
     defer term.mutex.unlock();
 
@@ -91,7 +91,7 @@ fn progressRuntimeLocked(term: *terminal_term.Term, now_ns: u64) RuntimeProgress
     };
 }
 
-fn pumpTransportSlice(term: *terminal_term.Term, mode: pty_session.TransportPumpMode) TransportProgress {
+fn pumpTransportSlice(term: *Term, mode: pty_session.TransportPumpMode) TransportProgress {
     return pumpTransportSliceWith(
         term,
         mode,
@@ -205,40 +205,40 @@ const RealTransportOps = struct {
         return limits;
     }
 
-    fn lease(term: *terminal_term.Term) FairMutex.Lease {
+    fn lease(term: *Term) FairMutex.Lease {
         return term.mutex.lease();
     }
 
-    fn releaseLease(_: *terminal_term.Term, lease_value: FairMutex.Lease) void {
+    fn releaseLease(_: *Term, lease_value: FairMutex.Lease) void {
         lease_value.release();
     }
 
-    fn lockUnfair(term: *terminal_term.Term) void {
+    fn lockUnfair(term: *Term) void {
         term.mutex.lockUnfair();
     }
 
-    fn unlock(term: *terminal_term.Term) void {
+    fn unlock(term: *Term) void {
         term.mutex.unlock();
     }
 
-    fn pumpOutboundLeased(term: *terminal_term.Term) pty_session.OutboundProgress {
+    fn pumpOutboundLeased(term: *Term) pty_session.OutboundProgress {
         return pty_session.pumpOutboundLeased(term);
     }
 
-    fn readTransportLeased(term: *terminal_term.Term, out: []u8) u32 {
+    fn readTransportLeased(term: *Term, out: []u8) u32 {
         return pty_session.readTransportLeased(term, out);
     }
 
-    fn feedTermBytesLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u32) bool {
+    fn feedTermBytesLocked(term: *Term, bytes: []const u8, chunk_len: u32) bool {
         return feedTermDataLocked(term, bytes, chunk_len);
     }
 
-    fn pendingInputBytesLocked(term: *terminal_term.Term) u64 {
+    fn pendingInputBytesLocked(term: *Term) u64 {
         return pty_session.pendingInputBytesLocked(term);
     }
 };
 
-fn feedTermDataLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u32) bool {
+fn feedTermDataLocked(term: *Term, bytes: []const u8, chunk_len: u32) bool {
     const result = vt_retained.feedLocked(term, bytes);
     if (result.status != vt_c.HOWL_VT_CALL_OK) {
         term.pty.lifecycle = .failed;
@@ -252,20 +252,20 @@ fn feedTermDataLocked(term: *terminal_term.Term, bytes: []const u8, chunk_len: u
     return true;
 }
 
-fn drainTerminalReplyLocked(term: *terminal_term.Term) void {
+fn drainTerminalReplyLocked(term: *Term) void {
     drainTerminalReplyLockedWith(term, RealDrainReplyOps);
 }
 
 const RealDrainReplyOps = struct {
-    fn copyPendingOutputLocked(term: *terminal_term.Term) ![]const u8 {
+    fn copyPendingOutputLocked(term: *Term) ![]const u8 {
         return vt_retained.copyPendingOutputLocked(term);
     }
 
-    fn publishInputBytesLocked(term: *terminal_term.Term, pending: []const u8) !bool {
+    fn publishInputBytesLocked(term: *Term, pending: []const u8) !bool {
         return pty_session.publishInputBytesLocked(term, pending);
     }
 
-    fn clearPendingOutputLocked(term: *terminal_term.Term) void {
+    fn clearPendingOutputLocked(term: *Term) void {
         vt_retained.clearPendingOutputLocked(term);
     }
 };

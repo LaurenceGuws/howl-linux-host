@@ -1,6 +1,6 @@
 const std = @import("std");
 const c = @import("howl_pty_c");
-const terminal_term = @import("../terminal/term.zig");
+const Term = @import("../term.zig").Term;
 
 const default_pending_capacity: u32 = 4096;
 
@@ -97,7 +97,7 @@ pub fn deinitHandle(handle: c.HowlPtySessionHandle) void {
     c.howl_pty_session_deinit(handle);
 }
 
-pub fn start(term: *terminal_term.Term) !void {
+pub fn start(term: *Term) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
     if (ptySessionSnapshot(term.session).status == .active) return error.AlreadyStarted;
@@ -109,46 +109,46 @@ pub fn start(term: *terminal_term.Term) !void {
     term.pty.lifecycle = .ready;
 }
 
-pub fn stop(term: *terminal_term.Term) void {
+pub fn stop(term: *Term) void {
     term.mutex.lock();
     defer term.mutex.unlock();
     c.howl_pty_session_stop(term.session);
     term.pty.lifecycle = .stopped;
 }
 
-pub fn resize(term: *terminal_term.Term, cols: u16, rows: u16) !void {
+pub fn resize(term: *Term, cols: u16, rows: u16) !void {
     term.mutex.lock();
     defer term.mutex.unlock();
     try resizeLocked(term, cols, rows);
 }
 
-pub fn resizeLocked(term: *terminal_term.Term, cols: u16, rows: u16) !void {
+pub fn resizeLocked(term: *Term, cols: u16, rows: u16) !void {
     try requireResizeOk(c.howl_pty_session_resize(term.session, cols, rows));
 }
 
-pub fn lifecycleState(term: *const terminal_term.Term) LifecycleState {
-    const mut: *terminal_term.Term = @constCast(term);
+pub fn lifecycleState(term: *const Term) LifecycleState {
+    const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return term.pty.lifecycle;
 }
 
-pub fn isAlive(term: *const terminal_term.Term) bool {
-    const mut: *terminal_term.Term = @constCast(term);
+pub fn isAlive(term: *const Term) bool {
+    const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return ptySessionSnapshot(term.session).status == .active;
 }
 
-pub fn snapshot(term: *const terminal_term.Term) Snapshot {
-    const mut: *terminal_term.Term = @constCast(term);
+pub fn snapshot(term: *const Term) Snapshot {
+    const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return ptySessionSnapshot(term.session);
 }
 
-pub fn outcome(term: *const terminal_term.Term) SessionOutcome {
-    const mut: *terminal_term.Term = @constCast(term);
+pub fn outcome(term: *const Term) SessionOutcome {
+    const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return classifyOutcome(term.pty.lifecycle, ptySessionSnapshot(term.session));
@@ -164,24 +164,24 @@ pub fn requireOk(status: i32) !void {
     return ptyRequireOk(status);
 }
 
-pub fn hasOutboundInputBacklog(term: *const terminal_term.Term) bool {
-    const mut: *terminal_term.Term = @constCast(term);
+pub fn hasOutboundInputBacklog(term: *const Term) bool {
+    const mut: *Term = @constCast(term);
     mut.mutex.lock();
     defer mut.mutex.unlock();
     return ptySessionPendingBytes(term.session) != 0;
 }
 
-pub fn waitTransport(term: *terminal_term.Term, timeout_ms: i32) bool {
+pub fn waitTransport(term: *Term, timeout_ms: i32) bool {
     return c.howl_pty_session_wait_readable(term.session, timeout_ms) != 0;
 }
 
-pub fn kickWait(term: *terminal_term.Term) void {
+pub fn kickWait(term: *Term) void {
     term.mutex.lock();
     defer term.mutex.unlock();
     c.howl_pty_session_kick_wait(term.session);
 }
 
-pub fn pumpOutboundLeased(term: *terminal_term.Term) OutboundProgress {
+pub fn pumpOutboundLeased(term: *Term) OutboundProgress {
     const outbound = c.howl_pty_session_pump_outbound(term.session, 0);
     ptyRequireStructOk(outbound.status);
     return .{
@@ -190,7 +190,7 @@ pub fn pumpOutboundLeased(term: *terminal_term.Term) OutboundProgress {
     };
 }
 
-pub fn readTransportLeased(term: *terminal_term.Term, out: []u8) u32 {
+pub fn readTransportLeased(term: *Term, out: []u8) u32 {
     if (out.len == 0) return 0;
     const read = c.howl_pty_session_read(term.session, out.ptr, out.len);
     ptyRequireStructOk(read.status);
@@ -207,18 +207,18 @@ pub fn transportLimits(mode: TransportPumpMode) TransportLimits {
     return .{ .chunk_bytes = result.chunk_bytes, .max_reads = result.max_reads, .max_bytes = result.max_bytes };
 }
 
-pub fn pendingInputBytesLocked(term: *terminal_term.Term) u64 {
+pub fn pendingInputBytesLocked(term: *Term) u64 {
     return ptySessionPendingBytes(term.session);
 }
 
-pub fn publishInputBytes(term: *terminal_term.Term, bytes: []const u8) !void {
+pub fn publishInputBytes(term: *Term, bytes: []const u8) !void {
     if (bytes.len == 0) return;
     term.mutex.lock();
     defer term.mutex.unlock();
     _ = try publishInputBytesLocked(term, bytes);
 }
 
-pub fn publishInputBytesLocked(term: *terminal_term.Term, encoded: []const u8) !bool {
+pub fn publishInputBytesLocked(term: *Term, encoded: []const u8) !bool {
     if (encoded.len == 0) return false;
     try ptyPublishInput(term.session, encoded);
     return true;

@@ -4,9 +4,8 @@ const std = @import("std");
 const c = @import("howl_vt_c");
 const vt_focus = @import("focus.zig");
 const vt_input_buffer = @import("input_buffer.zig");
-const terminal_term = @import("../terminal/term.zig");
+const Term = @import("../term.zig").Term;
 
-const Term = terminal_term.Term;
 const TermInput = struct {
     const Key = u32;
     const Modifier = u32;

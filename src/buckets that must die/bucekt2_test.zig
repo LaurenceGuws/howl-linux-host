@@ -12,8 +12,8 @@ const render_retained = @import("../render/surface_retained.zig");
 const surface_layout = @import("../render/surface_layout.zig");
 const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
 const terminal_scrollbar = @import("../scroll_bar/scrollbar.zig");
-const terminal_term = @import("../terminal/term.zig");
-const terminal_config = @import("../config/terminal.zig");
+const Term = @import("../term.zig").Term;
+const term_config = @import("../config/term.zig");
 
 const Surface = surface_mod.Surface;
 const HostInput = @import("../input/input.zig").Input;
@@ -22,7 +22,7 @@ const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
 const SurfaceLayout = render_retained.SurfaceLayout;
 const surface_testing = surface_mod.testing;
 
-const test_terminal_conf = terminal_config.Config{
+const test_terminal_conf = term_config.Config{
     .shell = &.{},
     .start_path = null,
     .command = null,
@@ -148,7 +148,7 @@ fn driveWantsRenderTurnHook(_: *Surface) bool {
     return drive_hook_state.wants_render_turn;
 }
 
-fn driveOnceHook(_: *terminal_term.Term, _: u64) pty_pump.Outcome {
+fn driveOnceHook(_: *Term, _: u64) pty_pump.Outcome {
     const outcome = drive_hook_state.outcomes[drive_hook_state.drive_calls];
     drive_hook_state.drive_calls += 1;
     return outcome;
@@ -302,18 +302,18 @@ fn prepareSubmitSurface(surface: *Surface, snapshot_seq: u64) !void {
 fn prepareSubmitSurfaceWithCursor(surface: *Surface, snapshot_seq: u64, cursor_visible: bool) !void {
     _ = cursor_visible;
     const layout = surface.term.render.surface_layout;
-    const terminal = vt_c.howl_vt_terminal_init(layout.rows, layout.cols, 16) orelse return error.TestUnexpectedResult;
-    defer vt_c.howl_vt_terminal_deinit(terminal);
+    const term = vt_c.howl_vt_terminal_init(layout.rows, layout.cols, 16) orelse return error.TestUnexpectedResult;
+    defer vt_c.howl_vt_terminal_deinit(term);
     const bytes = [_]u8{'a'};
     var feed_index: u64 = 0;
     while (feed_index < @max(snapshot_seq, 1)) : (feed_index += 1) {
-        const feed = vt_c.howl_vt_terminal_feed(terminal, &bytes, bytes.len);
+        const feed = vt_c.howl_vt_terminal_feed(term, &bytes, bytes.len);
         try std.testing.expectEqual(vt_c.HOWL_VT_CALL_OK, feed.status);
     }
     var render_state: vt_c.HowlVtRenderStateHandle = null;
     try std.testing.expectEqual(vt_c.HOWL_VT_CALL_OK, vt_c.howl_vt_render_state_init(&render_state));
     defer vt_c.howl_vt_render_state_deinit(render_state);
-    try std.testing.expectEqual(vt_c.HOWL_VT_CALL_OK, vt_c.howl_vt_render_state_update(render_state, terminal));
+    try std.testing.expectEqual(vt_c.HOWL_VT_CALL_OK, vt_c.howl_vt_render_state_update(render_state, term));
     try std.testing.expectEqual(render_retained.PrepareResult.prepared, surface.term.render.prepare(render_state));
     try recordExpectedPreparedUpload(surface);
 }
@@ -345,7 +345,7 @@ const ClipboardCase = struct {
         self.last_text = "";
     }
 
-    fn apply(self: *@This(), policy: @import("../config/terminal.zig").ClipboardOsc52Policy) void {
+    fn apply(self: *@This(), policy: @import("../config/term.zig").ClipboardOsc52Policy) void {
         self.term.mutex.lockFair();
         defer self.term.mutex.unlock();
         self.drain_calls += 1;

@@ -1,4 +1,4 @@
-const terminal_config = @import("../config/terminal.zig");
+const term_config = @import("../config/term.zig");
 const render_c = @import("howl_render_c");
 const std = @import("std");
 
@@ -22,7 +22,7 @@ pub const ResolvedFonts = struct {
     }
 };
 
-pub fn resolve(alloc: Allocator, fonts: terminal_config.Fonts) !ResolvedFonts {
+pub fn resolve(alloc: Allocator, fonts: term_config.Fonts) !ResolvedFonts {
     var resolved = ResolvedFonts{};
     errdefer resolved.deinit(alloc);
 
@@ -37,7 +37,7 @@ fn resolvePrimary(alloc: Allocator, configured: ?[:0]const u8) !?[:0]u8 {
     return try resolvePath(alloc, bundled_primary_path);
 }
 
-fn resolveFallbacks(alloc: Allocator, fonts: terminal_config.Fonts) ![]const [:0]u8 {
+fn resolveFallbacks(alloc: Allocator, fonts: term_config.Fonts) ![]const [:0]u8 {
     var out = std.ArrayList([:0]u8).empty;
     defer freeOwnedFallbacks(&out, alloc);
 

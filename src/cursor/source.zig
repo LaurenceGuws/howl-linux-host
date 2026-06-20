@@ -1,6 +1,6 @@
 const std = @import("std");
 const vt_c = @import("howl_vt_c");
-const terminal_config = @import("../config/terminal.zig");
+const term_config = @import("../config/term.zig");
 
 pub const CursorRenderInfo = struct {
     row: u16 = 0,
@@ -16,7 +16,7 @@ pub const CursorRenderInfo = struct {
         return config_blink and focused and self.is_visible and self.blink and self.has_shape;
     }
 
-    pub fn effectiveShape(self: CursorRenderInfo, focused: bool, unfocused_shape: terminal_config.CursorUnfocusedShape) u8 {
+    pub fn effectiveShape(self: CursorRenderInfo, focused: bool, unfocused_shape: term_config.CursorUnfocusedShape) u8 {
         if (!self.has_shape) return 0;
         if (focused) return self.shape;
         return switch (unfocused_shape) {

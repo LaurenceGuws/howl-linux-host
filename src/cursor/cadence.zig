@@ -1,13 +1,13 @@
 const std = @import("std");
 const vt_c = @import("howl_vt_c");
 const render_retained = @import("../render/surface_retained.zig");
-const terminal_config = @import("../config/terminal.zig");
+const term_config = @import("../config/term.zig");
 const cursor_blink = @import("blink.zig");
 const cursor_source = @import("source.zig");
 
 const CadenceFacts = cursor_blink.CursorBlink.CadenceFacts;
 const HostCursorCadence = render_retained.HostCursorCadence;
-const TerminalConfig = terminal_config.Config;
+const TerminalConfig = term_config.Config;
 const TimingConfig = cursor_blink.TimingConfig;
 
 pub fn applyHostCursorCadence(render: *HostCursorCadence, info: cursor_source.CursorRenderInfo, blink_cadence: CadenceFacts, conf: *const TerminalConfig, focused: bool) void {
@@ -33,7 +33,7 @@ pub fn applyHostCursorTrailCadence(render: *HostCursorCadence, blink_config: Tim
     render.now_ns = now_ns;
 }
 
-fn renderCursorColor(color_value: terminal_config.CursorColor) vt_c.HowlVtColor {
+fn renderCursorColor(color_value: term_config.CursorColor) vt_c.HowlVtColor {
     return .{ .kind = @intFromEnum(color_value.kind), .value = color_value.value };
 }
 

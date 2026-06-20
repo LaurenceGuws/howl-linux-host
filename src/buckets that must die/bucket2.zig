@@ -14,15 +14,15 @@ const pty_session = @import("../pty/session.zig");
 const render_retained = @import("../render/surface_retained.zig");
 const vt_surface = @import("../vt/surface.zig");
 const vt_title = @import("../vt/title.zig");
-const terminal_term = @import("../terminal/term.zig");
+const HowlTerm = @import("../term.zig").Term;
+const VtState = @import("../term.zig").VtState;
 const vt_retained = @import("../vt/surface_retained.zig");
-const HowlTerm = terminal_term.Term;
 const LifecycleState = pty_session.LifecycleState;
 const SurfaceLayoutRequest = surface_layout.SurfaceLayoutRequest;
 const Config = @import("../config/config.zig");
 const TerminalConfig = Config.Terminal;
-const CursorStyle = @import("../config/terminal.zig").CursorStyle;
-const ClipboardOsc52Policy = @import("../config/terminal.zig").ClipboardOsc52Policy;
+const CursorStyle = @import("../config/term.zig").CursorStyle;
+const ClipboardOsc52Policy = @import("../config/term.zig").ClipboardOsc52Policy;
 const font_size = terminal_fonts;
 const surface_layout = @import("../render/surface_layout.zig");
 const terminal_input = @import("bucket3.zig");
@@ -292,7 +292,7 @@ pub const Surface = struct {
         return terminal_scrollbar.wantsPassiveHoverWake(self, origin_x, origin_y, logical_width, logical_height);
     }
 
-    /// Report whether this terminal needs unpressed mouse motion for link hover.
+    /// Report whether this term needs unpressed mouse motion for link hover.
     pub fn wantsLinkHover(self: *const Context) bool {
         return self.conf.link_hover != .off;
     }
@@ -936,7 +936,7 @@ fn titleFromLaunch(launch: pty_session.Launch) []const u8 {
     return std.mem.trim(u8, std.fs.path.basename(launch.shell), " \t\r\n");
 }
 
-fn initRenderState(vt_state: *terminal_term.VtState) !void {
+fn initRenderState(vt_state: *VtState) !void {
     std.debug.assert(vt_state.render_state == null);
     var state: vt_c.HowlVtRenderStateHandle = null;
     if (vt_c.howl_vt_render_state_init(&state) != vt_c.HOWL_VT_CALL_OK) return error.VtInitFailed;

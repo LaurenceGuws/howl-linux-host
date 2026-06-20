@@ -1,13 +1,13 @@
 const std = @import("std");
 const pty_c = @import("howl_pty_c");
 const vt_c = @import("howl_vt_c");
-const pty_session = @import("../pty/session.zig");
-const render_retained = @import("../render/surface_retained.zig");
-const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
-const vt_focus = @import("../vt/focus.zig");
-const vt_input_buffer = @import("../vt/input_buffer.zig");
-const vt_output_buffer = @import("../vt/output_buffer.zig");
-const vt_title = @import("../vt/title.zig");
+const pty_session = @import("pty/session.zig");
+const render_retained = @import("render/surface_retained.zig");
+const FairMutex = @import("sync/fair_mutex.zig").FairMutex;
+const vt_focus = @import("vt/focus.zig");
+const vt_input_buffer = @import("vt/input_buffer.zig");
+const vt_output_buffer = @import("vt/output_buffer.zig");
+const vt_title = @import("vt/title.zig");
 
 pub const VtState = struct {
     title: vt_title.Title = .{},

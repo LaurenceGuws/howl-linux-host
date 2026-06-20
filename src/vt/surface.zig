@@ -1,6 +1,6 @@
 const std = @import("std");
 const vt_c = @import("howl_vt_c");
-const terminal_term = @import("../terminal/term.zig");
+const Term = @import("../term.zig").Term;
 const terminal_links = @import("../render/links.zig");
 
 pub const HyperlinkHover = terminal_links.HyperlinkHover;
@@ -24,13 +24,13 @@ pub const RenderStateCapture = struct {
     }
 };
 
-pub fn captureRenderState(term: *terminal_term.Term, hover: ?HyperlinkHover) !RenderStateCapture {
+pub fn captureRenderState(term: *Term, hover: ?HyperlinkHover) !RenderStateCapture {
     term.mutex.lockFair();
     defer term.mutex.unlock();
     return captureRenderStateLockedWith(term, hover, RenderStateCaptureOps);
 }
 
-pub fn captureRenderStateLocked(term: *terminal_term.Term, hover: ?HyperlinkHover) !RenderStateCapture {
+pub fn captureRenderStateLocked(term: *Term, hover: ?HyperlinkHover) !RenderStateCapture {
     return captureRenderStateLockedWith(term, hover, RenderStateCaptureOps);
 }
 
@@ -52,7 +52,7 @@ const RenderStateCaptureOps = struct {
     }
 };
 
-pub fn ackPublishedSourceLocked(term: *terminal_term.Term, snapshot_seq: u64) bool {
+pub fn ackPublishedSourceLocked(term: *Term, snapshot_seq: u64) bool {
     return ackPublishedSourceLockedWith(term, snapshot_seq, RealAckOps);
 }
 

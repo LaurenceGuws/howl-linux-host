@@ -5,8 +5,8 @@ const terminal_selection = @import("../selection/selection.zig");
 const vt_retained = @import("../vt/surface_retained.zig");
 const window = @import("../events/window.zig");
 const HostInput = @import("../input/input.zig").Input;
-const LinkHoverPolicy = @import("../config/terminal.zig").LinkHoverPolicy;
-const LinkUnderlineStyle = @import("../config/terminal.zig").LinkUnderlineStyle;
+const LinkHoverPolicy = @import("../config/term.zig").LinkHoverPolicy;
+const LinkUnderlineStyle = @import("../config/term.zig").LinkUnderlineStyle;
 
 pub const HoveredLinkCell = struct {
     row: u16,

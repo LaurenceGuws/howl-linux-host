@@ -1,6 +1,6 @@
 const std = @import("std");
 const howl_lua = @import("howl_lua");
-const term_config = @import("terminal.zig");
+const term_config = @import("term.zig");
 const window_config = @import("window.zig");
 const tab_bar_config = @import("tab_bar.zig");
 const assert = std.debug.assert;

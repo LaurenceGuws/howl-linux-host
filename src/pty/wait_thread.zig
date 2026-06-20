@@ -1,6 +1,6 @@
 const pty_session = @import("../pty/session.zig");
 const pty_pump = @import("../pty/pump.zig");
-const terminal_term = @import("../terminal/term.zig");
+const Term = @import("../term.zig").Term;
 const EventLoop = @import("../events/event_loop.zig");
 const std = @import("std");
 
@@ -86,11 +86,11 @@ const ProgressThreadOps = struct {
         return pty_pump.driveOnce(termRef(self), now_ns);
     }
 
-    fn waitTransport(term: *terminal_term.Term, timeout_ms: i32) bool {
+    fn waitTransport(term: *Term, timeout_ms: i32) bool {
         return pty_session.waitTransport(term, timeout_ms);
     }
 
-    fn isAlive(term: *const terminal_term.Term) bool {
+    fn isAlive(term: *const Term) bool {
         return pty_session.isAlive(term);
     }
 
@@ -100,7 +100,7 @@ const ProgressThreadOps = struct {
     }
 };
 
-test "progress thread drives terminal before waking event loop" {
+test "progress thread drives term before waking event loop" {
     fake_state = .{};
     const term = FakeTerm.init();
     var ctx = FakeCtx{ .term = term };
