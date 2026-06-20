@@ -2,7 +2,6 @@ const std = @import("std");
 const EventLoop = @import("../events/event_loop.zig");
 const window = @import("../events/window.zig");
 const Layout = @import("../layout/layout.zig");
-const layout_cells = @import("../layout/cells.zig");
 const term_texture = @import("../render/surface.zig");
 const HostInput = @import("../input/input.zig").Input;
 const pty_c = @import("howl_pty_c");
@@ -892,6 +891,7 @@ pub const Surface = struct {
             .write_bytes_to_pty = writeBytesToPtySelected,
             .write_key_to_pty = writeKeyToPtySelected,
             .write_mouse_to_pty = writeMouseToPtySelected,
+            .surface_point_cell = surfacePointCellSelected,
             .process_scrollbar_mouse = processScrollBarMouseSelected,
             .clear_hovered_link = clearHoveredLinkSelected,
             .scroll_viewport_by_wheel = scrollViewportByWheelSelected,
@@ -924,17 +924,21 @@ pub const Surface = struct {
 
     fn writeMouseToPtySelected(surface: *anyopaque, mouse_event: HostInput.Mouse.Event) bool {
         const self = selectedSurface(surface);
-        const current_layout = self.term.render.surface_layout;
+        const cell = self.surfacePointCell(mouse_event);
         return term_input.publishMouse(&self.term, .{
             .kind = term_input.mouseKind(mouse_event.kind),
             .button = term_input.mouseButton(mouse_event.button),
-            .row = layout_cells.row(current_layout, mouse_event.pixel_y),
-            .col = layout_cells.col(current_layout, mouse_event.pixel_x),
+            .row = @intCast(cell.row),
+            .col = cell.col,
             .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
             .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
             .mods = term_input.mods(mouse_event.mods),
             .buttons_down = term_input.buttons(mouse_event.buttons_down),
         }) catch false;
+    }
+
+    fn surfacePointCellSelected(surface: *anyopaque, mouse_event: HostInput.Mouse.Event) input_processor.SurfacePointCell {
+        return selectedSurface(surface).surfacePointCell(mouse_event);
     }
 
     const ScrollVisualState = struct {
@@ -997,12 +1001,13 @@ pub const Surface = struct {
         self.term.render.notePrepareNeeded();
     }
 
-    pub fn pixelToTerminalCol(self: *const Term, pixel_x: i32) u16 {
-        return layout_cells.col(self.term.render.surface_layout, pixel_x);
-    }
-
-    pub fn pixelToTerminalRow(self: *const Term, pixel_y: i32) i32 {
-        return layout_cells.row(self.term.render.surface_layout, pixel_y);
+    pub fn surfacePointCell(self: *const Term, mouse_event: HostInput.Mouse.Event) input_processor.SurfacePointCell {
+        const cell = surface_layout.querySurfacePointCell(self.term.render.text_handle, self.term.render.surface_layout, mouse_event.pixel_x, mouse_event.pixel_y) catch return .{
+            .inside = false,
+            .row = 0,
+            .col = 0,
+        };
+        return .{ .inside = cell.inside != 0, .row = cell.row, .col = cell.col };
     }
 
     const TermInit = struct {
@@ -1029,7 +1034,7 @@ pub const Surface = struct {
     }
 
     fn initTermState(conf: *const TerminalConfig, launch: pty_session.Launch, render_init: RenderInit) !TermInit {
-        const layout = initSurfaceLayout(render_init);
+        const layout = try initSurfaceLayout(render_init);
         const session_handle = try pty_session.initHandle(launch, layout.cols, layout.rows);
         errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
         const vt = try initVt(layout.rows, layout.cols, .{
@@ -1063,9 +1068,21 @@ fn initRenderState(vt_state: *VtState) !void {
     vt_state.render_state = state;
 }
 
-fn initSurfaceLayout(render_init: RenderInit) render_retained.SurfaceLayout {
+fn initSurfaceLayout(render_init: RenderInit) !render_retained.SurfaceLayout {
     assertRenderInit(render_init);
-    return surface_layout.snapSurfaceLayout(.{ .content_px = render_init.content_px }, render_init.font_size_px);
+    var fallback_paths: [max_fallback_font_paths]?[*:0]const u8 = [_]?[*:0]const u8{null} ** max_fallback_font_paths;
+    for (render_init.fallback_font_paths, 0..) |path, index| fallback_paths[index] = path.ptr;
+    const config = render_c.HowlRenderTextConfig{
+        .font_size_px = render_init.font_size_px,
+        .fallback_font_path_count = @intCast(render_init.fallback_font_paths.len),
+        .reserved0 = 0,
+        .primary_font_path = if (render_init.primary_font_path) |path| path.ptr else null,
+        .fallback_font_paths = &fallback_paths,
+    };
+    var handle: render_c.HowlRenderTextHandle = null;
+    if (render_c.howl_render_text_init(&handle, &config) != render_c.HOWL_RENDER_CALL_OK) return error.RenderInitFailed;
+    defer render_c.howl_render_text_deinit(handle);
+    return try surface_layout.querySurfaceLayout(handle, .{ .content_px = render_init.content_px });
 }
 
 fn initRenderText(render: *render_retained.State, render_init: RenderInit) !void {

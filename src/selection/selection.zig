@@ -74,13 +74,13 @@ pub fn handleMouse(context: anytype, mouse_event: HostInput.Mouse.Event) MouseHa
 }
 
 fn eventCell(context: anytype, mouse_event: HostInput.Mouse.Event) SelectionCell {
-    const row = context.pixelToTerminalRow(mouse_event.pixel_y);
+    const cell = context.surfacePointCell(mouse_event);
     const info = c.howl_vt_terminal_query_visible_info(context.term.vt);
     std.debug.assert(info.status == c.HOWL_VT_CALL_OK);
     const visible_start: i32 = @intCast(info.info.history_count - info.info.scrollback_offset);
     return .{
-        .row = visible_start + row,
-        .col = context.pixelToTerminalCol(mouse_event.pixel_x),
+        .row = visible_start + @as(i32, @intCast(cell.row)),
+        .col = cell.col,
     };
 }
 

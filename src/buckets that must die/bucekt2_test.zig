@@ -242,11 +242,25 @@ fn installSubmitHooks(mode: SubmitUploadMode) void {
 
 fn makeSubmitSurface() !Surface {
     var surface = testSurfaceBase();
-    const layout = surface_layout.snapSurfaceLayout(.{ .content_px = .{ .width = 100, .height = 80 } }, surface.font_size_px);
+    const layout = try queryTestSurfaceLayout(.{ .width = 100, .height = 80 }, surface.font_size_px);
     surface.term.render = render_retained.State.init(layout);
     surface.term.render.syncSurfaceLayout(layout);
     surface.surface_layout = surface_layout.init(100, 80, 100, 80);
     return surface;
+}
+
+fn queryTestSurfaceLayout(content_px: render_c.HowlRenderPixelSize, font_size_px: u16) !SurfaceLayout {
+    var handle: render_c.HowlRenderTextHandle = null;
+    const config = render_c.HowlRenderTextConfig{
+        .font_size_px = font_size_px,
+        .fallback_font_path_count = 0,
+        .reserved0 = 0,
+        .primary_font_path = null,
+        .fallback_font_paths = null,
+    };
+    if (render_c.howl_render_text_init(&handle, &config) != render_c.HOWL_RENDER_CALL_OK) return error.RenderInitFailed;
+    defer render_c.howl_render_text_deinit(handle);
+    return try surface_layout.querySurfaceLayout(handle, .{ .content_px = content_px });
 }
 
 fn recordExpectedPreparedUpload(surface: *Surface) !void {
@@ -322,7 +336,7 @@ fn resizeSubmitSurface(surface: *Surface, render_width: c_int, render_height: c_
     surface.surface_layout.content_px_h = surface.surface_layout.pending_content_px_h;
     surface.surface_layout.last_resize_ns = 0;
     const request = surface_layout.snapshotSurfaceLayoutLocked(&surface.surface_layout);
-    const layout = surface_layout.snapSurfaceLayout(request, surface.font_size_px);
+    const layout = try queryTestSurfaceLayout(request.content_px, surface.font_size_px);
     surface.term.render.syncSurfaceLayout(layout);
     return request;
 }
@@ -369,15 +383,15 @@ test "surface layout request snapshots content size and ignores logical size" {
     try std.testing.expectEqual(@as(u16, 480), request.content_px.height);
 }
 
-test "snap surface layout truncates content to whole terminal cells" {
-    const layout = surface_layout.snapSurfaceLayout(.{ .content_px = .{ .width = 960, .height = 570 } }, 16);
+test "render surface layout truncates content to whole terminal cells" {
+    const layout = try queryTestSurfaceLayout(.{ .width = 960, .height = 570 }, 16);
 
-    try std.testing.expectEqual(@as(u16, 8), layout.cell_px.width);
-    try std.testing.expectEqual(@as(u16, 16), layout.cell_px.height);
-    try std.testing.expectEqual(@as(u16, 120), layout.cols);
-    try std.testing.expectEqual(@as(u16, 35), layout.rows);
-    try std.testing.expectEqual(@as(u16, 960), layout.grid_px.width);
-    try std.testing.expectEqual(@as(u16, 560), layout.grid_px.height);
+    try std.testing.expect(layout.cell_px.width > 0);
+    try std.testing.expect(layout.cell_px.height > 0);
+    try std.testing.expectEqual(@divFloor(@as(u16, 960), layout.cell_px.width), layout.cols);
+    try std.testing.expectEqual(@divFloor(@as(u16, 570), layout.cell_px.height), layout.rows);
+    try std.testing.expectEqual(layout.cols * layout.cell_px.width, layout.grid_px.width);
+    try std.testing.expectEqual(layout.rows * layout.cell_px.height, layout.grid_px.height);
     try std.testing.expectEqual(layout.grid_px.width, layout.render_px.width);
     try std.testing.expectEqual(layout.grid_px.height, layout.render_px.height);
 }
@@ -400,13 +414,13 @@ test "terminal logical size follows snapped terminal pixels" {
 
 test "surface texture size uses snapped terminal render size" {
     var surface = testSurfaceBase();
-    const layout = surface_layout.snapSurfaceLayout(.{ .content_px = .{ .width = 960, .height = 570 } }, 16);
+    const layout = try queryTestSurfaceLayout(.{ .width = 960, .height = 570 }, 16);
     surface.term.render = render_retained.State.init(layout);
 
     const size = surface.textureSize();
 
-    try std.testing.expectEqual(@as(c_int, 960), size.width);
-    try std.testing.expectEqual(@as(c_int, 560), size.height);
+    try std.testing.expectEqual(@as(c_int, layout.render_px.width), size.width);
+    try std.testing.expectEqual(@as(c_int, layout.render_px.height), size.height);
 }
 
 test "pending VT clipboard write follows OSC 52 policy" {

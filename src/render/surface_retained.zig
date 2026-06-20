@@ -295,9 +295,6 @@ pub const State = struct {
         const prepare_input = c.HowlRenderTextPrepare{
             .render_state = @ptrCast(state),
             .render_px = self.surface_layout.render_px,
-            .grid_px = self.surface_layout.grid_px,
-            .cell_px = self.surface_layout.cell_px,
-            .grid = .{ .cols = self.surface_layout.cols, .rows = self.surface_layout.rows },
             .layout_epoch = self.layout_epoch,
             .focused = self.cursor_cadence.focused,
             .cursor_opacity = self.cursor_cadence.cursor_opacity,

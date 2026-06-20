@@ -141,7 +141,7 @@ fn deriveSurfaceLayout(term: anytype, request: SurfaceLayoutRequest) !retained.S
     term.mutex.lock();
     defer term.mutex.unlock();
 
-    const next = snapSurfaceLayout(request, term.render.surface_layout.cell_px.height);
+    const next = try querySurfaceLayout(term.render.text_handle, request);
     return term.render.surfaceLayoutSync(next);
 }
 
@@ -149,30 +149,38 @@ fn deriveSurfaceLayoutLocked(term: anytype, request: SurfaceLayoutRequest) !reta
     std.debug.assert(request.content_px.width > 0);
     std.debug.assert(request.content_px.height > 0);
 
-    const next = snapSurfaceLayout(request, term.render.surface_layout.cell_px.height);
+    const next = try querySurfaceLayout(term.render.text_handle, request);
     return term.render.surfaceLayoutSync(next);
 }
 
-pub fn snapSurfaceLayout(request: SurfaceLayoutRequest, font_size_px: u16) retained.SurfaceLayout {
+pub fn querySurfaceLayout(handle: c.HowlRenderTextHandle, request: SurfaceLayoutRequest) !retained.SurfaceLayout {
     std.debug.assert(request.content_px.width > 0);
     std.debug.assert(request.content_px.height > 0);
-    const cell_h = @max(font_size_px, 1);
-    const cell_w = @max(@divTrunc(cell_h, 2), 1);
-    const cols = @max(1, @divTrunc(request.content_px.width, cell_w));
-    const rows = @max(1, @divTrunc(request.content_px.height, cell_h));
-    const grid_px = c.HowlRenderPixelSize{
-        .width = cols * cell_w,
-        .height = rows * cell_h,
-    };
+    if (handle == null) return error.MissingRenderTextHandle;
+    var response = std.mem.zeroes(c.HowlRenderLayoutResponse);
+    if (c.howl_render_surface_layout(handle, request.content_px, &response) != c.HOWL_RENDER_CALL_OK) return error.RenderLayoutFailed;
+    if (response.status != c.HOWL_RENDER_CALL_OK) return error.RenderLayoutFailed;
     const layout = retained.SurfaceLayout{
-        .render_px = grid_px,
-        .grid_px = grid_px,
-        .cols = cols,
-        .rows = rows,
-        .cell_px = .{ .width = cell_w, .height = cell_h },
+        .render_px = response.render_px,
+        .grid_px = response.grid_px,
+        .cols = response.grid.cols,
+        .rows = response.grid.rows,
+        .cell_px = response.cell_layout.cell_px,
     };
     assertSurfaceLayout(layout);
     return layout;
+}
+
+pub fn querySurfacePointCell(handle: c.HowlRenderTextHandle, layout: retained.SurfaceLayout, point_x_px: i32, point_y_px: i32) !c.HowlRenderSurfacePointCell {
+    assertSurfaceLayout(layout);
+    if (handle == null) return error.MissingRenderTextHandle;
+    var response = std.mem.zeroes(c.HowlRenderSurfacePointCell);
+    const status = c.howl_render_surface_point_cell(handle, layout.render_px, .{ .x_px = point_x_px, .y_px = point_y_px }, &response);
+    if (status != c.HOWL_RENDER_CALL_OK) return error.RenderLayoutFailed;
+    if (response.status != c.HOWL_RENDER_CALL_OK) return error.RenderLayoutFailed;
+    std.debug.assert(response.row < layout.rows);
+    std.debug.assert(response.col < layout.cols);
+    return response;
 }
 
 fn commitSurfaceLayout(term: anytype, layout: retained.SurfaceLayout) void {

@@ -119,9 +119,10 @@ fn openLinkAtCell(context: anytype, cell: HoveredLinkCell) bool {
 }
 
 fn eventCell(context: anytype, mouse_event: HostInput.Mouse.Event) HoveredLinkCell {
+    const cell = context.surfacePointCell(mouse_event);
     return .{
-        .row = @intCast(context.pixelToTerminalRow(mouse_event.pixel_y)),
-        .col = context.pixelToTerminalCol(mouse_event.pixel_x),
+        .row = cell.row,
+        .col = cell.col,
     };
 }
 

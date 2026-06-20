@@ -1,7 +1,6 @@
 const std = @import("std");
 const EventLoop = @import("../events/event_loop.zig");
 const Layout = @import("../layout/layout.zig");
-const layout_cells = @import("../layout/cells.zig");
 const HostInput = @import("input.zig").Input;
 const terminal_selection = @import("../selection/selection.zig");
 const term_input = @import("../vt/input.zig");
@@ -18,6 +17,12 @@ pub const ScrollMouseOutcome = struct {
     host_visual_changed: bool,
 };
 
+pub const SurfacePointCell = struct {
+    inside: bool,
+    row: u16,
+    col: u16,
+};
+
 pub const TermInput = struct {
     surface: *anyopaque,
     term: *Term,
@@ -26,6 +31,7 @@ pub const TermInput = struct {
     write_bytes_to_pty: *const fn (*anyopaque, []const u8) bool,
     write_key_to_pty: *const fn (*anyopaque, HostInput.Keys.Event) bool,
     write_mouse_to_pty: *const fn (*anyopaque, HostInput.Mouse.Event) bool,
+    surface_point_cell: *const fn (*anyopaque, HostInput.Mouse.Event) SurfacePointCell,
     process_scrollbar_mouse: *const fn (*anyopaque, HostInput.Mouse.Event, i32, i32, c_int, c_int) ScrollMouseOutcome,
     clear_hovered_link: *const fn (*anyopaque) bool,
     scroll_viewport_by_wheel: *const fn (*anyopaque, HostInput.Mouse.Event) bool,
@@ -77,11 +83,12 @@ pub fn drainPointerInput(selected: *TermInput, input_events: *HostInput, origin_
 }
 
 pub fn terminalOwnsMouse(selected: *const TermInput, mouse_event: HostInput.Mouse.Event) bool {
+    const cell = selected.surface_point_cell(selected.surface, mouse_event);
     return term_input.wouldReportMouse(selected.term, .{
         .kind = term_input.mouseKind(mouse_event.kind),
         .button = term_input.mouseButton(mouse_event.button),
-        .row = layout_cells.row(selected.surface_layout.*, mouse_event.pixel_y),
-        .col = layout_cells.col(selected.surface_layout.*, mouse_event.pixel_x),
+        .row = @intCast(cell.row),
+        .col = cell.col,
         .pixel_x = if (mouse_event.pixel_x < 0) null else @intCast(mouse_event.pixel_x),
         .pixel_y = if (mouse_event.pixel_y < 0) null else @intCast(mouse_event.pixel_y),
         .mods = term_input.mods(mouse_event.mods),
@@ -182,6 +189,7 @@ const TestTermInputState = struct {
             .write_bytes_to_pty = writeBytesToPty,
             .write_key_to_pty = writeKeyToPty,
             .write_mouse_to_pty = writeMouseToPty,
+            .surface_point_cell = surfacePointCell,
             .process_scrollbar_mouse = processScrollBarMouse,
             .clear_hovered_link = clearHoveredLink,
             .scroll_viewport_by_wheel = scrollViewportByWheel,
@@ -220,6 +228,10 @@ const TestTermInputState = struct {
         const self = state(surface);
         self.publish_calls += 1;
         return self.publish_mouse_ok;
+    }
+
+    fn surfacePointCell(_: *anyopaque, _: HostInput.Mouse.Event) SurfacePointCell {
+        return .{ .inside = true, .row = 0, .col = 0 };
     }
 
     fn processScrollBarMouse(surface: *anyopaque, mouse_event: HostInput.Mouse.Event, _: i32, _: i32, _: c_int, _: c_int) ScrollMouseOutcome {
