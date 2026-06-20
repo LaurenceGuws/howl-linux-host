@@ -73,16 +73,7 @@ pub const PreparedUpload = struct {
 
 pub const max_cursor_trail_rects = 16;
 
-pub const HostCursorTrailRect = extern struct {
-    row: u16,
-    col: u16,
-    rows: u16,
-    cols: u16,
-    opacity: u8,
-    reserved0: u8 = 0,
-    reserved1: u16 = 0,
-    color: vt_c.HowlVtRgb8,
-};
+pub const HostCursorTrailRect = c.HowlRenderCursorTrailRect;
 
 pub const HostCursorCadence = extern struct {
     focused: u8,
@@ -312,10 +303,14 @@ pub const State = struct {
             .cursor_opacity = self.cursor_cadence.cursor_opacity,
             .text_blink_opacity = self.cursor_cadence.text_blink_opacity,
             .effective_shape = self.cursor_cadence.effective_shape,
+            .cursor_trail_count = @intCast(@min(self.cursor_cadence.cursor_trail_count, max_cursor_trail_rects)),
+            .reserved0 = 0,
             .cursor_color = @bitCast(self.cursor_cadence.cursor_color),
             .cursor_text_color = @bitCast(self.cursor_cadence.cursor_text_color),
+            .cursor_trail_color = @bitCast(self.cursor_cadence.cursor_trail_color),
             .cursor_beam_thickness = self.cursor_cadence.cursor_beam_thickness,
             .cursor_underline_thickness = self.cursor_cadence.cursor_underline_thickness,
+            .cursor_trail_rects = self.cursor_cadence.cursor_trail_rects,
         };
         if (c.howl_render_text_prepare(handle, &prepare_input, &upload) != c.HOWL_RENDER_CALL_OK) return self.failPrepare();
         const surface = upload.surface_frame orelse return self.failPrepare();

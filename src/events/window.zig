@@ -1,5 +1,4 @@
 const std = @import("std");
-const icon = @import("icon.zig");
 const sdl_c = @import("sdl_c");
 
 var pointer_cursor: ?*sdl_c.SDL_Cursor = null;
@@ -136,7 +135,6 @@ pub fn quit() void {
 pub fn createWindow(title: [*:0]const u8, width: c_int, height: c_int, flags: Flags) ?Ptr {
     const handle = sdl_c.SDL_CreateWindow(title, width, height, @intCast(flags)) orelse return null;
     _ = sdl_c.SDL_StartTextInput(handle);
-    icon.apply(handle);
     return handle;
 }
 

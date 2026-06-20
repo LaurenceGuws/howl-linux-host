@@ -111,20 +111,12 @@ fn testSurfaceBase() Surface {
         .links = .{},
         .selection = .{},
         .cursor_blink = .{},
-        .cursor_position_changed_by_client_sequence = 0,
-        .cursor_trail_pending_deadline_ns = 0,
-        .cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect),
-        .cursor_source_row = 0,
-        .cursor_source_col = 0,
-        .cursor_source_rows = 1,
-        .cursor_source_cols = 1,
-        .cursor_source_visible = true,
-        .cursor_source_blink = false,
-        .cursor_source_has_shape = true,
-        .cursor_source_shape = 0,
+        .cursor_position_sequence = 0,
+        .cursor_client_moved_at_ns = 0,
+        .cursor_render_info = .{},
+        .cursor_trail = .{},
         .cursor_text_blinking = false,
         .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
-        .cursor_trail_trigger_ready = false,
     };
 }
 
@@ -449,20 +441,12 @@ test "cursor activity pushes blink deadline while visible" {
         .links = .{},
         .selection = .{},
         .cursor_blink = .{},
-        .cursor_position_changed_by_client_sequence = 0,
-        .cursor_trail_pending_deadline_ns = 0,
-        .cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect),
-        .cursor_source_row = 0,
-        .cursor_source_col = 0,
-        .cursor_source_rows = 1,
-        .cursor_source_cols = 1,
-        .cursor_source_visible = true,
-        .cursor_source_blink = false,
-        .cursor_source_has_shape = true,
-        .cursor_source_shape = 0,
+        .cursor_position_sequence = 0,
+        .cursor_client_moved_at_ns = 0,
+        .cursor_render_info = .{},
+        .cursor_trail = .{},
         .cursor_text_blinking = false,
         .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
-        .cursor_trail_trigger_ready = false,
     };
 
     try std.testing.expect(context.resetCursorBlinkActivity(1234));
@@ -516,7 +500,7 @@ test "pty wake does not reset cursor blink cadence" {
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
-    surface.cursor_source_blink = true;
+    surface.cursor_render_info.blink = true;
     surface.cursor_blink.cursor_opacity = 0;
     surface.cursor_blink.visible = false;
     surface.cursor_blink.deadline_ns = 10_000;
@@ -923,10 +907,10 @@ test "cursor cadence without runtime admission keeps render wake pending" {
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
-    surface.cursor_source_visible = true;
-    surface.cursor_source_blink = true;
-    surface.cursor_source_has_shape = true;
-    surface.cursor_source_shape = 0;
+    surface.cursor_render_info.is_visible = true;
+    surface.cursor_render_info.blink = true;
+    surface.cursor_render_info.has_shape = true;
+    surface.cursor_render_info.shape = 0;
     surface.cursor_blink.zero_time_ns = 0;
     surface.cursor_blink.deadline_ns = cursor_blink.default_interval_ns;
 
@@ -1645,10 +1629,10 @@ test "mismatched complete present does not ack or clear" {
 test "host cursor facts preserve explicit no-shape as visible no-draw truth" {
     var surface = testSurfaceBase();
     surface.conf = &test_terminal_conf;
-    surface.cursor_source_visible = true;
-    surface.cursor_source_blink = true;
-    surface.cursor_source_has_shape = true;
-    surface.cursor_source_shape = 3;
+    surface.cursor_render_info.is_visible = true;
+    surface.cursor_render_info.blink = true;
+    surface.cursor_render_info.has_shape = true;
+    surface.cursor_render_info.shape = 3;
     surface.window_focused = true;
     surface.widget_focused = true;
 
@@ -1663,9 +1647,9 @@ test "host cursor facts preserve explicit no-shape as visible no-draw truth" {
 test "cursor blink follows source blink bit when config permits blinking" {
     var surface = testSurfaceBase();
     surface.conf = &test_terminal_conf;
-    surface.cursor_source_visible = true;
-    surface.cursor_source_has_shape = true;
-    surface.cursor_source_blink = false;
+    surface.cursor_render_info.is_visible = true;
+    surface.cursor_render_info.has_shape = true;
+    surface.cursor_render_info.blink = false;
     surface.window_focused = true;
     surface.widget_focused = true;
 
@@ -1674,7 +1658,7 @@ test "cursor blink follows source blink bit when config permits blinking" {
     try std.testing.expectEqual(@as(?u32, null), facts.cadence.wait_ms);
     try std.testing.expectEqual(@as(u8, 255), facts.render.cursor_opacity);
 
-    surface.cursor_source_blink = true;
+    surface.cursor_render_info.blink = true;
     const blinking_facts = surface.cursorFacts(1000);
     try std.testing.expect(blinking_facts.cadence.wait_ms != null);
 }
@@ -1685,9 +1669,9 @@ test "host unfocused hollow stays distinct from no-shape" {
 
     var surface = testSurfaceBase();
     surface.conf = &conf;
-    surface.cursor_source_visible = true;
-    surface.cursor_source_has_shape = true;
-    surface.cursor_source_shape = 3;
+    surface.cursor_render_info.is_visible = true;
+    surface.cursor_render_info.has_shape = true;
+    surface.cursor_render_info.shape = 3;
     surface.window_focused = false;
     surface.widget_focused = true;
 

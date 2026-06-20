@@ -1,6 +1,6 @@
 const std = @import("std");
 const EventLoop = @import("../events/event_loop.zig");
-const window = @import("../window/window2.zig");
+const window = @import("../events/window.zig");
 const Layout = @import("../layout/layout.zig");
 const term_texture = @import("../render/surface.zig");
 const HostInput = @import("../input/input.zig").Input;
@@ -29,6 +29,9 @@ const terminal_input = @import("bucket3.zig");
 const term_input = @import("../vt/input.zig");
 const terminal_links = @import("../render/links.zig");
 const cursor_blink = @import("../cursor/blink.zig");
+const cursor_cadence = @import("../cursor/cadence.zig");
+const cursor_source = @import("../cursor/source.zig");
+const cursor_trail = @import("../cursor/trail.zig");
 const terminal_scrollbar = @import("../scroll_bar/scrollbar.zig");
 const terminal_selection = @import("../selection/selection.zig");
 
@@ -153,20 +156,12 @@ pub const Surface = struct {
     links: terminal_links.Links,
     selection: terminal_selection.Selection,
     cursor_blink: cursor_blink.CursorBlink,
-    cursor_position_changed_by_client_sequence: u64,
-    cursor_trail_pending_deadline_ns: u64,
-    cursor_trail_pending_rect: render_retained.HostCursorTrailRect,
-    cursor_source_row: u16,
-    cursor_source_col: u16,
-    cursor_source_rows: u16,
-    cursor_source_cols: u16,
-    cursor_source_visible: bool,
-    cursor_source_blink: bool,
-    cursor_source_has_shape: bool,
-    cursor_source_shape: u8,
+    cursor_position_sequence: u64,
+    cursor_client_moved_at_ns: u64,
+    cursor_render_info: cursor_source.CursorRenderInfo,
+    cursor_trail: cursor_trail.CursorTrail,
     cursor_text_blinking: bool,
     cursor_render: render_retained.HostCursorCadence,
-    cursor_trail_trigger_ready: bool,
 
     const InitialRequest = struct {
         conf: *const TerminalConfig,
@@ -229,20 +224,12 @@ pub const Surface = struct {
             .trail_decay_fast_ns = cursor_blink.trailDecayNs(request.conf.cursor_trail_decay_fast, cursor_blink.default_trail_decay_fast_ns),
             .trail_decay_slow_ns = cursor_blink.trailDecayNs(request.conf.cursor_trail_decay_slow, cursor_blink.default_trail_decay_slow_ns),
         });
-        self.cursor_position_changed_by_client_sequence = 0;
-        self.cursor_trail_pending_deadline_ns = 0;
-        self.cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect);
-        self.cursor_source_row = 0;
-        self.cursor_source_col = 0;
-        self.cursor_source_rows = 1;
-        self.cursor_source_cols = 1;
-        self.cursor_source_visible = true;
-        self.cursor_source_blink = false;
-        self.cursor_source_has_shape = true;
-        self.cursor_source_shape = 0;
+        self.cursor_position_sequence = 0;
+        self.cursor_client_moved_at_ns = 0;
+        self.cursor_render_info = .{};
+        self.cursor_trail = .{};
         self.cursor_text_blinking = false;
         self.cursor_render = std.mem.zeroes(render_retained.HostCursorCadence);
-        self.cursor_trail_trigger_ready = false;
     }
 
     pub fn deinit(self: *Context) void {
@@ -412,17 +399,28 @@ pub const Surface = struct {
     }
 
     pub fn cursorFacts(self: *Context, now_ns: u64) CursorFacts {
-        self.promotePendingCursorTrail(now_ns);
         const focused = self.window_focused and self.widget_focused;
-        const render = self.computeCursorRender(now_ns, focused);
-        const animate = self.cursorBlinkShouldAnimate();
+        const animate = self.cursor_render_info.shouldAnimate(focused, self.conf.cursor_blink);
+        const animation_valid = self.cursorAnimationValid();
+        const trail_geometry_valid = self.cursorTrailGeometryValid();
+        const trail_options = self.cursorTrailOptions();
+        const trail_count: u16 = if (trail_geometry_valid) blk: {
+            const trail_grid = self.cursorTrailGrid();
+            const trail_cursor = self.cursorTrailCursor();
+            _ = self.cursor_trail.update(trail_cursor, trail_grid, trail_options, self.cursor_client_moved_at_ns, now_ns, false);
+            break :blk self.cursor_trail.renderCount();
+        } else 0;
         var cadence = self.cursor_blink.cadenceFacts(.{
             .animate = animate,
-            .animation_valid = self.cursorAnimationValid(),
+            .animation_valid = animation_valid,
             .text_blinking = self.cursor_text_blinking,
-            .trail_active = render.cursor_trail_count != 0,
+            .trail_active = trail_count != 0,
         }, now_ns);
-        cadence.wait_ms = minOptionalWaitMs(cadence.wait_ms, self.pendingCursorTrailWaitMs(now_ns));
+        cadence.wait_ms = minOptionalWaitMs(cadence.wait_ms, cursor_trail.CursorTrail.waitMs(trail_options, self.cursor_client_moved_at_ns, now_ns));
+        var render = self.cursor_render;
+        cursor_cadence.applyHostCursorCadence(&render, self.cursor_render_info, cadence, self.conf, focused);
+        cursor_cadence.applyHostCursorTrailCadence(&render, self.cursor_blink.config, trail_count, now_ns);
+        if (trail_geometry_valid and render.cursor_trail_count != 0) render.cursor_trail_rects[0] = self.cursor_trail.toHostRect(self.cursorTrailGrid());
         var dirty_render = render;
         dirty_render.now_ns = self.cursor_render.now_ns;
         if (!std.mem.eql(u8, std.mem.asBytes(&dirty_render), std.mem.asBytes(&self.cursor_render))) {
@@ -437,7 +435,6 @@ pub const Surface = struct {
     pub fn consumeCursorFacts(self: *Context, facts: CursorFacts) bool {
         const upload_ok = self.term.render.setHostCursorCadence(&facts.render);
         if (!upload_ok) return false;
-        if (facts.render.cursor_trail_count != 0) self.cursor_trail_trigger_ready = false;
         self.cursor_render = facts.render;
         self.cursor_blink.applyCadenceFacts(facts.cadence);
         return facts.redraw();
@@ -595,10 +592,6 @@ pub const Surface = struct {
         return mut.term.render.admitRenderTurn(mut.term_texture.host_texture_id == 0);
     }
 
-    fn cursorBlinkShouldAnimate(self: *Context) bool {
-        return self.conf.cursor_blink and self.window_focused and self.widget_focused and self.cursor_source_visible and self.cursor_source_blink and self.cursor_source_has_shape;
-    }
-
     const DriveResult = struct {
         prepared: bool,
         state_after: render_retained.RetainedState,
@@ -622,7 +615,7 @@ pub const Surface = struct {
                 };
                 defer visible.deinit(self.term.allocator);
                 self.links.hover_publish_pending = false;
-                self.notePublishedCursorSource(visible.state, EventLoop.nowNs()) catch {
+                self.publishCursorInfo(visible.state, EventLoop.nowNs()) catch {
                     self.term.render.noteRetainedFailure();
                     break :blk idleDrive(self.term.render.retainedState(), .failed);
                 };
@@ -806,64 +799,8 @@ pub const Surface = struct {
         std.debug.assert(state == .submit_ready or state == .present_in_flight);
     }
 
-    fn promotePendingCursorTrail(self: *Context, now_ns: u64) void {
-        if (self.cursor_trail_pending_deadline_ns == 0 or now_ns < self.cursor_trail_pending_deadline_ns) return;
-        self.cursor_trail_trigger_ready = true;
-        self.cursor_render.cursor_trail_rects[0] = self.cursor_trail_pending_rect;
-        self.cursor_trail_pending_deadline_ns = 0;
-        self.cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect);
-    }
-
-    fn pendingCursorTrailWaitMs(self: *const Context, now_ns: u64) ?u32 {
-        if (self.cursor_trail_pending_deadline_ns == 0 or self.cursor_trail_pending_deadline_ns <= now_ns) return null;
-        const wait_ns = self.cursor_trail_pending_deadline_ns - now_ns;
-        const wait_ms = @max(@as(u64, 1), wait_ns / std.time.ns_per_ms);
-        return @intCast(@min(wait_ms, @as(u64, std.math.maxInt(u32))));
-    }
-
-    fn computeCursorRender(self: *Context, now_ns: u64, focused: bool) render_retained.HostCursorCadence {
-        const cadence = self.cursor_blink.cadenceFacts(.{
-            .animate = self.conf.cursor_blink and self.cursor_source_blink and self.cursor_source_visible and self.cursor_source_has_shape and focused,
-            .animation_valid = self.cursorAnimationValid(),
-            .text_blinking = self.cursor_text_blinking,
-            .trail_active = false,
-        }, now_ns);
-        self.cursor_blink.setTrailActive(false, now_ns);
-        var render = self.cursor_render;
-        render.focused = @intFromBool(focused);
-        render.cursor_opacity = cadence.cursor_opacity;
-        render.text_blink_opacity = cadence.text_blink_opacity;
-        if (!self.cursor_source_has_shape) {
-            render.cursor_opacity = 0;
-            render.text_blink_opacity = 0;
-        }
-        render.effective_shape = effectiveCursorShape(self, focused);
-        render.cursor_color = renderCursorColor(self.conf.cursor);
-        render.cursor_text_color = renderCursorColor(self.conf.cursor_text_color);
-        render.cursor_trail_color = renderCursorColor(self.conf.cursor_trail_color);
-        render.cursor_beam_thickness = self.conf.cursor_beam_thickness;
-        render.cursor_underline_thickness = self.conf.cursor_underline_thickness;
-        render.cursor_trail_decay_fast_s = secondsFromNs(self.cursor_blink.config.trail_decay_fast_ns);
-        render.cursor_trail_decay_slow_s = secondsFromNs(self.cursor_blink.config.trail_decay_slow_ns);
-        render.now_ns = now_ns;
-        render.cursor_trail_count = if (self.cursor_trail_trigger_ready) 1 else 0;
-        return render;
-    }
-
     fn driveCursor(self: *Context, now_ns: u64) bool {
         return self.consumeCursorFacts(self.cursorFacts(now_ns));
-    }
-
-    fn effectiveCursorShape(self: *const Context, focused: bool) u8 {
-        if (!self.cursor_source_has_shape) return 0;
-        if (focused) return self.cursor_source_shape;
-        return switch (self.conf.cursor_shape_unfocused) {
-            .unchanged => self.cursor_source_shape,
-            .block => 0,
-            .underline => 1,
-            .beam => 2,
-            .hollow => 4,
-        };
     }
 
     fn cursorAnimationValid(self: *const Context) bool {
@@ -874,122 +811,67 @@ pub const Surface = struct {
             self.default_font_size_px > 0;
     }
 
-    fn notePublishedCursorSource(self: *Context, state: vt_c.HowlVtRenderStateHandle, now_ns: u64) !void {
-        const row = try renderStateU16(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y);
-        const col = try renderStateU16(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VIEWPORT_X);
-        const visible = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VISIBLE) != 0;
-        const blink = try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_BLINKING) != 0;
-        const visual_style = try renderStateCursorVisualStyle(state);
-        const position_seq = (@as(u64, row) << 32) | @as(u64, col);
-        if (self.cursor_position_changed_by_client_sequence != position_seq) {
-            if (self.shouldQueueTrail(row, col)) {
-                self.cursor_trail_pending_deadline_ns = now_ns + self.conf.cursor_trail * std.time.ns_per_ms;
-                self.cursor_trail_pending_rect = self.currentCursorTrailRect();
-            } else {
-                self.cursor_trail_pending_deadline_ns = 0;
-                self.cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect);
-            }
-            self.cursor_position_changed_by_client_sequence = position_seq;
+    fn cursorTrailGeometryValid(self: *const Context) bool {
+        return self.term.render.surface_layout.cell_px.width > 0 and self.term.render.surface_layout.cell_px.height > 0;
+    }
+
+    fn publishCursorInfo(self: *Context, state: vt_c.HowlVtRenderStateHandle, now_ns: u64) !void {
+        const collected = try cursor_source.collectCursorInfo(state);
+        const position_sequence = collected.info.positionSequence();
+        if (self.cursor_position_sequence != position_sequence) {
+            self.cursor_position_sequence = position_sequence;
+            self.cursor_client_moved_at_ns = now_ns;
             _ = self.resetCursorBlinkActivity(now_ns);
         }
-        self.cursor_source_row = row;
-        self.cursor_source_col = col;
-        self.cursor_source_rows = 1;
-        self.cursor_source_cols = if (try renderStateByte(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VIEWPORT_WIDE_TAIL) != 0) 2 else 1;
-        self.cursor_source_visible = visible;
-        self.cursor_source_blink = blink;
-        self.cursor_source_has_shape = true;
-        self.cursor_source_shape = renderCursorShapeFromVisualStyle(visual_style);
-        self.cursor_text_blinking = try blinkingTextUsed(state);
+        self.cursor_render_info = collected.info;
+        self.cursor_text_blinking = collected.text_blinking;
     }
 
-    fn shouldQueueTrail(self: *const Context, row: u16, col: u16) bool {
-        if (self.conf.cursor_trail == 0) return false;
-        if (self.cursor_position_changed_by_client_sequence == 0) return false;
-        return cursorMovementDistance(self.cursor_source_row, self.cursor_source_col, row, col) >= self.conf.cursor_trail_start_threshold;
-    }
-
-    fn currentCursorTrailRect(self: *const Context) render_retained.HostCursorTrailRect {
+    fn cursorTrailCursor(self: *const Context) cursor_trail.Cursor {
         return .{
-            .row = self.cursor_source_row,
-            .col = self.cursor_source_col,
-            .rows = self.cursor_source_rows,
-            .cols = self.cursor_source_cols,
-            .opacity = 255,
-            .reserved0 = 0,
-            .reserved1 = 0,
-            .color = .{ .r = 0, .g = 0, .b = 0 },
+            .x = self.cursor_render_info.col,
+            .y = self.cursor_render_info.row,
+            .shape = cursorTrailShape(self.cursor_render_info.shape, self.cursor_render_info.has_shape),
+            .visible = self.cursor_render_info.is_visible,
+            .beam_thickness = self.conf.cursor_beam_thickness,
+            .underline_thickness = self.conf.cursor_underline_thickness,
         };
     }
 
-    fn renderCursorColor(color_value: @import("../config/terminal.zig").CursorColor) vt_c.HowlVtColor {
-        return .{ .kind = @intFromEnum(color_value.kind), .value = color_value.value };
+    fn cursorTrailOptions(self: *const Context) cursor_trail.Options {
+        return .{
+            .delay_ns = @as(u64, self.conf.cursor_trail) * std.time.ns_per_ms,
+            .decay_fast = secondsFromNs(self.cursor_blink.config.trail_decay_fast_ns),
+            .decay_slow = secondsFromNs(self.cursor_blink.config.trail_decay_slow_ns),
+            .start_threshold = self.conf.cursor_trail_start_threshold,
+        };
+    }
+
+    fn cursorTrailGrid(self: *const Context) cursor_trail.Grid {
+        const cell_width: f32 = @floatFromInt(self.term.render.surface_layout.cell_px.width);
+        const cell_height: f32 = @floatFromInt(self.term.render.surface_layout.cell_px.height);
+        std.debug.assert(cell_width > 0);
+        std.debug.assert(cell_height > 0);
+        return .{ .xstart = 0, .ystart = 0, .dx = cell_width, .dy = cell_height, .cell_width = cell_width, .cell_height = cell_height };
+    }
+
+    fn cursorTrailShape(shape: u8, has_shape: bool) cursor_trail.CursorShape {
+        if (!has_shape) return .none;
+        return switch (shape) {
+            1 => .underline,
+            2 => .beam,
+            4 => .hollow,
+            else => .block,
+        };
     }
 
     fn secondsFromNs(ns: u64) f32 {
         return @as(f32, @floatFromInt(ns)) / @as(f32, @floatFromInt(std.time.ns_per_s));
     }
 
-    fn cursorMovementDistance(from_row: u16, from_col: u16, to_row: u16, to_col: u16) u16 {
-        const row_delta = if (to_row > from_row) to_row - from_row else from_row - to_row;
-        const col_delta = if (to_col > from_col) to_col - from_col else from_col - to_col;
-        return row_delta + col_delta;
-    }
-
     fn minOptionalWaitMs(current_wait_ms: ?u32, next_wait_ms: ?u32) ?u32 {
         const next = next_wait_ms orelse return current_wait_ms;
         return if (current_wait_ms) |current| @min(current, next) else next;
-    }
-
-    fn blinkingTextUsed(state: vt_c.HowlVtRenderStateHandle) !bool {
-        var iterator: vt_c.HowlVtRenderStateRowIteratorHandle = null;
-        try requireVtOk(vt_c.howl_vt_render_state_row_iterator_init(&iterator));
-        defer vt_c.howl_vt_render_state_row_iterator_deinit(iterator);
-        try requireVtOk(vt_c.howl_vt_render_state_get(state, vt_c.HOWL_VT_RENDER_STATE_DATA_ROW_ITERATOR, @ptrCast(&iterator)));
-        var cells: vt_c.HowlVtRenderStateRowCellsHandle = null;
-        try requireVtOk(vt_c.howl_vt_render_state_row_cells_init(&cells));
-        defer vt_c.howl_vt_render_state_row_cells_deinit(cells);
-        while (vt_c.howl_vt_render_state_row_iterator_next(iterator) != 0) {
-            try requireVtOk(vt_c.howl_vt_render_state_row_get(iterator, vt_c.HOWL_VT_RENDER_STATE_ROW_DATA_CELLS, @ptrCast(&cells)));
-            while (vt_c.howl_vt_render_state_row_cells_next(cells) != 0) {
-                var cell: vt_c.HowlVtRenderStateCell = std.mem.zeroes(vt_c.HowlVtRenderStateCell);
-                try requireVtOk(vt_c.howl_vt_render_state_row_cells_get(cells, vt_c.HOWL_VT_RENDER_STATE_ROW_CELLS_DATA_CELL, @ptrCast(&cell)));
-                if (cell.attrs.blink != 0) return true;
-            }
-        }
-        return false;
-    }
-
-    fn renderStateByte(state: vt_c.HowlVtRenderStateHandle, key: vt_c.HowlVtRenderStateData) !u8 {
-        var value: u8 = 0;
-        try requireVtOk(vt_c.howl_vt_render_state_get(state, key, @ptrCast(&value)));
-        return value;
-    }
-
-    fn renderStateU16(state: vt_c.HowlVtRenderStateHandle, key: vt_c.HowlVtRenderStateData) !u16 {
-        var value: u16 = 0;
-        try requireVtOk(vt_c.howl_vt_render_state_get(state, key, @ptrCast(&value)));
-        return value;
-    }
-
-    fn renderStateCursorVisualStyle(state: vt_c.HowlVtRenderStateHandle) !vt_c.HowlVtRenderStateCursorVisualStyle {
-        var value: vt_c.HowlVtRenderStateCursorVisualStyle = vt_c.HOWL_VT_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR;
-        try requireVtOk(vt_c.howl_vt_render_state_get(state, vt_c.HOWL_VT_RENDER_STATE_DATA_CURSOR_VISUAL_STYLE, @ptrCast(&value)));
-        return value;
-    }
-
-    fn requireVtOk(status: i32) !void {
-        if (status == vt_c.HOWL_VT_CALL_OK) return;
-        return error.VtCallFailed;
-    }
-
-    fn renderCursorShapeFromVisualStyle(style: vt_c.HowlVtRenderStateCursorVisualStyle) u8 {
-        return switch (style) {
-            vt_c.HOWL_VT_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE => 1,
-            vt_c.HOWL_VT_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR => 2,
-            vt_c.HOWL_VT_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW => 4,
-            else => 0,
-        };
     }
 
     pub fn terminalOwnsMouse(self: *Context, mouse_event: HostInput.Mouse.Event) bool {
@@ -1398,7 +1280,7 @@ test "cursor activity reset uses the passed now_ns" {
     const now_ns: u64 = 1234;
     surface.cursor_blink.visible = false;
     surface.cursor_blink.deadline_ns = 17;
-    surface.cursor_source_blink = true;
+    surface.cursor_render_info.blink = true;
     const facts = surface.runtimeFacts(true, now_ns, .{ .input_published = true });
     const result = surface.driveProgressWithFacts(true, now_ns, facts);
 
@@ -1412,7 +1294,7 @@ test "surface activity reset restores visible and refreshes deadline" {
     var surface = testSurfaceBase();
     surface.cursor_blink.visible = false;
     surface.cursor_blink.deadline_ns = 17;
-    surface.cursor_source_blink = true;
+    surface.cursor_render_info.blink = true;
 
     try std.testing.expect(surface.resetCursorBlinkActivity(1234));
     try std.testing.expect(surface.cursor_blink.visible);
@@ -1422,8 +1304,8 @@ test "surface activity reset restores visible and refreshes deadline" {
 
 test "focus loss disables animation and restores visible" {
     var surface = testSurfaceBase();
-    surface.cursor_source_visible = true;
-    surface.cursor_source_blink = true;
+    surface.cursor_render_info.is_visible = true;
+    surface.cursor_render_info.blink = true;
     surface.cursor_blink.visible = false;
     surface.cursor_blink.deadline_ns = 777;
     surface.window_focused = false;
@@ -1440,8 +1322,8 @@ test "focus loss disables animation and restores visible" {
 
 test "cursor facts reaches invalid animation branch from host-owned runtime state" {
     var surface = testSurfaceBase();
-    surface.cursor_source_visible = true;
-    surface.cursor_source_blink = true;
+    surface.cursor_render_info.is_visible = true;
+    surface.cursor_render_info.blink = true;
     surface.window_focused = true;
     surface.widget_focused = true;
     surface.cursor_blink.deadline_ns = cursor_blink.interval_ns;
@@ -1455,8 +1337,8 @@ test "unfocused cursor shape follows config" {
     var conf = test_terminal_conf;
     conf.cursor_shape_unfocused = .hollow;
     surface.conf = &conf;
-    surface.cursor_source_has_shape = true;
-    surface.cursor_source_shape = 0;
+    surface.cursor_render_info.has_shape = true;
+    surface.cursor_render_info.shape = 0;
     surface.window_focused = false;
     surface.widget_focused = true;
 
@@ -1466,18 +1348,11 @@ test "unfocused cursor shape follows config" {
 
 test "published no-shape stays distinct from hidden visibility" {
     var surface = testSurfaceBase();
-    surface.cursor_source_row = 1;
-    surface.cursor_source_col = 2;
-    surface.cursor_source_rows = 1;
-    surface.cursor_source_cols = 1;
-    surface.cursor_source_visible = true;
-    surface.cursor_source_blink = true;
-    surface.cursor_source_has_shape = true;
-    surface.cursor_source_shape = 3;
+    surface.cursor_render_info = .{ .row = 1, .col = 2, .rows = 1, .cols = 1, .is_visible = true, .blink = true, .has_shape = true, .shape = 3 };
 
-    try std.testing.expect(surface.cursor_source_visible);
-    try std.testing.expect(surface.cursor_source_has_shape);
-    try std.testing.expectEqual(@as(u8, 3), surface.cursor_source_shape);
+    try std.testing.expect(surface.cursor_render_info.is_visible);
+    try std.testing.expect(surface.cursor_render_info.has_shape);
+    try std.testing.expectEqual(@as(u8, 3), surface.cursor_render_info.shape);
     const facts = surface.cursorFacts(10);
     try std.testing.expectEqual(@as(u8, 3), facts.render.effective_shape);
     try std.testing.expectEqual(@as(u8, 255), facts.render.cursor_opacity);
@@ -1489,9 +1364,9 @@ test "unfocused hollow stays distinct from explicit no-shape" {
 
     var surface = testSurfaceBase();
     surface.conf = &conf;
-    surface.cursor_source_visible = true;
-    surface.cursor_source_has_shape = true;
-    surface.cursor_source_shape = 3;
+    surface.cursor_render_info.is_visible = true;
+    surface.cursor_render_info.has_shape = true;
+    surface.cursor_render_info.shape = 3;
     surface.window_focused = false;
     surface.widget_focused = true;
 
@@ -1509,81 +1384,56 @@ test "cursor trail start respects configured duration threshold and color" {
 
     var surface = testSurfaceBase();
     surface.conf = &conf;
-    surface.cursor_source_row = 1;
-    surface.cursor_source_col = 1;
-    surface.cursor_position_changed_by_client_sequence = 1000;
-
-    surface.cursor_source_row = 1;
-    surface.cursor_source_col = 2;
-    surface.cursor_source_rows = 1;
-    surface.cursor_source_cols = 1;
-    try std.testing.expect(!surface.cursor_trail_trigger_ready);
-    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_pending_deadline_ns);
+    surface.cursor_render_info = .{ .row = 1, .col = 2, .rows = 1, .cols = 1 };
 
     const move_ns = @as(u64, 20) * std.time.ns_per_ms;
     const ready_ns = move_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms;
-    surface.cursor_trail_pending_deadline_ns = ready_ns;
-    surface.cursor_trail_pending_rect = surface.currentCursorTrailRect();
-    try std.testing.expectEqual(ready_ns, surface.cursor_trail_pending_deadline_ns);
-    try std.testing.expect(!surface.cursor_trail_trigger_ready);
+    surface.cursor_client_moved_at_ns = move_ns;
 
     const early_facts = surface.cursorFacts(ready_ns - 1);
     try std.testing.expect(early_facts.cadence.wait_ms != null);
-    try std.testing.expect(!surface.cursor_trail_trigger_ready);
+    try std.testing.expectEqual(@as(u16, 0), early_facts.render.cursor_trail_count);
 
     const facts = surface.cursorFacts(ready_ns);
-    try std.testing.expect(surface.cursor_trail_trigger_ready);
     try std.testing.expectEqual(@as(u16, 1), facts.render.cursor_trail_count);
-    try std.testing.expectEqual(@as(u16, 2), facts.render.cursor_trail_rects[0].col);
-    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_pending_deadline_ns);
+    try std.testing.expect(surface.cursor_trail.needs_render);
 
     try std.testing.expectEqual(@as(u32, 0x102030), facts.render.cursor_trail_color.value);
 }
 
-test "cursor trail pending follows latest qualifying cursor movement" {
+test "cursor trail wait follows latest cursor movement" {
     var conf = test_terminal_conf;
     conf.cursor_trail = 100;
     conf.cursor_trail_start_threshold = 2;
 
     var surface = testSurfaceBase();
     surface.conf = &conf;
-    surface.cursor_position_changed_by_client_sequence = 1;
-    surface.cursor_source_row = 1;
-    surface.cursor_source_col = 1;
+    surface.cursor_position_sequence = 1;
+    surface.cursor_render_info = .{ .row = 1, .col = 1, .rows = 1, .cols = 1 };
 
     const first_ns = @as(u64, 10) * std.time.ns_per_ms;
-    surface.cursor_trail_pending_deadline_ns = first_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms;
-    surface.cursor_trail_pending_rect = surface.currentCursorTrailRect();
-    try std.testing.expectEqual(first_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms, surface.cursor_trail_pending_deadline_ns);
-    try std.testing.expectEqual(@as(u16, 1), surface.cursor_trail_pending_rect.col);
+    surface.cursor_client_moved_at_ns = first_ns;
+    try std.testing.expectEqual(@as(?u32, 100), surface.cursorFacts(first_ns).cadence.wait_ms);
 
     const second_ns = @as(u64, 20) * std.time.ns_per_ms;
-    surface.cursor_source_col = 4;
-    surface.cursor_trail_pending_deadline_ns = second_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms;
-    surface.cursor_trail_pending_rect = surface.currentCursorTrailRect();
-    try std.testing.expectEqual(second_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms, surface.cursor_trail_pending_deadline_ns);
-    try std.testing.expectEqual(@as(u16, 4), surface.cursor_trail_pending_rect.col);
-    try std.testing.expect(!surface.cursor_trail_trigger_ready);
+    surface.cursor_render_info.col = 4;
+    surface.cursor_client_moved_at_ns = second_ns;
+    try std.testing.expectEqual(@as(?u32, 100), surface.cursorFacts(second_ns).cadence.wait_ms);
 }
 
-test "cursor trail pending clears on below-threshold movement" {
+test "cursor trail start threshold skips equality like Kitty" {
     var conf = test_terminal_conf;
-    conf.cursor_trail = 100;
+    conf.cursor_trail = 0;
     conf.cursor_trail_start_threshold = 3;
 
     var surface = testSurfaceBase();
     surface.conf = &conf;
-    surface.cursor_position_changed_by_client_sequence = 1;
-    surface.cursor_source_row = 1;
-    surface.cursor_source_col = 1;
+    surface.cursor_position_sequence = 1;
+    surface.cursor_render_info = .{ .row = 0, .col = 2, .rows = 1, .cols = 1 };
 
-    const first_ns = @as(u64, 10) * std.time.ns_per_ms;
-    surface.cursor_trail_pending_deadline_ns = first_ns + @as(u64, conf.cursor_trail) * std.time.ns_per_ms;
-    try std.testing.expect(surface.cursor_trail_pending_deadline_ns != 0);
-
-    surface.cursor_trail_pending_deadline_ns = 0;
-    try std.testing.expectEqual(@as(u64, 0), surface.cursor_trail_pending_deadline_ns);
-    try std.testing.expect(!surface.cursor_trail_trigger_ready);
+    const facts = surface.cursorFacts(@as(u64, 10) * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u16, 0), facts.render.cursor_trail_count);
+    try std.testing.expect(!surface.cursor_trail.needs_render);
 }
 
 test "cursor trail cadence passes configured decay to render" {
@@ -1604,6 +1454,43 @@ test "cursor trail cadence passes configured decay to render" {
 
     try std.testing.expectEqual(@as(f32, 0.2), facts.render.cursor_trail_decay_fast_s);
     try std.testing.expectEqual(@as(f32, 0.6), facts.render.cursor_trail_decay_slow_s);
+}
+
+test "cursor trail active animation schedules followup samples" {
+    var conf = test_terminal_conf;
+    conf.cursor_trail = 0;
+    conf.cursor_trail_start_threshold = 0;
+
+    var surface = testSurfaceBase();
+    surface.conf = &conf;
+    surface.term.render.surface_layout.cell_px = .{ .width = 8, .height = 16 };
+    surface.cursor_render_info = .{ .row = 1, .col = 8, .rows = 1, .cols = 1 };
+    surface.cursor_client_moved_at_ns = 10 * std.time.ns_per_ms;
+
+    const facts = surface.cursorFacts(10 * std.time.ns_per_ms);
+    try std.testing.expectEqual(@as(u16, 1), facts.render.cursor_trail_count);
+    try std.testing.expect(facts.cadence.wait_ms != null);
+    try std.testing.expectEqual(@as(u8, 1), facts.render.cursor_trail_rects[0].pixel_rect);
+}
+
+test "cursor trail intermediate sample changes pixel rect before settling" {
+    var conf = test_terminal_conf;
+    conf.cursor_trail = 0;
+    conf.cursor_trail_start_threshold = 0;
+
+    var surface = testSurfaceBase();
+    surface.conf = &conf;
+    surface.term.render.surface_layout.cell_px = .{ .width = 8, .height = 16 };
+    surface.cursor_render_info = .{ .row = 2, .col = 8, .rows = 1, .cols = 1 };
+    surface.cursor_client_moved_at_ns = 10 * std.time.ns_per_ms;
+
+    const first = surface.cursorFacts(10 * std.time.ns_per_ms);
+    try std.testing.expect(surface.consumeCursorFacts(first));
+    const second = surface.cursorFacts(35 * std.time.ns_per_ms);
+
+    try std.testing.expectEqual(@as(u16, 1), second.render.cursor_trail_count);
+    try std.testing.expect(second.cadence.wait_ms != null);
+    try std.testing.expect(first.render.cursor_trail_rects[0].x_px != second.render.cursor_trail_rects[0].x_px or first.render.cursor_trail_rects[0].y_px != second.render.cursor_trail_rects[0].y_px or first.render.cursor_trail_rects[0].width_px != second.render.cursor_trail_rects[0].width_px or first.render.cursor_trail_rects[0].height_px != second.render.cursor_trail_rects[0].height_px);
 }
 
 const test_terminal_conf: TerminalConfig = .{
@@ -1665,19 +1552,11 @@ fn testSurfaceBase() Surface {
         .links = .{},
         .selection = .{},
         .cursor_blink = .{},
-        .cursor_position_changed_by_client_sequence = 0,
-        .cursor_trail_pending_deadline_ns = 0,
-        .cursor_trail_pending_rect = std.mem.zeroes(render_retained.HostCursorTrailRect),
-        .cursor_source_row = 0,
-        .cursor_source_col = 0,
-        .cursor_source_rows = 1,
-        .cursor_source_cols = 1,
-        .cursor_source_visible = true,
-        .cursor_source_blink = false,
-        .cursor_source_has_shape = true,
-        .cursor_source_shape = 0,
+        .cursor_position_sequence = 0,
+        .cursor_client_moved_at_ns = 0,
+        .cursor_render_info = .{},
+        .cursor_trail = .{},
         .cursor_text_blinking = false,
         .cursor_render = std.mem.zeroes(render_retained.HostCursorCadence),
-        .cursor_trail_trigger_ready = false,
     };
 }

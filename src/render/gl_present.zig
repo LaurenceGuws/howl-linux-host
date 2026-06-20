@@ -1,6 +1,6 @@
 const gl_c = @import("gl_c");
 const Layout = @import("../layout/layout.zig");
-const Present = @import("../render/present.zig");
+const Present = @import("present.zig");
 const Rects = @import("../buckets that must die/bucket.zig");
 const sdl_c = @import("sdl_c");
 const std = @import("std");
@@ -209,72 +209,93 @@ fn setTextureParams(comptime c: type) void {
 }
 
 const FakeC = struct {
-    const SDL_Window = opaque {};
-    const SDL_GLContext = ?*anyopaque;
-    const SDL_FunctionPointer = ?*const fn () callconv(.c) void;
-    const EGLBoolean = c_uint;
-    const EGLDisplay = ?*anyopaque;
-    const EGLint = c_int;
-    const EGLSurface = ?*anyopaque;
-    const SDL_WINDOW_RESIZABLE = 1;
-    const SDL_WINDOW_OPENGL = 2;
-    const GL_COLOR_BUFFER_BIT = 0x4000;
+    pub const SDL_Window = opaque {};
+    pub const SDL_GLContext = ?*anyopaque;
+    pub const SDL_FunctionPointer = ?*const fn () callconv(.c) void;
+    pub const EGLBoolean = c_uint;
+    pub const EGLDisplay = ?*anyopaque;
+    pub const EGLint = c_int;
+    pub const EGLSurface = ?*anyopaque;
+    pub const SDL_WINDOW_RESIZABLE = 1;
+    pub const SDL_WINDOW_OPENGL = 2;
+    pub const GL_COLOR_BUFFER_BIT = 0x4000;
+    pub const GL_TEXTURE_2D = 0x0DE1;
+    pub const GL_QUADS = 0x0007;
+    pub const GL_RGBA = 0x1908;
+    pub const GL_TEXTURE_MIN_FILTER = 0x2801;
+    pub const GL_TEXTURE_MAG_FILTER = 0x2800;
+    pub const GL_TEXTURE_WRAP_S = 0x2802;
+    pub const GL_TEXTURE_WRAP_T = 0x2803;
+    pub const GL_NEAREST = 0x2600;
+    pub const GL_CLAMP_TO_EDGE = 0x812F;
 
     var copy_tex_image_calls: u32 = 0;
     var copy_tex_subimage_calls: u32 = 0;
     var egl_swap_calls: u32 = 0;
 
-    fn SDL_GetWindowSizeInPixels(_: *SDL_Window, width: *c_int, height: *c_int) bool {
+    pub fn SDL_GetWindowSizeInPixels(_: *SDL_Window, width: *c_int, height: *c_int) bool {
         width.* = 80;
         height.* = 25;
         return true;
     }
 
-    fn glBindTexture(_: c_uint, _: c_uint) void {}
-    fn glCopyTexImage2D(_: c_uint, _: c_int, _: c_uint, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int) void {
+    pub fn glBindTexture(_: c_uint, _: c_uint) void {}
+    pub fn glGenTextures(_: c_int, textures: *c_uint) void {
+        textures.* = 1;
+    }
+
+    pub fn glDeleteTextures(_: c_int, _: *const c_uint) void {}
+    pub fn glCopyTexImage2D(_: c_uint, _: c_int, _: c_uint, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int) void {
         copy_tex_image_calls += 1;
     }
 
-    fn glCopyTexSubImage2D(_: c_uint, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int) void {
+    pub fn glCopyTexSubImage2D(_: c_uint, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int, _: c_int) void {
         copy_tex_subimage_calls += 1;
     }
 
-    fn glViewport(_: c_int, _: c_int, _: c_int, _: c_int) void {}
-    fn glClearColor(_: f32, _: f32, _: f32, _: f32) void {}
-    fn glClear(_: c_uint) void {}
-    fn glTexParameteri(_: c_uint, _: c_uint, _: c_int) void {}
+    pub fn glViewport(_: c_int, _: c_int, _: c_int, _: c_int) void {}
+    pub fn glClearColor(_: f32, _: f32, _: f32, _: f32) void {}
+    pub fn glClear(_: c_uint) void {}
+    pub fn glTexParameteri(_: c_uint, _: c_uint, _: c_int) void {}
+    pub fn glEnable(_: c_uint) void {}
+    pub fn glDisable(_: c_uint) void {}
+    pub fn glColor4f(_: f32, _: f32, _: f32, _: f32) void {}
+    pub fn glBegin(_: c_uint) void {}
+    pub fn glEnd() void {}
+    pub fn glTexCoord2f(_: f32, _: f32) void {}
+    pub fn glVertex2f(_: f32, _: f32) void {}
 
-    fn SDL_IsMainThread() bool {
+    pub fn SDL_IsMainThread() bool {
         return true;
     }
 
-    fn SDL_GL_GetCurrentContext() SDL_GLContext {
+    pub fn SDL_GL_GetCurrentContext() SDL_GLContext {
         return @ptrFromInt(2);
     }
 
-    fn SDL_GL_GetCurrentWindow() *SDL_Window {
+    pub fn SDL_GL_GetCurrentWindow() *SDL_Window {
         return @ptrFromInt(1);
     }
 
-    fn SDL_EGL_GetCurrentDisplay() EGLDisplay {
+    pub fn SDL_EGL_GetCurrentDisplay() EGLDisplay {
         return @ptrFromInt(3);
     }
 
-    fn SDL_EGL_GetWindowSurface(_: *SDL_Window) EGLSurface {
+    pub fn SDL_EGL_GetWindowSurface(_: *SDL_Window) EGLSurface {
         return @ptrFromInt(4);
     }
 
-    fn SDL_EGL_GetProcAddress(name: [*:0]const u8) SDL_FunctionPointer {
+    pub fn SDL_EGL_GetProcAddress(name: [*:0]const u8) SDL_FunctionPointer {
         if (std.mem.orderZ(u8, name, "eglSwapBuffers") == .eq) return @ptrCast(&fakeEglSwapBuffers);
         return null;
     }
 
-    fn fakeEglSwapBuffers(_: EGLDisplay, _: EGLSurface) callconv(.c) EGLBoolean {
+    pub fn fakeEglSwapBuffers(_: EGLDisplay, _: EGLSurface) callconv(.c) EGLBoolean {
         egl_swap_calls += 1;
         return 1;
     }
 
-    fn SDL_GetTicksNS() u64 {
+    pub fn SDL_GetTicksNS() u64 {
         return 1000;
     }
 };
@@ -328,6 +349,10 @@ test "tab cache refreshes only on revision change" {
 
     var state = testState();
     var frame = testFrame();
+    frame.term_texture_rect.y = 16;
+    frame.term_texture_rect.height = 9;
+    frame.tab_count = 1;
+    frame.tab_labels = &.{"shell"};
 
     const first = displaySubmitPresentSync(FakeC, &state, frame);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);

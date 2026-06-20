@@ -1,13 +1,14 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const Config = @import("config/config.zig");
-const Display = @import("window/window.zig");
+const GlPresent = @import("render/gl_present.zig");
 const EventLoop = @import("events/event_loop.zig");
 const Input = @import("input/input.zig").Input;
 const Processor = @import("events/event.zig").Processor;
 const TabBar = @import("tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("tab_bar/tab_slots.zig").Slots;
-const window = @import("window/window2.zig");
+const window_icon = @import("window_icon.zig");
+const window = @import("events/window.zig");
 
 pub const Args = cli.Args;
 const child_term_value: [*:0]const u8 = "xterm-256color";
@@ -45,14 +46,14 @@ noinline fn start(io: std.Io, options: Args) !void {
     app_window.* = try createWindow(conf);
     window_created = true;
 
-    const display = try std.heap.c_allocator.create(Display.State);
-    var display_created = false;
+    const gl_present = try std.heap.c_allocator.create(GlPresent.State);
+    var gl_present_created = false;
     defer {
-        if (display_created) Display.deinit(Display.C, display);
-        std.heap.c_allocator.destroy(display);
+        if (gl_present_created) GlPresent.deinit(GlPresent.C, gl_present);
+        std.heap.c_allocator.destroy(gl_present);
     }
-    try Display.init(Display.C, display, app_window.handle);
-    display_created = true;
+    try GlPresent.init(GlPresent.C, gl_present, app_window.handle);
+    gl_present_created = true;
 
     const tab_bar = try std.heap.c_allocator.create(TabBar);
     tab_bar.* = .{};
@@ -86,7 +87,7 @@ noinline fn start(io: std.Io, options: Args) !void {
         .conf = conf,
         .io = io,
         .window = app_window,
-        .display = display,
+        .gl_present = gl_present,
         .tab_bar = tab_bar,
         .tabs = tabs,
         .active_tab_idx = active_tab_idx,
@@ -117,8 +118,9 @@ fn loadConfig(options: Args) !Config.UiConfig {
 }
 
 fn createWindow(conf: *const Config.UiConfig) !window.Window {
-    var app_window = try window.Window.create(conf.window.title.ptr, conf.window.width, conf.window.height, Display.flags(Display.C));
+    var app_window = try window.Window.create(conf.window.title.ptr, conf.window.width, conf.window.height, GlPresent.flags(GlPresent.C));
     errdefer app_window.deinit();
+    window_icon.apply(app_window.handle);
     return app_window;
 }
 

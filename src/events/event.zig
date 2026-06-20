@@ -2,7 +2,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const Config = @import("../config/config.zig");
-const Display = @import("../window/window.zig");
+const GlPresent = @import("../render/gl_present.zig");
 const Layout = @import("../layout/layout.zig");
 const Viewport = @import("../layout/viewport.zig");
 const EventLoop = @import("event_loop.zig");
@@ -11,8 +11,8 @@ const TabBar = @import("../tab_bar/tab_bar.zig").TabBar;
 const TabSlots = @import("../tab_bar/tab_slots.zig").Slots;
 const Present = @import("../render/present.zig");
 const Terminal = @import("../buckets that must die/bucket2.zig").Surface;
-const FrameTimer = @import("../window/frame_timer.zig");
-const window = @import("../window/window2.zig");
+const FrameTimer = @import("frame_timer.zig");
+const window = @import("window.zig");
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
@@ -21,7 +21,7 @@ pub const Processor = struct {
     conf: *const Config.UiConfig,
     io: std.Io,
     window: *window.Window,
-    display: *Display.State,
+    gl_present: *GlPresent.State,
     tab_bar: *TabBar,
     tabs: *TabSlots,
     active_tab_idx: *TabIndex,
@@ -464,11 +464,11 @@ pub const Processor = struct {
     fn submitPresent(self: *Self, frame: RenderFrame, reason: PresentReason) void {
         switch (reason) {
             .none => {},
-            .host_damage => _ = self.display.submitPresentSync(presentFrame(frame)),
+            .host_damage => _ = self.gl_present.submitPresentSync(presentFrame(frame)),
             .terminal_frame => {
                 assert(frame.turn.step == .rendered);
                 assert(frame.turn.present_snapshot_seq != 0);
-                const token = self.display.submitPresentSync(presentFrame(frame));
+                const token = self.gl_present.submitPresentSync(presentFrame(frame));
                 frame.tab.notePresentSubmitted(frame.turn.present_snapshot_seq, token);
                 frame.tab.completePresent(token);
             },
