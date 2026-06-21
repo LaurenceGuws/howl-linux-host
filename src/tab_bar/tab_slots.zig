@@ -2,14 +2,14 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const TabBar = @import("../tab_bar.zig").TabBar;
-const TerminalSurface = @import("../buckets that must die/bucket2.zig").Surface;
+const RuntimeTab = @import("../tab.zig").Tab;
 
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
 
 pub const Slots = struct {
-    surfaces: [max_tabs]TerminalSurface = undefined,
-    active_tabs: [max_tabs]*TerminalSurface = undefined,
+    tabs: [max_tabs]RuntimeTab = undefined,
+    active_tabs: [max_tabs]*RuntimeTab = undefined,
     active_slots: [max_tabs]TabIndex = undefined,
     free_slots: [max_tabs]TabIndex = undefined,
     active_count: TabIndex = 0,
@@ -37,22 +37,22 @@ pub const Slots = struct {
         self.assertCounts();
     }
 
-    pub fn items(self: *Slots) []*TerminalSurface {
+    pub fn items(self: *Slots) []*RuntimeTab {
         self.assertCounts();
         return self.active_tabs[0..self.active_count];
     }
 
-    pub fn acquireSlot(self: *Slots) ?struct { slot_idx: TabIndex, tab: *TerminalSurface } {
+    pub fn acquireSlot(self: *Slots) ?struct { slot_idx: TabIndex, tab: *RuntimeTab } {
         self.assertCounts();
         if (self.free_count == 0) return null;
         self.free_count -= 1;
         const slot_idx = self.free_slots[self.free_count];
         assert(slot_idx < max_tabs);
         self.assertCounts();
-        return .{ .slot_idx = slot_idx, .tab = &self.surfaces[slot_idx] };
+        return .{ .slot_idx = slot_idx, .tab = &self.tabs[slot_idx] };
     }
 
-    pub fn appendActive(self: *Slots, slot_idx: TabIndex, tab: *TerminalSurface) void {
+    pub fn appendActive(self: *Slots, slot_idx: TabIndex, tab: *RuntimeTab) void {
         self.assertCounts();
         assert(self.active_count < max_tabs);
         assert(slot_idx < max_tabs);
@@ -71,7 +71,7 @@ pub const Slots = struct {
         self.assertCounts();
     }
 
-    pub fn orderedRemoveActive(self: *Slots, idx: TabIndex) struct { slot_idx: TabIndex, tab: *TerminalSurface } {
+    pub fn orderedRemoveActive(self: *Slots, idx: TabIndex) struct { slot_idx: TabIndex, tab: *RuntimeTab } {
         self.assertCounts();
         assert(idx < self.active_count);
         const slot_idx = self.active_slots[idx];
@@ -121,7 +121,7 @@ test "tab slots bound growth and reuse freed slots" {
 test "tab slots preserve order on close semantics" {
     var tabs: Slots = undefined;
     tabs.init();
-    var active: [4]*TerminalSurface = undefined;
+    var active: [4]*RuntimeTab = undefined;
 
     for (0..4) |i| {
         const slot = tabs.acquireSlot() orelse return error.TestUnexpectedResult;

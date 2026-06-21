@@ -25,6 +25,7 @@ test {
     _ = @import("scroll_bar.zig");
     _ = @import("selection.zig");
     _ = @import("sync.zig");
+    _ = @import("tab.zig");
     _ = @import("tab_bar.zig");
     _ = @import("texture.zig");
     _ = @import("vt.zig");

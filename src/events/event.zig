@@ -13,8 +13,8 @@ const Input = @import("../input.zig").Input;
 const TabBar = @import("../tab_bar.zig").TabBar;
 const TabBarConfig = @import("../config/tab_bar.zig").Config;
 const TabSlots = @import("../tab_bar/tab_slots.zig").Slots;
-const Terminal = @import("../buckets that must die/bucket2.zig").Surface;
-const TerminalTurnStep = Terminal.TurnStep;
+const RuntimeTab = @import("../tab.zig").Tab;
+const TerminalTurnStep = RuntimeTab.TurnStep;
 const FrameTimer = @import("frame_timer.zig");
 const window = @import("window.zig");
 
@@ -50,14 +50,14 @@ pub const Processor = struct {
     };
 
     const LoopRuntimeFacts = struct {
-        tabs: [max_tabs]Terminal.RuntimeFacts,
+        tabs: [max_tabs]RuntimeTab.RuntimeFacts,
         tab_count: usize,
         runtime_admitted: bool,
         runtime_wake_pending: bool,
         runtime_wait_ms: ?u32,
         render_turn_pending: bool,
 
-        fn tab(self: *const LoopRuntimeFacts, index: usize) Terminal.RuntimeFacts {
+        fn tab(self: *const LoopRuntimeFacts, index: usize) RuntimeTab.RuntimeFacts {
             assert(index < self.tab_count);
             return self.tabs[index];
         }
@@ -103,12 +103,12 @@ pub const Processor = struct {
         active_tab: TabIndex,
         tab_bar_revision: u64,
         labels: []const []const u8,
-        damage: Terminal.PresentDamage,
+        damage: RuntimeTab.PresentDamage,
     };
 
     const RenderFrame = struct {
-        tab: *Terminal,
-        turn: Terminal.TurnResult,
+        tab: *RuntimeTab,
+        turn: RuntimeTab.TurnResult,
         snapshot: RenderSnapshot,
     };
 
@@ -295,7 +295,7 @@ pub const Processor = struct {
         return facts;
     }
 
-    fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, runtime: Terminal.RuntimeFacts, active: bool) void {
+    fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, runtime: RuntimeTab.RuntimeFacts, active: bool) void {
         facts.runtime_wake_pending = facts.runtime_wake_pending or runtime.wake_pending or runtime.runtime_due_now;
         facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, runtime.runtime_wait_ms);
         if (active) {
@@ -364,7 +364,7 @@ pub const Processor = struct {
         return true;
     }
 
-    fn acknowledgeTerminalWakes(tabs: []*Terminal) void {
+    fn acknowledgeTerminalWakes(tabs: []*RuntimeTab) void {
         assert(tabs.len <= max_tabs);
         for (tabs) |tab| _ = tab.acknowledgeProgressWake();
     }
@@ -375,7 +375,7 @@ pub const Processor = struct {
         return progress;
     }
 
-    fn driveTerminalProgress(tabs: []*Terminal, active_tab_idx: TabIndex, runtime_facts: LoopRuntimeFacts, now_ns: u64) TerminalProgress {
+    fn driveTerminalProgress(tabs: []*RuntimeTab, active_tab_idx: TabIndex, runtime_facts: LoopRuntimeFacts, now_ns: u64) TerminalProgress {
         var should_redraw = false;
         var keep_running = false;
         var drive_performed = false;
@@ -394,7 +394,7 @@ pub const Processor = struct {
         };
     }
 
-    fn driveTabRuntimeTurn(tab: *Terminal, active: bool, now_ns: u64, facts: Terminal.RuntimeFacts) Terminal.DriveProgressResult {
+    fn driveTabRuntimeTurn(tab: *RuntimeTab, active: bool, now_ns: u64, facts: RuntimeTab.RuntimeFacts) RuntimeTab.DriveProgressResult {
         return tab.driveProgressWithFacts(active, now_ns, facts);
     }
 
@@ -441,11 +441,11 @@ pub const Processor = struct {
         return .{ .tab = tab, .turn = turn, .snapshot = snapshot };
     }
 
-    fn syncActiveWindowTitle(app_window: *window.Window, tab: *Terminal) void {
+    fn syncActiveWindowTitle(app_window: *window.Window, tab: *RuntimeTab) void {
         app_window.setTitle(tab.titleSlice());
     }
 
-    fn renderSnapshot(self: *Self, tab: *Terminal) RenderSnapshot {
+    fn renderSnapshot(self: *Self, tab: *RuntimeTab) RenderSnapshot {
         const window_interior = LayoutWindow.interior(self.window, &self.conf.tab_bar, @intCast(self.tabs.items().len));
         const pane = LayoutTab.singlePane(LayoutTab.body(window_interior), .first);
         const terminal = LayoutPane.terminal(pane, tab.textureSize());
@@ -463,7 +463,7 @@ pub const Processor = struct {
         };
     }
 
-    fn derivePresentReason(host_redraw: bool, step: Terminal.TurnStep) PresentReason {
+    fn derivePresentReason(host_redraw: bool, step: RuntimeTab.TurnStep) PresentReason {
         return switch (step) {
             .rendered => .terminal_frame,
             .blocked_present => .terminal_retire,
@@ -498,7 +498,7 @@ pub const Processor = struct {
             .tab_count = @intCast(frame.snapshot.labels.len),
             .active_tab = frame.snapshot.active_tab,
             .tab_bar_revision = frame.snapshot.tab_bar_revision,
-            .tab_bar_font_size_px = @max(frame.tab.font_size_px, 1),
+            .tab_bar_font_size_px = frame.tab.tabBarFontSizePx(),
             .tab_labels = frame.snapshot.labels,
             .damage = frame.turn.present_damage,
         };
@@ -508,22 +508,22 @@ pub const Processor = struct {
         _ = self;
     }
 
-    fn resizeTerminals(conf: *const Config.UiConfig, app_window: *window.Window, tabs: []*Terminal) void {
+    fn resizeTerminals(conf: *const Config.UiConfig, app_window: *window.Window, tabs: []*RuntimeTab) void {
         resizeTerminalsForTabBody(tabs, LayoutTab.body(LayoutWindow.interior(app_window, &conf.tab_bar, @intCast(tabs.len))));
     }
 
-    fn resizeTerminalsForTabBody(tabs: []*Terminal, tab_body: LayoutTab.Body) void {
+    fn resizeTerminalsForTabBody(tabs: []*RuntimeTab, tab_body: LayoutTab.Body) void {
         const pane = LayoutTab.singlePane(tab_body, .first);
         for (tabs) |tab| tab.resize(pane.pixel_size.width, pane.pixel_size.height, pane.logical_size.width, pane.logical_size.height);
     }
 
-    fn setWindowFocused(app_window: *window.Window, tabs: []*Terminal, active_tab_idx: TabIndex, focused: bool) void {
+    fn setWindowFocused(app_window: *window.Window, tabs: []*RuntimeTab, active_tab_idx: TabIndex, focused: bool) void {
         assert(tabIndexInRange(tabs, active_tab_idx));
         _ = app_window.setFocused(focused);
         syncTerminalFocus(app_window, tabs, active_tab_idx);
     }
 
-    fn activeTabProblem(tabs: []*Terminal, active_tab_idx: TabIndex) ?ActiveTabProblem {
+    fn activeTabProblem(tabs: []*RuntimeTab, active_tab_idx: TabIndex) ?ActiveTabProblem {
         if (tabs.len == 0) return .exited;
         const tab = activeSurface(tabs, active_tab_idx);
         return switch (tab.sessionOutcome()) {
@@ -533,13 +533,13 @@ pub const Processor = struct {
         };
     }
 
-    fn activeTab(tabs: []*Terminal, active_tab_idx: TabIndex) *Terminal {
+    fn activeTab(tabs: []*RuntimeTab, active_tab_idx: TabIndex) *RuntimeTab {
         assert(tabs.len > 0);
         assert(tabIndexInRange(tabs, active_tab_idx));
         return tabs[@intCast(active_tab_idx)];
     }
 
-    fn activeSurface(tabs: []*Terminal, active_tab_idx: TabIndex) *Terminal {
+    fn activeSurface(tabs: []*RuntimeTab, active_tab_idx: TabIndex) *RuntimeTab {
         return activeTab(tabs, active_tab_idx);
     }
 
@@ -576,7 +576,7 @@ pub const Processor = struct {
         syncActiveWindowTitle(app_window, activeSurface(updated, active_tab_idx.*));
     }
 
-    fn selectRelative(app_window: *window.Window, tabs: []*Terminal, active_tab_idx: *TabIndex, delta: i32) void {
+    fn selectRelative(app_window: *window.Window, tabs: []*RuntimeTab, active_tab_idx: *TabIndex, delta: i32) void {
         if (tabs.len <= 1) return;
         const len_i: i32 = @intCast(tabs.len);
         var idx: i32 = @intCast(active_tab_idx.*);
@@ -584,7 +584,7 @@ pub const Processor = struct {
         selectTab(app_window, tabs, active_tab_idx, @intCast(idx));
     }
 
-    fn selectTab(app_window: *window.Window, tabs: []*Terminal, active_tab_idx: *TabIndex, idx: TabIndex) void {
+    fn selectTab(app_window: *window.Window, tabs: []*RuntimeTab, active_tab_idx: *TabIndex, idx: TabIndex) void {
         if (!tabIndexInRange(tabs, idx)) return;
         if (idx == active_tab_idx.*) return;
         active_tab_idx.* = idx;
@@ -593,7 +593,7 @@ pub const Processor = struct {
         syncActiveWindowTitle(app_window, activeSurface(tabs, active_tab_idx.*));
     }
 
-    fn syncTerminalFocus(app_window: *window.Window, tabs: []*Terminal, active_tab_idx: TabIndex) void {
+    fn syncTerminalFocus(app_window: *window.Window, tabs: []*RuntimeTab, active_tab_idx: TabIndex) void {
         assert(tabIndexInRange(tabs, active_tab_idx));
         for (tabs, 0..) |tab, i| {
             tab.setWindowFocused(app_window.focused);
@@ -601,13 +601,13 @@ pub const Processor = struct {
         }
     }
 
-    fn tabTitles(tabs: []*Terminal, buf: [][]const u8) []const []const u8 {
+    fn tabTitles(tabs: []*RuntimeTab, buf: [][]const u8) []const []const u8 {
         assert(buf.len >= tabs.len);
         for (tabs, 0..) |tab, i| buf[i] = tab.titleSlice();
         return buf[0..tabs.len];
     }
 
-    fn tabBarRevision(tabs: []*Terminal, active_tab_idx: TabIndex) u64 {
+    fn tabBarRevision(tabs: []*RuntimeTab, active_tab_idx: TabIndex) u64 {
         assert(tabIndexInRange(tabs, active_tab_idx));
         var revision: u64 = @as(u64, tabs.len) << 32;
         revision ^= @as(u64, active_tab_idx) << 16;
@@ -619,14 +619,14 @@ pub const Processor = struct {
         return revision;
     }
 
-    fn pasteIntoActiveTab(tab: *Terminal) void {
+    fn pasteIntoActiveTab(tab: *RuntimeTab) void {
         const text = window.getClipboardText(std.heap.c_allocator) catch return;
         defer if (text) |buf| std.heap.c_allocator.free(buf);
         const payload = text orelse return;
         tab.paste(payload);
     }
 
-    fn tabIndexInRange(tabs: []*Terminal, idx: TabIndex) bool {
+    fn tabIndexInRange(tabs: []*RuntimeTab, idx: TabIndex) bool {
         return tabIndexInRangeLen(tabs.len, idx);
     }
     fn tabIndexInRangeLen(len: usize, idx: TabIndex) bool {
