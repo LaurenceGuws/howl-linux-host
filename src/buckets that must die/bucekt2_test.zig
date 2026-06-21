@@ -77,12 +77,13 @@ fn testSurfaceBase() Surface {
             .render = render_retained.State.init(testSurfaceLayout(0, 0, 0, 0, 1, 1, 1, 1)),
             .vt_state = .{},
             .mutex = .{},
-            .texture_trigger = .{},
-            .texture_event_loop = null,
+            .present_surface_trigger = null,
+            .present_surface_wake_loop = null,
         },
         .progress = .{},
         .live = false,
         .term_texture = .{ .host_surface_id = 1, .width = 2, .height = 1 },
+        .present_surface_trigger = .{},
         .render_surface_textures = .{},
         .conf = &test_terminal_conf,
         .input = undefined,
@@ -391,6 +392,7 @@ test "cursor activity pushes blink deadline while visible" {
         .progress = .{},
         .live = false,
         .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
+        .present_surface_trigger = .{},
         .render_surface_textures = .{},
         .conf = undefined,
         .input = undefined,
@@ -983,7 +985,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
 
     try prepareSubmitSurface(&surface, 51);
     const wake_wait = event_mod.testing.computeLoopWaitFromTrigger(1_000, false, true, false, null, .{
-        .texture_triggered = true,
+        .present_surface_triggered = true,
     });
     try std.testing.expect(!wake_wait.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), wake_wait.wait_ms);
@@ -1002,7 +1004,7 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     const next_admission = surface.term.render.admitRenderTurn(false);
     try std.testing.expectEqual(render_retained.RetainedState.submit_ready, next_admission.state);
     const resumed_wait = event_mod.testing.computeLoopWaitFromTrigger(17_001_000, false, true, next_admission.needsRenderTurn(), null, .{
-        .texture_triggered = false,
+        .present_surface_triggered = false,
     });
     try std.testing.expect(!resumed_wait.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), resumed_wait.wait_ms);

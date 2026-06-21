@@ -48,7 +48,7 @@ fn progressThreadMainWith(target_value: ProgressThreadTarget, comptime Ops: type
         if (!waitForTransport(target_value, Ops)) continue;
         while (!target_value.progress.stop.load(.acquire)) {
             const progress = Ops.driveProgress(target_value.term, EventLoop.nowNs());
-            if (progress.should_redraw or !progress.alive) signalTexturePresent(target_value, Ops);
+            if (progress.should_redraw or !progress.alive) signalPresentSurface(target_value, Ops);
             if (!progress.alive) return;
             if (!progress.keep) break;
         }
@@ -65,9 +65,9 @@ fn waitForTransport(target_value: ProgressThreadTarget, comptime Ops: type) bool
     return true;
 }
 
-fn signalTexturePresent(target_value: ProgressThreadTarget, comptime Ops: type) void {
+fn signalPresentSurface(target_value: ProgressThreadTarget, comptime Ops: type) void {
     _ = target_value.progress;
-    Ops.triggerTexturePresent(target_value.term);
+    Ops.triggerPresentSurface(target_value.term);
 }
 
 const ProgressThreadOps = struct {
@@ -83,8 +83,8 @@ const ProgressThreadOps = struct {
         return pty_session.isAlive(term);
     }
 
-    fn triggerTexturePresent(term: *Term) void {
-        term.triggerTexturePresent();
+    fn triggerPresentSurface(term: *Term) void {
+        term.triggerPresentSurface();
     }
 };
 
@@ -144,13 +144,13 @@ test "progress target carries explicit term and wait owner" {
     try std.testing.expectEqual(&progress, target_value.progress);
 }
 
-test "signal texture present forwards every redraw edge to term trigger" {
+test "signal present surface forwards every redraw edge to term trigger" {
     fake_state = .{};
     var term: FakeTerm = undefined;
     var progress = WaitThread{};
     const target_value = fakeTarget(&term, &progress);
-    signalTexturePresent(target_value, FakeOps);
-    signalTexturePresent(target_value, FakeOps);
+    signalPresentSurface(target_value, FakeOps);
+    signalPresentSurface(target_value, FakeOps);
     try std.testing.expectEqual(@as(u8, 2), fake_state.trigger_calls);
 }
 
@@ -248,7 +248,7 @@ const FakeOps = struct {
         return fake_state.is_alive;
     }
 
-    fn triggerTexturePresent(_: *Term) void {
+    fn triggerPresentSurface(_: *Term) void {
         fake_state.trigger_calls += 1;
     }
 };

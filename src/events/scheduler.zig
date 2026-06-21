@@ -12,7 +12,7 @@ const FrameTimer = @import("frame_timer.zig").FrameTimer;
 const window = @import("window.zig");
 
 pub const HostEvent = enum {
-    texture_triggered,
+    present_surface_triggered,
     input_pending,
     window_geometry_changed,
     window_focus_changed,
@@ -194,9 +194,9 @@ fn testWindow(has_frame: bool) window.Window {
     };
 }
 
-test "texture trigger prevents indefinite wait without granting progress admission" {
+test "present surface trigger prevents indefinite wait without granting progress admission" {
     var events = HostEventQueue.init();
-    events.append(.texture_triggered);
+    events.append(.present_surface_triggered);
 
     const wait = chooseWait(false, &events, null, 1);
 

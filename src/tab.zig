@@ -42,7 +42,7 @@ const second_pane: PaneId = @enumFromInt(1);
 ///   Invariant: visible unfocused panes still participate in redraw/progress; hidden panes do not.
 /// - `InputAdmission` is the terminal-input knob. Options are admitted or blocked.
 ///   Invariant: only the focused visible pane in the selected tab receives published input.
-/// - `resize` is the geometry-realization knob. Input is a tab body.
+/// - `resize` is the geometry-application knob. Input is a tab body.
 ///   Invariant: every initialized pane records the new placement size, independent of focus.
 pub const Tab = struct {
     panes: [max_frame_panes]TerminalSurface = undefined,
@@ -226,11 +226,11 @@ pub const Tab = struct {
         return self.driveCursorEvent(selection, now_ns, .trail);
     }
 
-    pub fn takeTextureTriggered(self: *Tab) bool {
+    pub fn consumePresentSurfaceTriggers(self: *Tab) bool {
         self.assertInvariants();
         var triggered = false;
         for (self.initializedPanes()) |*runtime_pane| {
-            triggered = runtime_pane.term.takeTextureTriggered() or triggered;
+            triggered = runtime_pane.consumePresentSurfaceTrigger() or triggered;
         }
         return triggered;
     }
@@ -613,8 +613,8 @@ test "runtime tab split placement exposes both pane ids" {
 test "runtime tab resize records left-right placement for both panes" {
     var tab = initializedTestTab();
     installSplitForTest(&tab, .left_right);
-    installResizeRealizationForTest(&tab);
-    defer deinitResizeRealizationForTest(&tab);
+    installResizeTerminalStateForTest(&tab);
+    defer deinitResizeTerminalStateForTest(&tab);
     const next_body = testResizedTabBody();
 
     tab.resize(next_body);
@@ -628,8 +628,8 @@ test "runtime tab resize records left-right placement for both panes" {
 test "runtime tab resize records top-bottom placement for both panes" {
     var tab = initializedTestTab();
     installSplitForTest(&tab, .top_bottom);
-    installResizeRealizationForTest(&tab);
-    defer deinitResizeRealizationForTest(&tab);
+    installResizeTerminalStateForTest(&tab);
+    defer deinitResizeTerminalStateForTest(&tab);
     const next_body = testResizedTabBody();
 
     tab.resize(next_body);
@@ -643,8 +643,8 @@ test "runtime tab resize records top-bottom placement for both panes" {
 test "runtime tab resize does not change selected pane info policy" {
     var tab = initializedTestTab();
     installSplitForTest(&tab, .left_right);
-    installResizeRealizationForTest(&tab);
-    defer deinitResizeRealizationForTest(&tab);
+    installResizeTerminalStateForTest(&tab);
+    defer deinitResizeTerminalStateForTest(&tab);
     var before_infos: [Tab.max_frame_panes]Tab.PaneInfo = undefined;
     var after_infos: [Tab.max_frame_panes]Tab.PaneInfo = undefined;
 
@@ -666,8 +666,8 @@ test "runtime tab resize does not change selected pane info policy" {
 test "runtime tab frame panes after resize must expose resized placement for both panes" {
     var tab = initializedTestTab();
     installSplitForTest(&tab, .left_right);
-    installResizeRealizationForTest(&tab);
-    defer deinitResizeRealizationForTest(&tab);
+    installResizeTerminalStateForTest(&tab);
+    defer deinitResizeTerminalStateForTest(&tab);
     const next_body = testResizedTabBody();
     var panes: [Tab.max_frame_panes]Layout.FramePane = undefined;
 
@@ -863,13 +863,15 @@ test "runtime tab session outcome follows active pane without runtime failure" {
     try std.testing.expectEqual(pty_session.SessionOutcome.exited, tab.sessionOutcome());
 }
 
-test "runtime tab consumes texture triggers from contained panes" {
+test "runtime tab consumes present surface triggers from contained panes" {
     var tab = initializedTestTab();
     installSplitForTest(&tab, .left_right);
-    tab.pane(.first).term.triggerTexturePresent();
+    tab.pane(.first).term.present_surface_trigger = &tab.pane(.first).present_surface_trigger;
+    tab.pane(.first).term.present_surface_wake_loop = null;
+    tab.pane(.first).term.triggerPresentSurface();
 
-    try std.testing.expect(tab.takeTextureTriggered());
-    try std.testing.expect(!tab.takeTextureTriggered());
+    try std.testing.expect(tab.consumePresentSurfaceTriggers());
+    try std.testing.expect(!tab.consumePresentSurfaceTriggers());
 }
 
 test "cursor trail event mutates terminal cursor owner and reports redraw" {
@@ -951,8 +953,9 @@ fn canInstallSplit(tab: *const Tab) bool {
 
 fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u64) void {
     pane.term.mutex = .{};
-    pane.term.texture_trigger = .{};
-    pane.term.texture_event_loop = null;
+    pane.present_surface_trigger = .{};
+    pane.term.present_surface_trigger = null;
+    pane.term.present_surface_wake_loop = null;
     pane.term.vt_state = .{};
     pane.term.pty = .{ .launch = .{ .shell = test_terminal_conf.shell } };
     pane.term.initTitle();
@@ -1002,7 +1005,7 @@ fn deinitSessionForTest(pane: *TerminalSurface) void {
     pane.term.session = null;
 }
 
-fn installResizeRealizationForTest(tab: *Tab) void {
+fn installResizeTerminalStateForTest(tab: *Tab) void {
     const config = render_c.HowlRenderTextConfig{
         .font_size_px = 1,
         .fallback_font_path_count = 0,
@@ -1018,7 +1021,7 @@ fn installResizeRealizationForTest(tab: *Tab) void {
     }
 }
 
-fn deinitResizeRealizationForTest(tab: *Tab) void {
+fn deinitResizeTerminalStateForTest(tab: *Tab) void {
     for (tab.initializedPanes()) |*pane_value| {
         pane_value.term.render.deinit();
         vt_c.howl_vt_terminal_deinit(pane_value.term.vt);

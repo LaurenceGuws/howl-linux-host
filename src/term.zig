@@ -24,8 +24,8 @@ pub const Term = struct {
     render: render_retained.State,
     vt_state: VtState = .{},
     mutex: FairMutex = .{},
-    texture_trigger: texture_term.PresentTrigger = .{},
-    texture_event_loop: ?*EventLoop.EventLoop = null,
+    present_surface_trigger: ?*texture_term.PresentSurfaceTrigger = null,
+    present_surface_wake_loop: ?*EventLoop.EventLoop = null,
     host_title: vt_title.HostTitle = .{},
 
     pub fn initTitle(self: *Term) void {
@@ -58,19 +58,16 @@ pub const Term = struct {
         vt_title.refreshHost(&self.host_title, &self.vt_state.title, fallback);
     }
 
-    pub fn initTextureTrigger(self: *Term, event_loop: *EventLoop.EventLoop) void {
-        texture_term.initPresentTrigger(&self.texture_trigger);
-        self.texture_event_loop = event_loop;
+    pub fn initPresentSurfaceTrigger(self: *Term, trigger: *texture_term.PresentSurfaceTrigger, event_loop: *EventLoop.EventLoop) void {
+        self.present_surface_trigger = trigger;
+        self.present_surface_wake_loop = event_loop;
     }
 
-    pub fn triggerTexturePresent(self: *Term) void {
-        if (!texture_term.triggerPresent(&self.texture_trigger)) return;
-        const event_loop = self.texture_event_loop orelse return;
+    pub fn triggerPresentSurface(self: *Term) void {
+        const trigger = self.present_surface_trigger orelse return;
+        if (!texture_term.triggerPresentSurface(trigger)) return;
+        const event_loop = self.present_surface_wake_loop orelse return;
         event_loop.wake();
-    }
-
-    pub fn takeTextureTriggered(self: *Term) bool {
-        return texture_term.takeTriggered(&self.texture_trigger);
     }
 
     fn titleFromLaunch(launch: pty_session.Launch) []const u8 {
@@ -107,8 +104,8 @@ fn testTitleTerm(launch: pty_session.Launch) Term {
         .render = undefined,
         .vt_state = .{},
         .mutex = .{},
-        .texture_trigger = .{},
-        .texture_event_loop = null,
+        .present_surface_trigger = null,
+        .present_surface_wake_loop = null,
         .host_title = .{},
     };
 }

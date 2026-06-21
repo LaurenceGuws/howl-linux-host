@@ -2,7 +2,7 @@
 
 Reference Linux desktop host for the Howl terminal stack.
 
-It embeds `howl-pty`, `howl-vt`, and `howl-render` through their C ABIs and realizes them as an SDL/OpenGL desktop terminal. The host owns app lifecycle, input, tabs, wake policy, frame pacing, backend resources, upload, and presentation.
+It embeds `howl-pty`, `howl-vt`, and `howl-render` through their C ABIs and presents them as an SDL/OpenGL desktop terminal. The host owns app lifecycle, input, tabs, wake policy, frame pacing, backend resources, upload, and presentation.
 
 ## Build
 

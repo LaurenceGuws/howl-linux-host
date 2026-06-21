@@ -130,7 +130,7 @@ pub const Processor = struct {
         handleTypedHostEvents(self, &host_events);
         const event_action = pumpWindowEvents(self, wait);
         if (event_action == .quit) return .quit;
-        if (takeTextureTriggers(self.tabs.items())) handleTypedHostEvent(self, .texture_triggered);
+        if (consumePresentSurfaceTriggers(self.tabs.items())) handleTypedHostEvent(self, .present_surface_triggered);
 
         const host_visual_changed_opt = try applyHostOwnedMutations(self, &host_events);
         if (host_visual_changed_opt) |host_visual_changed| {
@@ -185,7 +185,7 @@ pub const Processor = struct {
     fn collectWaitHostEvents(self: *Self) HostEventQueue {
         var events = HostEventQueue.init();
         if (self.input.hasPendingEvents()) events.append(.input_pending);
-        if (takeTextureTriggers(self.tabs.items())) events.append(.texture_triggered);
+        if (consumePresentSurfaceTriggers(self.tabs.items())) events.append(.present_surface_triggered);
         if (self.window.hasRequestedRedraw()) events.append(.redraw_requested);
         return events;
     }
@@ -196,7 +196,7 @@ pub const Processor = struct {
 
     fn handleTypedHostEvent(self: *Self, event: HostScheduler.HostEvent) void {
         switch (event) {
-            .texture_triggered => {
+            .present_surface_triggered => {
                 // `requestRedraw` is Howl's host dirty bit; actual present remains gated by `hasFrame`.
                 self.window.requestRedraw();
             },
@@ -266,10 +266,10 @@ pub const Processor = struct {
         return true;
     }
 
-    fn takeTextureTriggers(tabs: []*RuntimeTab) bool {
+    fn consumePresentSurfaceTriggers(tabs: []*RuntimeTab) bool {
         assert(tabs.len <= max_tabs);
         var triggered = false;
-        for (tabs) |tab| triggered = tab.takeTextureTriggered() or triggered;
+        for (tabs) |tab| triggered = tab.consumePresentSurfaceTriggers() or triggered;
         return triggered;
     }
 
@@ -541,14 +541,14 @@ pub const testing = struct {
     };
 
     pub const TriggerWaitInput = struct {
-        texture_triggered: bool,
+        present_surface_triggered: bool,
     };
 
     pub fn computeLoopWaitFromTrigger(now_ns: u64, pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_deadline_ns: ?u64, trigger: TriggerWaitInput) WaitResult {
         _ = frame_ready;
         var events = HostScheduler.HostEventQueue.init();
         if (redraw_requested) events.append(.redraw_requested);
-        if (trigger.texture_triggered) events.append(.texture_triggered);
+        if (trigger.present_surface_triggered) events.append(.present_surface_triggered);
         const wait = Processor.computeLoopWaitWithPendingEvents(pending_events, &events, frame_deadline_ns, now_ns);
         return .{ .wait_for_window = wait.for_window, .wait_ms = wait.timeout_ms };
     }
@@ -658,21 +658,21 @@ fn testTabBarConfig() TabBarConfig {
     return .{ .height = 30, .min_tabs_for_bar = 2 };
 }
 
-test "texture trigger event prevents wait" {
+test "present surface trigger event prevents wait" {
     var events = HostScheduler.HostEventQueue.init();
-    events.append(.texture_triggered);
+    events.append(.present_surface_triggered);
 
     const wait = Processor.computeLoopWaitWithPendingEvents(false, &events, null, 1);
 
     try std.testing.expect(!wait.for_window);
 }
 
-test "texture trigger listener requests redraw consequence" {
+test "present surface trigger listener requests redraw" {
     var app_window = testWindow(false, false);
     var processor: Processor = undefined;
     processor.window = &app_window;
 
-    Processor.handleTypedHostEvent(&processor, .texture_triggered);
+    Processor.handleTypedHostEvent(&processor, .present_surface_triggered);
 
     try std.testing.expect(app_window.hasRequestedRedraw());
     try std.testing.expect(!app_window.hasFrame());

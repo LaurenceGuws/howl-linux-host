@@ -14,20 +14,20 @@ pub const renderSurfaceSpritePatch = frame_commands.renderSurfaceSpritePatch;
 pub const renderSurfaceGlyphs = frame_commands.renderSurfaceGlyphs;
 pub const renderSurfaceGlyphPatch = frame_commands.renderSurfaceGlyphPatch;
 
-pub const PresentTrigger = struct {
+pub const PresentSurfaceTrigger = struct {
     triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
-pub fn initPresentTrigger(trigger: *PresentTrigger) void {
+pub fn initPresentSurfaceTrigger(trigger: *PresentSurfaceTrigger) void {
     trigger.triggered.store(false, .release);
 }
 
-pub fn triggerPresent(trigger: *PresentTrigger) bool {
+pub fn triggerPresentSurface(trigger: *PresentSurfaceTrigger) bool {
     const was_triggered = trigger.triggered.swap(true, .acq_rel);
     return !was_triggered;
 }
 
-pub fn takeTriggered(trigger: *PresentTrigger) bool {
+pub fn consumePresentSurfaceTrigger(trigger: *PresentSurfaceTrigger) bool {
     return trigger.triggered.swap(false, .acq_rel);
 }
 
@@ -37,7 +37,7 @@ pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *ren
     const had_matching_texture = host_surface.host_surface_id != 0 and
         host_surface.width == surface.render_px.width and
         host_surface.height == surface.render_px.height;
-    textures.realizeSurface(surface);
+    textures.syncPresentSurfaceResources(surface);
     ensureTexture(host_surface, surface.render_px.width, surface.render_px.height);
     const class = frame_commands.classifyRenderSurface(surface) orelse std.debug.panic("trusted render surface has unsupported shape", .{});
     frame_commands.assertRenderSurfacePatchHostSurface(class, had_matching_texture);
@@ -154,21 +154,21 @@ pub const testing = struct {
     }
 };
 
-test "texture present trigger coalesces duplicate triggers" {
-    var trigger = PresentTrigger{};
+test "texture present surface trigger coalesces duplicate triggers" {
+    var trigger = PresentSurfaceTrigger{};
 
-    try std.testing.expect(triggerPresent(&trigger));
-    try std.testing.expect(!triggerPresent(&trigger));
+    try std.testing.expect(triggerPresentSurface(&trigger));
+    try std.testing.expect(!triggerPresentSurface(&trigger));
 
-    try std.testing.expect(takeTriggered(&trigger));
-    try std.testing.expect(!takeTriggered(&trigger));
+    try std.testing.expect(consumePresentSurfaceTrigger(&trigger));
+    try std.testing.expect(!consumePresentSurfaceTrigger(&trigger));
 }
 
-test "take triggered clears trigger and allows later trigger" {
-    var trigger = PresentTrigger{};
+test "consume present surface trigger clears trigger and allows later trigger" {
+    var trigger = PresentSurfaceTrigger{};
 
-    try std.testing.expect(triggerPresent(&trigger));
-    try std.testing.expect(takeTriggered(&trigger));
-    try std.testing.expect(triggerPresent(&trigger));
-    try std.testing.expect(takeTriggered(&trigger));
+    try std.testing.expect(triggerPresentSurface(&trigger));
+    try std.testing.expect(consumePresentSurfaceTrigger(&trigger));
+    try std.testing.expect(triggerPresentSurface(&trigger));
+    try std.testing.expect(consumePresentSurfaceTrigger(&trigger));
 }

@@ -221,7 +221,7 @@ fn uploadTabTextSurface(state: anytype, fb_w: c_int, bar_h: c_int, frame: Layout
     const status = render_c.howl_render_cell_surface_prepare(handle, &prepare, &upload);
     if (status != render_c.HOWL_RENDER_CALL_OK) std.debug.panic("trusted tab cell surface prepare failed: status={}", .{status});
     const surface = upload.surface_frame orelse std.debug.panic("trusted tab cell surface prepare returned no frame", .{});
-    state.tab_resources.realizeSurface(surface);
+    state.tab_resources.syncPresentSurfaceResources(surface);
     frame_commands.uploadRenderSurfaceCommands(
         &state.tab_resources,
         .{ .host_surface_id = state.tab_texture_id, .width = prepare.render_px.width, .height = prepare.render_px.height },

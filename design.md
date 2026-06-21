@@ -8,7 +8,7 @@ Shared rules: [`../AGENTS.md`](../AGENTS.md), [`../project-memory.md`](../projec
 
 `howl-linux-host` is the reference desktop host for the Howl C ABI terminal stack.
 
-It owns platform UX, SDL input, the app event loop, wake policy, tab/window orchestration, presentation cadence, backend resource realization, and process-level launch policy. It does not own PTY transport internals, VT semantics, render internals, or terminal-state truth.
+It owns platform UX, SDL input, the app event loop, wake policy, tab/window orchestration, presentation cadence, GL texture resources, present-surface triggers, and process-level launch policy. It does not own PTY transport internals, VT semantics, render internals, or terminal-state truth.
 
 ## Public Surface
 
@@ -28,7 +28,7 @@ It owns platform UX, SDL input, the app event loop, wake policy, tab/window orch
 - `src/tab_bar/slots.zig` owns bounded tab slot allocation and ordering.
 - `src/window/window.zig` owns SDL window lifecycle, clipboard calls, cursor shape, URL opening, and GL context setup.
 - `src/window/pacing.zig` owns frame-pacing state and present-permission reasons.
-- `src/window/present.zig`, `texture.zig`, `draw.zig`, and `term_texture.zig` own host-side GL presentation and texture realization.
+- `src/window/present.zig`, `texture.zig`, `draw.zig`, and `term_texture.zig` own host-side GL presentation and texture upload.
 - `src/terminal/context.zig` owns one terminal session/surface aggregate and event routing across PTY, VT, render, input, and window/display modules.
 - `src/terminal/selection.zig` owns host selection gesture adaptation over context-owned fields.
 - `src/terminal/links.zig` owns visible-link hover/open behavior over context-owned fields.

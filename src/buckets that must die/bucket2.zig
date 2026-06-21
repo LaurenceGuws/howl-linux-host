@@ -99,6 +99,7 @@ pub const Surface = struct {
     progress: pty_wait_thread.WaitThread = .{},
     live: bool,
     term_texture: render_c.HowlRenderHostSurface,
+    present_surface_trigger: term_texture.PresentSurfaceTrigger,
     render_surface_textures: term_texture.RenderResourceTextures,
     conf: *const TerminalConfig,
     input: *HostInput,
@@ -159,6 +160,7 @@ pub const Surface = struct {
         self.progress = .{};
         self.live = false;
         self.term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 };
+        term_texture.initPresentSurfaceTrigger(&self.present_surface_trigger);
         self.render_surface_textures = .{};
         self.conf = request.conf;
         self.input = request.input;
@@ -374,7 +376,8 @@ pub const Surface = struct {
         try initRenderText(&self.term.render, render_init);
         self.term.vt_state = .{};
         self.term.mutex = .{};
-        self.term.initTextureTrigger(self.event_loop);
+        term_texture.initPresentSurfaceTrigger(&self.present_surface_trigger);
+        self.term.initPresentSurfaceTrigger(&self.present_surface_trigger, self.event_loop);
         self.term.initTitle();
         self.live = true;
         try initRenderState(&self.term.vt_state);
@@ -530,6 +533,10 @@ pub const Surface = struct {
     fn uploadRenderSurface(self: *Term, surface_frame: *const render_c.HowlRenderSurfaceFrame) bool {
         if (testing_hooks.upload_render_surface) |hook| return hook(self, surface_frame);
         return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, surface_frame);
+    }
+
+    pub fn consumePresentSurfaceTrigger(self: *Term) bool {
+        return term_texture.consumePresentSurfaceTrigger(&self.present_surface_trigger);
     }
 
     fn submitStep(result: render_retained.SubmitResult) TurnStep {
@@ -1163,12 +1170,13 @@ fn testSurfaceBase() Surface {
             }),
             .vt_state = .{},
             .mutex = .{},
-            .texture_trigger = .{},
-            .texture_event_loop = null,
+            .present_surface_trigger = null,
+            .present_surface_wake_loop = null,
         },
         .progress = .{},
         .live = false,
         .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
+        .present_surface_trigger = .{},
         .render_surface_textures = .{},
         .conf = &test_terminal_conf,
         .input = undefined,

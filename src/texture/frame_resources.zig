@@ -26,11 +26,11 @@ pub const RenderResourceTextures = struct {
         for (&self.slots) |*slot| deleteSlot(slot);
     }
 
-    pub fn realizeSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurfaceFrame) void {
-        self.realizeSurfaceLocked(surface);
+    pub fn syncPresentSurfaceResources(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurfaceFrame) void {
+        self.syncPresentSurfaceResourcesLocked(surface);
     }
 
-    fn realizeSurfaceLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurfaceFrame) void {
+    fn syncPresentSurfaceResourcesLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderSurfaceFrame) void {
         self.validateSurface(surface);
         const creates = spanSlice(
             render_c.HowlRenderResourceCreate,
