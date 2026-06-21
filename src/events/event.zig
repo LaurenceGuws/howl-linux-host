@@ -13,8 +13,7 @@ const TabBar = @import("../tab_bar.zig").TabBar;
 const TabBarConfig = @import("../config/tab_bar.zig").Config;
 const TabSlots = @import("../tab_bar/tab_slots.zig").Slots;
 const RuntimeTab = @import("../tab.zig").Tab;
-const TerminalTurnStep = RuntimeTab.TurnStep;
-const FrameTimer = @import("frame_timer.zig");
+const HostScheduler = @import("scheduler.zig");
 const window = @import("window.zig");
 
 const TabIndex = TabBar.TabIndex;
@@ -31,10 +30,7 @@ pub const Processor = struct {
     input: *Input,
     event_loop: *EventLoop.EventLoop,
     term_input_admitted: bool,
-    frame_timer: FrameTimer.FrameTimer,
-    frame_deadline_ns: ?u64,
-
-    pub const FrameTimerState = FrameTimer.FrameTimer;
+    scheduler: HostScheduler.Scheduler,
 
     const Self = @This();
 
@@ -53,6 +49,7 @@ pub const Processor = struct {
         tab_count: usize,
         runtime_admitted: bool,
         runtime_wake_pending: bool,
+        terminal_work_due_now: bool,
         runtime_wait_ms: ?u32,
         render_turn_pending: bool,
 
@@ -66,33 +63,6 @@ pub const Processor = struct {
         should_redraw: bool,
         keep_running: bool,
         drive_performed: bool = false,
-    };
-
-    const LoopWaitIntent = struct {
-        pending_events: bool,
-        runtime_wake: bool,
-        runtime_admission: bool,
-        runtime_wait_ms: ?u32,
-        frame_wait_ms: ?u32,
-        frame_ready: bool,
-        visual_present_pending: bool,
-
-        fn waitForWindow(self: LoopWaitIntent) bool {
-            if (self.pending_events) return false;
-            if (self.runtime_wake) return false;
-            if (self.runtime_admission) return false;
-            if (self.frame_ready and self.visual_present_pending) return false;
-            return true;
-        }
-
-        fn waitMs(self: LoopWaitIntent) ?u32 {
-            return waitMsMerge3(self.runtime_wait_ms, self.frame_wait_ms, null);
-        }
-    };
-
-    const LoopWait = struct {
-        wait_for_window: bool,
-        wait_ms: ?u32,
     };
 
     const RenderSnapshot = struct {
@@ -110,8 +80,6 @@ pub const Processor = struct {
         turn: RuntimeTab.TurnResult,
         snapshot: RenderSnapshot,
     };
-
-    const PresentReason = enum { none, host_damage, terminal_frame, terminal_retire };
 
     const ActiveTabProblem = enum {
         exited,
@@ -176,7 +144,7 @@ pub const Processor = struct {
         if (quitRequested(self)) |action| return action;
 
         const now_ns = EventLoop.nowNs();
-        self.noteFrameDeadline(now_ns);
+        self.scheduler.noteFrameDeadline(self.window, now_ns);
         const wait_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.term_input_admitted);
         const wait = computeLoopWait(self, now_ns, wait_runtime_facts);
         const event_action = pumpWindowEvents(self, wait);
@@ -203,9 +171,9 @@ pub const Processor = struct {
             }
 
             const frame = render(self);
-            const present_reason = derivePresentReason(host_redraw, frame.turn.step);
+            const present_reason = HostScheduler.choosePresent(.{ .host = host_redraw, .terminal = terminalFrameDirty(frame.turn.step), .present = false }, terminalPresentBlocked(frame.turn.step));
             submitPresent(self, frame, present_reason);
-            if (present_reason == .host_damage or present_reason == .terminal_frame) try self.requestFrame(EventLoop.nowNs());
+            if (present_reason == .host_dirty or present_reason == .terminal_dirty) try self.scheduler.requestFrame(self.window, EventLoop.nowNs());
             if (quitRequested(self)) |action| return action;
             if (try handleActiveTabProblem(self)) |action| return action;
             return .continue_running;
@@ -214,66 +182,29 @@ pub const Processor = struct {
         }
     }
 
-    fn computeLoopWait(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWait {
+    fn computeLoopWait(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) HostScheduler.Wait {
         assert(now_ns > 0);
-        return computeLoopWaitWithPendingEvents(self.input.hasPendingEvents(), self.window.hasFrame(), self.window.hasRequestedRedraw(), self.frame_deadline_ns, now_ns, runtime_facts);
+        return chooseWaitFromFacts(self.input.hasPendingEvents(), self.window.hasRequestedRedraw(), self.scheduler.frame(self.window, now_ns), runtime_facts);
     }
 
-    fn loopWaitIntent(self: *Self, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWaitIntent {
-        return .{
-            .pending_events = self.input.hasPendingEvents(),
-            .runtime_wake = runtime_facts.runtime_wake_pending,
-            .runtime_admission = runtime_facts.runtime_admitted,
-            .runtime_wait_ms = runtime_facts.runtime_wait_ms,
-            .frame_wait_ms = frameDeadlineWaitMs(now_ns, self.frame_deadline_ns),
-            .frame_ready = self.window.hasFrame(),
-            .visual_present_pending = self.window.hasRequestedRedraw() or runtime_facts.render_turn_pending,
-        };
-    }
-
-    fn computeLoopWaitWithPendingEvents(pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_deadline_ns: ?u64, now_ns: u64, runtime_facts: LoopRuntimeFacts) LoopWait {
+    fn computeLoopWaitWithPendingEvents(pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_deadline_ns: ?u64, now_ns: u64, runtime_facts: LoopRuntimeFacts) HostScheduler.Wait {
         assert(now_ns > 0);
-        const wait_intent = loopWaitIntentWithPendingEvents(pending_events, frame_ready, redraw_requested, frameDeadlineWaitMs(now_ns, frame_deadline_ns), runtime_facts);
-        return .{
-            .wait_for_window = wait_intent.waitForWindow(),
-            .wait_ms = wait_intent.waitMs(),
-        };
+        return chooseWaitFromFacts(pending_events, redraw_requested, .{ .ready = frame_ready, .wait_ms = HostScheduler.frameWaitMs(now_ns, frame_deadline_ns) }, runtime_facts);
     }
 
-    fn loopWaitIntentWithPendingEvents(pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_wait_ms: ?u32, runtime_facts: LoopRuntimeFacts) LoopWaitIntent {
-        return .{
-            .pending_events = pending_events,
-            .runtime_wake = runtime_facts.runtime_wake_pending,
-            .runtime_admission = runtime_facts.runtime_admitted,
-            .runtime_wait_ms = runtime_facts.runtime_wait_ms,
-            .frame_wait_ms = frame_wait_ms,
-            .frame_ready = frame_ready,
-            .visual_present_pending = redraw_requested or runtime_facts.render_turn_pending,
-        };
+    fn chooseWaitFromFacts(pending_events: bool, redraw_requested: bool, frame: HostScheduler.Frame, facts: LoopRuntimeFacts) HostScheduler.Wait {
+        return HostScheduler.chooseWait(
+            pending_events,
+            .{ .terminal = facts.runtime_wake_pending },
+            .{ .host = redraw_requested, .terminal = facts.render_turn_pending, .present = false },
+            frame,
+            .{ .terminal_wait_ms = terminalWaitMs(facts), .frame_wait_ms = frame.wait_ms },
+        );
     }
 
-    fn noteFrameDeadline(self: *Self, now_ns: u64) void {
-        assert(now_ns > 0);
-        if (self.window.hasFrame()) return;
-        const deadline_ns = self.frame_deadline_ns orelse return;
-        if (now_ns < deadline_ns) return;
-        self.window.markFrameReady();
-        self.frame_deadline_ns = null;
-    }
-
-    fn requestFrame(self: *Self, now_ns: u64) !void {
-        assert(now_ns > 0);
-        self.window.markFrameUsed();
-        const timeout_ns = self.frame_timer.computeTimeoutNs(now_ns, try self.window.currentRefreshIntervalNs());
-        self.frame_deadline_ns = now_ns + timeout_ns;
-    }
-
-    fn frameDeadlineWaitMs(now_ns: u64, deadline_ns: ?u64) ?u32 {
-        assert(now_ns > 0);
-        const deadline = deadline_ns orelse return null;
-        if (now_ns >= deadline) return 0;
-        const remaining_ns = deadline - now_ns;
-        return @intCast(@max(@as(u64, 1), std.math.divCeil(u64, remaining_ns, std.time.ns_per_ms) catch 1));
+    fn terminalWaitMs(facts: LoopRuntimeFacts) ?u32 {
+        if (facts.runtime_admitted or facts.terminal_work_due_now) return 0;
+        return facts.runtime_wait_ms;
     }
 
     fn collectLoopRuntimeFacts(self: *Self, now_ns: u64, term_input_admitted: bool) LoopRuntimeFacts {
@@ -285,6 +216,7 @@ pub const Processor = struct {
             .tab_count = tabs.len,
             .runtime_admitted = false,
             .runtime_wake_pending = false,
+            .terminal_work_due_now = false,
             .runtime_wait_ms = null,
             .render_turn_pending = false,
         };
@@ -299,7 +231,8 @@ pub const Processor = struct {
     }
 
     fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, runtime: RuntimeTab.RuntimeFacts, selected: bool) void {
-        facts.runtime_wake_pending = facts.runtime_wake_pending or runtime.wake_pending or runtime.runtime_due_now;
+        facts.runtime_wake_pending = facts.runtime_wake_pending or runtime.wake_pending;
+        facts.terminal_work_due_now = facts.terminal_work_due_now or runtime.runtime_due_now;
         facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, runtime.runtime_wait_ms);
         if (selected) {
             facts.runtime_admitted = runtime.input_published;
@@ -312,8 +245,8 @@ pub const Processor = struct {
         return .quit;
     }
 
-    fn pumpWindowEvents(self: *Self, wait: LoopWait) LoopAction {
-        const signal = self.event_loop.pumpInput(self.input, wait.wait_for_window, wait.wait_ms);
+    fn pumpWindowEvents(self: *Self, wait: HostScheduler.Wait) LoopAction {
+        const signal = self.event_loop.pumpInput(self.input, wait.for_window, wait.timeout_ms);
         return switch (signal) {
             .none => .continue_running,
             .quit => .quit,
@@ -422,12 +355,6 @@ pub const Processor = struct {
         return if (tab_count == 1) .quit else .close_tab;
     }
 
-    fn waitMsMerge3(first: ?u32, second: ?u32, third: ?u32) ?u32 {
-        var wait_ms = minOptionalWaitMs(first, second);
-        wait_ms = minOptionalWaitMs(wait_ms, third);
-        return wait_ms;
-    }
-
     fn minOptionalWaitMs(current_wait_ms: ?u32, next_wait_ms: ?u32) ?u32 {
         const next = next_wait_ms orelse return current_wait_ms;
         return if (current_wait_ms) |current| @min(current, next) else next;
@@ -466,19 +393,11 @@ pub const Processor = struct {
         };
     }
 
-    fn derivePresentReason(host_redraw: bool, step: RuntimeTab.TurnStep) PresentReason {
-        return switch (step) {
-            .rendered => .terminal_frame,
-            .blocked_present => .terminal_retire,
-            .surface_idle, .idle_prepare, .idle_submit, .failed => if (host_redraw) .host_damage else .none,
-        };
-    }
-
-    fn submitPresent(self: *Self, frame: RenderFrame, reason: PresentReason) void {
+    fn submitPresent(self: *Self, frame: RenderFrame, reason: HostScheduler.Present) void {
         switch (reason) {
             .none => {},
-            .host_damage => _ = self.texture_frame.submitPresentSync(presentFrame(&frame)),
-            .terminal_frame => {
+            .host_dirty => _ = self.texture_frame.submitPresentSync(presentFrame(&frame)),
+            .terminal_dirty => {
                 assert(frame.turn.step == .rendered);
                 const token = self.texture_frame.submitPresentSync(presentFrame(&frame));
                 frame.tab.notePresentSubmitted(frame.turn, token);
@@ -488,6 +407,14 @@ pub const Processor = struct {
                 assert(frame.turn.step == .blocked_present);
             },
         }
+    }
+
+    fn terminalFrameDirty(step: RuntimeTab.TurnStep) bool {
+        return step == .rendered;
+    }
+
+    fn terminalPresentBlocked(step: RuntimeTab.TurnStep) bool {
+        return step == .blocked_present;
     }
 
     fn presentFrame(frame: *const RenderFrame) Layout.Frame {
@@ -663,6 +590,13 @@ pub const Processor = struct {
 };
 
 pub const testing = struct {
+    pub const PresentReason = enum { none, host_damage, terminal_frame, terminal_retire };
+
+    pub const WaitResult = struct {
+        wait_for_window: bool,
+        wait_ms: ?u32,
+    };
+
     pub const RuntimeFactsInput = struct {
         runtime_admitted: bool,
         runtime_wake_pending: bool,
@@ -670,20 +604,27 @@ pub const testing = struct {
         render_turn_pending: bool,
     };
 
-    pub fn computeLoopWaitFromFacts(now_ns: u64, pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_deadline_ns: ?u64, runtime: RuntimeFactsInput) Processor.LoopWait {
+    pub fn computeLoopWaitFromFacts(now_ns: u64, pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_deadline_ns: ?u64, runtime: RuntimeFactsInput) WaitResult {
         const runtime_facts = Processor.LoopRuntimeFacts{
             .tabs = undefined,
             .tab_count = 0,
             .runtime_admitted = runtime.runtime_admitted,
             .runtime_wake_pending = runtime.runtime_wake_pending,
+            .terminal_work_due_now = false,
             .runtime_wait_ms = runtime.runtime_wait_ms,
             .render_turn_pending = runtime.render_turn_pending,
         };
-        return Processor.computeLoopWaitWithPendingEvents(pending_events, frame_ready, redraw_requested, frame_deadline_ns, now_ns, runtime_facts);
+        const wait = Processor.computeLoopWaitWithPendingEvents(pending_events, frame_ready, redraw_requested, frame_deadline_ns, now_ns, runtime_facts);
+        return .{ .wait_for_window = wait.for_window, .wait_ms = wait.timeout_ms };
     }
 
-    pub fn derivePresentReasonFromFacts(host_redraw_requested: bool, host_visual_changed: bool, step: TerminalTurnStep) Processor.PresentReason {
-        return Processor.derivePresentReason(host_redraw_requested or host_visual_changed, step);
+    pub fn derivePresentReasonFromFacts(host_redraw_requested: bool, host_visual_changed: bool, step: RuntimeTab.TurnStep) PresentReason {
+        return switch (HostScheduler.choosePresent(.{ .host = host_redraw_requested or host_visual_changed, .terminal = Processor.terminalFrameDirty(step), .present = false }, Processor.terminalPresentBlocked(step))) {
+            .none => .none,
+            .host_dirty => .host_damage,
+            .terminal_dirty => .terminal_frame,
+            .terminal_retire => .terminal_retire,
+        };
     }
 };
 
@@ -799,6 +740,7 @@ fn testLoopRuntimeFacts(tab_count: usize, runtime_admitted: bool, runtime_wake_p
         .tab_count = tab_count,
         .runtime_admitted = runtime_admitted,
         .runtime_wake_pending = runtime_wake_pending,
+        .terminal_work_due_now = false,
         .runtime_wait_ms = runtime_wait_ms,
         .render_turn_pending = render_turn_pending,
     };
@@ -813,12 +755,22 @@ test "wake facts do not grant runtime admission" {
     try std.testing.expect(!facts.runtime_admitted);
 }
 
+test "due terminal work does not become wake" {
+    var facts = testLoopRuntimeFacts(0, false, false, null, false);
+
+    Processor.noteLoopRuntimeFacts(&facts, testRuntimeFacts(false, true, false, null, false), true);
+
+    try std.testing.expect(!facts.runtime_wake_pending);
+    try std.testing.expect(facts.terminal_work_due_now);
+}
+
 test "active runtime admission follows explicit surface facts" {
     var facts = Processor.LoopRuntimeFacts{
         .tabs = undefined,
         .tab_count = 0,
         .runtime_admitted = false,
         .runtime_wake_pending = false,
+        .terminal_work_due_now = false,
         .runtime_wait_ms = null,
         .render_turn_pending = false,
     };
@@ -826,62 +778,6 @@ test "active runtime admission follows explicit surface facts" {
     Processor.noteLoopRuntimeFacts(&facts, testRuntimeFacts(false, false, true, null, false), true);
 
     try std.testing.expect(facts.runtime_admitted);
-}
-
-test "pending events prevent waiting" {
-    const wait = Processor.LoopWaitIntent{
-        .pending_events = true,
-        .runtime_wake = false,
-        .runtime_admission = false,
-        .runtime_wait_ms = null,
-        .frame_wait_ms = 20,
-        .frame_ready = false,
-        .visual_present_pending = true,
-    };
-
-    try std.testing.expect(!wait.waitForWindow());
-}
-
-test "runtime wake prevents waiting without granting frame" {
-    const wait = Processor.LoopWaitIntent{
-        .pending_events = false,
-        .runtime_wake = true,
-        .runtime_admission = false,
-        .runtime_wait_ms = null,
-        .frame_wait_ms = 20,
-        .frame_ready = false,
-        .visual_present_pending = false,
-    };
-
-    try std.testing.expect(!wait.waitForWindow());
-}
-
-test "frame wait participates through frame deadline" {
-    const wait = Processor.LoopWaitIntent{
-        .pending_events = false,
-        .runtime_wake = false,
-        .runtime_admission = false,
-        .runtime_wait_ms = null,
-        .frame_wait_ms = 33,
-        .frame_ready = false,
-        .visual_present_pending = true,
-    };
-
-    try std.testing.expectEqual(@as(?u32, 33), wait.waitMs());
-}
-
-test "runtime wait carries active-surface cursor cadence deadline" {
-    const wait = Processor.LoopWaitIntent{
-        .pending_events = false,
-        .runtime_wake = false,
-        .runtime_admission = false,
-        .runtime_wait_ms = 7,
-        .frame_wait_ms = 33,
-        .frame_ready = false,
-        .visual_present_pending = true,
-    };
-
-    try std.testing.expectEqual(@as(?u32, 7), wait.waitMs());
 }
 
 test "terminal input admission clears only after drove" {
@@ -906,6 +802,7 @@ test "explicit wake admission does not require continuation" {
         .tab_count = 0,
         .runtime_admitted = false,
         .runtime_wake_pending = false,
+        .terminal_work_due_now = false,
         .runtime_wait_ms = null,
         .render_turn_pending = false,
     };
@@ -921,6 +818,7 @@ test "active surface wait participates through explicit surface facts" {
         .tab_count = 0,
         .runtime_admitted = false,
         .runtime_wake_pending = false,
+        .terminal_work_due_now = false,
         .runtime_wait_ms = null,
         .render_turn_pending = false,
     };
@@ -928,67 +826,4 @@ test "active surface wait participates through explicit surface facts" {
     Processor.noteLoopRuntimeFacts(&facts, testRuntimeFacts(false, false, false, 17, false), true);
 
     try std.testing.expectEqual(@as(?u32, 17), facts.runtime_wait_ms);
-}
-
-test "blocked render turn waits until frame deadline" {
-    const first_runtime = testing.RuntimeFactsInput{
-        .runtime_admitted = false,
-        .runtime_wake_pending = true,
-        .runtime_wait_ms = null,
-        .render_turn_pending = true,
-    };
-    const first_wait = testing.computeLoopWaitFromFacts(1_000, false, true, false, null, first_runtime);
-    try std.testing.expect(!first_wait.wait_for_window);
-    try std.testing.expectEqual(@as(?u32, null), first_wait.wait_ms);
-
-    const first_reason = testing.derivePresentReasonFromFacts(false, false, .rendered);
-    try std.testing.expectEqual(Processor.PresentReason.terminal_frame, first_reason);
-
-    const followup_runtime = testing.RuntimeFactsInput{
-        .runtime_admitted = false,
-        .runtime_wake_pending = false,
-        .runtime_wait_ms = null,
-        .render_turn_pending = true,
-    };
-    const followup_wait = testing.computeLoopWaitFromFacts(1_000, false, false, false, 17_000_000, followup_runtime);
-    try std.testing.expect(followup_wait.wait_for_window);
-    try std.testing.expectEqual(@as(?u32, 17), followup_wait.wait_ms);
-
-    const resumed_wait = testing.computeLoopWaitFromFacts(17_000_000, false, true, false, null, followup_runtime);
-    try std.testing.expect(!resumed_wait.wait_for_window);
-    try std.testing.expectEqual(@as(?u32, null), resumed_wait.wait_ms);
-}
-
-test "blocked frame still drives runtime progress for pending events" {
-    const RuntimeDriver = struct {
-        fn run(now_ns: u64, drive_runtime_facts: Processor.LoopRuntimeFacts) Processor.TerminalProgress {
-            _ = now_ns;
-            return .{ .should_redraw = drive_runtime_facts.render_turn_pending, .keep_running = false, .drive_performed = true };
-        }
-    };
-
-    const blocked = RuntimeDriver.run(2_000, .{
-        .tabs = undefined,
-        .tab_count = 0,
-        .runtime_admitted = false,
-        .runtime_wake_pending = true,
-        .runtime_wait_ms = null,
-        .render_turn_pending = true,
-    });
-    try std.testing.expect(blocked.drive_performed);
-    try std.testing.expect(blocked.should_redraw);
-
-    const resumed = RuntimeDriver.run(17_000_000, .{
-        .tabs = undefined,
-        .tab_count = 0,
-        .runtime_admitted = false,
-        .runtime_wake_pending = true,
-        .runtime_wait_ms = null,
-        .render_turn_pending = true,
-    });
-    try std.testing.expect(resumed.drive_performed);
-}
-
-test "latched host redraw remains a present reason after event pump" {
-    try std.testing.expectEqual(Processor.PresentReason.host_damage, Processor.derivePresentReason(true, .surface_idle));
 }

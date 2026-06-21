@@ -14,6 +14,7 @@ pub const Window = Events.window;
 
 test {
     _ = EventLoop;
+    _ = Events.scheduler;
     _ = PtyWaitThread;
     _ = @import("config.zig");
     _ = @import("cursor.zig");

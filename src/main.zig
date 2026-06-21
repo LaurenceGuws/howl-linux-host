@@ -105,8 +105,7 @@ noinline fn start(io: std.Io, options: Args) !void {
         .input = input,
         .event_loop = event_loop,
         .term_input_admitted = false,
-        .frame_timer = Processor.FrameTimerState.init(),
-        .frame_deadline_ns = null,
+        .scheduler = Events.scheduler.Scheduler.init(),
     };
     try processor.openTab();
     processor.configureInputPolicies();
