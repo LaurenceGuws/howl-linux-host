@@ -403,9 +403,9 @@ pub const Tab = struct {
     pub fn sessionOutcome(self: *const Tab) pty_session.SessionOutcome {
         self.assertInvariants();
         for (self.initializedPanesConst()) |*runtime_pane| {
-            if (runtime_pane.sessionOutcome() == .runtime_failed) return .runtime_failed;
+            if (pty_session.outcome(&runtime_pane.term) == .runtime_failed) return .runtime_failed;
         }
-        return switch (self.activePaneConst().sessionOutcome()) {
+        return switch (pty_session.outcome(&self.activePaneConst().term)) {
             .active => .active,
             .exited => .exited,
             .runtime_failed => .runtime_failed,
@@ -891,6 +891,30 @@ test "runtime pane info focus movement changes only focused flag" {
     try std.testing.expect(!after[1].is_focused);
 }
 
+test "runtime tab session outcome reports inactive runtime failure" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+    try installSessionForTest(&tab.panes[0], .failed, .stopped);
+    defer deinitSessionForTest(&tab.panes[0]);
+    try installSessionForTest(&tab.panes[1], .ready, .active);
+    defer deinitSessionForTest(&tab.panes[1]);
+
+    try std.testing.expectEqual(pty_session.SessionOutcome.runtime_failed, tab.sessionOutcome());
+}
+
+test "runtime tab session outcome follows active pane without runtime failure" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+    try installSessionForTest(&tab.panes[0], .stopped, .stopped);
+    defer deinitSessionForTest(&tab.panes[0]);
+    try installSessionForTest(&tab.panes[1], .ready, .active);
+    defer deinitSessionForTest(&tab.panes[1]);
+
+    try std.testing.expectEqual(pty_session.SessionOutcome.active, tab.sessionOutcome());
+    pty_session.stop(&tab.panes[1].term);
+    try std.testing.expectEqual(pty_session.SessionOutcome.exited, tab.sessionOutcome());
+}
+
 test "runtime tab input admission reaches only focused visible pane" {
     terminal_bucket.testing.installHooks(.{
         .wake_pending = struct {
@@ -1051,6 +1075,26 @@ fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u
     pane.window_focused = true;
     pane.widget_focused = true;
     pane.font_size_px = 16;
+}
+
+fn installSessionForTest(pane: *TerminalSurface, lifecycle: pty_session.LifecycleState, status: pty_session.SessionStatus) !void {
+    pane.term.pty = .{ .launch = .{ .shell = test_terminal_conf.shell }, .lifecycle = lifecycle };
+    pane.term.session = try pty_session.initHandle(pane.term.pty.launch, 80, 24);
+    errdefer {
+        pty_session.deinitHandle(pane.term.session);
+        pane.term.session = null;
+    }
+    switch (status) {
+        .idle => {},
+        .active => try pty_session.start(&pane.term),
+        .stopped => pty_session.stop(&pane.term),
+    }
+    pane.term.pty.lifecycle = lifecycle;
+}
+
+fn deinitSessionForTest(pane: *TerminalSurface) void {
+    pty_session.deinitHandle(pane.term.session);
+    pane.term.session = null;
 }
 
 fn installResizeRealizationForTest(tab: *Tab) void {

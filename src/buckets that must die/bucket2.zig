@@ -278,10 +278,6 @@ pub const Surface = struct {
         return pty_session.snapshot(&self.term);
     }
 
-    pub fn sessionOutcome(self: *const Term) pty_session.SessionOutcome {
-        return pty_session.outcome(&self.term);
-    }
-
     pub fn titleSlice(self: *Term) []const u8 {
         if (vt_title.generation(&self.term.vt_state.title) != self.title_generation_seen) {
             self.refreshTitle();
