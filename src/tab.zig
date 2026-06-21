@@ -13,6 +13,7 @@ const pty_session = @import("pty/session.zig");
 const pty_pump = @import("pty/pump.zig");
 const render_retained = @import("render/surface_retained.zig");
 const terminal_scrollbar = @import("scroll_bar.zig");
+const term_input = @import("vt/input.zig");
 const HowlTerm = @import("term.zig").Term;
 
 const TerminalConfig = Config.Terminal;
@@ -362,11 +363,13 @@ pub const Tab = struct {
     }
 
     pub fn wantsLinkHover(self: *const Tab) bool {
-        return self.activePaneConst().wantsLinkHover();
+        return self.activePaneConst().conf.link_hover != .off;
     }
 
     pub fn wantsTerminalHoverReporting(self: *Tab) bool {
-        return self.activePane().wantsTerminalHoverReporting();
+        const pane_value = self.activePane();
+        if (!pane_value.live) return false;
+        return term_input.wouldReportUnpressedMouseMotion(&pane_value.term);
     }
 
     pub fn sessionOutcome(self: *const Tab) pty_session.SessionOutcome {

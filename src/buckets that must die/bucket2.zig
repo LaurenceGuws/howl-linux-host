@@ -271,16 +271,6 @@ pub const Surface = struct {
         _ = self.resetCursorBlinkActivity(EventLoop.nowNs());
     }
 
-    /// Report whether this term needs unpressed mouse motion for link hover.
-    pub fn wantsLinkHover(self: *const Term) bool {
-        return self.conf.link_hover != .off;
-    }
-
-    pub fn wantsTerminalHoverReporting(self: *Term) bool {
-        if (!self.live) return false;
-        return term_input.wouldReportUnpressedMouseMotion(&self.term);
-    }
-
     pub fn lifecycleState(self: *const Term) LifecycleState {
         return pty_session.lifecycleState(&self.term);
     }
