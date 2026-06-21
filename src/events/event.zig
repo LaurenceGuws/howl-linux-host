@@ -181,12 +181,15 @@ pub const Processor = struct {
         const wait = computeLoopWait(self, now_ns, wait_runtime_facts);
         const event_action = pumpWindowEvents(self, wait);
         if (event_action == .quit) return .quit;
+        // Alacritty-shaped handoff: the PTY thread already mutated terminal state before waking us.
+        // Consume that wake after event pump and before host-owned mutations; wake is not runtime admission.
+        // Runtime drive facts are collected again after host mutations below.
+        acknowledgeTerminalWakes(self.tabs.items());
 
         const host_visual_changed_opt = try applyHostOwnedMutations(self);
         if (host_visual_changed_opt) |host_visual_changed| {
             drainPresentComplete(self);
             const drive_runtime_facts = collectLoopRuntimeFacts(self, now_ns, self.term_input_admitted);
-            acknowledgeTerminalWakes(self.tabs.items());
             const terminal_progress = driveRuntimeProgress(self, now_ns, drive_runtime_facts);
             self.configureInputPolicies();
             if (try handleActiveTabProblem(self)) |action| return action;
@@ -375,6 +378,7 @@ pub const Processor = struct {
     }
 
     fn driveTerminalProgress(tabs: []*RuntimeTab, active_tab_idx: TabIndex, runtime_facts: LoopRuntimeFacts, now_ns: u64) TerminalProgress {
+        assert(runtime_facts.tab_count == tabs.len);
         var should_redraw = false;
         var keep_running = false;
         var drive_performed = false;
@@ -787,6 +791,26 @@ fn testRuntimeFacts(wake_pending: bool, runtime_due_now: bool, input_published: 
         .runtime_wait_ms = runtime_wait_ms,
         .render_turn_pending = render_turn_pending,
     };
+}
+
+fn testLoopRuntimeFacts(tab_count: usize, runtime_admitted: bool, runtime_wake_pending: bool, runtime_wait_ms: ?u32, render_turn_pending: bool) Processor.LoopRuntimeFacts {
+    return .{
+        .tabs = undefined,
+        .tab_count = tab_count,
+        .runtime_admitted = runtime_admitted,
+        .runtime_wake_pending = runtime_wake_pending,
+        .runtime_wait_ms = runtime_wait_ms,
+        .render_turn_pending = render_turn_pending,
+    };
+}
+
+test "wake facts do not grant runtime admission" {
+    var facts = testLoopRuntimeFacts(0, false, false, null, false);
+
+    Processor.noteLoopRuntimeFacts(&facts, testRuntimeFacts(true, false, false, null, false), true);
+
+    try std.testing.expect(facts.runtime_wake_pending);
+    try std.testing.expect(!facts.runtime_admitted);
 }
 
 test "active runtime admission follows explicit surface facts" {
