@@ -16,7 +16,6 @@ const vt_title = @import("../vt/title.zig");
 const HowlTerm = @import("../term.zig").Term;
 const VtState = @import("../term.zig").VtState;
 const vt_retained = @import("../vt/surface_retained.zig");
-const LifecycleState = pty_session.LifecycleState;
 const Config = @import("../config.zig");
 const TerminalConfig = Config.Terminal;
 const CursorStyle = @import("../config/term.zig").CursorStyle;
@@ -264,18 +263,6 @@ pub const Surface = struct {
 
     pub fn readSurfacePixels(self: *Term) render_c.HowlRenderPixelSize {
         return surface_layout.readSurfacePixels(&self.surface_layout);
-    }
-
-    pub fn lifecycleState(self: *const Term) LifecycleState {
-        return pty_session.lifecycleState(&self.term);
-    }
-
-    pub fn isAlive(self: *const Term) bool {
-        return pty_session.isAlive(&self.term);
-    }
-
-    pub fn ptySnapshot(self: *const Term) pty_session.Snapshot {
-        return pty_session.snapshot(&self.term);
     }
 
     pub fn titleSlice(self: *Term) []const u8 {
