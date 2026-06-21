@@ -104,7 +104,6 @@ noinline fn start(io: std.Io, options: Args) !void {
         .active_tab_idx = active_tab_idx,
         .input = input,
         .event_loop = event_loop,
-        .term_input_admitted = false,
         .scheduler = Events.scheduler.Scheduler.init(),
     };
     try processor.openTab();

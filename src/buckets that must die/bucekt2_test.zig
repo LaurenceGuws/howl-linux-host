@@ -6,12 +6,10 @@ const event_mod = @import("../events/event.zig");
 const host_layout = @import("../layout.zig");
 const surface_mod = @import("bucket2.zig");
 const cursor_blink = @import("../cursor/blink.zig");
-const pty_pump = @import("../pty/pump.zig");
 const render_retained = @import("../render/surface_retained.zig");
 const surface_layout = @import("../render/surface_layout.zig");
 const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
 const terminal_scrollbar = @import("../scroll_bar.zig");
-const Term = @import("../term.zig").Term;
 const term_config = @import("../config/term.zig");
 
 const Surface = surface_mod.Surface;
@@ -55,17 +53,6 @@ const SubmitUploadMode = enum {
     mutate_handle,
 };
 
-var drive_hook_state: struct {
-    wake_pending: bool = false,
-    runtime_due_now: bool = false,
-    wants_render_turn: bool = false,
-    alive: bool = true,
-    drive_calls: u8 = 0,
-    clipboard_calls: u8 = 0,
-    ack_calls: u8 = 0,
-    outcomes: [4]pty_pump.Outcome = undefined,
-} = .{};
-
 var submit_hook_state: struct {
     mode: SubmitUploadMode = .success,
     saw_unlocked: bool = false,
@@ -90,6 +77,7 @@ fn testSurfaceBase() Surface {
             .render = render_retained.State.init(testSurfaceLayout(0, 0, 0, 0, 1, 1, 1, 1)),
             .vt_state = .{},
             .mutex = .{},
+            .texture_trigger = .{},
         },
         .progress = .{},
         .live = false,
@@ -127,49 +115,6 @@ fn testSurfaceLayout(render_width: u16, render_height: u16, grid_width: u16, gri
         .rows = rows,
         .cell_px = .{ .width = cell_width, .height = cell_height },
     };
-}
-
-fn driveWakePendingHook(_: *Surface) bool {
-    return drive_hook_state.wake_pending;
-}
-
-fn driveRuntimeDueHook(_: *Surface, _: u64) bool {
-    return drive_hook_state.runtime_due_now;
-}
-
-fn driveIsAliveHook(_: *Surface) bool {
-    return drive_hook_state.alive;
-}
-
-fn driveWantsRenderTurnHook(_: *Surface) bool {
-    return drive_hook_state.wants_render_turn;
-}
-
-fn driveOnceHook(_: *Term, _: u64) pty_pump.Outcome {
-    const outcome = drive_hook_state.outcomes[drive_hook_state.drive_calls];
-    drive_hook_state.drive_calls += 1;
-    return outcome;
-}
-
-fn driveClipboardHook(_: *Surface) void {
-    drive_hook_state.clipboard_calls += 1;
-}
-
-fn driveAckHook(_: *Surface) void {
-    drive_hook_state.ack_calls += 1;
-    drive_hook_state.wake_pending = false;
-}
-
-fn installDriveHooks() void {
-    surface_testing.installHooks(.{
-        .wake_pending = driveWakePendingHook,
-        .runtime_obligation_due_now = driveRuntimeDueHook,
-        .wants_render_turn = driveWantsRenderTurnHook,
-        .is_alive = driveIsAliveHook,
-        .drive_once = driveOnceHook,
-        .apply_pending_clipboard_writes = driveClipboardHook,
-        .ack_wake = driveAckHook,
-    });
 }
 
 fn uploadRenderSurfaceHook(surface: *Surface, surface_frame: *const render_c.HowlRenderSurfaceFrame) bool {
@@ -478,46 +423,6 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(context.cursor_blink.visible);
 }
 
-test "pty wake observes retained render turn prepared by pty thread" {
-    drive_hook_state = .{};
-    installDriveHooks();
-    defer surface_testing.resetHooks();
-    var surface = testSurfaceBase();
-    surface.widget_focused = false;
-
-    drive_hook_state.wants_render_turn = true;
-    surface.term.render.notePrepareNeeded();
-    drive_hook_state.wake_pending = true;
-    const facts = surface.runtimeFacts(1, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(1, facts);
-
-    try std.testing.expect(!result.drove);
-    try std.testing.expect(!result.outcome.should_redraw);
-    try std.testing.expect(facts.render_turn_pending);
-    try std.testing.expectEqual(render_retained.RetainedState.prepare_needed, surface.term.render.retainedState());
-}
-
-test "pty wake does not reset cursor blink cadence" {
-    drive_hook_state = .{};
-    installDriveHooks();
-    defer surface_testing.resetHooks();
-    var surface = testSurfaceBase();
-    surface.widget_focused = false;
-    surface.cursor_render_info.blink = true;
-    surface.cursor_blink.cursor_opacity = 0;
-    surface.cursor_blink.visible = false;
-    surface.cursor_blink.deadline_ns = 10_000;
-
-    drive_hook_state.wake_pending = true;
-    const facts = surface.runtimeFacts(1, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(1, facts);
-
-    try std.testing.expect(!result.drove);
-    try std.testing.expect(!result.outcome.should_redraw);
-    try std.testing.expectEqual(@as(u8, 0), surface.cursor_blink.cursor_opacity);
-    try std.testing.expect(!surface.cursor_blink.visible);
-}
-
 test "present pending blocks submit path until host present ack" {
     var state = try makeSubmitSurface();
     defer state.term.render.deinit();
@@ -534,32 +439,6 @@ test "submit path runs once no host present is in flight" {
 
     const admission = surface.term.render.admitRenderTurn(false);
     try std.testing.expectEqual(render_retained.RetainedState.submit_ready, admission.state);
-}
-
-test "cursor cadence without runtime admission keeps render wake pending" {
-    drive_hook_state = .{};
-    installDriveHooks();
-    defer surface_testing.resetHooks();
-    var surface = testSurfaceBase();
-    surface.cursor_render_info.is_visible = true;
-    surface.cursor_render_info.blink = true;
-    surface.cursor_render_info.has_shape = true;
-    surface.cursor_render_info.shape = 0;
-    surface.cursor_blink.zero_time_ns = 0;
-    surface.cursor_blink.deadline_ns = cursor_blink.default_interval_ns;
-
-    const result = surface.driveProgressWithFacts(cursor_blink.default_interval_ns, .{
-        .wake_pending = false,
-        .runtime_due_now = false,
-        .input_published = false,
-        .runtime_wait_ms = null,
-        .render_turn_pending = false,
-    });
-
-    try std.testing.expect(!result.drove);
-    try std.testing.expect(result.outcome.keep);
-    try std.testing.expect(result.outcome.should_redraw);
-    try std.testing.expectEqual(render_retained.RetainedState.prepare_needed, surface.term.render.retainedState());
 }
 
 test "idle render action constructor reports decision facts" {
@@ -851,7 +730,7 @@ test "prepared handle mutation after upload returns stale and restores prepare-n
 }
 
 test "resize success path submits full surface and acks matching present token" {
-    var ack_calls: u8 = 0;
+    var completion_count: u8 = 0;
     var ack_snapshot_seq: u64 = 0;
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
@@ -899,18 +778,18 @@ test "resize success path submits full surface and acks matching present token" 
     try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.admitRenderTurn(false).state);
 
     if (surface.term.render.completePresent(token + 1)) |snapshot_seq| {
-        ack_calls += 1;
+        completion_count += 1;
         ack_snapshot_seq = snapshot_seq;
     }
-    try std.testing.expectEqual(@as(u8, 0), ack_calls);
+    try std.testing.expectEqual(@as(u8, 0), completion_count);
     try std.testing.expectEqual(@as(u64, 0), ack_snapshot_seq);
     try std.testing.expect(surface.term.render.presentPending());
 
     if (surface.term.render.completePresent(token)) |snapshot_seq| {
-        ack_calls += 1;
+        completion_count += 1;
         ack_snapshot_seq = snapshot_seq;
     }
-    try std.testing.expectEqual(@as(u8, 1), ack_calls);
+    try std.testing.expectEqual(@as(u8, 1), completion_count);
     try std.testing.expectEqual(submit.snapshot_seq, ack_snapshot_seq);
     try std.testing.expect(!surface.term.render.presentPending());
 }
@@ -967,7 +846,7 @@ test "resize upload failure zeros host dimensions and retry submits same full fr
 }
 
 test "resize while present pending waits for matching ack before resized submit" {
-    var ack_calls: u8 = 0;
+    var completion_count: u8 = 0;
     var ack_snapshot_seq: u64 = 0;
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
@@ -999,19 +878,19 @@ test "resize while present pending waits for matching ack before resized submit"
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
 
     if (surface.term.render.completePresent(prior_token + 1)) |snapshot_seq| {
-        ack_calls += 1;
+        completion_count += 1;
         ack_snapshot_seq = snapshot_seq;
     }
-    try std.testing.expectEqual(@as(u8, 0), ack_calls);
+    try std.testing.expectEqual(@as(u8, 0), completion_count);
     try std.testing.expect(surface.term.render.presentPending());
     try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.admitRenderTurn(false).state);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
     if (surface.term.render.completePresent(prior_token)) |snapshot_seq| {
-        ack_calls += 1;
+        completion_count += 1;
         ack_snapshot_seq = snapshot_seq;
     }
-    try std.testing.expectEqual(@as(u8, 1), ack_calls);
+    try std.testing.expectEqual(@as(u8, 1), completion_count);
     try std.testing.expectEqual(prior_submit.snapshot_seq, ack_snapshot_seq);
     try std.testing.expect(!surface.term.render.presentPending());
 
@@ -1031,7 +910,7 @@ test "resize while present pending waits for matching ack before resized submit"
 }
 
 test "cursor visibility change while present pending submits latest snapshot after stale completion retires" {
-    var ack_calls: u8 = 0;
+    var completion_count: u8 = 0;
     var ack_snapshot_seq: u64 = 0;
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
@@ -1055,17 +934,17 @@ test "cursor visibility change while present pending submits latest snapshot aft
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 
     if (surface.term.render.completePresent(prior_token + 1)) |snapshot_seq| {
-        ack_calls += 1;
+        completion_count += 1;
         ack_snapshot_seq = snapshot_seq;
     }
-    try std.testing.expectEqual(@as(u8, 0), ack_calls);
+    try std.testing.expectEqual(@as(u8, 0), completion_count);
     try std.testing.expect(surface.term.render.presentPending());
 
     if (surface.term.render.completePresent(prior_token)) |snapshot_seq| {
-        ack_calls += 1;
+        completion_count += 1;
         ack_snapshot_seq = snapshot_seq;
     }
-    try std.testing.expectEqual(@as(u8, 1), ack_calls);
+    try std.testing.expectEqual(@as(u8, 1), completion_count);
     try std.testing.expectEqual(@as(u64, 1), ack_snapshot_seq);
     try std.testing.expect(!surface.term.render.presentPending());
     try std.testing.expectEqual(render_retained.RetainedState.submit_ready, surface.term.render.admitRenderTurn(false).state);
@@ -1108,18 +987,15 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     var presenter = FakePresenter{};
 
     try prepareSubmitSurface(&surface, 51);
-    const wake_wait = event_mod.testing.computeLoopWaitFromFacts(1_000, false, true, false, null, .{
-        .runtime_admitted = false,
-        .runtime_wake_pending = true,
-        .runtime_wait_ms = null,
-        .render_turn_pending = true,
+    const wake_wait = event_mod.testing.computeLoopWaitFromTrigger(1_000, false, true, false, null, .{
+        .texture_triggered = true,
     });
     try std.testing.expect(!wake_wait.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), wake_wait.wait_ms);
 
     const first_turn = surface.renderTurn();
     try std.testing.expectEqual(Surface.TurnStep.rendered, first_turn.step);
-    const first_reason = event_mod.testing.derivePresentReasonFromFacts(false, false, first_turn.step);
+    const first_reason = event_mod.testing.derivePresentReason(false, false, first_turn.step);
     try std.testing.expectEqual(@as(@TypeOf(first_reason), .terminal_frame), first_reason);
     const first_token = presenter.submitPresentSync(.{});
     tab.notePresentSubmitted(first_turn.present_snapshot_seq, first_token);
@@ -1130,18 +1006,15 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
     try prepareSubmitSurface(&surface, 52);
     const next_admission = surface.term.render.admitRenderTurn(false);
     try std.testing.expectEqual(render_retained.RetainedState.submit_ready, next_admission.state);
-    const resumed_wait = event_mod.testing.computeLoopWaitFromFacts(17_001_000, false, true, false, null, .{
-        .runtime_admitted = false,
-        .runtime_wake_pending = false,
-        .runtime_wait_ms = null,
-        .render_turn_pending = next_admission.needsRenderTurn(),
+    const resumed_wait = event_mod.testing.computeLoopWaitFromTrigger(17_001_000, false, true, next_admission.needsRenderTurn(), null, .{
+        .texture_triggered = false,
     });
     try std.testing.expect(!resumed_wait.wait_for_window);
     try std.testing.expectEqual(@as(?u32, null), resumed_wait.wait_ms);
 
     const second_turn = surface.renderTurn();
     try std.testing.expectEqual(Surface.TurnStep.rendered, second_turn.step);
-    const second_reason = event_mod.testing.derivePresentReasonFromFacts(false, false, second_turn.step);
+    const second_reason = event_mod.testing.derivePresentReason(false, false, second_turn.step);
     try std.testing.expectEqual(@as(@TypeOf(second_reason), .terminal_frame), second_reason);
     const second_token = presenter.submitPresentSync(.{});
     tab.notePresentSubmitted(second_turn.present_snapshot_seq, second_token);
@@ -1152,10 +1025,10 @@ test "terminal frame follows finite frame wait after pty-driven submit without f
 test "autonomous cursor-only rendered snapshot plans terminal frame through event present seam" {
     const processor_testing = event_mod.testing;
 
-    const keydown_reason = processor_testing.derivePresentReasonFromFacts(false, false, .rendered);
+    const keydown_reason = processor_testing.derivePresentReason(false, false, .rendered);
     try std.testing.expectEqual(@as(@TypeOf(keydown_reason), .terminal_frame), keydown_reason);
 
-    const autonomous_reason = processor_testing.derivePresentReasonFromFacts(false, true, .rendered);
+    const autonomous_reason = processor_testing.derivePresentReason(false, true, .rendered);
     try std.testing.expectEqual(@as(@TypeOf(autonomous_reason), .terminal_frame), autonomous_reason);
 }
 
@@ -1174,16 +1047,16 @@ test "complete present acks matching host-owned token once and clears" {
         render: FakeRender = .{},
     };
     const FakeOps = struct {
-        var ack_calls: u8 = 0;
+        var completion_count: u8 = 0;
         var last_snapshot_seq: u64 = 0;
 
         fn reset() void {
-            ack_calls = 0;
+            completion_count = 0;
             last_snapshot_seq = 0;
         }
 
         pub fn ack(_: *FakeTerm, snapshot_seq: u64) void {
-            ack_calls += 1;
+            completion_count += 1;
             last_snapshot_seq = snapshot_seq;
         }
     };
@@ -1192,18 +1065,18 @@ test "complete present acks matching host-owned token once and clears" {
     var term = FakeTerm{};
 
     if (term.render.completePresent(170)) |snapshot_seq| {
-        FakeOps.ack_calls += 1;
+        FakeOps.completion_count += 1;
         FakeOps.last_snapshot_seq = snapshot_seq;
     }
-    try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.completion_count);
     try std.testing.expectEqual(@as(u64, 17), FakeOps.last_snapshot_seq);
     try std.testing.expect(term.render.present_in_flight == null);
 
     if (term.render.completePresent(170)) |snapshot_seq| {
-        FakeOps.ack_calls += 1;
+        FakeOps.completion_count += 1;
         FakeOps.last_snapshot_seq = snapshot_seq;
     }
-    try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.completion_count);
     try std.testing.expectEqual(@as(u64, 17), FakeOps.last_snapshot_seq);
 }
 
@@ -1222,16 +1095,16 @@ test "mismatched complete present does not ack or clear" {
         render: FakeRender = .{},
     };
     const FakeOps = struct {
-        var ack_calls: u8 = 0;
+        var completion_count: u8 = 0;
         var last_snapshot_seq: u64 = 0;
 
         fn reset() void {
-            ack_calls = 0;
+            completion_count = 0;
             last_snapshot_seq = 0;
         }
 
         pub fn ack(_: *FakeTerm, snapshot_seq: u64) void {
-            ack_calls += 1;
+            completion_count += 1;
             last_snapshot_seq = snapshot_seq;
         }
     };
@@ -1240,18 +1113,18 @@ test "mismatched complete present does not ack or clear" {
     var term = FakeTerm{};
 
     if (term.render.completePresent(191)) |snapshot_seq| {
-        FakeOps.ack_calls += 1;
+        FakeOps.completion_count += 1;
         FakeOps.last_snapshot_seq = snapshot_seq;
     }
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.ack_calls);
+    try std.testing.expectEqual(@as(u8, 0), FakeOps.completion_count);
     try std.testing.expectEqual(@as(u64, 0), FakeOps.last_snapshot_seq);
     try std.testing.expect(term.render.present_in_flight != null);
 
     if (term.render.completePresent(190)) |snapshot_seq| {
-        FakeOps.ack_calls += 1;
+        FakeOps.completion_count += 1;
         FakeOps.last_snapshot_seq = snapshot_seq;
     }
-    try std.testing.expectEqual(@as(u8, 1), FakeOps.ack_calls);
+    try std.testing.expectEqual(@as(u8, 1), FakeOps.completion_count);
     try std.testing.expectEqual(@as(u64, 19), FakeOps.last_snapshot_seq);
     try std.testing.expect(term.render.present_in_flight == null);
 }

@@ -12,8 +12,6 @@ const Layout = @import("layout.zig");
 const terminal_bucket = @import("buckets that must die/bucket2.zig");
 const TerminalSurface = terminal_bucket.Surface;
 const pty_session = @import("pty/session.zig");
-const pty_pump = @import("pty/pump.zig");
-const pty_wait_thread = @import("pty/wait_thread.zig");
 const render_retained = @import("render/surface_retained.zig");
 const surface_layout = @import("render/surface_layout.zig");
 const terminal_scrollbar = @import("scroll_bar.zig");
@@ -58,8 +56,6 @@ pub const Tab = struct {
 
     pub const PresentDamage = TerminalSurface.PresentDamage;
     pub const TurnStep = TerminalSurface.TurnStep;
-    pub const DriveAdmission = TerminalSurface.DriveAdmission;
-    pub const DriveProgressResult = TerminalSurface.DriveProgressResult;
 
     pub const TabSelection = enum { selected, unselected };
 
@@ -91,16 +87,6 @@ pub const Tab = struct {
         pane_count: usize,
         step: TurnStep,
         present_damage: PresentDamage,
-    };
-
-    pub const RuntimeFacts = struct {
-        panes: [max_frame_panes]TerminalSurface.RuntimeFacts,
-        pane_count: usize,
-        wake_pending: bool,
-        runtime_due_now: bool,
-        input_published: bool,
-        runtime_wait_ms: ?u32,
-        render_turn_pending: bool,
     };
 
     pub fn activePaneId(self: *const Tab) PaneId {
@@ -225,61 +211,28 @@ pub const Tab = struct {
         return true;
     }
 
-    pub fn runtimeFacts(self: *Tab, selection: TabSelection, now_ns: u64, admission: DriveAdmission) RuntimeFacts {
+    pub fn driveCursorBlink(self: *Tab, selection: TabSelection, now_ns: u64) bool {
         self.assertInvariants();
-        var facts = RuntimeFacts{
-            .panes = undefined,
-            .pane_count = self.pane_count,
-            .wake_pending = false,
-            .runtime_due_now = false,
-            .input_published = false,
-            .runtime_wait_ms = null,
-            .render_turn_pending = false,
-        };
-
-        for (self.initializedPanes(), 0..) |*runtime_pane, i| {
-            const info = self.paneInfoOne(selection, paneIdFromIndex(i));
-            const pane_facts = switch (info.visibility) {
-                .visible => runtime_pane.runtimeFacts(now_ns, .{ .input_published = inputAdmissionPublished(paneInputAdmission(info, admission)) }),
-                .hidden => inertRuntimeFacts(),
-            };
-            facts.panes[i] = pane_facts;
-            facts.wake_pending = facts.wake_pending or pane_facts.wake_pending;
-            facts.runtime_due_now = facts.runtime_due_now or pane_facts.runtime_due_now;
-            facts.input_published = facts.input_published or pane_facts.input_published;
-            facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, pane_facts.runtime_wait_ms);
-            facts.render_turn_pending = facts.render_turn_pending or pane_facts.render_turn_pending;
-        }
-        return facts;
+        return self.driveCursorEvent(selection, now_ns, .blink);
     }
 
-    pub fn acknowledgeProgressWake(self: *Tab) bool {
+    pub fn driveCursorBlinkTimeout(self: *Tab, selection: TabSelection, now_ns: u64) bool {
         self.assertInvariants();
-        var acknowledged = false;
+        return self.driveCursorEvent(selection, now_ns, .blink_timeout);
+    }
+
+    pub fn driveCursorTrail(self: *Tab, selection: TabSelection, now_ns: u64) bool {
+        self.assertInvariants();
+        return self.driveCursorEvent(selection, now_ns, .trail);
+    }
+
+    pub fn takeTextureTriggered(self: *Tab) bool {
+        self.assertInvariants();
+        var triggered = false;
         for (self.initializedPanes()) |*runtime_pane| {
-            if (!pty_wait_thread.wakePending(runtime_pane)) continue;
-            pty_wait_thread.ackWake(runtime_pane);
-            acknowledged = true;
+            triggered = runtime_pane.term.takeTextureTriggered() or triggered;
         }
-        return acknowledged;
-    }
-
-    pub fn driveProgressWithFacts(self: *Tab, selection: TabSelection, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
-        self.assertInvariants();
-        std.debug.assert(facts.pane_count == self.pane_count);
-        var result = DriveProgressResult{ .drove = false, .outcome = .{ .keep = false, .should_redraw = false, .alive = false } };
-        for (self.initializedPanes(), 0..) |*runtime_pane, i| {
-            const info = self.paneInfoOne(selection, paneIdFromIndex(i));
-            const pane_drive = switch (info.visibility) {
-                .visible => runtime_pane.driveProgressWithFacts(now_ns, facts.panes[i]),
-                .hidden => inertDriveProgress(),
-            };
-            result.drove = result.drove or pane_drive.drove;
-            result.outcome.keep = result.outcome.keep or pane_drive.outcome.keep;
-            result.outcome.should_redraw = result.outcome.should_redraw or pane_drive.outcome.should_redraw;
-            result.outcome.alive = result.outcome.alive or pane_drive.outcome.alive;
-        }
-        return result;
+        return triggered;
     }
 
     pub fn renderTurn(self: *Tab) TurnResult {
@@ -525,27 +478,6 @@ pub const Tab = struct {
         };
     }
 
-    fn paneInputAdmission(info: PaneInfo, admission: DriveAdmission) InputAdmission {
-        if (info.visibility == .hidden) return .blocked;
-        if (!info.is_focused) return .blocked;
-        return if (admission.input_published) .admitted else .blocked;
-    }
-
-    fn inputAdmissionPublished(admission: InputAdmission) bool {
-        return switch (admission) {
-            .admitted => true,
-            .blocked => false,
-        };
-    }
-
-    fn inertRuntimeFacts() TerminalSurface.RuntimeFacts {
-        return .{ .wake_pending = false, .runtime_due_now = false, .input_published = false, .runtime_wait_ms = null, .render_turn_pending = false };
-    }
-
-    fn inertDriveProgress() DriveProgressResult {
-        return .{ .drove = false, .outcome = .{ .keep = false, .should_redraw = false, .alive = false } };
-    }
-
     fn paneTextureSize(pane_value: *const TerminalSurface) Layout.Size {
         const render_px = pane_value.term.render.surface_layout.render_px;
         const width = @as(c_int, @intCast(render_px.width));
@@ -580,9 +512,20 @@ pub const Tab = struct {
         };
     }
 
-    fn minOptionalWaitMs(current_wait_ms: ?u32, next_wait_ms: ?u32) ?u32 {
-        const next = next_wait_ms orelse return current_wait_ms;
-        return if (current_wait_ms) |current| @min(current, next) else next;
+    const CursorEvent = enum { blink, blink_timeout, trail };
+
+    fn driveCursorEvent(self: *Tab, selection: TabSelection, now_ns: u64, event: CursorEvent) bool {
+        var redraw = false;
+        for (self.initializedPanes(), 0..) |*runtime_pane, i| {
+            const info = self.paneInfoOne(selection, paneIdFromIndex(i));
+            if (info.visibility == .hidden) continue;
+            redraw = switch (event) {
+                .blink => runtime_pane.driveCursorBlink(now_ns),
+                .blink_timeout => runtime_pane.driveCursorBlinkTimeout(now_ns),
+                .trail => runtime_pane.driveCursorTrail(now_ns),
+            } or redraw;
+        }
+        return redraw;
     }
 
     fn assertInvariants(self: *const Tab) void {
@@ -896,46 +839,6 @@ test "runtime pane info focus movement changes only focused flag" {
     try std.testing.expect(!after[1].is_focused);
 }
 
-test "runtime tab acknowledge progress wake returns false when no pane wake is pending" {
-    var tab = initializedTestTab();
-    installSplitForTest(&tab, .left_right);
-
-    try std.testing.expect(!tab.acknowledgeProgressWake());
-    try expectTestWakePending(&tab, .first, false);
-    try expectTestWakePending(&tab, second_pane, false);
-}
-
-test "runtime tab acknowledge progress wake clears inactive pane wake" {
-    var tab = initializedTestTab();
-    installSplitForTest(&tab, .left_right);
-    setTestWakePending(&tab, .first, true);
-
-    try std.testing.expect(tab.acknowledgeProgressWake());
-    try expectTestWakePending(&tab, .first, false);
-    try expectTestWakePending(&tab, second_pane, false);
-}
-
-test "runtime tab acknowledge progress wake clears active pane wake" {
-    var tab = initializedTestTab();
-    installSplitForTest(&tab, .left_right);
-    setTestWakePending(&tab, second_pane, true);
-
-    try std.testing.expect(tab.acknowledgeProgressWake());
-    try expectTestWakePending(&tab, .first, false);
-    try expectTestWakePending(&tab, second_pane, false);
-}
-
-test "runtime tab acknowledge progress wake clears both pane wakes" {
-    var tab = initializedTestTab();
-    installSplitForTest(&tab, .left_right);
-    setTestWakePending(&tab, .first, true);
-    setTestWakePending(&tab, second_pane, true);
-
-    try std.testing.expect(tab.acknowledgeProgressWake());
-    try expectTestWakePending(&tab, .first, false);
-    try expectTestWakePending(&tab, second_pane, false);
-}
-
 test "runtime tab session outcome reports inactive runtime failure" {
     var tab = initializedTestTab();
     installSplitForTest(&tab, .left_right);
@@ -960,86 +863,29 @@ test "runtime tab session outcome follows active pane without runtime failure" {
     try std.testing.expectEqual(pty_session.SessionOutcome.exited, tab.sessionOutcome());
 }
 
-test "runtime tab input admission reaches only focused visible pane" {
-    terminal_bucket.testing.installHooks(.{
-        .wake_pending = struct {
-            fn hook(_: *TerminalSurface) bool {
-                return false;
-            }
-        }.hook,
-        .runtime_obligation_due_now = struct {
-            fn hook(_: *TerminalSurface, _: u64) bool {
-                return false;
-            }
-        }.hook,
-        .next_runtime_obligation_wait_ms = struct {
-            fn hook(_: *TerminalSurface, _: u64) ?u32 {
-                return null;
-            }
-        }.hook,
-        .wants_render_turn = struct {
-            fn hook(_: *TerminalSurface) bool {
-                return false;
-            }
-        }.hook,
-    });
-    defer terminal_bucket.testing.resetHooks();
+test "runtime tab consumes texture triggers from contained panes" {
     var tab = initializedTestTab();
     installSplitForTest(&tab, .left_right);
+    tab.pane(.first).term.triggerTexturePresent();
 
-    const facts = tab.runtimeFacts(.selected, 1, .{ .input_published = true });
-
-    try std.testing.expect(!facts.panes[0].input_published);
-    try std.testing.expect(facts.panes[1].input_published);
-    try std.testing.expect(facts.input_published);
+    try std.testing.expect(tab.takeTextureTriggered());
+    try std.testing.expect(!tab.takeTextureTriggered());
 }
 
-test "runtime tab visible unfocused pane contributes progress redraw" {
-    const TestState = struct {
-        var drive_calls: u8 = 0;
-    };
-    terminal_bucket.testing.installHooks(.{
-        .drive_once = struct {
-            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
-                TestState.drive_calls += 1;
-                return .{ .keep = false, .should_redraw = true, .alive = true };
-            }
-        }.hook,
-        .is_alive = struct {
-            fn hook(_: *TerminalSurface) bool {
-                return true;
-            }
-        }.hook,
-        .apply_pending_clipboard_writes = struct {
-            fn hook(_: *TerminalSurface) void {}
-        }.hook,
-        .ack_wake = struct {
-            fn hook(_: *TerminalSurface) void {}
-        }.hook,
-    });
-    defer terminal_bucket.testing.resetHooks();
+test "cursor trail event mutates terminal cursor owner and reports redraw" {
     var tab = initializedTestTab();
-    installSplitForTest(&tab, .left_right);
-    std.debug.assert(tab.activePaneId() == second_pane);
+    const pane_value = tab.pane(.first);
+    pane_value.cursor_render_info = .{ .row = 1, .col = 1, .is_visible = true, .blink = false, .has_shape = true, .shape = 0 };
+    pane_value.cursor_trail.needs_render = true;
+    pane_value.cursor_trail.cursor_edge_x = .{ 2, 3 };
+    pane_value.cursor_trail.cursor_edge_y = .{ -1, -2 };
+    pane_value.cursor_trail.corner_x = .{ 0, 0, 0, 0 };
+    pane_value.cursor_trail.corner_y = .{ 0, 0, 0, 0 };
 
-    const facts = Tab.RuntimeFacts{
-        .panes = .{
-            .{ .wake_pending = false, .runtime_due_now = true, .input_published = false, .runtime_wait_ms = null, .render_turn_pending = false },
-            .{ .wake_pending = false, .runtime_due_now = false, .input_published = false, .runtime_wait_ms = null, .render_turn_pending = false },
-        },
-        .pane_count = 2,
-        .wake_pending = false,
-        .runtime_due_now = true,
-        .input_published = false,
-        .runtime_wait_ms = null,
-        .render_turn_pending = false,
-    };
+    const redraw = tab.driveCursorTrail(.selected, 20_000_000);
 
-    const progress = tab.driveProgressWithFacts(.selected, 2, facts);
-
-    try std.testing.expect(progress.drove);
-    try std.testing.expect(progress.outcome.should_redraw);
-    try std.testing.expectEqual(@as(u8, 1), TestState.drive_calls);
+    try std.testing.expect(redraw);
+    try std.testing.expectEqual(render_retained.RetainedState.prepare_needed, pane_value.term.render.retainedState());
 }
 
 const test_terminal_conf = TerminalConfig{
@@ -1105,6 +951,7 @@ fn canInstallSplit(tab: *const Tab) bool {
 
 fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u64) void {
     pane.term.mutex = .{};
+    pane.term.texture_trigger = .{};
     pane.term.render = render_retained.State.init(.{
         .render_px = .{ .width = width, .height = height },
         .grid_px = .{ .width = width, .height = height },
@@ -1114,10 +961,18 @@ fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u
     });
     pane.term_texture = .{ .host_surface_id = texture_id, .width = width, .height = height };
     pane.progress = .{};
+    pane.live = true;
     pane.conf = &test_terminal_conf;
     pane.surface_layout = surface_layout.init(width, height, width, height);
     pane.scrollbar = .{};
     pane.links = .{};
+    pane.cursor_blink = .{};
+    pane.cursor_render_info = .{};
+    pane.cursor_trail = .{};
+    pane.cursor_position_sequence = 0;
+    pane.cursor_client_moved_at_ns = 0;
+    pane.cursor_text_blinking = false;
+    pane.cursor_render = std.mem.zeroes(render_retained.HostCursorCadence);
     pane.window_focused = true;
     pane.widget_focused = true;
     pane.font_size_px = 16;
@@ -1188,12 +1043,4 @@ fn testResizedTabBody() Layout.tab.Body {
 fn expectPaneResizePending(tab: *Tab, id: PaneId, pixel_size: Layout.Size, logical_size: Layout.Size) !void {
     const pane_value = tab.pane(id);
     surface_layout.assertPendingResize(&pane_value.surface_layout, pixel_size.width, pixel_size.height, logical_size.width, logical_size.height);
-}
-
-fn setTestWakePending(tab: *Tab, id: PaneId, pending: bool) void {
-    tab.pane(id).progress.wake_pending.store(pending, .release);
-}
-
-fn expectTestWakePending(tab: *Tab, id: PaneId, expected: bool) !void {
-    try std.testing.expectEqual(expected, pty_wait_thread.wakePending(tab.pane(id)));
 }

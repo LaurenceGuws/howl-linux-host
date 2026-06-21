@@ -4,110 +4,116 @@ const Term = @import("../term.zig").Term;
 const EventLoop = @import("../events/event_loop.zig");
 const std = @import("std");
 
-const wait_slice_timeout_ms: i32 = 50;
+pub const TransportWait = union(enum) {
+    indefinite,
+    timeout_ms: i32,
+};
+
+pub const ProgressThreadTarget = struct {
+    term: *Term,
+    progress: *WaitThread,
+};
 
 pub const WaitThread = struct {
     stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     thread: ?std.Thread = null,
-    wake_event_loop: ?*EventLoop.EventLoop = null,
 
-    pub fn init(self: *WaitThread, wake_event_loop: *EventLoop.EventLoop) void {
-        self.wake_pending.store(false, .release);
-        self.wake_event_loop = wake_event_loop;
+    pub fn init(self: *WaitThread) void {
+        self.stop.store(false, .release);
     }
 
     pub fn deinit(self: *WaitThread) void {
-        self.wake_event_loop = null;
-        self.wake_pending.store(false, .release);
+        self.stop.store(false, .release);
     }
 };
 
-pub fn progressThreadMain(self: anytype) void {
-    progressThreadMainWith(self, ProgressThreadOps);
+pub fn target(term: *Term, progress: *WaitThread) ProgressThreadTarget {
+    return .{ .term = term, .progress = progress };
 }
 
-pub fn wakePending(self: anytype) bool {
-    return self.progress.wake_pending.load(.acquire);
+pub fn progressThreadMain(target_value: ProgressThreadTarget) void {
+    progressThreadMainWith(target_value, ProgressThreadOps);
 }
 
-pub fn ackWake(self: anytype) void {
-    self.progress.wake_pending.store(false, .release);
+pub fn requestStop(progress: *WaitThread) void {
+    progress.stop.store(true, .release);
 }
 
-fn progressThreadMainWith(self: anytype, comptime Ops: type) void {
-    while (!self.progress.stop.load(.acquire)) {
-        if (!waitForTransport(self, Ops)) continue;
-        while (!self.progress.stop.load(.acquire)) {
-            const progress = Ops.driveProgress(self, EventLoop.nowNs());
-            if (progress.should_redraw or !progress.alive) signalWake(self, Ops);
+pub fn stopAndKick(target_value: ProgressThreadTarget) void {
+    stopAndKickWith(target_value, StopOps);
+}
+
+fn progressThreadMainWith(target_value: ProgressThreadTarget, comptime Ops: type) void {
+    while (!target_value.progress.stop.load(.acquire)) {
+        if (!waitForTransport(target_value, Ops)) continue;
+        while (!target_value.progress.stop.load(.acquire)) {
+            const progress = Ops.driveProgress(target_value.term, EventLoop.nowNs());
+            if (progress.should_redraw or !progress.alive) signalTexturePresent(target_value, Ops);
             if (!progress.alive) return;
             if (!progress.keep) break;
         }
     }
 }
 
-fn waitForTransport(self: anytype, comptime Ops: type) bool {
+fn waitForTransport(target_value: ProgressThreadTarget, comptime Ops: type) bool {
     while (true) {
-        if (self.progress.stop.load(.acquire)) return false;
-        if (!Ops.isAlive(termRef(self))) {
-            break;
-        }
-        if (Ops.waitTransport(termRef(self), @intCast(wait_slice_timeout_ms))) {
-            break;
-        }
+        if (target_value.progress.stop.load(.acquire)) return false;
+        if (!Ops.isAlive(target_value.term)) break;
+        if (Ops.waitTransport(target_value.term, .indefinite)) break;
     }
 
     return true;
 }
 
-fn TermRef(comptime TermField: type) type {
-    return switch (@typeInfo(TermField)) {
-        .pointer => TermField,
-        else => *TermField,
-    };
-}
-
-fn termRef(self: anytype) TermRef(@TypeOf(self.term)) {
-    return switch (@typeInfo(@TypeOf(self.term))) {
-        .pointer => self.term,
-        else => &self.term,
-    };
-}
-
-fn signalWake(self: anytype, comptime Ops: type) void {
-    if (!self.progress.wake_pending.swap(true, .acq_rel)) {
-        Ops.wakeEventLoop(self);
-    }
+fn signalTexturePresent(target_value: ProgressThreadTarget, comptime Ops: type) void {
+    _ = target_value.progress;
+    Ops.triggerTexturePresent(target_value.term);
 }
 
 const ProgressThreadOps = struct {
-    fn driveProgress(self: anytype, now_ns: u64) pty_pump.Outcome {
-        return pty_pump.driveOnce(termRef(self), now_ns);
+    fn driveProgress(term: *Term, now_ns: u64) pty_pump.Outcome {
+        return pty_pump.driveOnce(term, now_ns);
     }
 
-    fn waitTransport(term: *Term, timeout_ms: i32) bool {
-        return pty_session.waitTransport(term, timeout_ms);
+    fn waitTransport(term: *Term, wait: TransportWait) bool {
+        return pty_session.waitTransport(term, waitTimeoutMs(wait));
     }
 
     fn isAlive(term: *const Term) bool {
         return pty_session.isAlive(term);
     }
 
-    fn wakeEventLoop(self: anytype) void {
-        const event_loop = self.progress.wake_event_loop orelse return;
-        event_loop.wake();
+    fn triggerTexturePresent(term: *Term) void {
+        term.triggerTexturePresent();
     }
 };
 
+const StopOps = struct {
+    fn kickWait(term: *Term) void {
+        pty_session.kickWait(term);
+    }
+};
+
+fn stopAndKickWith(target_value: ProgressThreadTarget, comptime Ops: type) void {
+    requestStop(target_value.progress);
+    Ops.kickWait(target_value.term);
+}
+
+fn waitTimeoutMs(wait: TransportWait) i32 {
+    return switch (wait) {
+        .indefinite => -1,
+        .timeout_ms => |timeout_ms| timeout_ms,
+    };
+}
+
 test "progress thread drives term before waking event loop" {
     fake_state = .{};
-    const term = FakeTerm.init();
-    var ctx = FakeCtx{ .term = term };
-    progressThreadMainWith(&ctx, FakeOps);
+    var term: FakeTerm = undefined;
+    var progress = WaitThread{};
+    progressThreadMainWith(fakeTarget(&term, &progress), FakeOps);
     try std.testing.expectEqual(@as(u8, 1), fake_state.wait_calls);
     try std.testing.expectEqual(@as(u8, 1), fake_state.drive_calls);
-    try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.trigger_calls);
 }
 
 test "progress thread drains kept turns before waiting again" {
@@ -116,93 +122,103 @@ test "progress thread drains kept turns before waiting again" {
     fake_state.drive_keep_calls = 1;
     fake_state.drive_should_redraw = true;
     fake_state.set_stop_after_wait_call = 2;
-    var ctx = FakeCtx{ .term = FakeTerm.init() };
-    fake_ctx = &ctx;
-    defer fake_ctx = null;
+    var term: FakeTerm = undefined;
+    var progress = WaitThread{};
+    fake_progress = &progress;
+    defer fake_progress = null;
 
-    progressThreadMainWith(&ctx, FakeOps);
+    progressThreadMainWith(fakeTarget(&term, &progress), FakeOps);
 
     try std.testing.expectEqual(@as(u8, 2), fake_state.drive_calls);
-    try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
-    try std.testing.expect(ctx.progress.stop.load(.acquire));
+    try std.testing.expectEqual(@as(u8, 2), fake_state.trigger_calls);
+    try std.testing.expect(progress.stop.load(.acquire));
 }
 
-test "ack wake clears pending event-loop handoff state" {
-    var ctx = FakeCtx{ .term = FakeTerm.init() };
-    ctx.progress.wake_pending.store(true, .release);
-    try std.testing.expect(wakePending(&ctx));
-    ackWake(&ctx);
-    try std.testing.expect(!wakePending(&ctx));
+test "progress target carries explicit term and wait owner" {
+    var term: FakeTerm = undefined;
+    var progress = WaitThread{};
+
+    const target_value = target(&term, &progress);
+
+    try std.testing.expectEqual(&term, target_value.term);
+    try std.testing.expectEqual(&progress, target_value.progress);
 }
 
-test "signal wake coalesces duplicate event-loop wake requests" {
+test "signal texture present forwards every redraw edge to term trigger" {
     fake_state = .{};
-    var ctx = FakeCtx{ .term = FakeTerm.init() };
-    signalWake(&ctx, FakeOps);
-    try std.testing.expect(wakePending(&ctx));
-    signalWake(&ctx, FakeOps);
-    try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
+    var term: FakeTerm = undefined;
+    var progress = WaitThread{};
+    const target_value = fakeTarget(&term, &progress);
+    signalTexturePresent(target_value, FakeOps);
+    signalTexturePresent(target_value, FakeOps);
+    try std.testing.expectEqual(@as(u8, 2), fake_state.trigger_calls);
 }
 
 test "progress thread wakes on quiet transport death" {
     fake_state = .{};
     fake_state.is_alive = false;
-    var ctx = FakeCtx{ .term = FakeTerm.init() };
-    progressThreadMainWith(&ctx, FakeOps);
-    try std.testing.expectEqual(@as(u8, 1), fake_state.wake_calls);
+    var term: FakeTerm = undefined;
+    var progress = WaitThread{};
+    progressThreadMainWith(fakeTarget(&term, &progress), FakeOps);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.trigger_calls);
 }
 
-test "wait for transport retries finite slices until readable" {
+test "wait for transport blocks on readiness rather than polling slices" {
     fake_state = .{};
-    fake_state.transport_ready_after = 3;
-    var ctx = FakeCtx{ .term = FakeTerm.init() };
-    fake_ctx = &ctx;
-    defer fake_ctx = null;
-    try std.testing.expect(waitForTransport(&ctx, FakeOps));
-    try std.testing.expectEqual(@as(u8, 3), fake_state.wait_calls);
+    fake_state.transport_ready_after = 1;
+    var term: FakeTerm = undefined;
+    var progress = WaitThread{};
+
+    try std.testing.expect(waitForTransport(fakeTarget(&term, &progress), FakeOps));
+    try std.testing.expectEqual(TransportWait.indefinite, fake_state.last_wait.?);
+    try std.testing.expectEqual(@as(u8, 1), fake_state.wait_calls);
 }
 
-test "wait for transport ignores pending wake handoff" {
+test "stop and kick wakes an indefinite transport wait target" {
     fake_state = .{};
-    fake_state.transport_ready_after = 2;
-    var ctx = FakeCtx{ .term = FakeTerm.init() };
-    ctx.progress.wake_pending.store(true, .release);
-    try std.testing.expect(waitForTransport(&ctx, FakeOps));
-    try std.testing.expectEqual(@as(u8, 2), fake_state.wait_calls);
-    try std.testing.expect(ctx.progress.wake_pending.load(.acquire));
+    var term: FakeTerm = undefined;
+    var progress = WaitThread{};
+
+    stopAndKickWith(fakeTarget(&term, &progress), FakeStopOps);
+
+    try std.testing.expect(progress.stop.load(.acquire));
+    try std.testing.expectEqual(@as(u8, 1), fake_state.kick_calls);
 }
 
-const FakeTerm = struct {
-    pub fn init() FakeTerm {
-        return .{};
-    }
-};
+test "wait for transport ignores already triggered texture present" {
+    fake_state = .{};
+    fake_state.transport_ready_after = 1;
+    var term: FakeTerm = undefined;
+    var progress = WaitThread{};
 
-const FakeCtx = struct {
-    term: FakeTerm,
-    progress: struct {
-        stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-        wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-        wake_event_loop: ?*EventLoop.EventLoop = null,
-    } = .{},
-};
+    try std.testing.expect(waitForTransport(fakeTarget(&term, &progress), FakeOps));
+    try std.testing.expectEqual(@as(u8, 0), fake_state.trigger_calls);
+}
+
+const FakeTerm = Term;
+
+fn fakeTarget(term_value: *FakeTerm, progress: *WaitThread) ProgressThreadTarget {
+    return .{ .term = term_value, .progress = progress };
+}
 
 var fake_state: struct {
     wait_calls: u8 = 0,
     drive_calls: u8 = 0,
-    wake_calls: u8 = 0,
+    trigger_calls: u8 = 0,
     is_alive: bool = true,
     transport_ready_after: ?u8 = null,
     set_stop_after_wait_call: ?u8 = null,
     drive_alive_calls: u8 = 0,
     drive_keep_calls: u8 = 0,
     drive_should_redraw: bool = false,
+    kick_calls: u8 = 0,
+    last_wait: ?TransportWait = null,
 } = .{};
 
-var fake_ctx: ?*FakeCtx = null;
+var fake_progress: ?*WaitThread = null;
 
 const FakeOps = struct {
-    fn driveProgress(_: anytype, _: u64) pty_pump.Outcome {
+    fn driveProgress(_: *Term, _: u64) pty_pump.Outcome {
         const index = fake_state.drive_calls;
         fake_state.drive_calls += 1;
         return .{
@@ -212,26 +228,33 @@ const FakeOps = struct {
         };
     }
 
-    fn waitTransport(_: *FakeTerm, _: i32) bool {
+    fn waitTransport(_: *Term, wait: TransportWait) bool {
         fake_state.wait_calls += 1;
-        if (fake_state.set_stop_after_wait_call) |target| {
-            if (fake_state.wait_calls == target) {
-                const ctx = fake_ctx orelse unreachable;
-                ctx.progress.stop.store(true, .release);
+        fake_state.last_wait = wait;
+        if (fake_state.set_stop_after_wait_call) |target_call| {
+            if (fake_state.wait_calls == target_call) {
+                const progress = fake_progress orelse unreachable;
+                progress.stop.store(true, .release);
                 return false;
             }
         }
-        if (fake_state.transport_ready_after) |target| {
-            return fake_state.wait_calls >= target;
+        if (fake_state.transport_ready_after) |target_call| {
+            return fake_state.wait_calls >= target_call;
         }
         return true;
     }
 
-    fn isAlive(_: *const FakeTerm) bool {
+    fn isAlive(_: *const Term) bool {
         return fake_state.is_alive;
     }
 
-    fn wakeEventLoop(_: anytype) void {
-        fake_state.wake_calls += 1;
+    fn triggerTexturePresent(_: *Term) void {
+        fake_state.trigger_calls += 1;
+    }
+};
+
+const FakeStopOps = struct {
+    fn kickWait(_: *Term) void {
+        fake_state.kick_calls += 1;
     }
 };

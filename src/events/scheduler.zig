@@ -1,8 +1,9 @@
 //! Main host scheduling owner.
 //!
-//! This owner decides when the host loop may wait, when a frame deadline restores frame availability,
-//! and which present path the main host thread should take. It receives only host scheduling facts;
-//! terminal, render, texture, input, and window owners keep their own data and mutation.
+//! The main host thread owns event-loop wait policy, frame cadence timers, and present-path
+//! selection because those choices coordinate window/input/render owners without mutating their
+//! internal state. Timed work is represented as typed host events so wake, redraw, and terminal
+//! progress cannot be smuggled through broad fact buckets.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -10,24 +11,123 @@ const assert = std.debug.assert;
 const FrameTimer = @import("frame_timer.zig").FrameTimer;
 const window = @import("window.zig");
 
-pub const Scheduler = struct {
-    frame_timer: FrameTimer,
-    frame_deadline_ns: ?u64,
+pub const HostEvent = enum {
+    texture_triggered,
+    input_pending,
+    window_geometry_changed,
+    window_focus_changed,
+    redraw_requested,
+    frame_ready,
+    cursor_blink,
+    cursor_blink_timeout,
+    cursor_trail,
+};
 
-    pub fn init() Scheduler {
-        return .{
-            .frame_timer = FrameTimer.init(),
-            .frame_deadline_ns = null,
-        };
+pub const TimerTopic = enum {
+    frame,
+    cursor_blink,
+    cursor_blink_timeout,
+    cursor_trail,
+};
+
+pub const max_host_events = 32;
+
+pub const HostEventQueue = struct {
+    events: [max_host_events]HostEvent = undefined,
+    count: u8 = 0,
+
+    pub fn init() HostEventQueue {
+        return .{};
     }
 
-    pub fn noteFrameDeadline(self: *Scheduler, app_window: *window.Window, now_ns: u64) void {
+    pub fn append(self: *HostEventQueue, event: HostEvent) void {
+        assert(self.count < max_host_events);
+        self.events[self.count] = event;
+        self.count += 1;
+    }
+
+    pub fn len(self: *const HostEventQueue) usize {
+        return self.count;
+    }
+
+    pub fn contains(self: *const HostEventQueue, event: HostEvent) bool {
+        for (self.events[0..self.count]) |queued| {
+            if (queued == event) return true;
+        }
+        return false;
+    }
+
+    pub fn drain(self: *HostEventQueue) []const HostEvent {
+        const drained = self.events[0..self.count];
+        self.count = 0;
+        return drained;
+    }
+};
+
+pub const Wait = struct {
+    for_window: bool,
+    timeout_ms: ?u32,
+};
+
+pub const Present = enum {
+    none,
+    host_redraw,
+    terminal_frame,
+};
+
+const timer_count = @typeInfo(TimerTopic).@"enum".fields.len;
+
+const Timer = struct {
+    topic: TimerTopic,
+    deadline_ns: u64,
+    active: bool,
+};
+
+pub const Scheduler = struct {
+    frame_timer: FrameTimer,
+    timers: [timer_count]Timer,
+
+    pub fn init() Scheduler {
+        var self = Scheduler{
+            .frame_timer = FrameTimer.init(),
+            .timers = undefined,
+        };
+        for (&self.timers, 0..) |*timer, i| {
+            timer.* = .{ .topic = @enumFromInt(i), .deadline_ns = 0, .active = false };
+        }
+        return self;
+    }
+
+    pub fn schedule(self: *Scheduler, topic: TimerTopic, deadline_ns: u64) void {
+        assert(deadline_ns > 0);
+        const timer = &self.timers[@intFromEnum(topic)];
+        assert(timer.topic == topic);
+        timer.deadline_ns = deadline_ns;
+        timer.active = true;
+    }
+
+    pub fn unschedule(self: *Scheduler, topic: TimerTopic) void {
+        const timer = &self.timers[@intFromEnum(topic)];
+        assert(timer.topic == topic);
+        timer.deadline_ns = 0;
+        timer.active = false;
+    }
+
+    pub fn update(self: *Scheduler, events: *HostEventQueue, now_ns: u64) ?u64 {
         assert(now_ns > 0);
-        if (app_window.hasFrame()) return;
-        const deadline_ns = self.frame_deadline_ns orelse return;
-        if (now_ns < deadline_ns) return;
-        app_window.markFrameReady();
-        self.frame_deadline_ns = null;
+        var closest_deadline_ns: ?u64 = null;
+        for (&self.timers) |*timer| {
+            if (!timer.active) continue;
+            assert(timer.deadline_ns > 0);
+            if (timer.deadline_ns <= now_ns) {
+                events.append(timerEvent(timer.topic));
+                timer.deadline_ns = 0;
+                timer.active = false;
+            } else {
+                closest_deadline_ns = minOptionalDeadline(closest_deadline_ns, timer.deadline_ns);
+            }
+        }
+        return closest_deadline_ns;
     }
 
     pub fn requestFrame(self: *Scheduler, app_window: *window.Window, now_ns: u64) !void {
@@ -40,55 +140,25 @@ pub const Scheduler = struct {
         assert(refresh_interval_ns > 0);
         app_window.markFrameUsed();
         const timeout_ns = self.frame_timer.computeTimeoutNs(now_ns, refresh_interval_ns);
-        self.frame_deadline_ns = now_ns + timeout_ns;
-    }
-
-    pub fn frame(self: *const Scheduler, app_window: *const window.Window, now_ns: u64) Frame {
-        assert(now_ns > 0);
-        return .{
-            .ready = app_window.hasFrame(),
-            .wait_ms = frameWaitMs(now_ns, self.frame_deadline_ns),
-        };
+        self.schedule(.frame, now_ns + timeout_ns);
     }
 };
 
-pub const Wake = struct {
-    terminal: bool,
-};
+pub fn chooseWait(pending_events: bool, events: *const HostEventQueue, closest_deadline_ns: ?u64, now_ns: u64) Wait {
+    assert(now_ns > 0);
+    return .{
+        .for_window = !pending_events and events.len() == 0,
+        .timeout_ms = waitMsFromDeadline(now_ns, closest_deadline_ns),
+    };
+}
 
-pub const Dirty = struct {
-    host: bool,
-    terminal: bool,
-    present: bool,
+pub fn choosePresent(events: *const HostEventQueue, terminal_frame_ready: bool) Present {
+    if (terminal_frame_ready) return .terminal_frame;
+    if (events.contains(.redraw_requested)) return .host_redraw;
+    return .none;
+}
 
-    fn any(self: Dirty) bool {
-        return self.host or self.terminal or self.present;
-    }
-};
-
-pub const Frame = struct {
-    ready: bool,
-    wait_ms: ?u32,
-};
-
-pub const Deadline = struct {
-    terminal_wait_ms: ?u32,
-    frame_wait_ms: ?u32,
-};
-
-pub const Wait = struct {
-    for_window: bool,
-    timeout_ms: ?u32,
-};
-
-pub const Present = enum {
-    none,
-    host_dirty,
-    terminal_dirty,
-    terminal_retire,
-};
-
-pub fn frameWaitMs(now_ns: u64, deadline_ns: ?u64) ?u32 {
+pub fn waitMsFromDeadline(now_ns: u64, deadline_ns: ?u64) ?u32 {
     assert(now_ns > 0);
     const deadline = deadline_ns orelse return null;
     if (now_ns >= deadline) return 0;
@@ -96,154 +166,18 @@ pub fn frameWaitMs(now_ns: u64, deadline_ns: ?u64) ?u32 {
     return @intCast(@max(@as(u64, 1), std.math.divCeil(u64, remaining_ns, std.time.ns_per_ms) catch 1));
 }
 
-pub fn chooseWait(pending_events: bool, wake: Wake, dirty: Dirty, frame_value: Frame, deadline: Deadline) Wait {
-    return .{
-        .for_window = waitForWindow(pending_events, wake, dirty, frame_value),
-        .timeout_ms = minOptionalWaitMs(deadline.terminal_wait_ms, deadline.frame_wait_ms),
+fn timerEvent(topic: TimerTopic) HostEvent {
+    return switch (topic) {
+        .frame => .frame_ready,
+        .cursor_blink => .cursor_blink,
+        .cursor_blink_timeout => .cursor_blink_timeout,
+        .cursor_trail => .cursor_trail,
     };
 }
 
-pub fn choosePresent(dirty: Dirty, terminal_present_blocked: bool) Present {
-    if (terminal_present_blocked) return .terminal_retire;
-    if (dirty.terminal) return .terminal_dirty;
-    if (dirty.host or dirty.present) return .host_dirty;
-    return .none;
-}
-
-fn waitForWindow(pending_events: bool, wake: Wake, dirty: Dirty, frame_value: Frame) bool {
-    if (pending_events) return false;
-    if (wake.terminal) return false;
-    if (frame_value.ready and dirty.any()) return false;
-    return true;
-}
-
-fn minOptionalWaitMs(current_wait_ms: ?u32, next_wait_ms: ?u32) ?u32 {
-    const next = next_wait_ms orelse return current_wait_ms;
-    return if (current_wait_ms) |current| @min(current, next) else next;
-}
-
-test "wake prevents indefinite wait" {
-    const wait = chooseWait(false, .{ .terminal = true }, cleanDirty(), .{ .ready = false, .wait_ms = null }, .{ .terminal_wait_ms = null, .frame_wait_ms = null });
-
-    try std.testing.expect(!wait.for_window);
-    try std.testing.expectEqual(@as(?u32, null), wait.timeout_ms);
-}
-
-test "wake alone does not imply dirty or present" {
-    const dirty = cleanDirty();
-
-    try std.testing.expect(!dirty.any());
-    try std.testing.expectEqual(Present.none, choosePresent(dirty, false));
-}
-
-test "pending events prevent wait" {
-    const wait = chooseWait(true, noWake(), cleanDirty(), .{ .ready = false, .wait_ms = 20 }, .{ .terminal_wait_ms = null, .frame_wait_ms = 20 });
-
-    try std.testing.expect(!wait.for_window);
-}
-
-test "future frame deadline becomes finite wait" {
-    try std.testing.expectEqual(@as(?u32, 17), frameWaitMs(1_000, 17_001_000));
-}
-
-test "expired frame deadline restores frame and clears deadline" {
-    var scheduler = Scheduler.init();
-    scheduler.frame_deadline_ns = 17_000_000;
-    var app_window = testWindow(false);
-
-    scheduler.noteFrameDeadline(&app_window, 17_000_000);
-
-    try std.testing.expect(app_window.hasFrame());
-    try std.testing.expectEqual(@as(?u64, null), scheduler.frame_deadline_ns);
-}
-
-test "future frame deadline does not restore frame" {
-    var scheduler = Scheduler.init();
-    scheduler.frame_deadline_ns = 17_000_000;
-    var app_window = testWindow(false);
-
-    scheduler.noteFrameDeadline(&app_window, 16_999_999);
-
-    try std.testing.expect(!app_window.hasFrame());
-    try std.testing.expectEqual(@as(?u64, 17_000_000), scheduler.frame_deadline_ns);
-}
-
-test "request frame marks frame used and records deadline" {
-    var scheduler = Scheduler.init();
-    var app_window = testWindow(true);
-
-    try scheduler.requestFrameWithRefresh(&app_window, 1_000, 16_000_000);
-
-    try std.testing.expect(!app_window.hasFrame());
-    try std.testing.expectEqual(@as(?u64, 16_001_000), scheduler.frame_deadline_ns);
-}
-
-test "dirty without frame waits for frame deadline" {
-    const wait = chooseWait(false, noWake(), .{ .host = false, .terminal = true, .present = false }, .{ .ready = false, .wait_ms = 33 }, .{ .terminal_wait_ms = null, .frame_wait_ms = 33 });
-
-    try std.testing.expect(wait.for_window);
-    try std.testing.expectEqual(@as(?u32, 33), wait.timeout_ms);
-}
-
-test "dirty with ready frame does not wait" {
-    const wait = chooseWait(false, noWake(), .{ .host = true, .terminal = false, .present = false }, .{ .ready = true, .wait_ms = null }, .{ .terminal_wait_ms = null, .frame_wait_ms = null });
-
-    try std.testing.expect(!wait.for_window);
-}
-
-test "closest deadline wins" {
-    const wait = chooseWait(false, noWake(), cleanDirty(), .{ .ready = false, .wait_ms = 33 }, .{ .terminal_wait_ms = 7, .frame_wait_ms = 33 });
-
-    try std.testing.expectEqual(@as(?u32, 7), wait.timeout_ms);
-}
-
-test "present chooses host dirty" {
-    try std.testing.expectEqual(Present.host_dirty, choosePresent(.{ .host = true, .terminal = false, .present = false }, false));
-}
-
-test "present chooses terminal dirty before host dirty" {
-    try std.testing.expectEqual(Present.terminal_dirty, choosePresent(.{ .host = true, .terminal = true, .present = false }, false));
-}
-
-test "present chooses terminal retire" {
-    try std.testing.expectEqual(Present.terminal_retire, choosePresent(cleanDirty(), true));
-}
-
-test "present chooses none without dirty or blocked present" {
-    try std.testing.expectEqual(Present.none, choosePresent(cleanDirty(), false));
-}
-
-test "terminal deadline alone does not produce present" {
-    const dirty = cleanDirty();
-    const wait = chooseWait(false, noWake(), dirty, .{ .ready = false, .wait_ms = null }, .{ .terminal_wait_ms = 9, .frame_wait_ms = null });
-
-    try std.testing.expect(wait.for_window);
-    try std.testing.expectEqual(@as(?u32, 9), wait.timeout_ms);
-    try std.testing.expectEqual(Present.none, choosePresent(dirty, false));
-}
-
-test "terminal due deadline prevents indefinite wait without wake or dirty" {
-    const dirty = cleanDirty();
-    const wait = chooseWait(false, noWake(), dirty, .{ .ready = false, .wait_ms = null }, .{ .terminal_wait_ms = 0, .frame_wait_ms = null });
-
-    try std.testing.expect(wait.for_window);
-    try std.testing.expectEqual(@as(?u32, 0), wait.timeout_ms);
-    try std.testing.expectEqual(Present.none, choosePresent(dirty, false));
-}
-
-test "unavailable frame without dirty may wait" {
-    const wait = chooseWait(false, noWake(), cleanDirty(), .{ .ready = false, .wait_ms = null }, .{ .terminal_wait_ms = null, .frame_wait_ms = null });
-
-    try std.testing.expect(wait.for_window);
-    try std.testing.expectEqual(@as(?u32, null), wait.timeout_ms);
-}
-
-fn noWake() Wake {
-    return .{ .terminal = false };
-}
-
-fn cleanDirty() Dirty {
-    return .{ .host = false, .terminal = false, .present = false };
+fn minOptionalDeadline(current_deadline_ns: ?u64, next_deadline_ns: u64) ?u64 {
+    assert(next_deadline_ns > 0);
+    return if (current_deadline_ns) |current| @min(current, next_deadline_ns) else next_deadline_ns;
 }
 
 fn testWindow(has_frame: bool) window.Window {
@@ -258,4 +192,99 @@ fn testWindow(has_frame: bool) window.Window {
         .logical_h = 1,
         .focused = true,
     };
+}
+
+test "texture trigger prevents indefinite wait without granting progress admission" {
+    var events = HostEventQueue.init();
+    events.append(.texture_triggered);
+
+    const wait = chooseWait(false, &events, null, 1);
+
+    try std.testing.expect(!wait.for_window);
+    try std.testing.expectEqual(@as(?u32, null), wait.timeout_ms);
+    try std.testing.expectEqual(Present.none, choosePresent(&events, false));
+}
+
+test "dirty redraw is a typed event gated by frame availability" {
+    var events = HostEventQueue.init();
+    try std.testing.expectEqual(Present.none, choosePresent(&events, false));
+
+    events.append(.redraw_requested);
+    try std.testing.expectEqual(Present.host_redraw, choosePresent(&events, false));
+}
+
+test "terminal frame present is a real current outcome" {
+    var events = HostEventQueue.init();
+    events.append(.redraw_requested);
+
+    try std.testing.expectEqual(Present.terminal_frame, choosePresent(&events, true));
+}
+
+test "closest real timer topic wins when no host event is ready" {
+    var scheduler = Scheduler.init();
+    scheduler.schedule(.frame, 40_000_000);
+    scheduler.schedule(.cursor_blink, 9_000_000);
+    scheduler.schedule(.cursor_trail, 11_000_000);
+    var events = HostEventQueue.init();
+
+    const deadline_ns = scheduler.update(&events, 1_000_000);
+    const wait = chooseWait(false, &events, deadline_ns, 1_000_000);
+
+    try std.testing.expectEqual(@as(?u64, 9_000_000), deadline_ns);
+    try std.testing.expect(wait.for_window);
+    try std.testing.expectEqual(@as(?u32, 8), wait.timeout_ms);
+}
+
+test "cursor blink and trail timers publish distinct typed events" {
+    var scheduler = Scheduler.init();
+    scheduler.schedule(.cursor_blink, 10_000_000);
+    scheduler.schedule(.cursor_blink_timeout, 11_000_000);
+    scheduler.schedule(.cursor_trail, 12_000_000);
+    var events = HostEventQueue.init();
+
+    const first_deadline_ns = scheduler.update(&events, 10_000_000);
+
+    try std.testing.expect(events.contains(.cursor_blink));
+    try std.testing.expect(!events.contains(.cursor_blink_timeout));
+    try std.testing.expect(!events.contains(.cursor_trail));
+    try std.testing.expectEqual(@as(?u64, 11_000_000), first_deadline_ns);
+
+    _ = events.drain();
+    const second_deadline_ns = scheduler.update(&events, 12_000_000);
+
+    try std.testing.expect(events.contains(.cursor_blink_timeout));
+    try std.testing.expect(events.contains(.cursor_trail));
+    try std.testing.expectEqual(@as(?u64, null), second_deadline_ns);
+}
+
+test "request frame marks frame used and schedules frame topic" {
+    var scheduler = Scheduler.init();
+    var app_window = testWindow(true);
+
+    try scheduler.requestFrameWithRefresh(&app_window, 1_000, 16_000_000);
+
+    try std.testing.expect(!app_window.hasFrame());
+    try std.testing.expectEqual(@as(u64, 16_001_000), scheduler.timers[@intFromEnum(TimerTopic.frame)].deadline_ns);
+    try std.testing.expect(scheduler.timers[@intFromEnum(TimerTopic.frame)].active);
+}
+
+test "frame timer publishes frame ready and clears timer" {
+    var scheduler = Scheduler.init();
+    scheduler.schedule(.frame, 17_000_000);
+    var events = HostEventQueue.init();
+
+    const deadline_ns = scheduler.update(&events, 17_000_000);
+
+    try std.testing.expect(events.contains(.frame_ready));
+    try std.testing.expectEqual(@as(?u64, null), deadline_ns);
+    try std.testing.expect(!scheduler.timers[@intFromEnum(TimerTopic.frame)].active);
+}
+
+test "present selection has no retire outcome" {
+    var events = HostEventQueue.init();
+
+    try std.testing.expectEqual(Present.none, choosePresent(&events, false));
+    events.append(.redraw_requested);
+    try std.testing.expectEqual(Present.host_redraw, choosePresent(&events, false));
+    try std.testing.expectEqual(Present.terminal_frame, choosePresent(&events, true));
 }

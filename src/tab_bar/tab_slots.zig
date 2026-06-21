@@ -21,7 +21,7 @@ pub const Slots = struct {
             .free_count = max_tabs,
         };
         for (0..max_tabs) |slot| {
-            self.free_slots[slot] = @intCast(slot);
+            self.free_slots[slot] = @intCast(max_tabs - 1 - slot);
         }
         self.assertCounts();
     }

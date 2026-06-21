@@ -6,7 +6,6 @@ const HostInput = @import("../input.zig").Input;
 const pty_c = @import("howl_pty_c");
 const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
-const pty_pump = @import("../pty/pump.zig");
 const pty_wait_thread = @import("../pty/wait_thread.zig");
 const terminal_fonts = @import("../render/fonts.zig");
 const pty_session = @import("../pty/session.zig");
@@ -15,7 +14,6 @@ const vt_surface = @import("../vt/surface.zig");
 const vt_title = @import("../vt/title.zig");
 const HowlTerm = @import("../term.zig").Term;
 const VtState = @import("../term.zig").VtState;
-const vt_retained = @import("../vt/surface_retained.zig");
 const Config = @import("../config.zig");
 const TerminalConfig = Config.Terminal;
 const CursorStyle = @import("../config/term.zig").CursorStyle;
@@ -38,13 +36,6 @@ const history_capacity: u16 = 4096;
 const max_fallback_font_paths: u8 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
 const TestingHooks = struct {
-    wake_pending: ?*const fn (*Surface) bool = null,
-    runtime_obligation_due_now: ?*const fn (*Surface, u64) bool = null,
-    next_runtime_obligation_wait_ms: ?*const fn (*Surface, u64) ?u32 = null,
-    is_alive: ?*const fn (*Surface) bool = null,
-    drive_once: ?*const fn (*HowlTerm, u64) pty_pump.Outcome = null,
-    apply_pending_clipboard_writes: ?*const fn (*Surface) void = null,
-    ack_wake: ?*const fn (*Surface) void = null,
     wants_render_turn: ?*const fn (*Surface) bool = null,
     upload_render_surface: ?*const fn (*Surface, *const render_c.HowlRenderSurfaceFrame) bool = null,
     before_render_submit: ?*const fn (*Surface) void = null,
@@ -90,26 +81,6 @@ pub const Surface = struct {
         present_damage: PresentDamage,
     };
 
-    pub const DriveAdmission = struct {
-        input_published: bool,
-    };
-
-    pub const RuntimeFacts = struct {
-        wake_pending: bool,
-        runtime_due_now: bool,
-        input_published: bool,
-        runtime_wait_ms: ?u32,
-        render_turn_pending: bool,
-
-        pub fn runtimeWakePending(self: RuntimeFacts) bool {
-            return self.wake_pending or self.runtime_due_now;
-        }
-
-        pub fn driveAdmitted(self: RuntimeFacts) bool {
-            return self.runtime_due_now or self.input_published;
-        }
-    };
-
     pub const CursorFacts = struct {
         cadence: cursor_blink.CursorBlink.CadenceFacts,
         render: render_retained.HostCursorCadence,
@@ -121,11 +92,6 @@ pub const Surface = struct {
         pub fn waitMs(self: CursorFacts) ?u32 {
             return self.cadence.wait_ms;
         }
-    };
-
-    pub const DriveProgressResult = struct {
-        drove: bool,
-        outcome: pty_pump.Outcome,
     };
 
     pub const MouseHandlingOutcome = input_processor.MouseHandlingOutcome;
@@ -233,9 +199,8 @@ pub const Surface = struct {
         self.render_surface_textures.deinit();
         self.term_texture.width = 0;
         self.term_texture.height = 0;
-        self.progress.stop.store(true, .release);
-        pty_wait_thread.ackWake(self);
-        if (self.live) pty_session.kickWait(&self.term);
+        pty_wait_thread.requestStop(&self.progress);
+        if (self.live) pty_wait_thread.stopAndKick(pty_wait_thread.target(&self.term, &self.progress));
         if (self.progress.thread) |handle| handle.join();
         self.progress.thread = null;
         if (self.live) {
@@ -375,47 +340,16 @@ pub const Surface = struct {
         return redraw;
     }
 
-    pub fn cursorWaitMs(self: *Term, now_ns: u64) ?u32 {
-        return self.cursorFacts(now_ns).waitMs();
+    pub fn driveCursorBlink(self: *Term, now_ns: u64) bool {
+        return self.driveCursorIfFocused(now_ns);
     }
 
-    pub fn runtimeObligationDueNow(self: *Term, now_ns: u64) bool {
-        const obligation = vt_retained.queryRuntimeObligation(&self.term, now_ns) catch return false;
-        return obligation.pending_now;
+    pub fn driveCursorBlinkTimeout(self: *Term, now_ns: u64) bool {
+        return self.driveCursorIfFocused(now_ns);
     }
 
-    pub fn nextRuntimeObligationWaitMs(self: *Term, now_ns: u64) ?u32 {
-        if (testing_hooks.next_runtime_obligation_wait_ms) |hook| return hook(self, now_ns);
-        const obligation = vt_retained.queryRuntimeObligation(&self.term, now_ns) catch return null;
-        if (obligation.pending_now or obligation.deadline_ns == 0) return null;
-        const remaining_ns = obligation.deadline_ns -| now_ns;
-        const remaining_ms = @max(@as(u64, 1), remaining_ns / std.time.ns_per_ms);
-        return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
-    }
-
-    pub fn runtimeFacts(self: *Term, now_ns: u64, admission: DriveAdmission) RuntimeFacts {
-        const focused = self.window_focused and self.widget_focused;
-        return .{
-            .wake_pending = wakePendingHooked(self),
-            .runtime_due_now = runtimeObligationDueNowHooked(self, now_ns),
-            .input_published = admission.input_published,
-            .runtime_wait_ms = minOptionalWaitMs(self.nextRuntimeObligationWaitMs(now_ns), if (focused) self.cursorWaitMs(now_ns) else null),
-            .render_turn_pending = self.wantsRenderTurn(),
-        };
-    }
-
-    pub fn driveProgressWithFacts(self: *Term, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
-        if (!facts.driveAdmitted()) {
-            const focused = self.window_focused and self.widget_focused;
-            const cursor_redraw = if (focused) self.driveCursor(now_ns) else false;
-            return .{
-                .drove = false,
-                .outcome = .{ .keep = cursor_redraw, .should_redraw = cursor_redraw, .alive = isAliveHooked(self) },
-            };
-        }
-
-        const outcome = driveProgressBounded(self, now_ns);
-        return driveProgressConsequences(self, now_ns, outcome);
+    pub fn driveCursorTrail(self: *Term, now_ns: u64) bool {
+        return self.driveCursorIfFocused(now_ns);
     }
 
     pub fn renderTurn(self: *Term) TurnResult {
@@ -469,6 +403,7 @@ pub const Surface = struct {
         try initRenderText(&self.term.render, render_init);
         self.term.vt_state = .{};
         self.term.mutex = .{};
+        self.term.initTextureTrigger(self.event_loop);
         self.live = true;
         try initRenderState(&self.term.vt_state);
         try surface_layout.setTermCellPixelSize(&self.term, term_init.surface_layout.cell_px.width, term_init.surface_layout.cell_px.height);
@@ -481,25 +416,11 @@ pub const Surface = struct {
         if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
         self.refreshTitle();
         self.syncInputFocus();
-        self.progress.init(self.event_loop);
+        self.progress.init();
         self.progress.stop.store(false, .release);
-        const progress_thread = try std.Thread.spawn(.{}, pty_wait_thread.progressThreadMain, .{self});
+        const progress_thread = try std.Thread.spawn(.{}, pty_wait_thread.progressThreadMain, .{pty_wait_thread.target(&self.term, &self.progress)});
         if (std.Thread.use_pthreads) _ = std.c.pthread_setname_np(progress_thread.getHandle(), "howl-term-host");
         self.progress.thread = progress_thread;
-    }
-
-    fn applyPendingClipboardWrites(self: *Term) void {
-        if (testing_hooks.apply_pending_clipboard_writes) |hook| {
-            hook(self);
-            return;
-        }
-        self.term.mutex.lockFair();
-        defer self.term.mutex.unlock();
-
-        const pending = vt_retained.drainPendingClipboardLocked(&self.term) catch return;
-        const text = pending orelse return;
-        if (self.conf.clipboard_osc_52 != .allow) return;
-        _ = window.setClipboardText(text);
     }
 
     fn renderTurnAdmission(self: *const Term) render_retained.RenderTurnAdmission {
@@ -635,59 +556,6 @@ pub const Surface = struct {
         return .{ .result = .stale, .snapshot_seq = snapshot_seq };
     }
 
-    fn wakePendingHooked(self: *Term) bool {
-        if (testing_hooks.wake_pending) |hook| return hook(self);
-        return pty_wait_thread.wakePending(self);
-    }
-
-    fn runtimeObligationDueNowHooked(self: *Term, now_ns: u64) bool {
-        if (testing_hooks.runtime_obligation_due_now) |hook| return hook(self, now_ns);
-        return self.runtimeObligationDueNow(now_ns);
-    }
-
-    fn isAliveHooked(self: *Term) bool {
-        if (testing_hooks.is_alive) |hook| return hook(self);
-        return pty_session.isAlive(&self.term);
-    }
-
-    fn driveOnceHooked(term: *HowlTerm, now_ns: u64) pty_pump.Outcome {
-        if (testing_hooks.drive_once) |hook| return hook(term, now_ns);
-        return pty_pump.driveOnce(term, now_ns);
-    }
-
-    fn driveProgressBounded(self: *Term, now_ns: u64) pty_pump.Outcome {
-        return driveOnceHooked(&self.term, now_ns);
-    }
-
-    fn noteTerminalSourceChanged(self: *Term) void {
-        self.term.mutex.lockFair();
-        defer self.term.mutex.unlock();
-        self.term.render.notePrepareNeeded();
-    }
-
-    fn driveProgressConsequences(self: *Term, now_ns: u64, outcome_input: pty_pump.Outcome) DriveProgressResult {
-        const focused = self.window_focused and self.widget_focused;
-        var outcome = outcome_input;
-        if (outcome.should_redraw) {
-            self.noteTerminalSourceChanged();
-            if (focused and terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
-        }
-        if (focused) {
-            outcome.should_redraw = self.driveCursor(now_ns) or outcome.should_redraw;
-        }
-        applyPendingClipboardWrites(self);
-        ackWakeHooked(self);
-        return .{ .drove = true, .outcome = outcome };
-    }
-
-    fn ackWakeHooked(self: *Term) void {
-        if (testing_hooks.ack_wake) |hook| {
-            hook(self);
-            return;
-        }
-        pty_wait_thread.ackWake(self);
-    }
-
     fn uploadRenderSurface(self: *Term, surface_frame: *const render_c.HowlRenderSurfaceFrame) bool {
         if (testing_hooks.upload_render_surface) |hook| return hook(self, surface_frame);
         return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, surface_frame);
@@ -719,6 +587,11 @@ pub const Surface = struct {
 
     fn driveCursor(self: *Term, now_ns: u64) bool {
         return self.consumeCursorFacts(self.cursorFacts(now_ns));
+    }
+
+    fn driveCursorIfFocused(self: *Term, now_ns: u64) bool {
+        if (!(self.window_focused and self.widget_focused)) return false;
+        return self.driveCursor(now_ns);
     }
 
     fn cursorAnimationValid(self: *const Term) bool {
@@ -1072,275 +945,6 @@ pub const testing = struct {
     }
 };
 
-test "surface with no admission does not drive" {
-    const TestState = struct {
-        var drive_calls: u8 = 0;
-        var clipboard_calls: u8 = 0;
-        var ack_calls: u8 = 0;
-    };
-
-    testing.installHooks(.{
-        .wake_pending = struct {
-            fn hook(_: *Surface) bool {
-                return false;
-            }
-        }.hook,
-        .runtime_obligation_due_now = struct {
-            fn hook(_: *Surface, _: u64) bool {
-                return false;
-            }
-        }.hook,
-        .next_runtime_obligation_wait_ms = struct {
-            fn hook(_: *Surface, _: u64) ?u32 {
-                return null;
-            }
-        }.hook,
-        .is_alive = struct {
-            fn hook(_: *Surface) bool {
-                return true;
-            }
-        }.hook,
-        .drive_once = struct {
-            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
-                TestState.drive_calls += 1;
-                return .{ .keep = false, .should_redraw = false, .alive = true };
-            }
-        }.hook,
-        .apply_pending_clipboard_writes = struct {
-            fn hook(_: *Surface) void {
-                TestState.clipboard_calls += 1;
-            }
-        }.hook,
-        .ack_wake = struct {
-            fn hook(_: *Surface) void {
-                TestState.ack_calls += 1;
-            }
-        }.hook,
-        .wants_render_turn = struct {
-            fn hook(_: *Surface) bool {
-                return false;
-            }
-        }.hook,
-    });
-    defer testing.resetHooks();
-
-    var surface = testSurfaceBase();
-    const facts = surface.runtimeFacts(11, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(11, facts);
-
-    try std.testing.expect(!facts.driveAdmitted());
-    try std.testing.expect(!result.drove);
-    try std.testing.expectEqual(@as(u8, 0), TestState.drive_calls);
-    try std.testing.expectEqual(@as(u8, 0), TestState.clipboard_calls);
-    try std.testing.expectEqual(@as(u8, 0), TestState.ack_calls);
-}
-
-test "surface with admitted input does drive" {
-    const TestState = struct {
-        var drive_calls: u8 = 0;
-        var clipboard_calls: u8 = 0;
-        var ack_calls: u8 = 0;
-    };
-
-    testing.installHooks(.{
-        .wake_pending = struct {
-            fn hook(_: *Surface) bool {
-                return false;
-            }
-        }.hook,
-        .runtime_obligation_due_now = struct {
-            fn hook(_: *Surface, _: u64) bool {
-                return false;
-            }
-        }.hook,
-        .next_runtime_obligation_wait_ms = struct {
-            fn hook(_: *Surface, _: u64) ?u32 {
-                return null;
-            }
-        }.hook,
-        .is_alive = struct {
-            fn hook(_: *Surface) bool {
-                return true;
-            }
-        }.hook,
-        .drive_once = struct {
-            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
-                TestState.drive_calls += 1;
-                return .{ .keep = false, .should_redraw = false, .alive = true };
-            }
-        }.hook,
-        .apply_pending_clipboard_writes = struct {
-            fn hook(_: *Surface) void {
-                TestState.clipboard_calls += 1;
-            }
-        }.hook,
-        .ack_wake = struct {
-            fn hook(_: *Surface) void {
-                TestState.ack_calls += 1;
-            }
-        }.hook,
-        .wants_render_turn = struct {
-            fn hook(_: *Surface) bool {
-                return false;
-            }
-        }.hook,
-    });
-    defer testing.resetHooks();
-
-    var surface = testSurfaceBase();
-    const facts = surface.runtimeFacts(12, .{ .input_published = true });
-    const result = surface.driveProgressWithFacts(12, facts);
-
-    try std.testing.expect(facts.driveAdmitted());
-    try std.testing.expect(result.drove);
-    try std.testing.expectEqual(@as(u8, 1), TestState.drive_calls);
-    try std.testing.expectEqual(@as(u8, 1), TestState.clipboard_calls);
-    try std.testing.expectEqual(@as(u8, 1), TestState.ack_calls);
-}
-
-test "wake alone does not drive host transport" {
-    const TestState = struct {
-        var drive_calls: u8 = 0;
-    };
-
-    testing.installHooks(.{
-        .wake_pending = struct {
-            fn hook(_: *Surface) bool {
-                return true;
-            }
-        }.hook,
-        .runtime_obligation_due_now = struct {
-            fn hook(_: *Surface, _: u64) bool {
-                return false;
-            }
-        }.hook,
-        .next_runtime_obligation_wait_ms = struct {
-            fn hook(_: *Surface, _: u64) ?u32 {
-                return null;
-            }
-        }.hook,
-        .is_alive = struct {
-            fn hook(_: *Surface) bool {
-                return true;
-            }
-        }.hook,
-        .drive_once = struct {
-            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
-                TestState.drive_calls += 1;
-                return .{ .keep = false, .should_redraw = false, .alive = true };
-            }
-        }.hook,
-        .wants_render_turn = struct {
-            fn hook(_: *Surface) bool {
-                return false;
-            }
-        }.hook,
-    });
-    defer testing.resetHooks();
-
-    var surface = testSurfaceBase();
-    const facts = surface.runtimeFacts(13, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(13, facts);
-
-    try std.testing.expect(!facts.driveAdmitted());
-    try std.testing.expect(!result.drove);
-    try std.testing.expectEqual(@as(u8, 0), TestState.drive_calls);
-}
-
-test "runtime due drives without new input" {
-    const TestState = struct {
-        var drive_calls: u8 = 0;
-    };
-
-    testing.installHooks(.{
-        .wake_pending = struct {
-            fn hook(_: *Surface) bool {
-                return false;
-            }
-        }.hook,
-        .runtime_obligation_due_now = struct {
-            fn hook(_: *Surface, _: u64) bool {
-                return true;
-            }
-        }.hook,
-        .next_runtime_obligation_wait_ms = struct {
-            fn hook(_: *Surface, _: u64) ?u32 {
-                return null;
-            }
-        }.hook,
-        .drive_once = struct {
-            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
-                TestState.drive_calls += 1;
-                return .{ .keep = false, .should_redraw = false, .alive = true };
-            }
-        }.hook,
-        .wants_render_turn = struct {
-            fn hook(_: *Surface) bool {
-                return false;
-            }
-        }.hook,
-    });
-    defer testing.resetHooks();
-
-    var surface = testSurfaceBase();
-    const facts = surface.runtimeFacts(14, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(14, facts);
-
-    try std.testing.expect(facts.driveAdmitted());
-    try std.testing.expect(result.drove);
-    try std.testing.expectEqual(@as(u8, 1), TestState.drive_calls);
-}
-
-test "cursor activity reset uses the passed now_ns" {
-    testing.installHooks(.{
-        .wake_pending = struct {
-            fn hook(_: *Surface) bool {
-                return false;
-            }
-        }.hook,
-        .runtime_obligation_due_now = struct {
-            fn hook(_: *Surface, _: u64) bool {
-                return false;
-            }
-        }.hook,
-        .next_runtime_obligation_wait_ms = struct {
-            fn hook(_: *Surface, _: u64) ?u32 {
-                return null;
-            }
-        }.hook,
-        .drive_once = struct {
-            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
-                return .{ .keep = false, .should_redraw = true, .alive = true };
-            }
-        }.hook,
-        .apply_pending_clipboard_writes = struct {
-            fn hook(_: *Surface) void {}
-        }.hook,
-        .ack_wake = struct {
-            fn hook(_: *Surface) void {}
-        }.hook,
-        .wants_render_turn = struct {
-            fn hook(_: *Surface) bool {
-                return false;
-            }
-        }.hook,
-    });
-    defer testing.resetHooks();
-
-    var surface = testSurfaceBase();
-    const now_ns: u64 = 1234;
-    surface.cursor_blink.visible = false;
-    surface.cursor_blink.deadline_ns = 17;
-    surface.cursor_render_info.blink = true;
-    const facts = surface.runtimeFacts(now_ns, .{ .input_published = true });
-    const result = surface.driveProgressWithFacts(now_ns, facts);
-
-    try std.testing.expect(result.drove);
-    try std.testing.expect(surface.cursor_blink.visible);
-    try std.testing.expectEqual(cursor_blink.default_interval_ns, surface.cursor_blink.deadline_ns);
-    try std.testing.expectEqual(@as(u8, 255), surface.cursor_render.cursor_opacity);
-}
-
 test "surface activity reset restores visible and refreshes deadline" {
     var surface = testSurfaceBase();
     surface.cursor_blink.visible = false;
@@ -1596,6 +1200,7 @@ fn testSurfaceBase() Surface {
             }),
             .vt_state = .{},
             .mutex = .{},
+            .texture_trigger = .{},
         },
         .progress = .{},
         .live = false,

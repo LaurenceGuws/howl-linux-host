@@ -1,9 +1,11 @@
 const std = @import("std");
+const EventLoop = @import("events/event_loop.zig");
 const pty_c = @import("howl_pty_c");
 const vt_c = @import("howl_vt_c");
 const Pty = @import("pty.zig");
 const Render = @import("render.zig");
 const Sync = @import("sync.zig");
+const texture_term = @import("texture/term.zig");
 const Vt = @import("vt.zig");
 
 const pty_session = Pty.session;
@@ -36,4 +38,22 @@ pub const Term = struct {
     render: render_retained.State,
     vt_state: VtState = .{},
     mutex: FairMutex = .{},
+    texture_trigger: texture_term.PresentTrigger = .{},
+
+    pub fn initTextureTrigger(self: *Term, event_loop: *EventLoop.EventLoop) void {
+        texture_term.initPresentTrigger(&self.texture_trigger, event_loop, wakeEventLoop);
+    }
+
+    pub fn triggerTexturePresent(self: *Term) void {
+        texture_term.triggerPresent(&self.texture_trigger);
+    }
+
+    pub fn takeTextureTriggered(self: *Term) bool {
+        return texture_term.takeTriggered(&self.texture_trigger);
+    }
+
+    fn wakeEventLoop(context: *anyopaque) void {
+        const event_loop: *EventLoop.EventLoop = @ptrCast(@alignCast(context));
+        event_loop.wake();
+    }
 };

@@ -14,6 +14,30 @@ pub const renderSurfaceSpritePatch = frame_commands.renderSurfaceSpritePatch;
 pub const renderSurfaceGlyphs = frame_commands.renderSurfaceGlyphs;
 pub const renderSurfaceGlyphPatch = frame_commands.renderSurfaceGlyphPatch;
 
+pub const PresentTrigger = struct {
+    triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    wake_context: ?*anyopaque = null,
+    wake: ?*const fn (*anyopaque) void = null,
+};
+
+pub fn initPresentTrigger(trigger: *PresentTrigger, wake_context: *anyopaque, wake: *const fn (*anyopaque) void) void {
+    trigger.triggered.store(false, .release);
+    trigger.wake_context = wake_context;
+    trigger.wake = wake;
+}
+
+pub fn triggerPresent(trigger: *PresentTrigger) void {
+    const was_triggered = trigger.triggered.swap(true, .acq_rel);
+    if (was_triggered) return;
+    const wake_context = trigger.wake_context orelse return;
+    const wake = trigger.wake orelse return;
+    wake(wake_context);
+}
+
+pub fn takeTriggered(trigger: *PresentTrigger) bool {
+    return trigger.triggered.swap(false, .acq_rel);
+}
+
 pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurfaceFrame) bool {
     std.debug.assert(surface.render_px.width > 0);
     std.debug.assert(surface.render_px.height > 0);
@@ -136,3 +160,22 @@ pub const testing = struct {
         frame_resources.testing.validateSurface(textures, surface);
     }
 };
+
+test "texture present trigger coalesces duplicate triggers" {
+    var trigger = PresentTrigger{};
+
+    triggerPresent(&trigger);
+    triggerPresent(&trigger);
+
+    try std.testing.expect(takeTriggered(&trigger));
+    try std.testing.expect(!takeTriggered(&trigger));
+}
+
+test "take triggered clears trigger and allows later trigger" {
+    var trigger = PresentTrigger{};
+
+    triggerPresent(&trigger);
+    try std.testing.expect(takeTriggered(&trigger));
+    triggerPresent(&trigger);
+    try std.testing.expect(takeTriggered(&trigger));
+}
