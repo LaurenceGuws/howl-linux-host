@@ -65,30 +65,43 @@ pub fn resize(surface_resize: *SurfaceResize, scrollbar: *terminal_scrollbar.Sta
     scrollbar.invalidate();
 }
 
-pub fn syncPendingSurfacePixels(surface_resize: *SurfaceResize, term: *Term) void {
-    const surface_px = blk: {
-        surface_resize.mutex.lock();
-        defer surface_resize.mutex.unlock();
-        if (surface_resize.pending_surface_px_w == surface_resize.surface_px_w and surface_resize.pending_surface_px_h == surface_resize.surface_px_h) return;
-        surface_resize.surface_px_w = surface_resize.pending_surface_px_w;
-        surface_resize.surface_px_h = surface_resize.pending_surface_px_h;
-        surface_resize.last_resize_ns = 0;
-        break :blk readSurfacePixelsLocked(surface_resize);
-    };
-    syncSurfaceLayout(term, surface_px) catch return;
+pub fn assertPendingResize(surface_resize: *SurfaceResize, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
+    surface_resize.mutex.lock();
+    defer surface_resize.mutex.unlock();
+    std.debug.assert(surface_resize.pending_surface_px_w == render_width);
+    std.debug.assert(surface_resize.pending_surface_px_h == render_height);
+    std.debug.assert(surface_resize.logical_w == logical_width);
+    std.debug.assert(surface_resize.logical_h == logical_height);
 }
 
-pub fn syncPendingSurfacePixelsLocked(surface_resize: *SurfaceResize, term: *Term) void {
+pub fn syncPendingSurfacePixels(surface_resize: *SurfaceResize, term: *Term) bool {
     const surface_px = blk: {
         surface_resize.mutex.lock();
         defer surface_resize.mutex.unlock();
-        if (surface_resize.pending_surface_px_w == surface_resize.surface_px_w and surface_resize.pending_surface_px_h == surface_resize.surface_px_h) return;
+        const surface_size_same = surface_resize.pending_surface_px_w == surface_resize.surface_px_w and surface_resize.pending_surface_px_h == surface_resize.surface_px_h;
+        if (surface_size_same) break :blk readSurfacePixelsLocked(surface_resize);
         surface_resize.surface_px_w = surface_resize.pending_surface_px_w;
         surface_resize.surface_px_h = surface_resize.pending_surface_px_h;
         surface_resize.last_resize_ns = 0;
         break :blk readSurfacePixelsLocked(surface_resize);
     };
-    syncSurfaceLayoutLocked(term, surface_px) catch return;
+    syncSurfaceLayout(term, surface_px) catch return false;
+    return retainedRenderPixelsMatch(term, surface_px);
+}
+
+pub fn syncPendingSurfacePixelsLocked(surface_resize: *SurfaceResize, term: *Term) bool {
+    const surface_px = blk: {
+        surface_resize.mutex.lock();
+        defer surface_resize.mutex.unlock();
+        const surface_size_same = surface_resize.pending_surface_px_w == surface_resize.surface_px_w and surface_resize.pending_surface_px_h == surface_resize.surface_px_h;
+        if (surface_size_same) break :blk readSurfacePixelsLocked(surface_resize);
+        surface_resize.surface_px_w = surface_resize.pending_surface_px_w;
+        surface_resize.surface_px_h = surface_resize.pending_surface_px_h;
+        surface_resize.last_resize_ns = 0;
+        break :blk readSurfacePixelsLocked(surface_resize);
+    };
+    syncSurfaceLayoutLocked(term, surface_px) catch return false;
+    return retainedRenderPixelsMatchLocked(term, surface_px);
 }
 
 pub fn syncSurfaceLayout(term: *Term, surface_px: c.HowlRenderPixelSize) !void {
@@ -123,6 +136,16 @@ pub fn syncCurrentSurfaceLayout(surface_resize: *SurfaceResize, term: *Term) boo
     const surface_px = readSurfacePixels(surface_resize);
     syncSurfaceLayout(term, surface_px) catch return false;
     return true;
+}
+
+fn retainedRenderPixelsMatch(term: *Term, surface_px: c.HowlRenderPixelSize) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return retainedRenderPixelsMatchLocked(term, surface_px);
+}
+
+fn retainedRenderPixelsMatchLocked(term: *const Term, surface_px: c.HowlRenderPixelSize) bool {
+    return term.render.surface_layout.render_px.width == surface_px.width and term.render.surface_layout.render_px.height == surface_px.height;
 }
 
 pub fn readSurfacePixelsLocked(surface_resize: *const SurfaceResize) c.HowlRenderPixelSize {

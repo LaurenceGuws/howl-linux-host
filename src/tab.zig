@@ -1,6 +1,8 @@
 //! Host runtime tab owner.
 
 const std = @import("std");
+const render_c = @import("howl_render_c");
+const vt_c = @import("howl_vt_c");
 
 const Config = @import("config.zig");
 const EventLoop = @import("events/event_loop.zig");
@@ -12,6 +14,7 @@ const TerminalSurface = terminal_bucket.Surface;
 const pty_session = @import("pty/session.zig");
 const pty_pump = @import("pty/pump.zig");
 const render_retained = @import("render/surface_retained.zig");
+const surface_layout = @import("render/surface_layout.zig");
 const terminal_scrollbar = @import("scroll_bar.zig");
 const term_input = @import("vt/input.zig");
 const HowlTerm = @import("term.zig").Term;
@@ -23,6 +26,25 @@ const PaneVisibility = Layout.pane.Visibility;
 const second_pane: PaneId = @enumFromInt(1);
 
 /// Runtime owner for one tab and its bounded tiled panes.
+///
+/// Policy control spine:
+///
+/// - `pane_count` is the pane capacity knob. Options today are `1` or `2`.
+///   Invariant: a leaf split tree has one pane; a pair split tree has two panes.
+/// - `split_tree` is the tiled placement knob. Options today are leaf, left-right pair, or top-bottom pair.
+///   Invariant: placement is derived for every initialized pane, never only the active pane.
+/// - `active_pane` is the input-focus knob. Options are initialized pane ids only.
+///   Invariant: focus changes do not change kind, visibility, selectability, placement, or size.
+/// - `TabSelection` is the window-selection knob. Options are selected or unselected.
+///   Invariant: selected tiled panes are visible/selectable; unselected tiled panes are hidden/not selectable.
+/// - `PaneInfo.kind` is the pane-shape knob. Options are tiled or floating.
+///   Invariant today: all initialized panes are tiled and floating counts are zero.
+/// - `PaneInfo.visibility` is the presentation-admission knob. Options are visible or hidden.
+///   Invariant: visible unfocused panes still participate in redraw/progress; hidden panes do not.
+/// - `InputAdmission` is the terminal-input knob. Options are admitted or blocked.
+///   Invariant: only the focused visible pane in the selected tab receives published input.
+/// - `resize` is the geometry-realization knob. Input is a tab body.
+///   Invariant: every initialized pane records the new placement size, independent of focus.
 pub const Tab = struct {
     panes: [max_frame_panes]TerminalSurface = undefined,
     pane_count: u8 = 0,
@@ -300,7 +322,13 @@ pub const Tab = struct {
         self.assertInvariants();
         var placements_buf: [max_frame_panes]Layout.pane.Placement = undefined;
         const placements = self.place(tab_body, placements_buf[0..]);
-        for (placements) |placement| self.pane(placement.id).resize(placement.pixel_size.width, placement.pixel_size.height, placement.logical_size.width, placement.logical_size.height);
+        for (placements) |placement| {
+            const pane_value = self.pane(placement.id);
+            pane_value.resize(placement.pixel_size.width, placement.pixel_size.height, placement.logical_size.width, placement.logical_size.height);
+            assertPaneResizePending(pane_value, placement);
+            std.debug.assert(pane_value.syncPendingSurfacePixels());
+            assertPaneTextureSize(pane_value, placement.pixel_size);
+        }
     }
 
     pub fn activeTerminalPlacement(self: *const Tab, tab_body: Layout.tab.Body) Layout.pane.TerminalPlacement {
@@ -522,6 +550,16 @@ pub const Tab = struct {
         return .{ .width = width, .height = height };
     }
 
+    fn assertPaneResizePending(pane_value: *TerminalSurface, placement: Layout.pane.Placement) void {
+        surface_layout.assertPendingResize(&pane_value.surface_layout, placement.pixel_size.width, placement.pixel_size.height, placement.logical_size.width, placement.logical_size.height);
+    }
+
+    fn assertPaneTextureSize(pane_value: *const TerminalSurface, size: Layout.Size) void {
+        const texture_size = paneTextureSize(pane_value);
+        std.debug.assert(texture_size.width == size.width);
+        std.debug.assert(texture_size.height == size.height);
+    }
+
     fn aggregateTurnStep(current: TurnStep, next: TurnStep) TurnStep {
         return if (turnStepRank(next) > turnStepRank(current)) next else current;
     }
@@ -622,6 +660,79 @@ test "runtime tab split placement exposes both pane ids" {
     try std.testing.expectEqual(second_pane, panes[1].id);
     try std.testing.expectEqual(Layout.Rect{ .x = 0, .y = 30, .width = 960, .height = 285 }, panes[0].rect);
     try std.testing.expectEqual(Layout.Rect{ .x = 0, .y = 315, .width = 960, .height = 285 }, panes[1].rect);
+}
+
+test "runtime tab resize records left-right placement for both panes" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+    installResizeRealizationForTest(&tab);
+    defer deinitResizeRealizationForTest(&tab);
+    const next_body = testResizedTabBody();
+
+    tab.resize(next_body);
+
+    try expectPaneResizePending(&tab, .first, .{ .width = 600, .height = 720 }, .{ .width = 600, .height = 720 });
+    try expectPaneResizePending(&tab, second_pane, .{ .width = 600, .height = 720 }, .{ .width = 600, .height = 720 });
+    try std.testing.expectEqual(second_pane, tab.activePaneId());
+    try std.testing.expectEqual(Layout.splits.Tree{ .pair = .{ .direction = .left_right, .first = .{ .pane = .first }, .second = .{ .pane = second_pane } } }, tab.split_tree);
+}
+
+test "runtime tab resize records top-bottom placement for both panes" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .top_bottom);
+    installResizeRealizationForTest(&tab);
+    defer deinitResizeRealizationForTest(&tab);
+    const next_body = testResizedTabBody();
+
+    tab.resize(next_body);
+
+    try expectPaneResizePending(&tab, .first, .{ .width = 1200, .height = 360 }, .{ .width = 1200, .height = 360 });
+    try expectPaneResizePending(&tab, second_pane, .{ .width = 1200, .height = 360 }, .{ .width = 1200, .height = 360 });
+    try std.testing.expectEqual(second_pane, tab.activePaneId());
+    try std.testing.expectEqual(Layout.splits.Tree{ .pair = .{ .direction = .top_bottom, .first = .{ .pane = .first }, .second = .{ .pane = second_pane } } }, tab.split_tree);
+}
+
+test "runtime tab resize does not change selected pane info policy" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+    installResizeRealizationForTest(&tab);
+    defer deinitResizeRealizationForTest(&tab);
+    var before_infos: [Tab.max_frame_panes]Tab.PaneInfo = undefined;
+    var after_infos: [Tab.max_frame_panes]Tab.PaneInfo = undefined;
+
+    const before = tab.paneInfo(.selected, before_infos[0..]);
+    tab.resize(testResizedTabBody());
+    const after = tab.paneInfo(.selected, after_infos[0..]);
+
+    try std.testing.expectEqual(@as(usize, 2), before.len);
+    try std.testing.expectEqual(@as(usize, 2), after.len);
+    for (before, after) |before_pane, after_pane| {
+        try std.testing.expectEqual(before_pane.id, after_pane.id);
+        try std.testing.expectEqual(before_pane.kind, after_pane.kind);
+        try std.testing.expectEqual(before_pane.visibility, after_pane.visibility);
+        try std.testing.expectEqual(before_pane.is_focused, after_pane.is_focused);
+        try std.testing.expectEqual(before_pane.is_selectable, after_pane.is_selectable);
+    }
+}
+
+test "runtime tab frame panes after resize must expose resized placement for both panes" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+    installResizeRealizationForTest(&tab);
+    defer deinitResizeRealizationForTest(&tab);
+    const next_body = testResizedTabBody();
+    var panes: [Tab.max_frame_panes]Layout.FramePane = undefined;
+
+    tab.resize(next_body);
+    try std.testing.expectEqual(Layout.Size{ .width = 600, .height = 720 }, Tab.paneTextureSize(tab.paneConst(.first)));
+    try std.testing.expectEqual(Layout.Size{ .width = 600, .height = 720 }, Tab.paneTextureSize(tab.paneConst(second_pane)));
+    const frame_panes = tab.framePanes(next_body, panes[0..]);
+
+    try std.testing.expectEqual(@as(usize, 2), frame_panes.len);
+    try std.testing.expectEqual(PaneId.first, frame_panes[0].id);
+    try std.testing.expectEqual(second_pane, frame_panes[1].id);
+    try std.testing.expectEqual(Layout.Rect{ .x = 0, .y = 30, .width = 600, .height = 720 }, frame_panes[0].term_texture_rect);
+    try std.testing.expectEqual(Layout.Rect{ .x = 600, .y = 30, .width = 600, .height = 720 }, frame_panes[1].term_texture_rect);
 }
 
 test "runtime tab focus movement is no-op for one pane" {
@@ -934,13 +1045,38 @@ fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u
     });
     pane.term_texture = .{ .host_surface_id = texture_id, .width = width, .height = height };
     pane.conf = &test_terminal_conf;
-    pane.surface_layout.logical_w = width;
-    pane.surface_layout.logical_h = height;
+    pane.surface_layout = surface_layout.init(width, height, width, height);
     pane.scrollbar = .{};
     pane.links = .{};
     pane.window_focused = true;
     pane.widget_focused = true;
     pane.font_size_px = 16;
+}
+
+fn installResizeRealizationForTest(tab: *Tab) void {
+    const config = render_c.HowlRenderTextConfig{
+        .font_size_px = 1,
+        .fallback_font_path_count = 0,
+        .reserved0 = 0,
+        .primary_font_path = null,
+        .fallback_font_paths = null,
+    };
+    for (tab.initializedPanes()) |*pane_value| {
+        const layout = pane_value.term.render.surface_layout;
+        pane_value.term.session = pty_session.initHandle(.{ .shell = test_terminal_conf.shell }, layout.cols, layout.rows) catch unreachable;
+        pane_value.term.vt = vt_c.howl_vt_terminal_init(layout.rows, layout.cols, 16) orelse unreachable;
+        std.debug.assert(pane_value.term.render.initText(&config));
+    }
+}
+
+fn deinitResizeRealizationForTest(tab: *Tab) void {
+    for (tab.initializedPanes()) |*pane_value| {
+        pane_value.term.render.deinit();
+        vt_c.howl_vt_terminal_deinit(pane_value.term.vt);
+        pty_session.deinitHandle(pane_value.term.session);
+        pane_value.term.vt = null;
+        pane_value.term.session = null;
+    }
 }
 
 fn testTabBody() Layout.tab.Body {
@@ -949,4 +1085,17 @@ fn testTabBody() Layout.tab.Body {
         .pixel_size = .{ .width = 960, .height = 570 },
         .logical_size = .{ .width = 960, .height = 570 },
     };
+}
+
+fn testResizedTabBody() Layout.tab.Body {
+    return .{
+        .rect = .{ .x = 0, .y = 30, .width = 1200, .height = 720 },
+        .pixel_size = .{ .width = 1200, .height = 720 },
+        .logical_size = .{ .width = 1200, .height = 720 },
+    };
+}
+
+fn expectPaneResizePending(tab: *Tab, id: PaneId, pixel_size: Layout.Size, logical_size: Layout.Size) !void {
+    const pane_value = tab.pane(id);
+    surface_layout.assertPendingResize(&pane_value.surface_layout, pixel_size.width, pixel_size.height, logical_size.width, logical_size.height);
 }

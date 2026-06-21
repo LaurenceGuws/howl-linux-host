@@ -254,8 +254,8 @@ pub const Surface = struct {
         surface_layout.resize(&self.surface_layout, &self.scrollbar, render_width, render_height, logical_width, logical_height);
     }
 
-    pub fn syncPendingSurfacePixels(self: *Term) void {
-        surface_layout.syncPendingSurfacePixels(&self.surface_layout, &self.term);
+    pub fn syncPendingSurfacePixels(self: *Term) bool {
+        return surface_layout.syncPendingSurfacePixels(&self.surface_layout, &self.term);
     }
 
     pub fn syncSurfaceLayout(self: *Term, surface_px: render_c.HowlRenderPixelSize) !void {
@@ -551,7 +551,7 @@ pub const Surface = struct {
             .submit_ready => self.submitDriveResult(false, self.submitPreparedLocked()),
             .failed => idleDrive(.failed, .failed),
             .prepare_needed => blk: {
-                self.syncPendingSurfacePixelsLocked();
+                _ = self.syncPendingSurfacePixelsLocked();
                 var visible = vt_surface.captureRenderStateLocked(&self.term, terminal_links.hoverDecoration(self)) catch {
                     self.links.hover_publish_pending = false;
                     self.term.render.noteRetainedFailure();
@@ -573,8 +573,8 @@ pub const Surface = struct {
         };
     }
 
-    fn syncPendingSurfacePixelsLocked(self: *Term) void {
-        surface_layout.syncPendingSurfacePixelsLocked(&self.surface_layout, &self.term);
+    fn syncPendingSurfacePixelsLocked(self: *Term) bool {
+        return surface_layout.syncPendingSurfacePixelsLocked(&self.surface_layout, &self.term);
     }
 
     fn submitPrepared(self: *Term) SubmitPreparedResult {
