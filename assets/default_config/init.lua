@@ -80,6 +80,8 @@ return {
       zoom_reset = { "ctrl+zero" },
       zoom_stress_toggle = { "ctrl+shift+equal", "ctrl+shift+kp_add" },
       paste = { "ctrl+shift+v", "shift+insert" },
+      split_right = { "ctrl+shift+alt+five" },
+      split_down = { "ctrl+shift+alt+apostrophe" },
     },
   },
   tab_bar = {

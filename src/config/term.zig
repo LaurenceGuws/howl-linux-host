@@ -200,6 +200,8 @@ const binding_specs = [_]Input.Bindings.Spec{
     .{ .field = "zoom_reset", .action = .zoom_reset },
     .{ .field = "zoom_stress_toggle", .action = .zoom_stress_toggle },
     .{ .field = "paste", .action = .terminal_paste },
+    .{ .field = "split_right", .action = .terminal_split_right },
+    .{ .field = "split_down", .action = .terminal_split_down },
 };
 
 fn parseClipboardOsc52Policy(raw: []const u8) ClipboardOsc52Policy {
@@ -530,6 +532,32 @@ test "mouse bypass mod parsing" {
     try std.testing.expect(!none.shift and !none.alt and !none.ctrl);
     try std.testing.expect((try parseMouseBypassMod("ctrl")).ctrl);
     try std.testing.expectError(error.InvalidConfig, parseMouseBypassMod("meta"));
+}
+
+test "terminal config loads split bindings" {
+    var config = try loadConfigForTest(std.testing.allocator,
+        \\return {
+        \\  term = {
+        \\    shell = "/bin/sh",
+        \\    fallback_mono = {},
+        \\    fallback_symbols = {},
+        \\    fallback_emoji = {},
+        \\    bindings = {
+        \\      split_right = { "ctrl+shift+alt+five" },
+        \\      split_down = { "ctrl+shift+alt+apostrophe" },
+        \\    },
+        \\  },
+        \\}
+    );
+    defer config.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), config.bindings.bindings.len);
+    try std.testing.expectEqual(Input.Bindings.Action.terminal_split_right, config.bindings.bindings[0].action);
+    try std.testing.expectEqual(Input.Key.five, config.bindings.bindings[0].key);
+    try std.testing.expect(config.bindings.bindings[0].ctrl and config.bindings.bindings[0].shift and config.bindings.bindings[0].alt);
+    try std.testing.expectEqual(Input.Bindings.Action.terminal_split_down, config.bindings.bindings[1].action);
+    try std.testing.expectEqual(Input.Key.apostrophe, config.bindings.bindings[1].key);
+    try std.testing.expect(config.bindings.bindings[1].ctrl and config.bindings.bindings[1].shift and config.bindings.bindings[1].alt);
 }
 
 fn loadConfigForTest(allocator: std.mem.Allocator, source: []const u8) !Config {

@@ -543,12 +543,29 @@ pub const Processor = struct {
             .zoom_reset => _ = activeSurface(self.tabs.items(), self.active_tab_idx.*).resetFontSize(),
             .zoom_stress_toggle => _ = activeSurface(self.tabs.items(), self.active_tab_idx.*).toggleStressFontSize(),
             .terminal_paste => pasteIntoActiveTab(activeSurface(self.tabs.items(), self.active_tab_idx.*)),
+            .terminal_split_right => try self.splitActiveTab(.right),
+            .terminal_split_down => try self.splitActiveTab(.down),
             .terminal_new_tab => try self.openTab(),
             .terminal_close_tab => closeActiveTab(self.conf, self.window, self.tabs, self.active_tab_idx),
             .terminal_next_tab => selectRelative(self.window, self.tabs.items(), self.active_tab_idx, 1),
             .terminal_prev_tab => selectRelative(self.window, self.tabs.items(), self.active_tab_idx, -1),
             else => if (Input.Bindings.focusTabIndex(action)) |idx| selectTab(self.window, self.tabs.items(), self.active_tab_idx, idx),
         }
+    }
+
+    fn splitActiveTab(self: *Self, direction: enum { right, down }) !void {
+        const tabs = self.tabs.items();
+        const tab = activeSurface(tabs, self.active_tab_idx.*);
+        const tab_body = LayoutTab.body(LayoutWindow.interior(self.window, &self.conf.tab_bar, @intCast(tabs.len)));
+        const split = switch (direction) {
+            .right => try tab.splitRight(self.input, self.event_loop, &self.conf.term, tab_body),
+            .down => try tab.splitDown(self.input, self.event_loop, &self.conf.term, tab_body),
+        };
+        if (!split) return;
+
+        self.window.requestRedraw();
+        self.configureInputPolicies();
+        syncActiveWindowTitle(self.window, tab);
     }
 
     fn closeActiveTab(conf: *const Config.UiConfig, app_window: *window.Window, tabs: *TabSlots, active_tab_idx: *TabIndex) void {

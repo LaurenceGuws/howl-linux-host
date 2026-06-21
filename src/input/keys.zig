@@ -208,6 +208,8 @@ pub const Bindings = struct {
         zoom_reset,
         zoom_stress_toggle,
         terminal_paste,
+        terminal_split_right,
+        terminal_split_down,
         terminal_new_tab,
         terminal_close_tab,
         terminal_next_tab,
@@ -291,3 +293,23 @@ pub const Bindings = struct {
         return null;
     }
 };
+
+test "split right binding parses physical percent key" {
+    const binding = try Bindings.parse("ctrl+shift+alt+five", .terminal_split_right);
+
+    try std.testing.expectEqual(Bindings.Action.terminal_split_right, binding.action);
+    try std.testing.expectEqual(Key.five, binding.key);
+    try std.testing.expect(binding.ctrl);
+    try std.testing.expect(binding.shift);
+    try std.testing.expect(binding.alt);
+}
+
+test "split down binding parses physical quote key" {
+    const binding = try Bindings.parse("ctrl+shift+alt+apostrophe", .terminal_split_down);
+
+    try std.testing.expectEqual(Bindings.Action.terminal_split_down, binding.action);
+    try std.testing.expectEqual(Key.apostrophe, binding.key);
+    try std.testing.expect(binding.ctrl);
+    try std.testing.expect(binding.shift);
+    try std.testing.expect(binding.alt);
+}
