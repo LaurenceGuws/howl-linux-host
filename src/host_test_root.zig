@@ -36,6 +36,9 @@ test {
     _ = @import("tab_bar.zig").cell_surface;
     _ = @import("tab_bar.zig").surface;
     _ = @import("layout.zig").window;
+    _ = @import("layout.zig").tab;
+    _ = @import("layout.zig").pane;
+    _ = @import("layout.zig").tab_bar;
     _ = @import("layout.zig").z_index;
     _ = @import("layout.zig").scrollbar;
     _ = @import("layout.zig").scroll_chip;
@@ -59,6 +62,11 @@ test "host source has no rejected scroll layer noun" {
     try expectNoRejectedScrollLayerNoun(@embedFile("buckets that must die/bucket2.zig"));
 }
 
+test "host source has no temporary layout window symbols" {
+    try expectNoTemporaryLayoutWindowSymbol(@embedFile("layout/window.zig"));
+    try expectNoTemporaryLayoutWindowSymbol(@embedFile("events/event.zig"));
+}
+
 fn expectNoLayoutCellsImport(source: []const u8) !void {
     const stale_import = "layout/" ++ "cells.zig";
     const stale_relative_import = "../" ++ stale_import;
@@ -76,5 +84,26 @@ fn expectNoRejectedScrollLayerNoun(source: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, source, stale_relative_import) == null);
     try std.testing.expect(std.mem.indexOf(u8, source, stale_snapshot) == null);
     try std.testing.expect(std.mem.indexOf(u8, source, stale_method) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_local) == null);
+}
+
+fn expectNoTemporaryLayoutWindowSymbol(source: []const u8) !void {
+    const stale_regions_type = "LayoutWindow." ++ "Regions";
+    const stale_terminal_type = "LayoutWindow." ++ "Terminal";
+    const stale_regions_call = "LayoutWindow." ++ "regions";
+    const stale_terminal_call = "LayoutWindow." ++ "terminal";
+    const stale_regions_decl = "pub const " ++ "Regions";
+    const stale_terminal_decl = "pub const " ++ "Terminal";
+    const stale_next = "next_" ++ "viewport";
+    const stale_after = "after_" ++ "viewport";
+    const stale_local = "const " ++ "viewport" ++ " = LayoutWindow";
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_regions_type) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_terminal_type) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_regions_call) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_terminal_call) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_regions_decl) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_terminal_decl) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_next) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_after) == null);
     try std.testing.expect(std.mem.indexOf(u8, source, stale_local) == null);
 }

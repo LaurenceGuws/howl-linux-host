@@ -1,81 +1,45 @@
-//! Temporary Stage 1 host window-structure owner.
-//! Owns the geometry moved out of the old viewport path until later stages split behavior further.
+//! Host layout window interior owner.
 
 const std = @import("std");
 
 const Events = @import("../events.zig");
 const Layout = @import("../layout.zig");
+const TabBar = @import("tab_bar.zig");
 const TabBarConfig = @import("../config/tab_bar.zig").Config;
 const Window = Events.window.Window;
 
-pub const Regions = struct {
-    tab_bar_px: u32,
-    tab_bar_logical: u32,
-    content_px: Layout.Size,
-    content_logical: Layout.Size,
-    content_rect: Layout.Rect,
+pub const Interior = struct {
+    tab_bar: TabBar.Band,
+    tab_body_rect: Layout.Rect,
+    tab_body_px: Layout.Size,
+    tab_body_logical: Layout.Size,
 };
 
-pub const Terminal = struct {
-    regions: Regions,
-    texture_px: Layout.Size,
-    texture_rect: Layout.Rect,
-    logical_size: Layout.Size,
-};
-
-pub fn regions(window: *const Window, tab_bar: *const TabBarConfig, tab_count: u8) Regions {
-    const bar_height = tabBarHeight(tab_bar, tab_count);
-    const bar_px = @as(u32, @intCast(Layout.tabBarHeight(window, bar_height)));
-    const bar_logical = @as(u32, @intCast(Layout.tabBarHeightLogical(window, bar_height)));
-    const content_px = Layout.contentPixelSize(window, bar_height);
-    const content_logical = Layout.contentLogicalSize(window, bar_height);
+pub fn interior(window: *const Window, tab_bar: *const TabBarConfig, tab_count: u8) Interior {
+    const tab_bar_band = TabBar.band(window, tab_bar, tab_count);
+    const body_px = Layout.Size{ .width = @max(window.px_w, 1), .height = @max(window.px_h - @as(c_int, @intCast(tab_bar_band.pixel_height)), 1) };
+    const body_logical = Layout.Size{ .width = @max(window.logical_w, 1), .height = @max(window.logical_h - @as(c_int, @intCast(tab_bar_band.logical_height)), 1) };
     return .{
-        .tab_bar_px = bar_px,
-        .tab_bar_logical = bar_logical,
-        .content_px = content_px,
-        .content_logical = content_logical,
-        .content_rect = Layout.contentRect(window, bar_height),
+        .tab_bar = tab_bar_band,
+        .tab_body_rect = .{ .x = 0, .y = @intCast(tab_bar_band.pixel_height), .width = body_px.width, .height = body_px.height },
+        .tab_body_px = body_px,
+        .tab_body_logical = body_logical,
     };
 }
 
-pub fn terminal(window: *const Window, tab_bar: *const TabBarConfig, tab_count: u8, texture_px: Layout.Size) Terminal {
-    const r = regions(window, tab_bar, tab_count);
-    return .{
-        .regions = r,
-        .texture_px = texture_px,
-        .texture_rect = Layout.terminalRect(r.content_rect, texture_px),
-        .logical_size = Layout.terminalLogicalSize(r.content_logical, r.content_px, texture_px),
-    };
-}
-
-pub fn tabBarHeight(tab_bar: *const TabBarConfig, tab_count: u8) u32 {
-    return if (tab_count >= tab_bar.min_tabs_for_bar) tab_bar.height else 0;
-}
-
-test "window regions hide tab bar until configured tab count" {
+test "interior reserves tab bar and exposes tab body" {
     const window = testWindow();
     const tab_bar = testTabBarConfig();
 
-    const one = regions(&window, &tab_bar, 1);
-    try std.testing.expectEqual(@as(u32, 0), one.tab_bar_px);
-    try std.testing.expectEqual(@as(c_int, 600), one.content_px.height);
-    try std.testing.expectEqual(@as(c_int, 0), one.content_rect.y);
+    const one = interior(&window, &tab_bar, 1);
+    try std.testing.expectEqual(@as(u32, 0), one.tab_bar.pixel_height);
+    try std.testing.expectEqual(@as(c_int, 600), one.tab_body_px.height);
+    try std.testing.expectEqual(@as(c_int, 0), one.tab_body_rect.y);
 
-    const two = regions(&window, &tab_bar, 2);
-    try std.testing.expectEqual(@as(u32, 30), two.tab_bar_px);
-    try std.testing.expectEqual(@as(c_int, 570), two.content_px.height);
-    try std.testing.expectEqual(@as(c_int, 30), two.content_rect.y);
-}
-
-test "terminal window geometry derives placed texture and logical input size" {
-    const window = testWindow();
-    const tab_bar = testTabBarConfig();
-
-    const value = terminal(&window, &tab_bar, 2, .{ .width = 960, .height = 560 });
-
-    try std.testing.expectEqual(@as(c_int, 30), value.texture_rect.y);
-    try std.testing.expectEqual(@as(c_int, 560), value.texture_rect.height);
-    try std.testing.expectEqual(@as(c_int, 560), value.logical_size.height);
+    const two = interior(&window, &tab_bar, 2);
+    try std.testing.expectEqual(@as(u32, 30), two.tab_bar.pixel_height);
+    try std.testing.expectEqual(@as(c_int, 570), two.tab_body_px.height);
+    try std.testing.expectEqual(@as(c_int, 30), two.tab_body_rect.y);
 }
 
 fn testWindow() Window {
