@@ -6,7 +6,6 @@ const TextureFrame = @import("../texture/frame.zig");
 const Layout = @import("../layout.zig");
 const LayoutWindow = @import("../layout/window.zig");
 const LayoutTab = @import("../layout/tab.zig");
-const LayoutPane = @import("../layout/pane.zig");
 const LayoutTabBar = @import("../layout/tab_bar.zig");
 const EventLoop = @import("event_loop.zig");
 const Input = @import("../input.zig").Input;
@@ -344,8 +343,7 @@ pub const Processor = struct {
         const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
         const window_interior = LayoutWindow.interior(self.window, &self.conf.tab_bar, @intCast(self.tabs.items().len));
         const tab_body = LayoutTab.body(window_interior);
-        const pane = LayoutTab.singlePane(tab_body, .first);
-        const terminal = LayoutPane.terminal(pane, tab.textureSize());
+        const terminal = tab.activeTerminalPlacement(tab_body);
         const terminal_origin_y: i32 = @intCast(window_interior.tab_bar.logical_height);
         tab.drainTextInputFastPath(self.input, &self.term_input_admitted, host_visual_changed);
         tab.drainPointerInput(self.input, 0, terminal_origin_y, terminal.logical_size.width, terminal.logical_size.height, &self.term_input_admitted, host_visual_changed);
@@ -447,30 +445,20 @@ pub const Processor = struct {
 
     fn renderSnapshot(self: *Self, tab: *RuntimeTab) RenderSnapshot {
         const window_interior = LayoutWindow.interior(self.window, &self.conf.tab_bar, @intCast(self.tabs.items().len));
-        const pane = LayoutTab.singlePane(LayoutTab.body(window_interior), .first);
-        const terminal = LayoutPane.terminal(pane, tab.textureSize());
         var title_buf: [TabBar.max_tabs][]const u8 = undefined;
         const tabs = self.tabs.items();
         const tab_bar_snapshot = self.tab_bar.snapshot(self.active_tab_idx.*, tabTitles(tabs, title_buf[0..]));
+        var panes: [RuntimeTab.max_frame_panes]Layout.FramePane = undefined;
+        const frame_panes = tab.framePanes(LayoutTab.body(window_interior), panes[0..]);
         return .{
-            .panes = onePaneFrame(tab, pane.id, terminal.texture_rect),
-            .pane_count = RuntimeTab.max_frame_panes,
+            .panes = panes,
+            .pane_count = frame_panes.len,
             .tab_bar_height_px = @intCast(window_interior.tab_bar.pixel_height),
             .active_tab = tab_bar_snapshot.active_idx,
             .tab_bar_revision = tabBarRevision(tabs, self.active_tab_idx.*),
             .labels = tab_bar_snapshot.labels,
             .damage = .fullFrame(),
         };
-    }
-
-    fn onePaneFrame(tab: *RuntimeTab, id: LayoutPane.PaneId, texture_rect: Layout.Rect) [RuntimeTab.max_frame_panes]Layout.FramePane {
-        return .{.{
-            .id = id,
-            .term_texture_id = @intCast(tab.termTextureId()),
-            .term_texture_rect = texture_rect,
-            .scrollbar = tab.scrollbarPlacement(texture_rect),
-            .scroll_chip = tab.scrollChipPlacement(texture_rect),
-        }};
     }
 
     fn derivePresentReason(host_redraw: bool, step: RuntimeTab.TurnStep) PresentReason {
@@ -487,14 +475,12 @@ pub const Processor = struct {
             .host_damage => _ = self.texture_frame.submitPresentSync(presentFrame(&frame)),
             .terminal_frame => {
                 assert(frame.turn.step == .rendered);
-                assert(frame.turn.present_snapshot_seq != 0);
                 const token = self.texture_frame.submitPresentSync(presentFrame(&frame));
-                frame.tab.notePresentSubmitted(frame.turn.present_snapshot_seq, token);
+                frame.tab.notePresentSubmitted(frame.turn, token);
                 frame.tab.completePresent(token);
             },
             .terminal_retire => {
                 assert(frame.turn.step == .blocked_present);
-                assert(frame.turn.present_snapshot_seq == 0);
             },
         }
     }
@@ -521,8 +507,7 @@ pub const Processor = struct {
     }
 
     fn resizeTerminalsForTabBody(tabs: []*RuntimeTab, tab_body: LayoutTab.Body) void {
-        const pane = LayoutTab.singlePane(tab_body, .first);
-        for (tabs) |tab| tab.resize(pane.pixel_size.width, pane.pixel_size.height, pane.logical_size.width, pane.logical_size.height);
+        for (tabs) |tab| tab.resize(tab_body);
     }
 
     fn setWindowFocused(app_window: *window.Window, tabs: []*RuntimeTab, active_tab_idx: TabIndex, focused: bool) void {
@@ -678,17 +663,21 @@ test "tab bar height follows configured minimum tab count" {
 
 test "present frame carries one current runtime pane" {
     var tab: RuntimeTab = undefined;
-    tab.first_pane.font_size_px = 16;
-    const snapshot_panes = [_]Layout.FramePane{.{
+    tab.pane_count = 1;
+    tab.active_pane = .first;
+    tab.split_tree = Layout.splits.leaf(.first);
+    tab.panes[0].font_size_px = 16;
+    var snapshot_panes: [RuntimeTab.max_frame_panes]Layout.FramePane = undefined;
+    snapshot_panes[0] = .{
         .id = .first,
         .term_texture_id = 9,
         .term_texture_rect = .{ .x = 0, .y = 30, .width = 80, .height = 40 },
         .scrollbar = Layout.scrollbar.hidden(.{ .x = 0, .y = 30, .width = 80, .height = 40 }),
         .scroll_chip = Layout.scroll_chip.hidden(Layout.scrollbar.hidden(.{ .x = 0, .y = 30, .width = 80, .height = 40 })),
-    }};
+    };
     const snapshot = Processor.RenderSnapshot{
         .panes = snapshot_panes,
-        .pane_count = RuntimeTab.max_frame_panes,
+        .pane_count = 1,
         .tab_bar_height_px = 30,
         .active_tab = 0,
         .tab_bar_revision = 1,
@@ -698,11 +687,9 @@ test "present frame carries one current runtime pane" {
     const render_frame = Processor.RenderFrame{
         .tab = &tab,
         .turn = .{
-            .state_before = undefined,
-            .state_after = undefined,
-            .prepared = false,
+            .panes = undefined,
+            .pane_count = 1,
             .step = .surface_idle,
-            .present_snapshot_seq = 0,
             .present_damage = .fullFrame(),
         },
         .snapshot = snapshot,
@@ -714,8 +701,61 @@ test "present frame carries one current runtime pane" {
     try std.testing.expectEqual(@as(c_int, 30), frame.tab_bar_height_px);
 }
 
+test "present frame slices only active snapshot pane count" {
+    var tab: RuntimeTab = undefined;
+    tab.pane_count = 1;
+    tab.active_pane = .first;
+    tab.split_tree = Layout.splits.leaf(.first);
+    tab.panes[0].font_size_px = 16;
+    var snapshot_panes: [RuntimeTab.max_frame_panes]Layout.FramePane = undefined;
+    snapshot_panes[0] = .{
+        .id = .first,
+        .term_texture_id = 9,
+        .term_texture_rect = .{ .x = 0, .y = 30, .width = 80, .height = 40 },
+        .scrollbar = Layout.scrollbar.hidden(.{ .x = 0, .y = 30, .width = 80, .height = 40 }),
+        .scroll_chip = Layout.scroll_chip.hidden(Layout.scrollbar.hidden(.{ .x = 0, .y = 30, .width = 80, .height = 40 })),
+    };
+    snapshot_panes[1] = .{
+        .id = @enumFromInt(1),
+        .term_texture_id = 10,
+        .term_texture_rect = .{ .x = 80, .y = 30, .width = 80, .height = 40 },
+        .scrollbar = Layout.scrollbar.hidden(.{ .x = 80, .y = 30, .width = 80, .height = 40 }),
+        .scroll_chip = Layout.scroll_chip.hidden(Layout.scrollbar.hidden(.{ .x = 80, .y = 30, .width = 80, .height = 40 })),
+    };
+    const render_frame = Processor.RenderFrame{
+        .tab = &tab,
+        .turn = .{ .panes = undefined, .pane_count = 1, .step = .surface_idle, .present_damage = .fullFrame() },
+        .snapshot = .{
+            .panes = snapshot_panes,
+            .pane_count = 1,
+            .tab_bar_height_px = 30,
+            .active_tab = 0,
+            .tab_bar_revision = 1,
+            .labels = &.{"shell"},
+            .damage = .fullFrame(),
+        },
+    };
+
+    const frame = Processor.presentFrame(&render_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), frame.panes.len);
+    try std.testing.expectEqual(Layout.pane.PaneId.first, frame.panes[0].id);
+}
+
 fn testTabBarConfig() TabBarConfig {
     return .{ .height = 30, .min_tabs_for_bar = 2, .bindings = .{ .bindings = &.{} } };
+}
+
+fn testRuntimeFacts(wake_pending: bool, runtime_due_now: bool, input_published: bool, runtime_wait_ms: ?u32, render_turn_pending: bool) RuntimeTab.RuntimeFacts {
+    return .{
+        .panes = undefined,
+        .pane_count = 1,
+        .wake_pending = wake_pending,
+        .runtime_due_now = runtime_due_now,
+        .input_published = input_published,
+        .runtime_wait_ms = runtime_wait_ms,
+        .render_turn_pending = render_turn_pending,
+    };
 }
 
 test "active runtime admission follows explicit surface facts" {
@@ -728,13 +768,7 @@ test "active runtime admission follows explicit surface facts" {
         .render_turn_pending = false,
     };
 
-    Processor.noteLoopRuntimeFacts(&facts, .{
-        .wake_pending = false,
-        .runtime_due_now = false,
-        .input_published = true,
-        .runtime_wait_ms = null,
-        .render_turn_pending = false,
-    }, true);
+    Processor.noteLoopRuntimeFacts(&facts, testRuntimeFacts(false, false, true, null, false), true);
 
     try std.testing.expect(facts.runtime_admitted);
 }
@@ -821,13 +855,7 @@ test "explicit wake admission does not require continuation" {
         .render_turn_pending = false,
     };
 
-    Processor.noteLoopRuntimeFacts(&facts, .{
-        .wake_pending = false,
-        .runtime_due_now = false,
-        .input_published = false,
-        .runtime_wait_ms = null,
-        .render_turn_pending = false,
-    }, false);
+    Processor.noteLoopRuntimeFacts(&facts, testRuntimeFacts(false, false, false, null, false), false);
 
     try std.testing.expect(!facts.runtime_wake_pending);
 }
@@ -842,13 +870,7 @@ test "active surface wait participates through explicit surface facts" {
         .render_turn_pending = false,
     };
 
-    Processor.noteLoopRuntimeFacts(&facts, .{
-        .wake_pending = false,
-        .runtime_due_now = false,
-        .input_published = false,
-        .runtime_wait_ms = 17,
-        .render_turn_pending = false,
-    }, true);
+    Processor.noteLoopRuntimeFacts(&facts, testRuntimeFacts(false, false, false, 17, false), true);
 
     try std.testing.expectEqual(@as(?u32, 17), facts.runtime_wait_ms);
 }
