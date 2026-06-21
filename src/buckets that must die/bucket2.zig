@@ -404,10 +404,6 @@ pub const Surface = struct {
         };
     }
 
-    pub fn driveProgress(self: *Term, now_ns: u64, admission: DriveAdmission) DriveProgressResult {
-        return self.driveProgressWithFacts(now_ns, self.runtimeFacts(now_ns, admission));
-    }
-
     pub fn driveProgressWithFacts(self: *Term, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
         if (!facts.driveAdmitted()) {
             const focused = self.window_focused and self.widget_focused;
