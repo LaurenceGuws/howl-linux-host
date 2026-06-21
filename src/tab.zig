@@ -371,14 +371,14 @@ pub const Tab = struct {
     }
 
     pub fn titleSlice(self: *Tab) []const u8 {
-        return self.activePane().titleSlice();
+        return self.activePane().term.titleSlice();
     }
 
     pub fn titleGeneration(self: *const Tab) u64 {
         self.assertInvariants();
         var generation: u64 = 0;
         for (self.initializedPanesConst(), 0..) |*runtime_pane, i| {
-            generation ^= runtime_pane.titleGeneration() +% (@as(u64, i) + 1) * 0x9e3779b97f4a7c15;
+            generation ^= runtime_pane.term.titleGeneration() +% (@as(u64, i) + 1) * 0x9e3779b97f4a7c15;
             generation = std.math.rotl(u64, generation, 7);
         }
         return generation;
@@ -952,6 +952,10 @@ fn canInstallSplit(tab: *const Tab) bool {
 fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u64) void {
     pane.term.mutex = .{};
     pane.term.texture_trigger = .{};
+    pane.term.texture_event_loop = null;
+    pane.term.vt_state = .{};
+    pane.term.pty = .{ .launch = .{ .shell = test_terminal_conf.shell } };
+    pane.term.initTitle();
     pane.term.render = render_retained.State.init(.{
         .render_px = .{ .width = width, .height = height },
         .grid_px = .{ .width = width, .height = height },

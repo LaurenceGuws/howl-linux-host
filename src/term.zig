@@ -11,24 +11,10 @@ const Vt = @import("vt.zig");
 const pty_session = Pty.session;
 const render_retained = Render.surface_retained;
 const FairMutex = Sync.FairMutex;
-const vt_focus = Vt.focus;
-const vt_input_buffer = Vt.input_buffer;
-const vt_output_buffer = Vt.output_buffer;
+const vt_state = Vt.state;
 const vt_title = Vt.title;
 
-pub const VtState = struct {
-    title: vt_title.Title = .{},
-    output_buffer: vt_output_buffer.Buffer = .{},
-    input_buffer: vt_input_buffer.Buffer = .{},
-    render_state: vt_c.HowlVtRenderStateHandle = null,
-    focus: vt_focus.Focus = .{},
-
-    pub fn deinit(self: *VtState, allocator: std.mem.Allocator) void {
-        _ = allocator;
-        if (self.render_state) |state| vt_c.howl_vt_render_state_deinit(state);
-        self.render_state = null;
-    }
-};
+pub const VtState = vt_state.State;
 
 pub const Term = struct {
     allocator: std.mem.Allocator,
@@ -39,21 +25,90 @@ pub const Term = struct {
     vt_state: VtState = .{},
     mutex: FairMutex = .{},
     texture_trigger: texture_term.PresentTrigger = .{},
+    texture_event_loop: ?*EventLoop.EventLoop = null,
+    host_title: vt_title.HostTitle = .{},
+
+    pub fn initTitle(self: *Term) void {
+        vt_title.initHost(&self.host_title);
+    }
+
+    pub fn setTitleFromLaunch(self: *Term) void {
+        vt_title.set(&self.vt_state.title, titleFromLaunch(self.pty.launch));
+        self.refreshTitle();
+    }
+
+    pub fn titleSlice(self: *Term) []const u8 {
+        if (vt_title.hostStale(&self.host_title, &self.vt_state.title)) {
+            self.refreshTitle();
+        }
+        return vt_title.hostCurrent(&self.host_title);
+    }
+
+    pub fn titleGeneration(self: *const Term) u64 {
+        return vt_title.generation(&self.vt_state.title);
+    }
+
+    pub fn refreshTitle(self: *Term) void {
+        self.refreshTitleWithFallback(titleFromLaunch(self.pty.launch));
+    }
+
+    fn refreshTitleWithFallback(self: *Term, fallback: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        vt_title.refreshHost(&self.host_title, &self.vt_state.title, fallback);
+    }
 
     pub fn initTextureTrigger(self: *Term, event_loop: *EventLoop.EventLoop) void {
-        texture_term.initPresentTrigger(&self.texture_trigger, event_loop, wakeEventLoop);
+        texture_term.initPresentTrigger(&self.texture_trigger);
+        self.texture_event_loop = event_loop;
     }
 
     pub fn triggerTexturePresent(self: *Term) void {
-        texture_term.triggerPresent(&self.texture_trigger);
+        if (!texture_term.triggerPresent(&self.texture_trigger)) return;
+        const event_loop = self.texture_event_loop orelse return;
+        event_loop.wake();
     }
 
     pub fn takeTextureTriggered(self: *Term) bool {
         return texture_term.takeTriggered(&self.texture_trigger);
     }
 
-    fn wakeEventLoop(context: *anyopaque) void {
-        const event_loop: *EventLoop.EventLoop = @ptrCast(@alignCast(context));
-        event_loop.wake();
+    fn titleFromLaunch(launch: pty_session.Launch) []const u8 {
+        if (launch.command) |command| {
+            const trimmed = std.mem.trim(u8, command, " \t\r\n");
+            if (trimmed.len > 0) return trimmed;
+        }
+        return std.mem.trim(u8, std.fs.path.basename(launch.shell), " \t\r\n");
     }
 };
+
+test "term title fallback trims command" {
+    var term = testTitleTerm(.{ .shell = "/bin/sh", .command = "  vim main.zig  \n" });
+
+    term.refreshTitle();
+
+    try std.testing.expectEqualStrings("vim main.zig", term.titleSlice());
+}
+
+test "term title fallback uses shell basename" {
+    var term = testTitleTerm(.{ .shell = "/usr/bin/fish", .command = null });
+
+    term.refreshTitle();
+
+    try std.testing.expectEqualStrings("fish", term.titleSlice());
+}
+
+fn testTitleTerm(launch: pty_session.Launch) Term {
+    return .{
+        .allocator = std.testing.allocator,
+        .pty = .{ .launch = launch },
+        .session = null,
+        .vt = null,
+        .render = undefined,
+        .vt_state = .{},
+        .mutex = .{},
+        .texture_trigger = .{},
+        .texture_event_loop = null,
+        .host_title = .{},
+    };
+}

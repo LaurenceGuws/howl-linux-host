@@ -11,7 +11,6 @@ const terminal_fonts = @import("../render/fonts.zig");
 const pty_session = @import("../pty/session.zig");
 const render_retained = @import("../render/surface_retained.zig");
 const vt_surface = @import("../vt/surface.zig");
-const vt_title = @import("../vt/title.zig");
 const HowlTerm = @import("../term.zig").Term;
 const VtState = @import("../term.zig").VtState;
 const Config = @import("../config.zig");
@@ -104,9 +103,6 @@ pub const Surface = struct {
     conf: *const TerminalConfig,
     input: *HostInput,
     event_loop: *EventLoop.EventLoop,
-    title_buf: [128]u8,
-    title_len: u8,
-    title_generation_seen: u64,
     surface_layout: surface_layout.SurfaceResize,
     font_size_px: u16,
     default_font_size_px: u16,
@@ -167,9 +163,6 @@ pub const Surface = struct {
         self.conf = request.conf;
         self.input = request.input;
         self.event_loop = request.event_loop;
-        self.title_buf = undefined;
-        self.title_len = 0;
-        self.title_generation_seen = 0;
         self.surface_layout = surface_layout.init(request.render_width, request.render_height, request.logical_width, request.logical_height);
         self.font_size_px = start_font_px;
         self.default_font_size_px = start_font_px;
@@ -228,28 +221,6 @@ pub const Surface = struct {
 
     pub fn readSurfacePixels(self: *Term) render_c.HowlRenderPixelSize {
         return surface_layout.readSurfacePixels(&self.surface_layout);
-    }
-
-    pub fn titleSlice(self: *Term) []const u8 {
-        if (vt_title.generation(&self.term.vt_state.title) != self.title_generation_seen) {
-            self.refreshTitle();
-        }
-        return self.title_buf[0..self.title_len];
-    }
-
-    pub fn titleGeneration(self: *const Term) u64 {
-        return vt_title.generation(&self.term.vt_state.title);
-    }
-
-    pub fn refreshTitle(self: *Term) void {
-        self.term.mutex.lock();
-        defer self.term.mutex.unlock();
-        self.title_len = @intCast(vt_title.copy(&self.term.vt_state.title, self.title_buf[0..]));
-        self.title_generation_seen = vt_title.generation(&self.term.vt_state.title);
-        if (self.title_len != 0) return;
-        const fallback = self.conf.command orelse self.conf.shell;
-        self.title_len = @intCast(@min(fallback.len, self.title_buf.len));
-        if (self.title_len != 0) @memcpy(self.title_buf[0..self.title_len], fallback[0..self.title_len]);
     }
 
     pub fn setWindowFocused(self: *Term, focused: bool) void {
@@ -404,6 +375,7 @@ pub const Surface = struct {
         self.term.vt_state = .{};
         self.term.mutex = .{};
         self.term.initTextureTrigger(self.event_loop);
+        self.term.initTitle();
         self.live = true;
         try initRenderState(&self.term.vt_state);
         try surface_layout.setTermCellPixelSize(&self.term, term_init.surface_layout.cell_px.width, term_init.surface_layout.cell_px.height);
@@ -411,10 +383,9 @@ pub const Surface = struct {
     }
 
     fn startRuntime(self: *Term) !void {
-        vt_title.set(&self.term.vt_state.title, titleFromLaunch(self.term.pty.launch));
+        self.term.setTitleFromLaunch();
         try pty_session.start(&self.term);
         if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
-        self.refreshTitle();
         self.syncInputFocus();
         self.progress.init();
         self.progress.stop.store(false, .release);
@@ -840,14 +811,6 @@ pub const Surface = struct {
     }
 };
 
-fn titleFromLaunch(launch: pty_session.Launch) []const u8 {
-    if (launch.command) |command| {
-        const trimmed = std.mem.trim(u8, command, " \t\r\n");
-        if (trimmed.len > 0) return trimmed;
-    }
-    return std.mem.trim(u8, std.fs.path.basename(launch.shell), " \t\r\n");
-}
-
 fn initRenderState(vt_state: *VtState) !void {
     std.debug.assert(vt_state.render_state == null);
     var state: vt_c.HowlVtRenderStateHandle = null;
@@ -1201,6 +1164,7 @@ fn testSurfaceBase() Surface {
             .vt_state = .{},
             .mutex = .{},
             .texture_trigger = .{},
+            .texture_event_loop = null,
         },
         .progress = .{},
         .live = false,
@@ -1209,9 +1173,6 @@ fn testSurfaceBase() Surface {
         .conf = &test_terminal_conf,
         .input = undefined,
         .event_loop = undefined,
-        .title_buf = undefined,
-        .title_len = 0,
-        .title_generation_seen = 0,
         .surface_layout = undefined,
         .font_size_px = 0,
         .default_font_size_px = 0,

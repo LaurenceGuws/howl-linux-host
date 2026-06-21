@@ -16,22 +16,15 @@ pub const renderSurfaceGlyphPatch = frame_commands.renderSurfaceGlyphPatch;
 
 pub const PresentTrigger = struct {
     triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    wake_context: ?*anyopaque = null,
-    wake: ?*const fn (*anyopaque) void = null,
 };
 
-pub fn initPresentTrigger(trigger: *PresentTrigger, wake_context: *anyopaque, wake: *const fn (*anyopaque) void) void {
+pub fn initPresentTrigger(trigger: *PresentTrigger) void {
     trigger.triggered.store(false, .release);
-    trigger.wake_context = wake_context;
-    trigger.wake = wake;
 }
 
-pub fn triggerPresent(trigger: *PresentTrigger) void {
+pub fn triggerPresent(trigger: *PresentTrigger) bool {
     const was_triggered = trigger.triggered.swap(true, .acq_rel);
-    if (was_triggered) return;
-    const wake_context = trigger.wake_context orelse return;
-    const wake = trigger.wake orelse return;
-    wake(wake_context);
+    return !was_triggered;
 }
 
 pub fn takeTriggered(trigger: *PresentTrigger) bool {
@@ -164,8 +157,8 @@ pub const testing = struct {
 test "texture present trigger coalesces duplicate triggers" {
     var trigger = PresentTrigger{};
 
-    triggerPresent(&trigger);
-    triggerPresent(&trigger);
+    try std.testing.expect(triggerPresent(&trigger));
+    try std.testing.expect(!triggerPresent(&trigger));
 
     try std.testing.expect(takeTriggered(&trigger));
     try std.testing.expect(!takeTriggered(&trigger));
@@ -174,8 +167,8 @@ test "texture present trigger coalesces duplicate triggers" {
 test "take triggered clears trigger and allows later trigger" {
     var trigger = PresentTrigger{};
 
-    triggerPresent(&trigger);
+    try std.testing.expect(triggerPresent(&trigger));
     try std.testing.expect(takeTriggered(&trigger));
-    triggerPresent(&trigger);
+    try std.testing.expect(triggerPresent(&trigger));
     try std.testing.expect(takeTriggered(&trigger));
 }
