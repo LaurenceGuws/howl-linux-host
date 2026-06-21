@@ -5,6 +5,9 @@ const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 const HostInput = @import("input.zig").Input;
 
 pub const window = @import("layout/window.zig");
+pub const z_index = @import("layout/z_index.zig");
+pub const scrollbar = @import("layout/scrollbar.zig");
+pub const scroll_chip = @import("layout/scroll_chip.zig");
 
 pub const Rect = struct {
     x: c_int,
@@ -18,20 +21,11 @@ pub const Size = struct {
     height: c_int,
 };
 
-pub const ScrollbarLayout = struct {
-    visible: bool,
-    x: c_int,
-    y: c_int,
-    width: c_int,
-    height: c_int,
-    thumb_y: c_int,
-    thumb_height: c_int,
-};
-
 pub const Frame = struct {
     term_texture_id: u32,
     term_texture_rect: Rect,
-    scrollbar: ScrollbarLayout,
+    scrollbar: scrollbar.Placement,
+    scroll_chip: scroll_chip.Placement,
     tab_count: TabIndex,
     active_tab: TabIndex,
     tab_bar_revision: u64,

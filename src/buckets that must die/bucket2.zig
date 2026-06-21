@@ -74,10 +74,6 @@ pub const Surface = struct {
 
     pub const PresentDamage = @import("../texture/egl_swap.zig").Damage;
 
-    pub const OverlaySnapshot = struct {
-        scrollbar: Layout.ScrollbarLayout,
-    };
-
     pub const TurnStep = enum {
         surface_idle,
         idle_prepare,
@@ -304,10 +300,12 @@ pub const Surface = struct {
         return term_input.wouldReportUnpressedMouseMotion(&self.term);
     }
 
-    pub fn overlaySnapshot(self: *const Term, texture_rect: Layout.Rect) OverlaySnapshot {
-        return .{
-            .scrollbar = terminal_scrollbar.layout(@constCast(self), texture_rect),
-        };
+    pub fn scrollbarPlacement(self: *const Term, texture_rect: Layout.Rect) Layout.scrollbar.Placement {
+        return terminal_scrollbar.scrollbar(@constCast(self), texture_rect);
+    }
+
+    pub fn scrollChipPlacement(self: *const Term, texture_rect: Layout.Rect) Layout.scroll_chip.Placement {
+        return terminal_scrollbar.scrollChip(@constCast(self), texture_rect);
     }
 
     pub fn textureSize(self: *const Term) Layout.Size {

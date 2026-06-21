@@ -95,7 +95,8 @@ pub const Processor = struct {
 
     const RenderSnapshot = struct {
         texture_rect: Layout.Rect,
-        scrollbar: Layout.ScrollbarLayout,
+        scrollbar: Layout.scrollbar.Placement,
+        scroll_chip: Layout.scroll_chip.Placement,
         active_tab: TabIndex,
         tab_bar_revision: u64,
         labels: []const []const u8,
@@ -441,13 +442,13 @@ pub const Processor = struct {
 
     fn renderSnapshot(self: *Self, tab: *Terminal) RenderSnapshot {
         const viewport = LayoutWindow.terminal(self.window, &self.conf.tab_bar, @intCast(self.tabs.items().len), tab.textureSize());
-        const overlay = tab.overlaySnapshot(viewport.texture_rect);
         var title_buf: [TabBar.max_tabs][]const u8 = undefined;
         const tabs = self.tabs.items();
         const tab_bar_snapshot = self.tab_bar.snapshot(self.active_tab_idx.*, tabTitles(tabs, title_buf[0..]));
         return .{
             .texture_rect = viewport.texture_rect,
-            .scrollbar = overlay.scrollbar,
+            .scrollbar = tab.scrollbarPlacement(viewport.texture_rect),
+            .scroll_chip = tab.scrollChipPlacement(viewport.texture_rect),
             .active_tab = tab_bar_snapshot.active_idx,
             .tab_bar_revision = tabBarRevision(tabs, self.active_tab_idx.*),
             .labels = tab_bar_snapshot.labels,
@@ -486,6 +487,7 @@ pub const Processor = struct {
             .term_texture_id = @intCast(frame.tab.termTextureId()),
             .term_texture_rect = frame.snapshot.texture_rect,
             .scrollbar = frame.snapshot.scrollbar,
+            .scroll_chip = frame.snapshot.scroll_chip,
             .tab_count = @intCast(frame.snapshot.labels.len),
             .active_tab = frame.snapshot.active_tab,
             .tab_bar_revision = frame.snapshot.tab_bar_revision,

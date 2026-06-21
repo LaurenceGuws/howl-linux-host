@@ -160,6 +160,7 @@ pub fn submitFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.
         frame.term_texture_rect.height,
     );
     texture_scroll_bar.draw(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
+    texture_scroll_bar.drawChip(c, @max(fb_w, 1), @max(fb_h, 1), frame.scroll_chip);
     _ = egl_swap.swapDamaged(c, handle, frame.damage.rects[0..frame.damage.count], @max(fb_w, 1), @max(fb_h, 1), frame.damage.full, false);
     return token;
 }
@@ -368,7 +369,8 @@ fn testFrame() Layout.Frame {
     return .{
         .term_texture_id = 0,
         .term_texture_rect = .{ .x = 0, .y = 0, .width = 80, .height = 25 },
-        .scrollbar = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+        .scrollbar = Layout.scrollbar.hidden(.{ .x = 0, .y = 0, .width = 0, .height = 0 }),
+        .scroll_chip = Layout.scroll_chip.hidden(Layout.scrollbar.hidden(.{ .x = 0, .y = 0, .width = 0, .height = 0 })),
         .tab_count = 0,
         .active_tab = 0,
         .tab_bar_revision = 1,

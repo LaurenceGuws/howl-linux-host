@@ -48,7 +48,8 @@ pub const State = struct {
     cache_valid: bool = false,
     cache_rect: Layout.Rect = .{ .x = 0, .y = 0, .width = 0, .height = 0 },
     cache_view: View = .{ .visible_rows = 1, .scrollback_count = 0, .scrollback_offset = 0, .alternate_screen = false },
-    cache_layout: Layout.ScrollbarLayout = .{ .visible = false, .x = 0, .y = 0, .width = 0, .height = 0, .thumb_y = 0, .thumb_height = 0 },
+    cache_scrollbar: Layout.scrollbar.Placement = Layout.scrollbar.hidden(.{ .x = 0, .y = 0, .width = 0, .height = 0 }),
+    cache_scroll_chip: Layout.scroll_chip.Placement = Layout.scroll_chip.hidden(Layout.scrollbar.hidden(.{ .x = 0, .y = 0, .width = 0, .height = 0 })),
     cache_ns: u64 = 0,
 
     pub fn invalidate(self: *State) void {
@@ -69,33 +70,37 @@ pub const State = struct {
         return self.dragging;
     }
 
-    pub fn layout(self: *State, texture_rect: Layout.Rect, view: View, logical_width: c_int, logical_height: c_int, window_focused: bool, now_ns: u64) Layout.ScrollbarLayout {
-        if (!self.shouldRefresh(texture_rect, view, now_ns)) return self.cache_layout;
+    pub fn scrollbar(self: *State, texture_rect: Layout.Rect, view: View, logical_width: c_int, logical_height: c_int, window_focused: bool, now_ns: u64) Layout.scrollbar.Placement {
+        self.refreshPlacement(texture_rect, view, logical_width, logical_height, window_focused, now_ns);
+        return self.cache_scrollbar;
+    }
+
+    pub fn scrollChip(self: *State, texture_rect: Layout.Rect, view: View, logical_width: c_int, logical_height: c_int, window_focused: bool, now_ns: u64) Layout.scroll_chip.Placement {
+        self.refreshPlacement(texture_rect, view, logical_width, logical_height, window_focused, now_ns);
+        return self.cache_scroll_chip;
+    }
+
+    fn refreshPlacement(self: *State, texture_rect: Layout.Rect, view: View, logical_width: c_int, logical_height: c_int, window_focused: bool, now_ns: u64) void {
+        if (!self.shouldRefresh(texture_rect, view, now_ns)) return;
         const model = modelFromView(view);
-        const out = if (!model.visible or texture_rect.width <= 0 or texture_rect.height <= 0)
-            Layout.ScrollbarLayout{ .visible = false, .x = texture_rect.x + texture_rect.width, .y = texture_rect.y, .width = 0, .height = 0, .thumb_y = texture_rect.y, .thumb_height = 0 }
+        const placement = if (!model.visible or texture_rect.width <= 0 or texture_rect.height <= 0)
+            .{ Layout.scrollbar.hidden(texture_rect), Layout.scroll_chip.hidden(Layout.scrollbar.hidden(texture_rect)) }
         else blk: {
             const logical_w = @max(logical_width, 1);
             const logical_h = @max(logical_height, 1);
             const focus_t = self.focusT(0, 0, logical_w, logical_h, window_focused);
             const track_layout = track(0, 0, logical_w, logical_h, focus_t);
             const thumb_rect = thumb(track_layout.y, track_layout.height, model.rows, model.total_lines, model.scrollback_offset);
-            break :blk Layout.ScrollbarLayout{
-                .visible = true,
-                .x = texture_rect.x + Layout.scaleLogicalToPixel(track_layout.x, logical_w, texture_rect.width),
-                .y = texture_rect.y + Layout.scaleLogicalToPixel(track_layout.y, logical_h, texture_rect.height),
-                .width = Layout.scaleLogicalSpan(track_layout.width, logical_w, texture_rect.width),
-                .height = Layout.scaleLogicalSpan(track_layout.height, logical_h, texture_rect.height),
-                .thumb_y = texture_rect.y + Layout.scaleLogicalToPixel(thumb_rect.y, logical_h, texture_rect.height),
-                .thumb_height = Layout.scaleLogicalSpan(thumb_rect.height, logical_h, texture_rect.height),
-            };
+            const scrollbar_out = Layout.scrollbar.place(texture_rect, .{ .width = logical_w, .height = logical_h }, track_layout.x, track_layout.y, track_layout.width, track_layout.height);
+            const chip_out = Layout.scroll_chip.place(scrollbar_out, .{ .width = logical_w, .height = logical_h }, thumb_rect.y, thumb_rect.height);
+            break :blk .{ scrollbar_out, chip_out };
         };
         self.cache_valid = true;
         self.cache_rect = texture_rect;
         self.cache_view = view;
-        self.cache_layout = out;
+        self.cache_scrollbar = placement[0];
+        self.cache_scroll_chip = placement[1];
         self.cache_ns = now_ns;
-        return out;
     }
 
     pub fn handleMouse(
@@ -303,6 +308,22 @@ test "scrollbar thumb sits at top at max offset" {
     try std.testing.expectEqual(@as(c_int, 10), out.y);
 }
 
+test "scrollbar state exposes separate track and chip placements" {
+    var state = State{};
+    const pane = Layout.Rect{ .x = 0, .y = 0, .width = 100, .height = 100 };
+    const view = View{ .visible_rows = 20, .scrollback_count = 60, .scrollback_offset = 0, .alternate_screen = false };
+
+    const track_out = state.scrollbar(pane, view, 100, 100, true, 1);
+    const chip_out = state.scrollChip(pane, view, 100, 100, true, 1);
+
+    try std.testing.expect(track_out.visible);
+    try std.testing.expect(chip_out.visible);
+    try std.testing.expectEqual(Layout.z_index.ZIndex.scrollbar, track_out.z_index);
+    try std.testing.expectEqual(Layout.z_index.ZIndex.scroll_chip, chip_out.z_index);
+    try std.testing.expect(Layout.z_index.before(track_out.z_index, chip_out.z_index));
+    try std.testing.expect(chip_out.rect.height < track_out.rect.height);
+}
+
 pub fn invalidate(self: anytype) void {
     self.scrollbar.invalidate();
 }
@@ -341,8 +362,19 @@ pub fn wantsPassiveHoverWake(self: anytype, origin_x: i32, origin_y: i32, logica
     return self.scrollbar.wantsPassiveHoverWake(viewFromTerm(scrollState(&self.term)), self.window_focused);
 }
 
-pub fn layout(self: anytype, texture_rect: Layout.Rect) Layout.ScrollbarLayout {
-    return self.scrollbar.layout(
+pub fn scrollbar(self: anytype, texture_rect: Layout.Rect) Layout.scrollbar.Placement {
+    return self.scrollbar.scrollbar(
+        texture_rect,
+        viewFromTerm(scrollState(&self.term)),
+        self.surface_layout.logical_w,
+        self.surface_layout.logical_h,
+        self.window_focused,
+        EventLoop.nowNs(),
+    );
+}
+
+pub fn scrollChip(self: anytype, texture_rect: Layout.Rect) Layout.scroll_chip.Placement {
+    return self.scrollbar.scrollChip(
         texture_rect,
         viewFromTerm(scrollState(&self.term)),
         self.surface_layout.logical_w,

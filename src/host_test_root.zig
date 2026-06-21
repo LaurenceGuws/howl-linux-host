@@ -36,6 +36,9 @@ test {
     _ = @import("tab_bar.zig").cell_surface;
     _ = @import("tab_bar.zig").surface;
     _ = @import("layout.zig").window;
+    _ = @import("layout.zig").z_index;
+    _ = @import("layout.zig").scrollbar;
+    _ = @import("layout.zig").scroll_chip;
     _ = @import("cursor.zig").cadence;
     _ = @import("cursor.zig").source;
     _ = @import("cursor.zig").trail;
@@ -50,9 +53,28 @@ test "host imports no obsolete layout cells owner" {
     try expectNoLayoutCellsImport(@embedFile("render/links.zig"));
 }
 
+test "host source has no rejected scroll layer noun" {
+    try expectNoRejectedScrollLayerNoun(@embedFile("layout.zig"));
+    try expectNoRejectedScrollLayerNoun(@embedFile("events/event.zig"));
+    try expectNoRejectedScrollLayerNoun(@embedFile("buckets that must die/bucket2.zig"));
+}
+
 fn expectNoLayoutCellsImport(source: []const u8) !void {
     const stale_import = "layout/" ++ "cells.zig";
     const stale_relative_import = "../" ++ stale_import;
     try std.testing.expect(std.mem.indexOf(u8, source, stale_import) == null);
     try std.testing.expect(std.mem.indexOf(u8, source, stale_relative_import) == null);
+}
+
+fn expectNoRejectedScrollLayerNoun(source: []const u8) !void {
+    const stale_file = "layout/" ++ "over" ++ "lay.zig";
+    const stale_relative_import = "../" ++ stale_file;
+    const stale_snapshot = "Over" ++ "laySnapshot";
+    const stale_method = "over" ++ "laySnapshot";
+    const stale_local = "const " ++ "over" ++ "lay";
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_file) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_relative_import) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_snapshot) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_method) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_local) == null);
 }
