@@ -97,9 +97,9 @@ pub const Processor = struct {
     };
 
     const RenderSnapshot = struct {
-        texture_rect: Layout.Rect,
-        scrollbar: Layout.scrollbar.Placement,
-        scroll_chip: Layout.scroll_chip.Placement,
+        panes: [RuntimeTab.max_frame_panes]Layout.FramePane,
+        pane_count: usize,
+        tab_bar_height_px: c_int,
         active_tab: TabIndex,
         tab_bar_revision: u64,
         labels: []const []const u8,
@@ -453,14 +453,24 @@ pub const Processor = struct {
         const tabs = self.tabs.items();
         const tab_bar_snapshot = self.tab_bar.snapshot(self.active_tab_idx.*, tabTitles(tabs, title_buf[0..]));
         return .{
-            .texture_rect = terminal.texture_rect,
-            .scrollbar = tab.scrollbarPlacement(terminal.texture_rect),
-            .scroll_chip = tab.scrollChipPlacement(terminal.texture_rect),
+            .panes = onePaneFrame(tab, pane.id, terminal.texture_rect),
+            .pane_count = RuntimeTab.max_frame_panes,
+            .tab_bar_height_px = @intCast(window_interior.tab_bar.pixel_height),
             .active_tab = tab_bar_snapshot.active_idx,
             .tab_bar_revision = tabBarRevision(tabs, self.active_tab_idx.*),
             .labels = tab_bar_snapshot.labels,
             .damage = .fullFrame(),
         };
+    }
+
+    fn onePaneFrame(tab: *RuntimeTab, id: LayoutPane.PaneId, texture_rect: Layout.Rect) [RuntimeTab.max_frame_panes]Layout.FramePane {
+        return .{.{
+            .id = id,
+            .term_texture_id = @intCast(tab.termTextureId()),
+            .term_texture_rect = texture_rect,
+            .scrollbar = tab.scrollbarPlacement(texture_rect),
+            .scroll_chip = tab.scrollChipPlacement(texture_rect),
+        }};
     }
 
     fn derivePresentReason(host_redraw: bool, step: RuntimeTab.TurnStep) PresentReason {
@@ -474,11 +484,11 @@ pub const Processor = struct {
     fn submitPresent(self: *Self, frame: RenderFrame, reason: PresentReason) void {
         switch (reason) {
             .none => {},
-            .host_damage => _ = self.texture_frame.submitPresentSync(presentFrame(frame)),
+            .host_damage => _ = self.texture_frame.submitPresentSync(presentFrame(&frame)),
             .terminal_frame => {
                 assert(frame.turn.step == .rendered);
                 assert(frame.turn.present_snapshot_seq != 0);
-                const token = self.texture_frame.submitPresentSync(presentFrame(frame));
+                const token = self.texture_frame.submitPresentSync(presentFrame(&frame));
                 frame.tab.notePresentSubmitted(frame.turn.present_snapshot_seq, token);
                 frame.tab.completePresent(token);
             },
@@ -489,12 +499,10 @@ pub const Processor = struct {
         }
     }
 
-    fn presentFrame(frame: RenderFrame) Layout.Frame {
+    fn presentFrame(frame: *const RenderFrame) Layout.Frame {
         return .{
-            .term_texture_id = @intCast(frame.tab.termTextureId()),
-            .term_texture_rect = frame.snapshot.texture_rect,
-            .scrollbar = frame.snapshot.scrollbar,
-            .scroll_chip = frame.snapshot.scroll_chip,
+            .panes = frame.snapshot.panes[0..frame.snapshot.pane_count],
+            .tab_bar_height_px = frame.snapshot.tab_bar_height_px,
             .tab_count = @intCast(frame.snapshot.labels.len),
             .active_tab = frame.snapshot.active_tab,
             .tab_bar_revision = frame.snapshot.tab_bar_revision,
@@ -666,6 +674,44 @@ test "tab bar height follows configured minimum tab count" {
     try std.testing.expectEqual(@as(u32, 0), LayoutTabBar.height(&tab_bar, 1));
     try std.testing.expectEqual(@as(u32, 30), LayoutTabBar.height(&tab_bar, 2));
     try std.testing.expectEqual(@as(u32, 30), LayoutTabBar.height(&tab_bar, 3));
+}
+
+test "present frame carries one current runtime pane" {
+    var tab: RuntimeTab = undefined;
+    tab.first_pane.font_size_px = 16;
+    const snapshot_panes = [_]Layout.FramePane{.{
+        .id = .first,
+        .term_texture_id = 9,
+        .term_texture_rect = .{ .x = 0, .y = 30, .width = 80, .height = 40 },
+        .scrollbar = Layout.scrollbar.hidden(.{ .x = 0, .y = 30, .width = 80, .height = 40 }),
+        .scroll_chip = Layout.scroll_chip.hidden(Layout.scrollbar.hidden(.{ .x = 0, .y = 30, .width = 80, .height = 40 })),
+    }};
+    const snapshot = Processor.RenderSnapshot{
+        .panes = snapshot_panes,
+        .pane_count = RuntimeTab.max_frame_panes,
+        .tab_bar_height_px = 30,
+        .active_tab = 0,
+        .tab_bar_revision = 1,
+        .labels = &.{"shell"},
+        .damage = .fullFrame(),
+    };
+    const render_frame = Processor.RenderFrame{
+        .tab = &tab,
+        .turn = .{
+            .state_before = undefined,
+            .state_after = undefined,
+            .prepared = false,
+            .step = .surface_idle,
+            .present_snapshot_seq = 0,
+            .present_damage = .fullFrame(),
+        },
+        .snapshot = snapshot,
+    };
+    const frame = Processor.presentFrame(&render_frame);
+
+    try std.testing.expectEqual(@as(usize, 1), frame.panes.len);
+    try std.testing.expectEqual(Layout.pane.PaneId.first, frame.panes[0].id);
+    try std.testing.expectEqual(@as(c_int, 30), frame.tab_bar_height_px);
 }
 
 fn testTabBarConfig() TabBarConfig {

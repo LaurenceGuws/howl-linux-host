@@ -15,6 +15,8 @@ const TerminalConfig = Config.Terminal;
 pub const Tab = struct {
     first_pane: TerminalSurface = undefined,
 
+    pub const max_frame_panes = 1;
+
     pub const PresentDamage = TerminalSurface.PresentDamage;
     pub const TurnStep = TerminalSurface.TurnStep;
     pub const TurnResult = TerminalSurface.TurnResult;

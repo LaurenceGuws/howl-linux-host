@@ -135,6 +135,7 @@ pub fn deinit(comptime c: type, state: *GenericState(c)) void {
 }
 
 pub fn submitFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.Frame) PresentToken {
+    std.debug.assert(frame.panes.len > 0);
     const token = state.next_present_token;
     std.debug.assert(token != 0);
     state.next_present_token +%= 1;
@@ -148,25 +149,27 @@ pub fn submitFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.
     c.glViewport(0, 0, @max(fb_w, 1), @max(fb_h, 1));
     c.glClearColor(0.06, 0.09, 0.14, 1.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
-    drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.term_texture_rect.y);
-    gl_quad.textureRect(
-        c,
-        @max(fb_w, 1),
-        @max(fb_h, 1),
-        frame.term_texture_id,
-        frame.term_texture_rect.x,
-        frame.term_texture_rect.y,
-        frame.term_texture_rect.width,
-        frame.term_texture_rect.height,
-    );
-    texture_scroll_bar.draw(c, @max(fb_w, 1), @max(fb_h, 1), frame.scrollbar);
-    texture_scroll_bar.drawChip(c, @max(fb_w, 1), @max(fb_h, 1), frame.scroll_chip);
+    drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.tab_bar_height_px);
+    for (frame.panes) |pane| {
+        gl_quad.textureRect(
+            c,
+            @max(fb_w, 1),
+            @max(fb_h, 1),
+            pane.term_texture_id,
+            pane.term_texture_rect.x,
+            pane.term_texture_rect.y,
+            pane.term_texture_rect.width,
+            pane.term_texture_rect.height,
+        );
+    }
+    for (frame.panes) |pane| texture_scroll_bar.draw(c, @max(fb_w, 1), @max(fb_h, 1), pane.scrollbar);
+    for (frame.panes) |pane| texture_scroll_bar.drawChip(c, @max(fb_w, 1), @max(fb_h, 1), pane.scroll_chip);
     _ = egl_swap.swapDamaged(c, handle, frame.damage.rects[0..frame.damage.count], @max(fb_w, 1), @max(fb_h, 1), frame.damage.full, false);
     return token;
 }
 
 fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int, fb_h: c_int, frame: Layout.Frame) void {
-    const bar_h = @max(frame.term_texture_rect.y, 0);
+    const bar_h = @max(frame.tab_bar_height_px, 0);
     if (bar_h <= 0) {
         releaseTabCache(c, state);
         return;
@@ -281,6 +284,8 @@ const FakeC = struct {
     var copy_tex_image_calls: u32 = 0;
     var copy_tex_subimage_calls: u32 = 0;
     var egl_swap_calls: u32 = 0;
+    var quad_begin_calls: u32 = 0;
+    var texture_coord_calls: u32 = 0;
 
     pub fn SDL_GetWindowSizeInPixels(_: *SDL_Window, width: *c_int, height: *c_int) bool {
         width.* = 80;
@@ -309,9 +314,13 @@ const FakeC = struct {
     pub fn glEnable(_: c_uint) void {}
     pub fn glDisable(_: c_uint) void {}
     pub fn glColor4f(_: f32, _: f32, _: f32, _: f32) void {}
-    pub fn glBegin(_: c_uint) void {}
+    pub fn glBegin(_: c_uint) void {
+        quad_begin_calls += 1;
+    }
     pub fn glEnd() void {}
-    pub fn glTexCoord2f(_: f32, _: f32) void {}
+    pub fn glTexCoord2f(_: f32, _: f32) void {
+        texture_coord_calls += 1;
+    }
     pub fn glVertex2f(_: f32, _: f32) void {}
 
     pub fn SDL_IsMainThread() bool {
@@ -367,10 +376,8 @@ fn testState() GenericState(FakeC) {
 
 fn testFrame() Layout.Frame {
     return .{
-        .term_texture_id = 0,
-        .term_texture_rect = .{ .x = 0, .y = 0, .width = 80, .height = 25 },
-        .scrollbar = Layout.scrollbar.hidden(.{ .x = 0, .y = 0, .width = 0, .height = 0 }),
-        .scroll_chip = Layout.scroll_chip.hidden(Layout.scrollbar.hidden(.{ .x = 0, .y = 0, .width = 0, .height = 0 })),
+        .panes = test_frame_panes[0..],
+        .tab_bar_height_px = 0,
         .tab_count = 0,
         .active_tab = 0,
         .tab_bar_revision = 1,
@@ -379,6 +386,14 @@ fn testFrame() Layout.Frame {
         .damage = .fullFrame(),
     };
 }
+
+const test_frame_panes = [_]Layout.FramePane{.{
+    .id = .first,
+    .term_texture_id = 0,
+    .term_texture_rect = .{ .x = 0, .y = 0, .width = 80, .height = 25 },
+    .scrollbar = Layout.scrollbar.hidden(.{ .x = 0, .y = 0, .width = 80, .height = 25 }),
+    .scroll_chip = Layout.scroll_chip.hidden(Layout.scrollbar.hidden(.{ .x = 0, .y = 0, .width = 80, .height = 25 })),
+}};
 
 test "submit present returns monotonic nonzero tokens" {
     var state = testState();
@@ -403,8 +418,7 @@ test "tab cache refreshes only on revision change" {
 
     var state = testState();
     var frame = testFrame();
-    frame.term_texture_rect.y = 16;
-    frame.term_texture_rect.height = 9;
+    frame.tab_bar_height_px = 16;
     frame.tab_count = 1;
     frame.tab_labels = &.{"shell"};
 
@@ -420,6 +434,54 @@ test "tab cache refreshes only on revision change" {
     try std.testing.expectEqual(@as(u32, 2), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
     try std.testing.expect(third > second);
     try std.testing.expectEqual(@as(u32, 3), FakeC.egl_swap_calls);
+}
+
+test "tab cache height follows explicit frame tab bar height" {
+    FakeC.copy_tex_image_calls = 0;
+    FakeC.copy_tex_subimage_calls = 0;
+
+    var state = testState();
+    var frame = testFrame();
+    frame.tab_bar_height_px = 12;
+    frame.tab_count = 1;
+    frame.tab_labels = &.{"shell"};
+
+    _ = submitFrameSync(FakeC, &state, frame);
+
+    try std.testing.expectEqual(@as(c_int, 12), state.tab_cache_h);
+    try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
+}
+
+test "submit present draws every frame pane and every pane scroll layer" {
+    FakeC.quad_begin_calls = 0;
+    FakeC.texture_coord_calls = 0;
+
+    const first_scrollbar = Layout.scrollbar.Placement{ .visible = true, .rect = .{ .x = 38, .y = 0, .width = 2, .height = 25 }, .z_index = .scrollbar };
+    const second_scrollbar = Layout.scrollbar.Placement{ .visible = true, .rect = .{ .x = 78, .y = 0, .width = 2, .height = 25 }, .z_index = .scrollbar };
+    const panes = [_]Layout.FramePane{
+        .{
+            .id = .first,
+            .term_texture_id = 11,
+            .term_texture_rect = .{ .x = 0, .y = 0, .width = 40, .height = 25 },
+            .scrollbar = first_scrollbar,
+            .scroll_chip = Layout.scroll_chip.Placement{ .visible = true, .rect = .{ .x = 38, .y = 5, .width = 2, .height = 10 }, .z_index = .scroll_chip },
+        },
+        .{
+            .id = @enumFromInt(1),
+            .term_texture_id = 12,
+            .term_texture_rect = .{ .x = 40, .y = 0, .width = 40, .height = 25 },
+            .scrollbar = second_scrollbar,
+            .scroll_chip = Layout.scroll_chip.Placement{ .visible = true, .rect = .{ .x = 78, .y = 5, .width = 2, .height = 10 }, .z_index = .scroll_chip },
+        },
+    };
+    var frame = testFrame();
+    frame.panes = panes[0..];
+    var state = testState();
+
+    _ = submitFrameSync(FakeC, &state, frame);
+
+    try std.testing.expectEqual(@as(u32, 8), FakeC.texture_coord_calls);
+    try std.testing.expectEqual(@as(u32, 6), FakeC.quad_begin_calls);
 }
 
 test "submit present completion is synchronous" {

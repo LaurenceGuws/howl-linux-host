@@ -25,11 +25,17 @@ pub const Size = struct {
     height: c_int,
 };
 
-pub const Frame = struct {
+pub const FramePane = struct {
+    id: pane.PaneId,
     term_texture_id: u32,
     term_texture_rect: Rect,
     scrollbar: scrollbar.Placement,
     scroll_chip: scroll_chip.Placement,
+};
+
+pub const Frame = struct {
+    panes: []const FramePane,
+    tab_bar_height_px: c_int,
     tab_count: TabIndex,
     active_tab: TabIndex,
     tab_bar_revision: u64,
@@ -162,4 +168,29 @@ test "window top-left y coordinates map top to positive ndc" {
 test "render target bottom-left y coordinates map row zero to negative ndc" {
     try std.testing.expectEqual(@as(f32, -1.0), renderTargetBottomLeftYToNdc(0, 10));
     try std.testing.expectEqual(@as(f32, 1.0), renderTargetBottomLeftYToNdc(10, 10));
+}
+
+test "frame carries explicit pane draw records and tab bar height" {
+    const frame_panes = [_]FramePane{.{
+        .id = .first,
+        .term_texture_id = 7,
+        .term_texture_rect = .{ .x = 0, .y = 16, .width = 80, .height = 24 },
+        .scrollbar = scrollbar.hidden(.{ .x = 0, .y = 16, .width = 80, .height = 24 }),
+        .scroll_chip = scroll_chip.hidden(scrollbar.hidden(.{ .x = 0, .y = 16, .width = 80, .height = 24 })),
+    }};
+
+    const frame = Frame{
+        .panes = frame_panes[0..],
+        .tab_bar_height_px = 16,
+        .tab_count = 1,
+        .active_tab = 0,
+        .tab_bar_revision = 1,
+        .tab_bar_font_size_px = 16,
+        .tab_labels = &.{"shell"},
+        .damage = .fullFrame(),
+    };
+
+    try std.testing.expectEqual(@as(usize, 1), frame.panes.len);
+    try std.testing.expectEqual(pane.PaneId.first, frame.panes[0].id);
+    try std.testing.expectEqual(@as(c_int, 16), frame.tab_bar_height_px);
 }

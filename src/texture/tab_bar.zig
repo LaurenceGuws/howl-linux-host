@@ -5,7 +5,7 @@ const TabIndex = @import("../tab_bar.zig").TabBar.TabIndex;
 const gl_quad = @import("../render/gl_quad.zig");
 
 pub fn drawBackground(comptime c: type, fb_w: c_int, fb_h: c_int, frame_value: Layout.Frame) void {
-    const bar_h = @max(frame_value.term_texture_rect.y, 0);
+    const bar_h = @max(frame_value.tab_bar_height_px, 0);
     if (bar_h <= 0) return;
 
     gl_quad.solidRect(c, fb_w, fb_h, 0, 0, fb_w, bar_h, 0.09, 0.11, 0.16, 1.0);
