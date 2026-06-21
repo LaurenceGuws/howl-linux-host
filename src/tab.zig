@@ -421,7 +421,9 @@ pub const Tab = struct {
     }
 
     pub fn paste(self: *Tab, payload: []const u8) void {
-        self.activePane().paste(payload);
+        const pane_value = self.activePane();
+        term_input.publishPaste(&pane_value.term, payload) catch return;
+        _ = pane_value.resetCursorBlinkActivity(EventLoop.nowNs());
     }
 
     pub fn tabBarFontSizePx(self: *const Tab) u16 {

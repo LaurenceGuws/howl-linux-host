@@ -266,11 +266,6 @@ pub const Surface = struct {
         return surface_layout.readSurfacePixels(&self.surface_layout);
     }
 
-    pub fn paste(self: *Term, payload: []const u8) void {
-        term_input.publishPaste(&self.term, payload) catch return;
-        _ = self.resetCursorBlinkActivity(EventLoop.nowNs());
-    }
-
     pub fn lifecycleState(self: *const Term) LifecycleState {
         return pty_session.lifecycleState(&self.term);
     }
