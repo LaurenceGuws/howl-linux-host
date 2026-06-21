@@ -38,6 +38,7 @@ test {
     _ = @import("layout.zig").window;
     _ = @import("layout.zig").tab;
     _ = @import("layout.zig").pane;
+    _ = @import("layout.zig").splits;
     _ = @import("layout.zig").tab_bar;
     _ = @import("layout.zig").z_index;
     _ = @import("layout.zig").scrollbar;
@@ -65,6 +66,18 @@ test "host source has no rejected scroll layer noun" {
 test "host source has no temporary layout window symbols" {
     try expectNoTemporaryLayoutWindowSymbol(@embedFile("layout/window.zig"));
     try expectNoTemporaryLayoutWindowSymbol(@embedFile("events/event.zig"));
+}
+
+test "host layout structure has no rejected owner names" {
+    try expectNoRejectedLayoutStructureName(@embedFile("layout.zig"));
+    try expectNoRejectedLayoutStructureName(@embedFile("layout/window.zig"));
+    try expectNoRejectedLayoutStructureName(@embedFile("layout/tab.zig"));
+    try expectNoRejectedLayoutStructureName(@embedFile("layout/pane.zig"));
+    try expectNoRejectedLayoutStructureName(@embedFile("layout/splits.zig"));
+    try expectNoRejectedLayoutStructureName(@embedFile("layout/tab_bar.zig"));
+    try expectNoRejectedLayoutStructureName(@embedFile("layout/scrollbar.zig"));
+    try expectNoRejectedLayoutStructureName(@embedFile("layout/scroll_chip.zig"));
+    try expectNoRejectedLayoutStructureName(@embedFile("layout/z_index.zig"));
 }
 
 fn expectNoLayoutCellsImport(source: []const u8) !void {
@@ -106,4 +119,21 @@ fn expectNoTemporaryLayoutWindowSymbol(source: []const u8) !void {
     try std.testing.expect(std.mem.indexOf(u8, source, stale_next) == null);
     try std.testing.expect(std.mem.indexOf(u8, source, stale_after) == null);
     try std.testing.expect(std.mem.indexOf(u8, source, stale_local) == null);
+}
+
+fn expectNoRejectedLayoutStructureName(source: []const u8) !void {
+    const stale_viewport_file = "layout/" ++ "viewport" ++ ".zig";
+    const stale_screen_file = "layout/" ++ "screen" ++ ".zig";
+    const stale_types_file = "types" ++ ".zig";
+    const stale_manager_file = "manager" ++ ".zig";
+    const stale_engine_file = "engine" ++ ".zig";
+    const stale_controller_file = "controller" ++ ".zig";
+    const stale_utils_file = "utils" ++ ".zig";
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_viewport_file) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_screen_file) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_types_file) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_manager_file) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_engine_file) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_controller_file) == null);
+    try std.testing.expect(std.mem.indexOf(u8, source, stale_utils_file) == null);
 }

@@ -7,6 +7,7 @@ const HostInput = @import("input.zig").Input;
 pub const window = @import("layout/window.zig");
 pub const tab = @import("layout/tab.zig");
 pub const pane = @import("layout/pane.zig");
+pub const splits = @import("layout/splits.zig");
 pub const tab_bar = @import("layout/tab_bar.zig");
 pub const z_index = @import("layout/z_index.zig");
 pub const scrollbar = @import("layout/scrollbar.zig");
