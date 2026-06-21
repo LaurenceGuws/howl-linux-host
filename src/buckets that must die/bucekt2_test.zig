@@ -411,15 +411,15 @@ test "terminal logical size follows snapped terminal pixels" {
     try std.testing.expectEqual(@as(c_int, 560), size.height);
 }
 
-test "surface texture size uses snapped terminal render size" {
+test "surface render layout carries snapped terminal render size" {
     var surface = testSurfaceBase();
     const layout = try queryTestSurfaceLayout(.{ .width = 960, .height = 570 }, 16);
     surface.term.render = render_retained.State.init(layout);
 
-    const size = surface.textureSize();
+    const render_px = surface.term.render.surface_layout.render_px;
 
-    try std.testing.expectEqual(@as(c_int, layout.render_px.width), size.width);
-    try std.testing.expectEqual(@as(c_int, layout.render_px.height), size.height);
+    try std.testing.expectEqual(layout.render_px.width, render_px.width);
+    try std.testing.expectEqual(layout.render_px.height, render_px.height);
 }
 
 test "pending VT clipboard write follows OSC 52 policy" {
@@ -483,20 +483,21 @@ test "pty wake is acknowledged without host transport drive" {
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
+    surface.widget_focused = false;
 
     drive_hook_state.wake_pending = true;
-    const first_facts = surface.runtimeFacts(false, 1, .{ .input_published = false });
-    try std.testing.expect(!first_facts.driveAdmitted(false));
+    const first_facts = surface.runtimeFacts(1, .{ .input_published = false });
+    try std.testing.expect(!first_facts.driveAdmitted());
 
-    const first = surface.driveProgressWithFacts(false, 1, first_facts);
+    const first = surface.driveProgressWithFacts(1, first_facts);
     try std.testing.expect(!first.drove);
     try std.testing.expect(!first.outcome.keep);
     try std.testing.expectEqual(@as(u8, 0), drive_hook_state.drive_calls);
     try std.testing.expect(surface.acknowledgeProgressWake());
     try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
 
-    const second_facts = surface.runtimeFacts(false, 2, .{ .input_published = false });
-    try std.testing.expect(!second_facts.driveAdmitted(false));
+    const second_facts = surface.runtimeFacts(2, .{ .input_published = false });
+    try std.testing.expect(!second_facts.driveAdmitted());
     try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
 }
 
@@ -505,12 +506,13 @@ test "pty wake observes retained render turn prepared by pty thread" {
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
+    surface.widget_focused = false;
 
     drive_hook_state.wants_render_turn = true;
     surface.term.render.notePrepareNeeded();
     drive_hook_state.wake_pending = true;
-    const facts = surface.runtimeFacts(false, 1, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(false, 1, facts);
+    const facts = surface.runtimeFacts(1, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(1, facts);
 
     try std.testing.expect(!result.drove);
     try std.testing.expect(!result.outcome.should_redraw);
@@ -523,14 +525,15 @@ test "pty wake does not reset cursor blink cadence" {
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
+    surface.widget_focused = false;
     surface.cursor_render_info.blink = true;
     surface.cursor_blink.cursor_opacity = 0;
     surface.cursor_blink.visible = false;
     surface.cursor_blink.deadline_ns = 10_000;
 
     drive_hook_state.wake_pending = true;
-    const facts = surface.runtimeFacts(false, 1, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(false, 1, facts);
+    const facts = surface.runtimeFacts(1, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(1, facts);
 
     try std.testing.expect(!result.drove);
     try std.testing.expect(!result.outcome.should_redraw);
@@ -538,14 +541,14 @@ test "pty wake does not reset cursor blink cadence" {
     try std.testing.expect(!surface.cursor_blink.visible);
 }
 
-test "inactive tab wake acknowledges without host transport drive" {
+test "wake acknowledges without host transport drive when not admitted" {
     drive_hook_state = .{};
     installDriveHooks();
     defer surface_testing.resetHooks();
     var surface = testSurfaceBase();
     drive_hook_state.wake_pending = true;
 
-    const result = surface.driveProgress(false, 4, .{ .input_published = false });
+    const result = surface.driveProgress(4, .{ .input_published = false });
 
     try std.testing.expect(!result.drove);
     try std.testing.expectEqual(@as(u8, 0), drive_hook_state.drive_calls);
@@ -583,7 +586,7 @@ test "cursor cadence without runtime admission keeps render wake pending" {
     surface.cursor_blink.zero_time_ns = 0;
     surface.cursor_blink.deadline_ns = cursor_blink.default_interval_ns;
 
-    const result = surface.driveProgressWithFacts(true, cursor_blink.default_interval_ns, .{
+    const result = surface.driveProgressWithFacts(cursor_blink.default_interval_ns, .{
         .wake_pending = false,
         .runtime_due_now = false,
         .input_published = false,
@@ -1118,10 +1121,6 @@ test "cursor visibility change while present pending submits latest snapshot aft
 test "terminal frame follows finite frame wait after pty-driven submit without further input" {
     const PresentTab = struct {
         surface: *Surface,
-
-        pub fn termTextureId(self: *const @This()) u32 {
-            return @intCast(self.surface.termTextureId());
-        }
 
         pub fn notePresentSubmitted(self: *@This(), snapshot_seq: u64, token: u64) void {
             self.surface.notePresentSubmitted(snapshot_seq, token);

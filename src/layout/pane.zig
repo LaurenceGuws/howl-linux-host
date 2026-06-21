@@ -8,6 +8,10 @@ pub const PaneId = enum(u16) { first = 0, _ };
 
 pub const Direction = enum { left, right, up, down };
 
+pub const Kind = enum { tiled, floating };
+
+pub const Visibility = enum { visible, hidden };
+
 pub const Placement = struct {
     id: PaneId,
     rect: Layout.Rect,
@@ -49,6 +53,10 @@ test "place preserves pane identity separately from geometry" {
     try std.testing.expectEqual(Layout.Rect{ .x = 0, .y = 30, .width = 960, .height = 570 }, value.rect);
     try std.testing.expectEqual(Layout.Size{ .width = 960, .height = 570 }, value.pixel_size);
     try std.testing.expectEqual(Layout.Size{ .width = 960, .height = 570 }, value.logical_size);
+}
+
+test "pane kind has tiled and floating vocabulary" {
+    try std.testing.expect(Kind.tiled != Kind.floating);
 }
 
 test "terminal derives texture rect and logical size inside pane" {

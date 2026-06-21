@@ -1,7 +1,6 @@
 const std = @import("std");
 const EventLoop = @import("../events/event_loop.zig");
 const window = @import("../events/window.zig");
-const Layout = @import("../layout.zig");
 const term_texture = @import("../texture/term.zig");
 const HostInput = @import("../input.zig").Input;
 const pty_c = @import("howl_pty_c");
@@ -107,8 +106,8 @@ pub const Surface = struct {
             return self.wake_pending or self.runtime_due_now;
         }
 
-        pub fn driveAdmitted(self: RuntimeFacts, active: bool) bool {
-            return self.runtime_due_now or (active and self.input_published);
+        pub fn driveAdmitted(self: RuntimeFacts) bool {
+            return self.runtime_due_now or self.input_published;
         }
     };
 
@@ -283,11 +282,7 @@ pub const Surface = struct {
     }
 
     pub fn handleScrollInput(self: *Term, input_events: *HostInput) void {
-        terminal_scrollbar.handlePages(self, input_events);
-    }
-
-    pub fn wantsPassiveHoverWake(self: *const Term, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-        return terminal_scrollbar.wantsPassiveHoverWake(self, origin_x, origin_y, logical_width, logical_height);
+        terminal_scrollbar.handlePages(&self.term, &self.scrollbar, input_events);
     }
 
     /// Report whether this term needs unpressed mouse motion for link hover.
@@ -298,26 +293,6 @@ pub const Surface = struct {
     pub fn wantsTerminalHoverReporting(self: *Term) bool {
         if (!self.live) return false;
         return term_input.wouldReportUnpressedMouseMotion(&self.term);
-    }
-
-    pub fn scrollbarPlacement(self: *const Term, texture_rect: Layout.Rect) Layout.scrollbar.Placement {
-        return terminal_scrollbar.scrollbar(@constCast(self), texture_rect);
-    }
-
-    pub fn scrollChipPlacement(self: *const Term, texture_rect: Layout.Rect) Layout.scroll_chip.Placement {
-        return terminal_scrollbar.scrollChip(@constCast(self), texture_rect);
-    }
-
-    pub fn textureSize(self: *const Term) Layout.Size {
-        const render_px = self.term.render.surface_layout.render_px;
-        const width = @as(c_int, @intCast(render_px.width));
-        const height = @as(c_int, @intCast(render_px.height));
-        std.debug.assert(width > 0);
-        std.debug.assert(height > 0);
-        return .{
-            .width = width,
-            .height = height,
-        };
     }
 
     pub fn lifecycleState(self: *const Term) LifecycleState {
@@ -362,7 +337,7 @@ pub const Surface = struct {
         if (self.window_focused == focused) return;
         self.window_focused = focused;
         if (!focused and terminal_links.clearHoveredLink(self)) self.input.requestRedraw();
-        terminal_scrollbar.setFocused(self, focused);
+        terminal_scrollbar.setFocused(&self.scrollbar, focused);
         self.syncInputFocus();
     }
 
@@ -370,7 +345,7 @@ pub const Surface = struct {
         if (self.widget_focused == focused) return;
         self.widget_focused = focused;
         if (!focused and terminal_links.clearHoveredLink(self)) self.input.requestRedraw();
-        terminal_scrollbar.invalidate(self);
+        terminal_scrollbar.invalidate(&self.scrollbar);
         self.syncInputFocus();
     }
 
@@ -464,18 +439,19 @@ pub const Surface = struct {
         return @intCast(@min(remaining_ms, @as(u64, std.math.maxInt(u32))));
     }
 
-    pub fn runtimeFacts(self: *Term, active: bool, now_ns: u64, admission: DriveAdmission) RuntimeFacts {
+    pub fn runtimeFacts(self: *Term, now_ns: u64, admission: DriveAdmission) RuntimeFacts {
+        const focused = self.window_focused and self.widget_focused;
         return .{
             .wake_pending = wakePendingHooked(self),
             .runtime_due_now = runtimeObligationDueNowHooked(self, now_ns),
-            .input_published = active and admission.input_published,
-            .runtime_wait_ms = minOptionalWaitMs(self.nextRuntimeObligationWaitMs(now_ns), if (active) self.cursorWaitMs(now_ns) else null),
+            .input_published = admission.input_published,
+            .runtime_wait_ms = minOptionalWaitMs(self.nextRuntimeObligationWaitMs(now_ns), if (focused) self.cursorWaitMs(now_ns) else null),
             .render_turn_pending = self.wantsRenderTurn(),
         };
     }
 
-    pub fn driveProgress(self: *Term, active: bool, now_ns: u64, admission: DriveAdmission) DriveProgressResult {
-        return self.driveProgressWithFacts(active, now_ns, self.runtimeFacts(active, now_ns, admission));
+    pub fn driveProgress(self: *Term, now_ns: u64, admission: DriveAdmission) DriveProgressResult {
+        return self.driveProgressWithFacts(now_ns, self.runtimeFacts(now_ns, admission));
     }
 
     pub fn acknowledgeProgressWake(self: *Term) bool {
@@ -484,9 +460,10 @@ pub const Surface = struct {
         return true;
     }
 
-    pub fn driveProgressWithFacts(self: *Term, active: bool, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
-        if (!facts.driveAdmitted(active)) {
-            const cursor_redraw = if (active) self.driveCursor(now_ns) else false;
+    pub fn driveProgressWithFacts(self: *Term, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
+        if (!facts.driveAdmitted()) {
+            const focused = self.window_focused and self.widget_focused;
+            const cursor_redraw = if (focused) self.driveCursor(now_ns) else false;
             return .{
                 .drove = false,
                 .outcome = .{ .keep = cursor_redraw, .should_redraw = cursor_redraw, .alive = isAliveHooked(self) },
@@ -494,7 +471,7 @@ pub const Surface = struct {
         }
 
         const outcome = driveProgressBounded(self, now_ns);
-        return driveProgressConsequences(self, active, now_ns, outcome);
+        return driveProgressConsequences(self, now_ns, outcome);
     }
 
     pub fn renderTurn(self: *Term) TurnResult {
@@ -530,10 +507,6 @@ pub const Surface = struct {
     pub fn noteRenderTurn(self: *Term, turn: TurnResult) void {
         if (turn.step == .surface_idle) return;
         if (turn.prepared and turn.state_after == .submit_ready) self.notePreparedStep(turn.state_after);
-    }
-
-    pub fn termTextureId(self: *const Term) u64 {
-        return self.term_texture.host_surface_id;
     }
 
     fn initTerm(self: *Term) !void {
@@ -748,13 +721,14 @@ pub const Surface = struct {
         self.term.render.notePrepareNeeded();
     }
 
-    fn driveProgressConsequences(self: *Term, active: bool, now_ns: u64, outcome_input: pty_pump.Outcome) DriveProgressResult {
+    fn driveProgressConsequences(self: *Term, now_ns: u64, outcome_input: pty_pump.Outcome) DriveProgressResult {
+        const focused = self.window_focused and self.widget_focused;
         var outcome = outcome_input;
-        if (active and outcome.should_redraw) {
+        if (outcome.should_redraw) {
             self.noteTerminalSourceChanged();
-            if (terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
+            if (focused and terminal_links.clearHoveredLink(self)) outcome.should_redraw = true;
         }
-        if (active) {
+        if (focused) {
             outcome.should_redraw = self.driveCursor(now_ns) or outcome.should_redraw;
         }
         applyPendingClipboardWrites(self);
@@ -959,7 +933,7 @@ pub const Surface = struct {
     fn processScrollBarMouseSelected(surface: *anyopaque, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) input_processor.ScrollMouseOutcome {
         const self = selectedSurface(surface);
         const before = ScrollVisualState.capture(self);
-        const consumed = terminal_scrollbar.handleMouse(self, mouse_event, origin_x, origin_y, logical_width, logical_height);
+        const consumed = terminal_scrollbar.handleMouse(&self.term, &self.scrollbar, mouse_event, origin_x, origin_y, logical_width, logical_height, self.window_focused);
         const after = ScrollVisualState.capture(self);
         if (before.scrollback_offset != after.scrollback_offset) self.noteRenderScrollbackChanged();
         return .{ .consumed = consumed, .host_visual_changed = !std.meta.eql(before, after) };
@@ -978,7 +952,7 @@ pub const Surface = struct {
             else => 0,
         };
         if (delta == 0) return false;
-        terminal_scrollbar.byRows(self, delta);
+        terminal_scrollbar.byRows(&self.term, &self.scrollbar, delta);
         const after = terminal_scrollbar.scrollState(&self.term).scrollback_offset;
         if (before != after) self.noteRenderScrollbackChanged();
         return before != after;
@@ -1154,7 +1128,7 @@ pub const testing = struct {
     }
 };
 
-test "inactive tab with no admission does not drive" {
+test "surface with no admission does not drive" {
     const TestState = struct {
         var drive_calls: u8 = 0;
         var clipboard_calls: u8 = 0;
@@ -1207,17 +1181,17 @@ test "inactive tab with no admission does not drive" {
     defer testing.resetHooks();
 
     var surface = testSurfaceBase();
-    const facts = surface.runtimeFacts(false, 11, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(false, 11, facts);
+    const facts = surface.runtimeFacts(11, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(11, facts);
 
-    try std.testing.expect(!facts.driveAdmitted(false));
+    try std.testing.expect(!facts.driveAdmitted());
     try std.testing.expect(!result.drove);
     try std.testing.expectEqual(@as(u8, 0), TestState.drive_calls);
     try std.testing.expectEqual(@as(u8, 0), TestState.clipboard_calls);
     try std.testing.expectEqual(@as(u8, 0), TestState.ack_calls);
 }
 
-test "active tab with admitted input does drive" {
+test "surface with admitted input does drive" {
     const TestState = struct {
         var drive_calls: u8 = 0;
         var clipboard_calls: u8 = 0;
@@ -1270,10 +1244,10 @@ test "active tab with admitted input does drive" {
     defer testing.resetHooks();
 
     var surface = testSurfaceBase();
-    const facts = surface.runtimeFacts(true, 12, .{ .input_published = true });
-    const result = surface.driveProgressWithFacts(true, 12, facts);
+    const facts = surface.runtimeFacts(12, .{ .input_published = true });
+    const result = surface.driveProgressWithFacts(12, facts);
 
-    try std.testing.expect(facts.driveAdmitted(true));
+    try std.testing.expect(facts.driveAdmitted());
     try std.testing.expect(result.drove);
     try std.testing.expectEqual(@as(u8, 1), TestState.drive_calls);
     try std.testing.expectEqual(@as(u8, 1), TestState.clipboard_calls);
@@ -1321,10 +1295,10 @@ test "wake alone does not drive host transport" {
     defer testing.resetHooks();
 
     var surface = testSurfaceBase();
-    const facts = surface.runtimeFacts(false, 13, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(false, 13, facts);
+    const facts = surface.runtimeFacts(13, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(13, facts);
 
-    try std.testing.expect(!facts.driveAdmitted(false));
+    try std.testing.expect(!facts.driveAdmitted());
     try std.testing.expect(!result.drove);
     try std.testing.expectEqual(@as(u8, 0), TestState.drive_calls);
 }
@@ -1365,10 +1339,10 @@ test "runtime due drives without new input" {
     defer testing.resetHooks();
 
     var surface = testSurfaceBase();
-    const facts = surface.runtimeFacts(false, 14, .{ .input_published = false });
-    const result = surface.driveProgressWithFacts(false, 14, facts);
+    const facts = surface.runtimeFacts(14, .{ .input_published = false });
+    const result = surface.driveProgressWithFacts(14, facts);
 
-    try std.testing.expect(facts.driveAdmitted(false));
+    try std.testing.expect(facts.driveAdmitted());
     try std.testing.expect(result.drove);
     try std.testing.expectEqual(@as(u8, 1), TestState.drive_calls);
 }
@@ -1414,8 +1388,8 @@ test "cursor activity reset uses the passed now_ns" {
     surface.cursor_blink.visible = false;
     surface.cursor_blink.deadline_ns = 17;
     surface.cursor_render_info.blink = true;
-    const facts = surface.runtimeFacts(true, now_ns, .{ .input_published = true });
-    const result = surface.driveProgressWithFacts(true, now_ns, facts);
+    const facts = surface.runtimeFacts(now_ns, .{ .input_published = true });
+    const result = surface.driveProgressWithFacts(now_ns, facts);
 
     try std.testing.expect(result.drove);
     try std.testing.expect(surface.cursor_blink.visible);

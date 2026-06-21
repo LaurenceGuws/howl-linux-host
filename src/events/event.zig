@@ -286,18 +286,19 @@ pub const Processor = struct {
             .render_turn_pending = false,
         };
         for (tabs, 0..) |tab, i| {
-            const active = @as(TabIndex, @intCast(i)) == self.active_tab_idx.*;
-            const tab_facts = tab.runtimeFacts(active, now_ns, .{ .input_published = term_input_admitted });
+            const selected = @as(TabIndex, @intCast(i)) == self.active_tab_idx.*;
+            const selection: RuntimeTab.TabSelection = if (selected) .selected else .unselected;
+            const tab_facts = tab.runtimeFacts(selection, now_ns, .{ .input_published = term_input_admitted });
             facts.tabs[i] = tab_facts;
-            noteLoopRuntimeFacts(&facts, tab_facts, active);
+            noteLoopRuntimeFacts(&facts, tab_facts, selected);
         }
         return facts;
     }
 
-    fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, runtime: RuntimeTab.RuntimeFacts, active: bool) void {
+    fn noteLoopRuntimeFacts(facts: *LoopRuntimeFacts, runtime: RuntimeTab.RuntimeFacts, selected: bool) void {
         facts.runtime_wake_pending = facts.runtime_wake_pending or runtime.wake_pending or runtime.runtime_due_now;
         facts.runtime_wait_ms = minOptionalWaitMs(facts.runtime_wait_ms, runtime.runtime_wait_ms);
-        if (active) {
+        if (selected) {
             facts.runtime_admitted = runtime.input_published;
             facts.render_turn_pending = runtime.render_turn_pending;
         }
@@ -379,8 +380,9 @@ pub const Processor = struct {
         var drive_performed = false;
         for (tabs, 0..) |tab, i| {
             const is_active = @as(TabIndex, @intCast(i)) == active_tab_idx;
+            const selection: RuntimeTab.TabSelection = if (is_active) .selected else .unselected;
             const facts = runtime_facts.tab(i);
-            const drive = driveTabRuntimeTurn(tab, is_active, now_ns, facts);
+            const drive = driveTabRuntimeTurn(tab, selection, now_ns, facts);
             if (is_active) drive_performed = drive.drove;
             should_redraw = should_redraw or drive.outcome.should_redraw;
             keep_running = keep_running or drive.outcome.keep;
@@ -392,8 +394,8 @@ pub const Processor = struct {
         };
     }
 
-    fn driveTabRuntimeTurn(tab: *RuntimeTab, active: bool, now_ns: u64, facts: RuntimeTab.RuntimeFacts) RuntimeTab.DriveProgressResult {
-        return tab.driveProgressWithFacts(active, now_ns, facts);
+    fn driveTabRuntimeTurn(tab: *RuntimeTab, selection: RuntimeTab.TabSelection, now_ns: u64, facts: RuntimeTab.RuntimeFacts) RuntimeTab.DriveProgressResult {
+        return tab.driveProgressWithFacts(selection, now_ns, facts);
     }
 
     fn handleActiveTabProblem(self: *Self) !?LoopAction {
@@ -431,11 +433,10 @@ pub const Processor = struct {
         const tab = activeTab(self.tabs.items(), self.active_tab_idx.*);
         self.window.clearRedrawRequest();
         const turn = tab.renderTurn();
-        const term_texture_before = tab.termTextureId();
         tab.noteRenderTurn(turn);
         syncActiveWindowTitle(self.window, tab);
         const snapshot = renderSnapshot(self, tab);
-        std.debug.assert(tab.termTextureId() != 0 or term_texture_before == 0);
+        std.debug.assert(tab.renderedPaneTexturesReady(turn));
         return .{ .tab = tab, .turn = turn, .snapshot = snapshot };
     }
 

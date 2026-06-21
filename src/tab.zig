@@ -6,12 +6,18 @@ const Config = @import("config.zig");
 const EventLoop = @import("events/event_loop.zig");
 const HostInput = @import("input.zig").Input;
 const Layout = @import("layout.zig");
-const TerminalSurface = @import("buckets that must die/bucket2.zig").Surface;
+const terminal_bucket = @import("buckets that must die/bucket2.zig");
+const TerminalSurface = terminal_bucket.Surface;
 const pty_session = @import("pty/session.zig");
+const pty_pump = @import("pty/pump.zig");
+const render_retained = @import("render/surface_retained.zig");
+const terminal_scrollbar = @import("scroll_bar.zig");
+const HowlTerm = @import("term.zig").Term;
 
 const TerminalConfig = Config.Terminal;
 const PaneId = Layout.pane.PaneId;
 const PaneDirection = Layout.pane.Direction;
+const PaneVisibility = Layout.pane.Visibility;
 const second_pane: PaneId = @enumFromInt(1);
 
 /// Runtime owner for one tab and its bounded tiled panes.
@@ -29,6 +35,26 @@ pub const Tab = struct {
     pub const TurnStep = TerminalSurface.TurnStep;
     pub const DriveAdmission = TerminalSurface.DriveAdmission;
     pub const DriveProgressResult = TerminalSurface.DriveProgressResult;
+
+    pub const TabSelection = enum { selected, unselected };
+
+    const PaneFocus = enum { focused, unfocused };
+
+    const InputAdmission = enum { admitted, blocked };
+
+    pub const TabInfo = struct {
+        are_floating_panes_visible: bool,
+        selectable_tiled_panes_count: usize,
+        selectable_floating_panes_count: usize,
+    };
+
+    pub const PaneInfo = struct {
+        id: PaneId,
+        kind: Layout.pane.Kind,
+        visibility: Layout.pane.Visibility,
+        is_focused: bool,
+        is_selectable: bool,
+    };
 
     pub const PaneTurn = struct {
         id: PaneId,
@@ -54,6 +80,28 @@ pub const Tab = struct {
 
     pub fn activePaneId(self: *const Tab) PaneId {
         return self.active_pane;
+    }
+
+    pub fn tabInfo(self: *const Tab, selection: TabSelection) TabInfo {
+        self.assertInvariants();
+        return .{
+            .are_floating_panes_visible = false,
+            .selectable_tiled_panes_count = switch (selection) {
+                .selected => self.pane_count,
+                .unselected => 0,
+            },
+            .selectable_floating_panes_count = 0,
+        };
+    }
+
+    pub fn paneInfo(self: *const Tab, selection: TabSelection, out: []PaneInfo) []PaneInfo {
+        self.assertInvariants();
+        std.debug.assert(out.len >= self.pane_count);
+        for (self.initializedPanesConst(), 0..) |_, i| {
+            const id = paneIdFromIndex(i);
+            out[i] = self.paneInfoOne(selection, id);
+        }
+        return out[0..self.pane_count];
     }
 
     pub fn pane(self: *Tab, id: PaneId) *TerminalSurface {
@@ -152,7 +200,7 @@ pub const Tab = struct {
         return true;
     }
 
-    pub fn runtimeFacts(self: *Tab, active: bool, now_ns: u64, admission: DriveAdmission) RuntimeFacts {
+    pub fn runtimeFacts(self: *Tab, selection: TabSelection, now_ns: u64, admission: DriveAdmission) RuntimeFacts {
         self.assertInvariants();
         var facts = RuntimeFacts{
             .panes = undefined,
@@ -165,8 +213,11 @@ pub const Tab = struct {
         };
 
         for (self.initializedPanes(), 0..) |*runtime_pane, i| {
-            const pane_active = active and paneIdFromIndex(i) == self.active_pane;
-            const pane_facts = runtime_pane.runtimeFacts(pane_active, now_ns, .{ .input_published = admission.input_published });
+            const info = self.paneInfoOne(selection, paneIdFromIndex(i));
+            const pane_facts = switch (info.visibility) {
+                .visible => runtime_pane.runtimeFacts(now_ns, .{ .input_published = inputAdmissionPublished(paneInputAdmission(info, admission)) }),
+                .hidden => inertRuntimeFacts(),
+            };
             facts.panes[i] = pane_facts;
             facts.wake_pending = facts.wake_pending or pane_facts.wake_pending;
             facts.runtime_due_now = facts.runtime_due_now or pane_facts.runtime_due_now;
@@ -184,13 +235,16 @@ pub const Tab = struct {
         return acknowledged;
     }
 
-    pub fn driveProgressWithFacts(self: *Tab, active: bool, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
+    pub fn driveProgressWithFacts(self: *Tab, selection: TabSelection, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
         self.assertInvariants();
         std.debug.assert(facts.pane_count == self.pane_count);
         var result = DriveProgressResult{ .drove = false, .outcome = .{ .keep = false, .should_redraw = false, .alive = false } };
         for (self.initializedPanes(), 0..) |*runtime_pane, i| {
-            const pane_active = active and paneIdFromIndex(i) == self.active_pane;
-            const pane_drive = runtime_pane.driveProgressWithFacts(pane_active, now_ns, facts.panes[i]);
+            const info = self.paneInfoOne(selection, paneIdFromIndex(i));
+            const pane_drive = switch (info.visibility) {
+                .visible => runtime_pane.driveProgressWithFacts(now_ns, facts.panes[i]),
+                .hidden => inertDriveProgress(),
+            };
             result.drove = result.drove or pane_drive.drove;
             result.outcome.keep = result.outcome.keep or pane_drive.outcome.keep;
             result.outcome.should_redraw = result.outcome.should_redraw or pane_drive.outcome.should_redraw;
@@ -216,10 +270,6 @@ pub const Tab = struct {
         for (turn.panes[0..turn.pane_count]) |pane_turn| self.pane(pane_turn.id).noteRenderTurn(pane_turn.turn);
     }
 
-    pub fn termTextureId(self: *const Tab) u64 {
-        return self.activePaneConst().termTextureId();
-    }
-
     pub fn notePresentSubmitted(self: *Tab, turn: TurnResult, token: u64) void {
         std.debug.assert(turn.pane_count == self.pane_count);
         for (turn.panes[0..turn.pane_count]) |pane_turn| {
@@ -234,6 +284,16 @@ pub const Tab = struct {
         for (self.initializedPanes()) |*runtime_pane| runtime_pane.completePresent(token);
     }
 
+    pub fn renderedPaneTexturesReady(self: *const Tab, turn: TurnResult) bool {
+        self.assertInvariants();
+        std.debug.assert(turn.pane_count == self.pane_count);
+        for (turn.panes[0..turn.pane_count]) |pane_turn| {
+            if (pane_turn.turn.step != .rendered) continue;
+            if (self.paneConst(pane_turn.id).term_texture.host_surface_id == 0) return false;
+        }
+        return true;
+    }
+
     pub fn resize(self: *Tab, tab_body: Layout.tab.Body) void {
         self.assertInvariants();
         var placements_buf: [max_frame_panes]Layout.pane.Placement = undefined;
@@ -246,28 +306,36 @@ pub const Tab = struct {
         var placements_buf: [max_frame_panes]Layout.pane.Placement = undefined;
         const placements = self.place(tab_body, placements_buf[0..]);
         for (placements) |placement| {
-            if (placement.id == self.active_pane) return Layout.pane.terminal(placement, self.activePaneConst().textureSize());
+            if (placement.id == self.active_pane) return Layout.pane.terminal(placement, paneTextureSize(self.activePaneConst()));
         }
         unreachable;
     }
 
-    pub fn framePanes(self: *const Tab, tab_body: Layout.tab.Body, out: []Layout.FramePane) []Layout.FramePane {
+    pub fn framePanes(self: *Tab, tab_body: Layout.tab.Body, out: []Layout.FramePane) []Layout.FramePane {
         self.assertInvariants();
         std.debug.assert(out.len >= self.pane_count);
         var placements_buf: [max_frame_panes]Layout.pane.Placement = undefined;
         const placements = self.place(tab_body, placements_buf[0..]);
-        for (placements, 0..) |placement, i| {
-            const runtime_pane = self.paneConst(placement.id);
-            const terminal = Layout.pane.terminal(placement, runtime_pane.textureSize());
-            out[i] = .{
+        var frame_count: usize = 0;
+        for (placements) |placement| {
+            const info = self.paneInfoOne(.selected, placement.id);
+            if (info.visibility == .hidden) continue;
+            const runtime_pane = self.pane(placement.id);
+            const terminal = Layout.pane.terminal(placement, paneTextureSize(runtime_pane));
+            const scroll_view = terminal_scrollbar.viewFromTerm(terminal_scrollbar.scrollState(&runtime_pane.term));
+            const logical_width = runtime_pane.surface_layout.logical_w;
+            const logical_height = runtime_pane.surface_layout.logical_h;
+            const scrollbar = terminal_scrollbar.placeScrollbar(&runtime_pane.scrollbar, terminal.texture_rect, scroll_view, logical_width, logical_height, runtime_pane.window_focused);
+            out[frame_count] = .{
                 .id = placement.id,
-                .term_texture_id = @intCast(runtime_pane.termTextureId()),
+                .term_texture_id = @intCast(runtime_pane.term_texture.host_surface_id),
                 .term_texture_rect = terminal.texture_rect,
-                .scrollbar = runtime_pane.scrollbarPlacement(terminal.texture_rect),
-                .scroll_chip = runtime_pane.scrollChipPlacement(terminal.texture_rect),
+                .scrollbar = scrollbar,
+                .scroll_chip = terminal_scrollbar.placeScrollChip(&runtime_pane.scrollbar, terminal.texture_rect, scroll_view, logical_width, logical_height, runtime_pane.window_focused),
             };
+            frame_count += 1;
         }
-        return out[0..placements.len];
+        return out[0..frame_count];
     }
 
     fn place(self: *const Tab, tab_body: Layout.tab.Body, out: []Layout.pane.Placement) []Layout.pane.Placement {
@@ -275,18 +343,6 @@ pub const Tab = struct {
         const placements = Layout.tab.placePanes(tab_body, self.split_tree, out);
         std.debug.assert(placements.len == self.pane_count);
         return placements;
-    }
-
-    pub fn textureSize(self: *const Tab) Layout.Size {
-        return self.activePaneConst().textureSize();
-    }
-
-    pub fn scrollbarPlacement(self: *const Tab, texture_rect: Layout.Rect) Layout.scrollbar.Placement {
-        return self.activePaneConst().scrollbarPlacement(texture_rect);
-    }
-
-    pub fn scrollChipPlacement(self: *const Tab, texture_rect: Layout.Rect) Layout.scroll_chip.Placement {
-        return self.activePaneConst().scrollChipPlacement(texture_rect);
     }
 
     pub fn drainTextInputFastPath(self: *Tab, input_events: *HostInput, input_published: *bool, host_visual_changed: *bool) void {
@@ -368,9 +424,9 @@ pub const Tab = struct {
     fn syncPaneFocus(self: *Tab) void {
         self.assertInvariants();
         for (self.initializedPanes(), 0..) |*runtime_pane, i| {
-            const active = paneIdFromIndex(i) == self.active_pane;
+            const focused = paneIdFromIndex(i) == self.active_pane;
             runtime_pane.setWindowFocused(self.window_focused);
-            runtime_pane.setWidgetFocused(self.widget_focused and active);
+            runtime_pane.setWidgetFocused(self.widget_focused and focused);
         }
     }
 
@@ -397,6 +453,64 @@ pub const Tab = struct {
     fn paneIdFromIndex(index: usize) PaneId {
         std.debug.assert(index < max_frame_panes);
         return @enumFromInt(index);
+    }
+
+    fn paneVisibility(self: *const Tab, selection: TabSelection, id: PaneId) PaneVisibility {
+        _ = self.paneConst(id);
+        return switch (selection) {
+            .selected => .visible,
+            .unselected => .hidden,
+        };
+    }
+
+    fn paneFocus(self: *const Tab, id: PaneId) PaneFocus {
+        return if (id == self.active_pane) .focused else .unfocused;
+    }
+
+    fn paneKind(self: *const Tab, id: PaneId) Layout.pane.Kind {
+        _ = self.paneConst(id);
+        return .tiled;
+    }
+
+    fn paneInfoOne(self: *const Tab, selection: TabSelection, id: PaneId) PaneInfo {
+        const visibility = self.paneVisibility(selection, id);
+        return .{
+            .id = id,
+            .kind = self.paneKind(id),
+            .visibility = visibility,
+            .is_focused = selection == .selected and self.paneFocus(id) == .focused,
+            .is_selectable = visibility == .visible,
+        };
+    }
+
+    fn paneInputAdmission(info: PaneInfo, admission: DriveAdmission) InputAdmission {
+        if (info.visibility == .hidden) return .blocked;
+        if (!info.is_focused) return .blocked;
+        return if (admission.input_published) .admitted else .blocked;
+    }
+
+    fn inputAdmissionPublished(admission: InputAdmission) bool {
+        return switch (admission) {
+            .admitted => true,
+            .blocked => false,
+        };
+    }
+
+    fn inertRuntimeFacts() TerminalSurface.RuntimeFacts {
+        return .{ .wake_pending = false, .runtime_due_now = false, .input_published = false, .runtime_wait_ms = null, .render_turn_pending = false };
+    }
+
+    fn inertDriveProgress() DriveProgressResult {
+        return .{ .drove = false, .outcome = .{ .keep = false, .should_redraw = false, .alive = false } };
+    }
+
+    fn paneTextureSize(pane_value: *const TerminalSurface) Layout.Size {
+        const render_px = pane_value.term.render.surface_layout.render_px;
+        const width = @as(c_int, @intCast(render_px.width));
+        const height = @as(c_int, @intCast(render_px.height));
+        std.debug.assert(width > 0);
+        std.debug.assert(height > 0);
+        return .{ .width = width, .height = height };
     }
 
     fn aggregateTurnStep(current: TurnStep, next: TurnStep) TurnStep {
@@ -550,6 +664,195 @@ test "runtime tab focus movement follows top-bottom split axis" {
     try std.testing.expect(tab.panes[1].widget_focused);
 }
 
+test "runtime tab focus movement does not change pane visibility" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+
+    try std.testing.expectEqual(PaneVisibility.visible, tab.paneVisibility(.selected, .first));
+    try std.testing.expectEqual(PaneVisibility.visible, tab.paneVisibility(.selected, second_pane));
+
+    primeTestFocusPublish(&tab, true, false);
+    try std.testing.expect(tab.focusPane(.left));
+
+    try std.testing.expectEqual(PaneVisibility.visible, tab.paneVisibility(.selected, .first));
+    try std.testing.expectEqual(PaneVisibility.visible, tab.paneVisibility(.selected, second_pane));
+}
+
+test "runtime tab split selected tab exposes both panes as visible" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .top_bottom);
+
+    try std.testing.expectEqual(PaneVisibility.visible, tab.paneVisibility(.selected, .first));
+    try std.testing.expectEqual(PaneVisibility.visible, tab.paneVisibility(.selected, second_pane));
+    try std.testing.expectEqual(PaneVisibility.hidden, tab.paneVisibility(.unselected, .first));
+    try std.testing.expectEqual(PaneVisibility.hidden, tab.paneVisibility(.unselected, second_pane));
+}
+
+test "runtime tab info reports selected tiled pane counts" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+
+    const info = tab.tabInfo(.selected);
+
+    try std.testing.expect(!info.are_floating_panes_visible);
+    try std.testing.expectEqual(@as(usize, 2), info.selectable_tiled_panes_count);
+    try std.testing.expectEqual(@as(usize, 0), info.selectable_floating_panes_count);
+}
+
+test "runtime tab info reports unselected panes as not selectable" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+
+    const info = tab.tabInfo(.unselected);
+
+    try std.testing.expect(!info.are_floating_panes_visible);
+    try std.testing.expectEqual(@as(usize, 0), info.selectable_tiled_panes_count);
+    try std.testing.expectEqual(@as(usize, 0), info.selectable_floating_panes_count);
+}
+
+test "runtime pane info reports selected tiled panes" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .top_bottom);
+    var infos: [Tab.max_frame_panes]Tab.PaneInfo = undefined;
+
+    const panes = tab.paneInfo(.selected, infos[0..]);
+
+    try std.testing.expectEqual(@as(usize, 2), panes.len);
+    try std.testing.expectEqual(PaneId.first, panes[0].id);
+    try std.testing.expectEqual(Layout.pane.Kind.tiled, panes[0].kind);
+    try std.testing.expectEqual(Layout.pane.Visibility.visible, panes[0].visibility);
+    try std.testing.expect(!panes[0].is_focused);
+    try std.testing.expect(panes[0].is_selectable);
+    try std.testing.expectEqual(second_pane, panes[1].id);
+    try std.testing.expectEqual(Layout.pane.Kind.tiled, panes[1].kind);
+    try std.testing.expectEqual(Layout.pane.Visibility.visible, panes[1].visibility);
+    try std.testing.expect(panes[1].is_focused);
+    try std.testing.expect(panes[1].is_selectable);
+}
+
+test "runtime pane info reports unselected tiled panes hidden" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .top_bottom);
+    var infos: [Tab.max_frame_panes]Tab.PaneInfo = undefined;
+
+    const panes = tab.paneInfo(.unselected, infos[0..]);
+
+    try std.testing.expectEqual(@as(usize, 2), panes.len);
+    for (panes) |pane_info| {
+        try std.testing.expectEqual(Layout.pane.Kind.tiled, pane_info.kind);
+        try std.testing.expectEqual(Layout.pane.Visibility.hidden, pane_info.visibility);
+        try std.testing.expect(!pane_info.is_focused);
+        try std.testing.expect(!pane_info.is_selectable);
+    }
+}
+
+test "runtime pane info focus movement changes only focused flag" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+    var before_infos: [Tab.max_frame_panes]Tab.PaneInfo = undefined;
+    var after_infos: [Tab.max_frame_panes]Tab.PaneInfo = undefined;
+
+    const before = tab.paneInfo(.selected, before_infos[0..]);
+    primeTestFocusPublish(&tab, true, false);
+    try std.testing.expect(tab.focusPane(.left));
+    const after = tab.paneInfo(.selected, after_infos[0..]);
+
+    try std.testing.expectEqual(@as(usize, 2), before.len);
+    try std.testing.expectEqual(@as(usize, 2), after.len);
+    for (before, after) |before_pane, after_pane| {
+        try std.testing.expectEqual(before_pane.id, after_pane.id);
+        try std.testing.expectEqual(before_pane.kind, after_pane.kind);
+        try std.testing.expectEqual(before_pane.visibility, after_pane.visibility);
+        try std.testing.expectEqual(before_pane.is_selectable, after_pane.is_selectable);
+    }
+    try std.testing.expect(!before[0].is_focused);
+    try std.testing.expect(before[1].is_focused);
+    try std.testing.expect(after[0].is_focused);
+    try std.testing.expect(!after[1].is_focused);
+}
+
+test "runtime tab input admission reaches only focused visible pane" {
+    terminal_bucket.testing.installHooks(.{
+        .wake_pending = struct {
+            fn hook(_: *TerminalSurface) bool {
+                return false;
+            }
+        }.hook,
+        .runtime_obligation_due_now = struct {
+            fn hook(_: *TerminalSurface, _: u64) bool {
+                return false;
+            }
+        }.hook,
+        .next_runtime_obligation_wait_ms = struct {
+            fn hook(_: *TerminalSurface, _: u64) ?u32 {
+                return null;
+            }
+        }.hook,
+        .wants_render_turn = struct {
+            fn hook(_: *TerminalSurface) bool {
+                return false;
+            }
+        }.hook,
+    });
+    defer terminal_bucket.testing.resetHooks();
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+
+    const facts = tab.runtimeFacts(.selected, 1, .{ .input_published = true });
+
+    try std.testing.expect(!facts.panes[0].input_published);
+    try std.testing.expect(facts.panes[1].input_published);
+    try std.testing.expect(facts.input_published);
+}
+
+test "runtime tab visible unfocused pane contributes progress redraw" {
+    const TestState = struct {
+        var drive_calls: u8 = 0;
+    };
+    terminal_bucket.testing.installHooks(.{
+        .drive_once = struct {
+            fn hook(_: *HowlTerm, _: u64) pty_pump.Outcome {
+                TestState.drive_calls += 1;
+                return .{ .keep = false, .should_redraw = true, .alive = true };
+            }
+        }.hook,
+        .is_alive = struct {
+            fn hook(_: *TerminalSurface) bool {
+                return true;
+            }
+        }.hook,
+        .apply_pending_clipboard_writes = struct {
+            fn hook(_: *TerminalSurface) void {}
+        }.hook,
+        .ack_wake = struct {
+            fn hook(_: *TerminalSurface) void {}
+        }.hook,
+    });
+    defer terminal_bucket.testing.resetHooks();
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+    std.debug.assert(tab.activePaneId() == second_pane);
+
+    const facts = Tab.RuntimeFacts{
+        .panes = .{
+            .{ .wake_pending = false, .runtime_due_now = true, .input_published = false, .runtime_wait_ms = null, .render_turn_pending = false },
+            .{ .wake_pending = false, .runtime_due_now = false, .input_published = false, .runtime_wait_ms = null, .render_turn_pending = false },
+        },
+        .pane_count = 2,
+        .wake_pending = false,
+        .runtime_due_now = true,
+        .input_published = false,
+        .runtime_wait_ms = null,
+        .render_turn_pending = false,
+    };
+
+    const progress = tab.driveProgressWithFacts(.selected, 2, facts);
+
+    try std.testing.expect(progress.drove);
+    try std.testing.expect(progress.outcome.should_redraw);
+    try std.testing.expectEqual(@as(u8, 1), TestState.drive_calls);
+}
+
 const test_terminal_conf = TerminalConfig{
     .shell = &.{},
     .start_path = null,
@@ -612,8 +915,15 @@ fn canInstallSplit(tab: *const Tab) bool {
 }
 
 fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u64) void {
+    pane.term.mutex = .{};
+    pane.term.render = render_retained.State.init(.{
+        .render_px = .{ .width = width, .height = height },
+        .grid_px = .{ .width = width, .height = height },
+        .cols = width,
+        .rows = height,
+        .cell_px = .{ .width = 1, .height = 1 },
+    });
     pane.term_texture = .{ .host_surface_id = texture_id, .width = width, .height = height };
-    pane.term.render.surface_layout.render_px = .{ .width = width, .height = height };
     pane.conf = &test_terminal_conf;
     pane.surface_layout.logical_w = width;
     pane.surface_layout.logical_h = height;

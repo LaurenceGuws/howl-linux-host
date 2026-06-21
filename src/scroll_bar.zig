@@ -64,12 +64,6 @@ pub const State = struct {
         self.invalidate();
     }
 
-    pub fn wantsPassiveHoverWake(self: *const State, view: View, window_focused: bool) bool {
-        const model = modelFromView(view);
-        if (!model.visible or !window_focused) return false;
-        return self.dragging;
-    }
-
     pub fn scrollbar(self: *State, texture_rect: Layout.Rect, view: View, logical_width: c_int, logical_height: c_int, window_focused: bool, now_ns: u64) Layout.scrollbar.Placement {
         self.refreshPlacement(texture_rect, view, logical_width, logical_height, window_focused, now_ns);
         return self.cache_scrollbar;
@@ -324,76 +318,54 @@ test "scrollbar state exposes separate track and chip placements" {
     try std.testing.expect(chip_out.rect.height < track_out.rect.height);
 }
 
-pub fn invalidate(self: anytype) void {
-    self.scrollbar.invalidate();
+pub fn invalidate(state: *State) void {
+    state.invalidate();
 }
 
-pub fn setFocused(self: anytype, focused: bool) void {
-    self.scrollbar.setFocused(focused);
+pub fn setFocused(state: *State, focused: bool) void {
+    state.setFocused(focused);
 }
 
-pub fn handlePages(self: anytype, input_events: *HostInput) void {
+pub fn handlePages(term: *Term, state: *State, input_events: *HostInput) void {
     const page_steps = input_events.drainScrollPages();
     var delta_rows: i32 = 0;
     if (page_steps != 0) {
-        const visible_rows: i32 = @intCast(@max(scrollState(&self.term).visible_rows, 1));
+        const visible_rows: i32 = @intCast(@max(scrollState(term).visible_rows, 1));
         const page_rows: i32 = @max(visible_rows - 1, 1);
         delta_rows += page_steps * page_rows;
     }
-    if (delta_rows != 0) byRows(self, delta_rows);
+    if (delta_rows != 0) byRows(term, state, delta_rows);
 }
 
-pub fn byRows(self: anytype, delta_rows: i32) void {
-    const changed = scrollByRows(&self.term, delta_rows);
-    if (changed) self.scrollbar.invalidate();
+pub fn byRows(term: *Term, state: *State, delta_rows: i32) void {
+    const changed = scrollByRows(term, delta_rows);
+    if (changed) state.invalidate();
 }
 
-pub fn handleMouse(self: anytype, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-    const result = self.scrollbar.handleMouse(mouse_event, origin_x, origin_y, logical_width, logical_height, viewFromTerm(scrollState(&self.term)), self.window_focused);
-    if (result.target_offset) |offset| _ = setOffset(self, offset);
+pub fn handleMouse(term: *Term, state: *State, mouse_event: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, window_focused: bool) bool {
+    const result = state.handleMouse(mouse_event, origin_x, origin_y, logical_width, logical_height, viewFromTerm(scrollState(term)), window_focused);
+    if (result.target_offset) |offset| _ = setOffset(term, state, offset);
     return result.consumed;
 }
 
-pub fn wantsPassiveHoverWake(self: anytype, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) bool {
-    _ = origin_x;
-    _ = origin_y;
-    _ = logical_width;
-    _ = logical_height;
-    return self.scrollbar.wantsPassiveHoverWake(viewFromTerm(scrollState(&self.term)), self.window_focused);
+pub fn placeScrollbar(state: *State, texture_rect: Layout.Rect, view: View, logical_width: c_int, logical_height: c_int, window_focused: bool) Layout.scrollbar.Placement {
+    return state.scrollbar(texture_rect, view, logical_width, logical_height, window_focused, EventLoop.nowNs());
 }
 
-pub fn scrollbar(self: anytype, texture_rect: Layout.Rect) Layout.scrollbar.Placement {
-    return self.scrollbar.scrollbar(
-        texture_rect,
-        viewFromTerm(scrollState(&self.term)),
-        self.surface_layout.logical_w,
-        self.surface_layout.logical_h,
-        self.window_focused,
-        EventLoop.nowNs(),
-    );
+pub fn placeScrollChip(state: *State, texture_rect: Layout.Rect, view: View, logical_width: c_int, logical_height: c_int, window_focused: bool) Layout.scroll_chip.Placement {
+    return state.scrollChip(texture_rect, view, logical_width, logical_height, window_focused, EventLoop.nowNs());
 }
 
-pub fn scrollChip(self: anytype, texture_rect: Layout.Rect) Layout.scroll_chip.Placement {
-    return self.scrollbar.scrollChip(
-        texture_rect,
-        viewFromTerm(scrollState(&self.term)),
-        self.surface_layout.logical_w,
-        self.surface_layout.logical_h,
-        self.window_focused,
-        EventLoop.nowNs(),
-    );
-}
-
-fn setOffset(self: anytype, offset: u32) bool {
+fn setOffset(term: *Term, state: *State, offset: u32) bool {
     const changed = if (offset == 0)
-        scrollViewportToBottom(&self.term)
+        scrollViewportToBottom(term)
     else
-        setScrollbackOffset(&self.term, offset);
-    if (changed) self.scrollbar.invalidate();
+        setScrollbackOffset(term, offset);
+    if (changed) state.invalidate();
     return changed;
 }
 
-fn viewFromTerm(term_view: ScrollState) View {
+pub fn viewFromTerm(term_view: ScrollState) View {
     return .{
         .visible_rows = term_view.visible_rows,
         .scrollback_count = term_view.scrollback_count,
