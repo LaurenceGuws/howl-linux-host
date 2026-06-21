@@ -478,29 +478,6 @@ test "cursor activity pushes blink deadline while visible" {
     try std.testing.expect(context.cursor_blink.visible);
 }
 
-test "pty wake is acknowledged without host transport drive" {
-    drive_hook_state = .{};
-    installDriveHooks();
-    defer surface_testing.resetHooks();
-    var surface = testSurfaceBase();
-    surface.widget_focused = false;
-
-    drive_hook_state.wake_pending = true;
-    const first_facts = surface.runtimeFacts(1, .{ .input_published = false });
-    try std.testing.expect(!first_facts.driveAdmitted());
-
-    const first = surface.driveProgressWithFacts(1, first_facts);
-    try std.testing.expect(!first.drove);
-    try std.testing.expect(!first.outcome.keep);
-    try std.testing.expectEqual(@as(u8, 0), drive_hook_state.drive_calls);
-    try std.testing.expect(surface.acknowledgeProgressWake());
-    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
-
-    const second_facts = surface.runtimeFacts(2, .{ .input_published = false });
-    try std.testing.expect(!second_facts.driveAdmitted());
-    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
-}
-
 test "pty wake observes retained render turn prepared by pty thread" {
     drive_hook_state = .{};
     installDriveHooks();
@@ -539,21 +516,6 @@ test "pty wake does not reset cursor blink cadence" {
     try std.testing.expect(!result.outcome.should_redraw);
     try std.testing.expectEqual(@as(u8, 0), surface.cursor_blink.cursor_opacity);
     try std.testing.expect(!surface.cursor_blink.visible);
-}
-
-test "wake acknowledges without host transport drive when not admitted" {
-    drive_hook_state = .{};
-    installDriveHooks();
-    defer surface_testing.resetHooks();
-    var surface = testSurfaceBase();
-    drive_hook_state.wake_pending = true;
-
-    const result = surface.driveProgress(4, .{ .input_published = false });
-
-    try std.testing.expect(!result.drove);
-    try std.testing.expectEqual(@as(u8, 0), drive_hook_state.drive_calls);
-    try std.testing.expect(surface.acknowledgeProgressWake());
-    try std.testing.expectEqual(@as(u8, 1), drive_hook_state.ack_calls);
 }
 
 test "present pending blocks submit path until host present ack" {

@@ -13,6 +13,7 @@ const terminal_bucket = @import("buckets that must die/bucket2.zig");
 const TerminalSurface = terminal_bucket.Surface;
 const pty_session = @import("pty/session.zig");
 const pty_pump = @import("pty/pump.zig");
+const pty_wait_thread = @import("pty/wait_thread.zig");
 const render_retained = @import("render/surface_retained.zig");
 const surface_layout = @import("render/surface_layout.zig");
 const terminal_scrollbar = @import("scroll_bar.zig");
@@ -255,7 +256,11 @@ pub const Tab = struct {
     pub fn acknowledgeProgressWake(self: *Tab) bool {
         self.assertInvariants();
         var acknowledged = false;
-        for (self.initializedPanes()) |*runtime_pane| acknowledged = runtime_pane.acknowledgeProgressWake() or acknowledged;
+        for (self.initializedPanes()) |*runtime_pane| {
+            if (!pty_wait_thread.wakePending(runtime_pane)) continue;
+            pty_wait_thread.ackWake(runtime_pane);
+            acknowledged = true;
+        }
         return acknowledged;
     }
 
@@ -891,6 +896,46 @@ test "runtime pane info focus movement changes only focused flag" {
     try std.testing.expect(!after[1].is_focused);
 }
 
+test "runtime tab acknowledge progress wake returns false when no pane wake is pending" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+
+    try std.testing.expect(!tab.acknowledgeProgressWake());
+    try expectTestWakePending(&tab, .first, false);
+    try expectTestWakePending(&tab, second_pane, false);
+}
+
+test "runtime tab acknowledge progress wake clears inactive pane wake" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+    setTestWakePending(&tab, .first, true);
+
+    try std.testing.expect(tab.acknowledgeProgressWake());
+    try expectTestWakePending(&tab, .first, false);
+    try expectTestWakePending(&tab, second_pane, false);
+}
+
+test "runtime tab acknowledge progress wake clears active pane wake" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+    setTestWakePending(&tab, second_pane, true);
+
+    try std.testing.expect(tab.acknowledgeProgressWake());
+    try expectTestWakePending(&tab, .first, false);
+    try expectTestWakePending(&tab, second_pane, false);
+}
+
+test "runtime tab acknowledge progress wake clears both pane wakes" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+    setTestWakePending(&tab, .first, true);
+    setTestWakePending(&tab, second_pane, true);
+
+    try std.testing.expect(tab.acknowledgeProgressWake());
+    try expectTestWakePending(&tab, .first, false);
+    try expectTestWakePending(&tab, second_pane, false);
+}
+
 test "runtime tab session outcome reports inactive runtime failure" {
     var tab = initializedTestTab();
     installSplitForTest(&tab, .left_right);
@@ -1068,6 +1113,7 @@ fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u
         .cell_px = .{ .width = 1, .height = 1 },
     });
     pane.term_texture = .{ .host_surface_id = texture_id, .width = width, .height = height };
+    pane.progress = .{};
     pane.conf = &test_terminal_conf;
     pane.surface_layout = surface_layout.init(width, height, width, height);
     pane.scrollbar = .{};
@@ -1142,4 +1188,12 @@ fn testResizedTabBody() Layout.tab.Body {
 fn expectPaneResizePending(tab: *Tab, id: PaneId, pixel_size: Layout.Size, logical_size: Layout.Size) !void {
     const pane_value = tab.pane(id);
     surface_layout.assertPendingResize(&pane_value.surface_layout, pixel_size.width, pixel_size.height, logical_size.width, logical_size.height);
+}
+
+fn setTestWakePending(tab: *Tab, id: PaneId, pending: bool) void {
+    tab.pane(id).progress.wake_pending.store(pending, .release);
+}
+
+fn expectTestWakePending(tab: *Tab, id: PaneId, expected: bool) !void {
+    try std.testing.expectEqual(expected, pty_wait_thread.wakePending(tab.pane(id)));
 }

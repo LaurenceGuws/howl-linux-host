@@ -408,12 +408,6 @@ pub const Surface = struct {
         return self.driveProgressWithFacts(now_ns, self.runtimeFacts(now_ns, admission));
     }
 
-    pub fn acknowledgeProgressWake(self: *Term) bool {
-        if (!wakePendingHooked(self)) return false;
-        ackWakeHooked(self);
-        return true;
-    }
-
     pub fn driveProgressWithFacts(self: *Term, now_ns: u64, facts: RuntimeFacts) DriveProgressResult {
         if (!facts.driveAdmitted()) {
             const focused = self.window_focused and self.widget_focused;
