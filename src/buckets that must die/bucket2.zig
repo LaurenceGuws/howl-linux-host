@@ -271,16 +271,6 @@ pub const Surface = struct {
         _ = self.resetCursorBlinkActivity(EventLoop.nowNs());
     }
 
-    pub fn drainTextInputFastPath(self: *Term, input_events: *HostInput, input_published: *bool, host_visual_changed: *bool) void {
-        var selected = self.termInput();
-        input_processor.drainTextInputFastPath(&selected, input_events, input_published, host_visual_changed);
-    }
-
-    pub fn drainPointerInput(self: *Term, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, input_published: *bool, host_visual_changed: *bool) void {
-        var selected = self.termInput();
-        input_processor.drainPointerInput(&selected, input_events, origin_x, origin_y, logical_width, logical_height, input_published, host_visual_changed);
-    }
-
     pub fn handleScrollInput(self: *Term, input_events: *HostInput) void {
         terminal_scrollbar.handlePages(&self.term, &self.scrollbar, input_events);
     }
@@ -853,7 +843,7 @@ pub const Surface = struct {
         return input_processor.terminalOwnsMouse(&selected, mouse_event);
     }
 
-    fn termInput(self: *Term) TermInput {
+    pub fn termInput(self: *Term) TermInput {
         return .{
             .surface = self,
             .term = &self.term,

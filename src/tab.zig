@@ -5,6 +5,7 @@ const std = @import("std");
 const Config = @import("config.zig");
 const EventLoop = @import("events/event_loop.zig");
 const HostInput = @import("input.zig").Input;
+const input_processor = @import("input/processor.zig");
 const Layout = @import("layout.zig");
 const terminal_bucket = @import("buckets that must die/bucket2.zig");
 const TerminalSurface = terminal_bucket.Surface;
@@ -346,11 +347,13 @@ pub const Tab = struct {
     }
 
     pub fn drainTextInputFastPath(self: *Tab, input_events: *HostInput, input_published: *bool, host_visual_changed: *bool) void {
-        self.activePane().drainTextInputFastPath(input_events, input_published, host_visual_changed);
+        var selected = self.activePane().termInput();
+        input_processor.drainTextInputFastPath(&selected, input_events, input_published, host_visual_changed);
     }
 
     pub fn drainPointerInput(self: *Tab, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, input_published: *bool, host_visual_changed: *bool) void {
-        self.activePane().drainPointerInput(input_events, origin_x, origin_y, logical_width, logical_height, input_published, host_visual_changed);
+        var selected = self.activePane().termInput();
+        input_processor.drainPointerInput(&selected, input_events, origin_x, origin_y, logical_width, logical_height, input_published, host_visual_changed);
     }
 
     pub fn handleScrollInput(self: *Tab, input_events: *HostInput) void {
