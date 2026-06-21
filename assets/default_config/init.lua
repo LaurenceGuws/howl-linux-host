@@ -80,14 +80,16 @@ return {
       zoom_reset = { "ctrl+zero" },
       zoom_stress_toggle = { "ctrl+shift+equal", "ctrl+shift+kp_add" },
       paste = { "ctrl+shift+v", "shift+insert" },
-      split_right = { "ctrl+shift+alt+five" },
-      split_down = { "ctrl+shift+alt+apostrophe" },
     },
   },
-  tab_bar = {
-    height = 30,
-    min_tabs_for_bar = 2,
+  layout = {
     bindings = {
+      split_right = { "ctrl+shift+alt+1" },
+      split_down = { "ctrl+shift+alt+2" },
+      focus_pane_left = { "ctrl+shift+alt+left" },
+      focus_pane_right = { "ctrl+shift+alt+right" },
+      focus_pane_up = { "ctrl+shift+alt+up" },
+      focus_pane_down = { "ctrl+shift+alt+down" },
       new_tab = { "ctrl+shift+t" },
       close_tab = { "ctrl+shift+w" },
       next_tab = { "ctrl+tab", "ctrl+shift+right" },
@@ -102,6 +104,10 @@ return {
       focus_tab_8 = { "ctrl+eight" },
       focus_tab_9 = { "ctrl+nine" },
     },
+  },
+  tab_bar = {
+    height = 30,
+    min_tabs_for_bar = 2,
   },
   -- Temporary runtime tracing setup. Uncomment when investigating locally:
   -- debug = {

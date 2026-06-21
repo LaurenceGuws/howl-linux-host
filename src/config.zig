@@ -3,6 +3,7 @@ const howl_lua = @import("howl_lua");
 const term_config = @import("config/term.zig");
 const window_config = @import("config/window.zig");
 const tab_bar_config = @import("config/tab_bar.zig");
+const layout_config = @import("config/layout.zig");
 const assert = std.debug.assert;
 
 const Lua = howl_lua;
@@ -13,6 +14,7 @@ pub const TerminalLinkUnderlineStyle = term_config.LinkUnderlineStyle;
 pub const UiConfig = struct {
     term: term_config.Config,
     window: window_config.Window,
+    layout: layout_config.Config,
     tab_bar: tab_bar_config.Config,
 
     pub fn load(alloc: std.mem.Allocator) !UiConfig {
@@ -38,6 +40,11 @@ pub const UiConfig = struct {
         var window = try window_config.Window.load(alloc, window_child.view());
         errdefer window.deinit(alloc);
 
+        var layout_child = root.childTable("layout") orelse return error.InvalidConfig;
+        defer layout_child.finish();
+        var layout = try layout_config.Config.load(alloc, layout_child.view());
+        errdefer layout.deinit(alloc);
+
         var tab_bar_child = root.childTable("tab_bar") orelse return error.InvalidConfig;
         defer tab_bar_child.finish();
         var tab_bar = try tab_bar_config.Config.load(alloc, tab_bar_child.view());
@@ -46,6 +53,7 @@ pub const UiConfig = struct {
         return .{
             .term = term,
             .window = window,
+            .layout = layout,
             .tab_bar = tab_bar,
         };
     }
@@ -53,6 +61,7 @@ pub const UiConfig = struct {
     pub fn deinit(self: *UiConfig, alloc: std.mem.Allocator) void {
         self.term.deinit(alloc);
         self.window.deinit(alloc);
+        self.layout.deinit(alloc);
         self.tab_bar.deinit(alloc);
     }
 
@@ -85,6 +94,7 @@ test "ui config propagates Kitty cursor config fields" {
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "assets/default_config/init.lua", .data =
         \\return {
         \\  window = { title = "Howl", width = 800, height = 600, mouse = { listen_always = false }, bindings = {} },
+        \\  layout = { bindings = {} },
         \\  term = {
         \\    shell = "/bin/sh",
         \\    start_path = "/tmp",
@@ -109,7 +119,7 @@ test "ui config propagates Kitty cursor config fields" {
         \\    fallback_emoji = {},
         \\    bindings = {},
         \\  },
-        \\  tab_bar = { height = 30, min_tabs_for_bar = 2, bindings = {} },
+        \\  tab_bar = { height = 30, min_tabs_for_bar = 2 },
         \\}
     });
     const path = try tmp.dir.realPathFileAlloc(std.testing.io, "assets/default_config/init.lua", std.testing.allocator);

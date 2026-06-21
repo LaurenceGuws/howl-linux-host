@@ -6,6 +6,8 @@ const Layout = @import("../layout.zig");
 
 pub const PaneId = enum(u16) { first = 0, _ };
 
+pub const Direction = enum { left, right, up, down };
+
 pub const Placement = struct {
     id: PaneId,
     rect: Layout.Rect,

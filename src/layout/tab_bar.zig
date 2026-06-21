@@ -67,5 +67,5 @@ fn testWindow() Window {
 }
 
 fn testConfig() Config {
-    return .{ .height = 30, .min_tabs_for_bar = 2, .bindings = .{ .bindings = &.{} } };
+    return .{ .height = 30, .min_tabs_for_bar = 2 };
 }

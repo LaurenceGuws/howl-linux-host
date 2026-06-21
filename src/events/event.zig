@@ -545,6 +545,10 @@ pub const Processor = struct {
             .terminal_paste => pasteIntoActiveTab(activeSurface(self.tabs.items(), self.active_tab_idx.*)),
             .terminal_split_right => try self.splitActiveTab(.right),
             .terminal_split_down => try self.splitActiveTab(.down),
+            .terminal_focus_pane_left => self.focusActivePane(.left),
+            .terminal_focus_pane_right => self.focusActivePane(.right),
+            .terminal_focus_pane_up => self.focusActivePane(.up),
+            .terminal_focus_pane_down => self.focusActivePane(.down),
             .terminal_new_tab => try self.openTab(),
             .terminal_close_tab => closeActiveTab(self.conf, self.window, self.tabs, self.active_tab_idx),
             .terminal_next_tab => selectRelative(self.window, self.tabs.items(), self.active_tab_idx, 1),
@@ -562,6 +566,15 @@ pub const Processor = struct {
             .down => try tab.splitDown(self.input, self.event_loop, &self.conf.term, tab_body),
         };
         if (!split) return;
+
+        self.window.requestRedraw();
+        self.configureInputPolicies();
+        syncActiveWindowTitle(self.window, tab);
+    }
+
+    fn focusActivePane(self: *Self, direction: Layout.pane.Direction) void {
+        const tab = activeSurface(self.tabs.items(), self.active_tab_idx.*);
+        if (!tab.focusPane(direction)) return;
 
         self.window.requestRedraw();
         self.configureInputPolicies();
@@ -760,7 +773,7 @@ test "present frame slices only active snapshot pane count" {
 }
 
 fn testTabBarConfig() TabBarConfig {
-    return .{ .height = 30, .min_tabs_for_bar = 2, .bindings = .{ .bindings = &.{} } };
+    return .{ .height = 30, .min_tabs_for_bar = 2 };
 }
 
 fn testRuntimeFacts(wake_pending: bool, runtime_due_now: bool, input_published: bool, runtime_wait_ms: ?u32, render_turn_pending: bool) RuntimeTab.RuntimeFacts {

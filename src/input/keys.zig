@@ -184,20 +184,20 @@ pub const Bindings = struct {
     pub const Configured = struct {
         term: []const Binding = &.{},
         window: []const Binding = &.{},
-        tab_bar: []const Binding = &.{},
+        layout: []const Binding = &.{},
 
         pub fn init(conf: anytype) Configured {
             return .{
                 .term = conf.term.bindings.bindings,
                 .window = conf.window.bindings.bindings,
-                .tab_bar = conf.tab_bar.bindings.bindings,
+                .layout = conf.layout.bindings.bindings,
             };
         }
 
         pub fn resolve(self: Configured, key: Key, ctrl: bool, shift: bool, alt: bool) ?Action {
             if (matchBinding(self.window, key, ctrl, shift, alt)) |action| return action;
             if (matchBinding(self.term, key, ctrl, shift, alt)) |action| return action;
-            if (matchBinding(self.tab_bar, key, ctrl, shift, alt)) |action| return action;
+            if (matchBinding(self.layout, key, ctrl, shift, alt)) |action| return action;
             return null;
         }
     };
@@ -210,6 +210,10 @@ pub const Bindings = struct {
         terminal_paste,
         terminal_split_right,
         terminal_split_down,
+        terminal_focus_pane_left,
+        terminal_focus_pane_right,
+        terminal_focus_pane_up,
+        terminal_focus_pane_down,
         terminal_new_tab,
         terminal_close_tab,
         terminal_next_tab,
@@ -312,4 +316,24 @@ test "split down binding parses physical quote key" {
     try std.testing.expect(binding.ctrl);
     try std.testing.expect(binding.shift);
     try std.testing.expect(binding.alt);
+}
+
+test "focus pane bindings parse arrow keys" {
+    const left = try Bindings.parse("ctrl+shift+alt+left", .terminal_focus_pane_left);
+    const right = try Bindings.parse("ctrl+shift+alt+right", .terminal_focus_pane_right);
+    const up = try Bindings.parse("ctrl+shift+alt+up", .terminal_focus_pane_up);
+    const down = try Bindings.parse("ctrl+shift+alt+down", .terminal_focus_pane_down);
+
+    try std.testing.expectEqual(Bindings.Action.terminal_focus_pane_left, left.action);
+    try std.testing.expectEqual(Key.left, left.key);
+    try std.testing.expect(left.ctrl and left.shift and left.alt);
+    try std.testing.expectEqual(Bindings.Action.terminal_focus_pane_right, right.action);
+    try std.testing.expectEqual(Key.right, right.key);
+    try std.testing.expect(right.ctrl and right.shift and right.alt);
+    try std.testing.expectEqual(Bindings.Action.terminal_focus_pane_up, up.action);
+    try std.testing.expectEqual(Key.up, up.key);
+    try std.testing.expect(up.ctrl and up.shift and up.alt);
+    try std.testing.expectEqual(Bindings.Action.terminal_focus_pane_down, down.action);
+    try std.testing.expectEqual(Key.down, down.key);
+    try std.testing.expect(down.ctrl and down.shift and down.alt);
 }

@@ -11,6 +11,7 @@ const pty_session = @import("pty/session.zig");
 
 const TerminalConfig = Config.Terminal;
 const PaneId = Layout.pane.PaneId;
+const PaneDirection = Layout.pane.Direction;
 const second_pane: PaneId = @enumFromInt(1);
 
 /// Runtime owner for one tab and its bounded tiled panes.
@@ -96,6 +97,31 @@ pub const Tab = struct {
 
     pub fn splitDown(self: *Tab, input: *HostInput, event_loop: *EventLoop.EventLoop, conf: *const TerminalConfig, tab_body: Layout.tab.Body) !bool {
         return self.split(input, event_loop, conf, tab_body, .top_bottom);
+    }
+
+    pub fn focusPane(self: *Tab, direction: PaneDirection) bool {
+        self.assertInvariants();
+        const next = switch (self.split_tree) {
+            .leaf => return false,
+            .pair => |pair| switch (pair.direction) {
+                .left_right => switch (direction) {
+                    .left => if (self.active_pane == second_pane) PaneId.first else return false,
+                    .right => if (self.active_pane == .first) second_pane else return false,
+                    .up, .down => return false,
+                },
+                .top_bottom => switch (direction) {
+                    .up => if (self.active_pane == second_pane) PaneId.first else return false,
+                    .down => if (self.active_pane == .first) second_pane else return false,
+                    .left, .right => return false,
+                },
+            },
+        };
+
+        std.debug.assert(next != self.active_pane);
+        self.active_pane = next;
+        self.syncPaneFocus();
+        self.assertInvariants();
+        return true;
     }
 
     fn split(self: *Tab, input: *HostInput, event_loop: *EventLoop.EventLoop, conf: *const TerminalConfig, tab_body: Layout.tab.Body, direction: Layout.splits.Direction) !bool {
@@ -475,6 +501,84 @@ test "runtime tab split placement exposes both pane ids" {
     try std.testing.expectEqual(Layout.Rect{ .x = 0, .y = 315, .width = 960, .height = 285 }, panes[1].rect);
 }
 
+test "runtime tab focus movement is no-op for one pane" {
+    var tab = initializedTestTab();
+
+    try std.testing.expect(!tab.focusPane(.left));
+    try std.testing.expectEqual(PaneId.first, tab.activePaneId());
+}
+
+test "runtime tab focus movement follows left-right split axis" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .left_right);
+
+    primeTestFocusPublish(&tab, true, false);
+    try std.testing.expect(tab.focusPane(.left));
+    try std.testing.expectEqual(PaneId.first, tab.activePaneId());
+    try std.testing.expect(tab.panes[0].widget_focused);
+    try std.testing.expect(!tab.panes[1].widget_focused);
+
+    try std.testing.expect(!tab.focusPane(.up));
+    try std.testing.expect(!tab.focusPane(.down));
+    try std.testing.expectEqual(PaneId.first, tab.activePaneId());
+
+    primeTestFocusPublish(&tab, false, true);
+    try std.testing.expect(tab.focusPane(.right));
+    try std.testing.expectEqual(second_pane, tab.activePaneId());
+    try std.testing.expect(!tab.panes[0].widget_focused);
+    try std.testing.expect(tab.panes[1].widget_focused);
+}
+
+test "runtime tab focus movement follows top-bottom split axis" {
+    var tab = initializedTestTab();
+    installSplitForTest(&tab, .top_bottom);
+
+    primeTestFocusPublish(&tab, true, false);
+    try std.testing.expect(tab.focusPane(.up));
+    try std.testing.expectEqual(PaneId.first, tab.activePaneId());
+    try std.testing.expect(tab.panes[0].widget_focused);
+    try std.testing.expect(!tab.panes[1].widget_focused);
+
+    try std.testing.expect(!tab.focusPane(.left));
+    try std.testing.expect(!tab.focusPane(.right));
+    try std.testing.expectEqual(PaneId.first, tab.activePaneId());
+
+    primeTestFocusPublish(&tab, false, true);
+    try std.testing.expect(tab.focusPane(.down));
+    try std.testing.expectEqual(second_pane, tab.activePaneId());
+    try std.testing.expect(!tab.panes[0].widget_focused);
+    try std.testing.expect(tab.panes[1].widget_focused);
+}
+
+const test_terminal_conf = TerminalConfig{
+    .shell = &.{},
+    .start_path = null,
+    .command = null,
+    .font_size = 12,
+    .fonts = .{ .primary = null, .mono = &.{}, .symbols = &.{}, .emoji = &.{} },
+    .cursor = .{ .kind = .default, .value = 0 },
+    .cursor_text_color = .{ .kind = .default, .value = 0 },
+    .cursor_shape = .block,
+    .cursor_shape_unfocused = .unchanged,
+    .cursor_beam_thickness = 1.5,
+    .cursor_underline_thickness = 2.0,
+    .cursor_blink_interval = 0.7,
+    .cursor_stop_blinking_after = 15.0,
+    .cursor_trail = 0,
+    .cursor_trail_decay_fast = 0.2,
+    .cursor_trail_decay_slow = 0.6,
+    .cursor_trail_start_threshold = 1,
+    .cursor_trail_color = .{ .kind = .default, .value = 0 },
+    .cursor_style = .block,
+    .cursor_blink = true,
+    .clipboard_osc_52 = .deny,
+    .link_open = .disabled,
+    .link_hover = .off,
+    .link_underline = .straight,
+    .mouse_bypass_mod = .{},
+    .bindings = .{ .bindings = &.{} },
+};
+
 fn initializedTestTab() Tab {
     var tab: Tab = undefined;
     tab.pane_count = 1;
@@ -492,6 +596,15 @@ fn installSplitForTest(tab: *Tab, direction: Layout.splits.Direction) void {
     tab.split_tree = Layout.splits.pair(direction, .first, second_pane);
     tab.active_pane = second_pane;
     setTestTexture(&tab.panes[1], 480, 570, 11);
+    tab.panes[0].widget_focused = false;
+    tab.panes[1].widget_focused = true;
+}
+
+fn primeTestFocusPublish(tab: *Tab, first_focused: bool, second_focused: bool) void {
+    tab.panes[0].term.mutex = .{};
+    tab.panes[0].term.vt_state.focus.focused = first_focused;
+    tab.panes[1].term.mutex = .{};
+    tab.panes[1].term.vt_state.focus.focused = second_focused;
 }
 
 fn canInstallSplit(tab: *const Tab) bool {
@@ -501,10 +614,13 @@ fn canInstallSplit(tab: *const Tab) bool {
 fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u64) void {
     pane.term_texture = .{ .host_surface_id = texture_id, .width = width, .height = height };
     pane.term.render.surface_layout.render_px = .{ .width = width, .height = height };
+    pane.conf = &test_terminal_conf;
     pane.surface_layout.logical_w = width;
     pane.surface_layout.logical_h = height;
     pane.scrollbar = .{};
+    pane.links = .{};
     pane.window_focused = true;
+    pane.widget_focused = true;
     pane.font_size_px = 16;
 }
 
