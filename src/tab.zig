@@ -357,7 +357,8 @@ pub const Tab = struct {
     }
 
     pub fn handleScrollInput(self: *Tab, input_events: *HostInput) void {
-        self.activePane().handleScrollInput(input_events);
+        const pane_value = self.activePane();
+        terminal_scrollbar.handlePages(&pane_value.term, &pane_value.scrollbar, input_events);
     }
 
     pub fn wantsLinkHover(self: *const Tab) bool {

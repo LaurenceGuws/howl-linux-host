@@ -271,10 +271,6 @@ pub const Surface = struct {
         _ = self.resetCursorBlinkActivity(EventLoop.nowNs());
     }
 
-    pub fn handleScrollInput(self: *Term, input_events: *HostInput) void {
-        terminal_scrollbar.handlePages(&self.term, &self.scrollbar, input_events);
-    }
-
     /// Report whether this term needs unpressed mouse motion for link hover.
     pub fn wantsLinkHover(self: *const Term) bool {
         return self.conf.link_hover != .off;
