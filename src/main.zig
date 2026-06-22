@@ -16,7 +16,7 @@ const TabBar = TabBarUnit.TabBar;
 const TabSlots = TabBarUnit.tab_slots.Slots;
 const TextureFrame = Texture.frame;
 const render_fonts = Render.fonts;
-const tab_cell_surface = TabBarUnit.cell_surface;
+const tab_bar_surface_layout = TabBarUnit.surface_layout;
 
 pub const Args = cli.Args;
 const child_term_value: [*:0]const u8 = "xterm-256color";
@@ -58,8 +58,8 @@ noinline fn start(io: std.Io, options: Args) !void {
     var texture_frame_created = false;
     var resolved_fonts = try render_fonts.resolve(std.heap.c_allocator, conf.term.fonts);
     defer resolved_fonts.deinit(std.heap.c_allocator);
-    var tab_text_config: tab_cell_surface.TextConfig = undefined;
-    tab_cell_surface.initTextConfig(&tab_text_config, @max(conf.term.font_size, 1), resolved_fonts.primary, resolved_fonts.fallbacks);
+    var tab_text_config: tab_bar_surface_layout.TextConfig = undefined;
+    tab_bar_surface_layout.initTextConfig(&tab_text_config, @max(conf.term.font_size, 1), resolved_fonts.primary, resolved_fonts.fallbacks);
     defer {
         if (texture_frame_created) TextureFrame.deinit(TextureFrame.C, texture_frame);
         std.heap.c_allocator.destroy(texture_frame);

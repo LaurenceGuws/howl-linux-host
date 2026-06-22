@@ -7,7 +7,7 @@ const TabBar = @import("../tab_bar.zig").TabBar;
 pub const Surface = struct {
     pub const max_cells: u16 = @as(u16, TabBar.max_tabs) * 64;
     comptime {
-        std.debug.assert(max_cells <= render_c.HOWL_RENDER_CELL_SURFACE_CELLS_MAX);
+        std.debug.assert(max_cells <= render_c.HOWL_RENDER_TAB_BAR_SURFACE_CELLS_MAX);
     }
 
     cells: [max_cells]render_c.HowlRenderCellText = [_]render_c.HowlRenderCellText{emptyCell()} ** max_cells,

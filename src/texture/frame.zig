@@ -8,7 +8,7 @@ const frame_resources = @import("frame_resources.zig");
 const texture_scroll_bar = @import("scroll_bar.zig");
 const sdl_c = @import("sdl_c");
 const std = @import("std");
-const tab_cell_surface = @import("../tab_bar/cell_surface.zig");
+const tab_bar_surface_layout = @import("../tab_bar/surface_layout.zig");
 const tab_bar_surface = @import("../tab_bar/surface.zig");
 const texture_tab_bar = @import("tab_bar.zig");
 const texture_term = @import("term.zig");
@@ -246,10 +246,10 @@ fn initTabText(comptime c: type, state: *GenericState(c), config: *const render_
 
 fn uploadTabTextSurface(comptime c: type, state: *GenericState(c), fb_w: c_int, bar_h: c_int, frame: Layout.Frame) void {
     const handle = state.tab_text_handle orelse return;
-    const tab_layout = tab_cell_surface.layout(frame.tab_bar_font_size_px, fb_w, bar_h);
+    const tab_layout = tab_bar_surface_layout.layout(frame.tab_bar_font_size_px, fb_w, bar_h);
     texture_tab_bar.writeCells(&state.tab_surface, frame, tab_layout.visible_cells);
-    var upload = std.mem.zeroes(render_c.HowlRenderCellSurfacePreparedUpload);
-    const prepare = render_c.HowlRenderCellSurfacePrepare{
+    var upload = std.mem.zeroes(render_c.HowlRenderTabBarSurfacePreparedUpload);
+    const prepare = render_c.HowlRenderTabBarSurfacePrepare{
         .render_px = .{ .width = @intCast(@max(fb_w, 1)), .height = @intCast(@max(bar_h, 1)) },
         .grid_px = .{ .width = tab_layout.visible_cells * tab_layout.cell_px.width, .height = tab_layout.cell_px.height },
         .cell_px = tab_layout.cell_px,
@@ -257,9 +257,9 @@ fn uploadTabTextSurface(comptime c: type, state: *GenericState(c), fb_w: c_int, 
         .layout_epoch = frame.tab_bar_revision,
         .cells = state.tab_surface.span(),
     };
-    const status = render_c.howl_render_cell_surface_prepare(handle, &prepare, &upload);
-    if (status != render_c.HOWL_RENDER_CALL_OK) std.debug.panic("trusted tab cell surface prepare failed: status={}", .{status});
-    const surface = upload.surface_frame orelse std.debug.panic("trusted tab cell surface prepare returned no frame", .{});
+    const status = render_c.howl_render_tab_bar_surface_prepare(handle, &prepare, &upload);
+    if (status != render_c.HOWL_RENDER_CALL_OK) std.debug.panic("trusted tab_bar_surface prepare failed: status={}", .{status});
+    const surface = upload.surface_frame orelse std.debug.panic("trusted tab_bar_surface prepare returned no frame", .{});
     state.tab_resources.syncRenderResources(surface);
     frame_commands.uploadTabBarSurfaceCommands(
         &state.tab_resources,

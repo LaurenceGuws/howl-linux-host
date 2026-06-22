@@ -9,7 +9,7 @@ pub const TextConfig = struct {
     config: render_c.HowlRenderTextConfig = std.mem.zeroes(render_c.HowlRenderTextConfig),
 };
 
-pub const CellSurfaceLayout = struct {
+pub const TabBarSurfaceLayout = struct {
     cell_px: render_c.HowlRenderCellSize,
     visible_cells: u16,
 };
@@ -28,7 +28,7 @@ pub fn initTextConfig(out: *TextConfig, font_size_px: u16, primary: ?[:0]u8, fal
     };
 }
 
-pub fn layout(font_size_px: u16, width_px: c_int, height_px: c_int) CellSurfaceLayout {
+pub fn layout(font_size_px: u16, width_px: c_int, height_px: c_int) TabBarSurfaceLayout {
     std.debug.assert(font_size_px > 0);
     std.debug.assert(width_px > 0);
     std.debug.assert(height_px > 0);
@@ -38,7 +38,7 @@ pub fn layout(font_size_px: u16, width_px: c_int, height_px: c_int) CellSurfaceL
     return .{ .cell_px = .{ .width = cell_w, .height = cell_h }, .visible_cells = cells };
 }
 
-test "tab cell surface text config uses resolved font inputs" {
+test "tab bar surface text config uses resolved font inputs" {
     const primary: [:0]u8 = @constCast("primary.ttf");
     const fallback: [:0]u8 = @constCast("symbols.ttf");
     const fallbacks = [_][:0]u8{fallback};
@@ -52,7 +52,7 @@ test "tab cell surface text config uses resolved font inputs" {
     try std.testing.expectEqual(@as(u16, 1), text_config.config.fallback_font_path_count);
 }
 
-test "tab cell surface layout are bounded by screen capacity" {
+test "tab bar surface layout is bounded by screen capacity" {
     const value = layout(16, 10000, 30);
 
     try std.testing.expectEqual(@as(u16, 8), value.cell_px.width);
