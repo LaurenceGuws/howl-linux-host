@@ -4,6 +4,9 @@ const render_c = @import("howl_render_c");
 const frame_commands = @import("frame_commands.zig");
 const frame_resources = @import("frame_resources.zig");
 
+// Terminal texture owns terminal render-surface GL uploads and host-side texture resources on the
+// main/window control spine. It does not own cross-thread surface-present triggers; term instances
+// own that wake edge, proving texture helpers cannot smuggle scheduling or presentation policy.
 pub const RenderResourceTextures = frame_resources.RenderResourceTextures;
 pub const RenderSurfaceClass = frame_commands.RenderSurfaceClass;
 pub const classifyRenderSurface = frame_commands.classifyRenderSurface;
@@ -14,30 +17,13 @@ pub const renderSurfaceSpritePatch = frame_commands.renderSurfaceSpritePatch;
 pub const renderSurfaceGlyphs = frame_commands.renderSurfaceGlyphs;
 pub const renderSurfaceGlyphPatch = frame_commands.renderSurfaceGlyphPatch;
 
-pub const PresentSurfaceTrigger = struct {
-    triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-};
-
-pub fn initPresentSurfaceTrigger(trigger: *PresentSurfaceTrigger) void {
-    trigger.triggered.store(false, .release);
-}
-
-pub fn triggerPresentSurface(trigger: *PresentSurfaceTrigger) bool {
-    const was_triggered = trigger.triggered.swap(true, .acq_rel);
-    return !was_triggered;
-}
-
-pub fn consumePresentSurfaceTrigger(trigger: *PresentSurfaceTrigger) bool {
-    return trigger.triggered.swap(false, .acq_rel);
-}
-
 pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurfaceFrame) bool {
     std.debug.assert(surface.render_px.width > 0);
     std.debug.assert(surface.render_px.height > 0);
     const had_matching_texture = host_surface.host_surface_id != 0 and
         host_surface.width == surface.render_px.width and
         host_surface.height == surface.render_px.height;
-    textures.syncPresentSurfaceResources(surface);
+    textures.syncRenderResources(surface);
     ensureTexture(host_surface, surface.render_px.width, surface.render_px.height);
     const class = frame_commands.classifyRenderSurface(surface) orelse std.debug.panic("trusted render surface has unsupported shape", .{});
     frame_commands.assertRenderSurfacePatchHostSurface(class, had_matching_texture);
@@ -153,22 +139,3 @@ pub const testing = struct {
         frame_resources.testing.validateSurface(textures, surface);
     }
 };
-
-test "texture present surface trigger coalesces duplicate triggers" {
-    var trigger = PresentSurfaceTrigger{};
-
-    try std.testing.expect(triggerPresentSurface(&trigger));
-    try std.testing.expect(!triggerPresentSurface(&trigger));
-
-    try std.testing.expect(consumePresentSurfaceTrigger(&trigger));
-    try std.testing.expect(!consumePresentSurfaceTrigger(&trigger));
-}
-
-test "consume present surface trigger clears trigger and allows later trigger" {
-    var trigger = PresentSurfaceTrigger{};
-
-    try std.testing.expect(triggerPresentSurface(&trigger));
-    try std.testing.expect(consumePresentSurfaceTrigger(&trigger));
-    try std.testing.expect(triggerPresentSurface(&trigger));
-    try std.testing.expect(consumePresentSurfaceTrigger(&trigger));
-}

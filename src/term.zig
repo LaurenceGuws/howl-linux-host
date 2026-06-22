@@ -2,10 +2,10 @@ const std = @import("std");
 const EventLoop = @import("events/event_loop.zig");
 const pty_c = @import("howl_pty_c");
 const vt_c = @import("howl_vt_c");
+const surface_present = @import("events/surface_present.zig");
 const Pty = @import("pty.zig");
 const Render = @import("render.zig");
 const Sync = @import("sync.zig");
-const texture_term = @import("texture/term.zig");
 const Vt = @import("vt.zig");
 
 const pty_session = Pty.session;
@@ -16,6 +16,10 @@ const vt_title = Vt.title;
 
 pub const VtState = vt_state.State;
 
+// Terminal instances own the coalesced surface-present wake edge entered by PTY progress threads
+// and consumed by the main/window control spine. They do not own texture resources, GL calls,
+// layout batching, present submission, or frame cadence; the false-to-true atomic edge proves that
+// repeated producer progress cannot flood the event loop before main consumes the trigger.
 pub const Term = struct {
     allocator: std.mem.Allocator,
     pty: pty_session.State,
@@ -24,8 +28,8 @@ pub const Term = struct {
     render: render_retained.State,
     vt_state: VtState = .{},
     mutex: FairMutex = .{},
-    present_surface_trigger: ?*texture_term.PresentSurfaceTrigger = null,
-    present_surface_wake_loop: ?*EventLoop.EventLoop = null,
+    surface_present_trigger: ?*surface_present.Trigger = null,
+    surface_present_wake_loop: ?*EventLoop.EventLoop = null,
     host_title: vt_title.HostTitle = .{},
 
     pub fn initTitle(self: *Term) void {
@@ -58,15 +62,15 @@ pub const Term = struct {
         vt_title.refreshHost(&self.host_title, &self.vt_state.title, fallback);
     }
 
-    pub fn initPresentSurfaceTrigger(self: *Term, trigger: *texture_term.PresentSurfaceTrigger, event_loop: *EventLoop.EventLoop) void {
-        self.present_surface_trigger = trigger;
-        self.present_surface_wake_loop = event_loop;
+    pub fn initSurfacePresentTrigger(self: *Term, trigger: *surface_present.Trigger, event_loop: *EventLoop.EventLoop) void {
+        self.surface_present_trigger = trigger;
+        self.surface_present_wake_loop = event_loop;
     }
 
-    pub fn triggerPresentSurface(self: *Term) void {
-        const trigger = self.present_surface_trigger orelse return;
-        if (!texture_term.triggerPresentSurface(trigger)) return;
-        const event_loop = self.present_surface_wake_loop orelse return;
+    pub fn triggerSurfacePresent(self: *Term) void {
+        const trigger = self.surface_present_trigger orelse return;
+        if (!surface_present.trigger(trigger)) return;
+        const event_loop = self.surface_present_wake_loop orelse return;
         event_loop.wake();
     }
 
@@ -104,8 +108,8 @@ fn testTitleTerm(launch: pty_session.Launch) Term {
         .render = undefined,
         .vt_state = .{},
         .mutex = .{},
-        .present_surface_trigger = null,
-        .present_surface_wake_loop = null,
+        .surface_present_trigger = null,
+        .surface_present_wake_loop = null,
         .host_title = .{},
     };
 }

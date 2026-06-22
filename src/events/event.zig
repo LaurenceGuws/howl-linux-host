@@ -19,6 +19,12 @@ const window = @import("window.zig");
 const TabIndex = TabBar.TabIndex;
 const max_tabs: TabIndex = TabBar.max_tabs;
 
+// The main/window control spine owns each SDL pump turn, surface-present trigger consumption,
+// layout batching, present-reason selection, and texture present admission. It does not own PTY,
+// VT, or render internals; typed events plus local present reasons prove presentation policy does
+// not leak back into scheduler or terminal owners.
+const PresentReason = enum { none, host_redraw, terminal_frame };
+
 pub const Processor = struct {
     conf: *const Config.UiConfig,
     io: std.Io,
@@ -130,7 +136,7 @@ pub const Processor = struct {
         handleTypedHostEvents(self, &host_events);
         const event_action = pumpWindowEvents(self, wait);
         if (event_action == .quit) return .quit;
-        if (consumePresentSurfaceTriggers(self.tabs.items())) handleTypedHostEvent(self, .present_surface_triggered);
+        if (consumeSurfacePresentTriggers(self.tabs.items())) handleTypedHostEvent(self, .surface_present_triggered);
 
         const host_visual_changed_opt = try applyHostOwnedMutations(self, &host_events);
         if (host_visual_changed_opt) |host_visual_changed| {
@@ -148,7 +154,7 @@ pub const Processor = struct {
             var present_events = HostEventQueue.init();
             if (self.window.hasRequestedRedraw()) present_events.append(.redraw_requested);
             const frame = render(self);
-            const present_reason = HostScheduler.choosePresent(&present_events, terminalFrameReady(frame.turn.step));
+            const present_reason = choosePresentReason(&present_events, terminalFrameReady(frame.turn.step));
             submitPresent(self, frame, present_reason);
             if (present_reason == .host_redraw or present_reason == .terminal_frame) try self.scheduler.requestFrame(self.window, EventLoop.nowNs());
             if (quitRequested(self)) |action| return action;
@@ -185,7 +191,7 @@ pub const Processor = struct {
     fn collectWaitHostEvents(self: *Self) HostEventQueue {
         var events = HostEventQueue.init();
         if (self.input.hasPendingEvents()) events.append(.input_pending);
-        if (consumePresentSurfaceTriggers(self.tabs.items())) events.append(.present_surface_triggered);
+        if (consumeSurfacePresentTriggers(self.tabs.items())) events.append(.surface_present_triggered);
         if (self.window.hasRequestedRedraw()) events.append(.redraw_requested);
         return events;
     }
@@ -196,7 +202,7 @@ pub const Processor = struct {
 
     fn handleTypedHostEvent(self: *Self, event: HostScheduler.HostEvent) void {
         switch (event) {
-            .present_surface_triggered => {
+            .surface_present_triggered => {
                 // `requestRedraw` is Howl's host dirty bit; actual present remains gated by `hasFrame`.
                 self.window.requestRedraw();
             },
@@ -266,10 +272,10 @@ pub const Processor = struct {
         return true;
     }
 
-    fn consumePresentSurfaceTriggers(tabs: []*RuntimeTab) bool {
+    fn consumeSurfacePresentTriggers(tabs: []*RuntimeTab) bool {
         assert(tabs.len <= max_tabs);
         var triggered = false;
-        for (tabs) |tab| triggered = tab.consumePresentSurfaceTriggers() or triggered;
+        for (tabs) |tab| triggered = tab.consumeSurfacePresentTriggers() or triggered;
         return triggered;
     }
 
@@ -343,7 +349,7 @@ pub const Processor = struct {
         };
     }
 
-    fn submitPresent(self: *Self, frame: RenderFrame, reason: HostScheduler.Present) void {
+    fn submitPresent(self: *Self, frame: RenderFrame, reason: PresentReason) void {
         switch (reason) {
             .none => {},
             .host_redraw => _ = self.texture_frame.submitPresentSync(presentFrame(&frame)),
@@ -358,6 +364,12 @@ pub const Processor = struct {
 
     fn terminalFrameReady(step: RuntimeTab.TurnStep) bool {
         return step == .rendered;
+    }
+
+    fn choosePresentReason(events: *const HostEventQueue, terminal_frame_ready: bool) PresentReason {
+        if (terminal_frame_ready) return .terminal_frame;
+        if (events.contains(.redraw_requested)) return .host_redraw;
+        return .none;
     }
 
     fn presentFrame(frame: *const RenderFrame) Layout.Frame {
@@ -533,7 +545,7 @@ pub const Processor = struct {
 };
 
 pub const testing = struct {
-    pub const PresentReason = enum { none, host_damage, terminal_frame };
+    pub const TestingPresentReason = enum { none, host_damage, terminal_frame };
 
     pub const WaitResult = struct {
         wait_for_window: bool,
@@ -541,22 +553,22 @@ pub const testing = struct {
     };
 
     pub const TriggerWaitInput = struct {
-        present_surface_triggered: bool,
+        surface_present_triggered: bool,
     };
 
     pub fn computeLoopWaitFromTrigger(now_ns: u64, pending_events: bool, frame_ready: bool, redraw_requested: bool, frame_deadline_ns: ?u64, trigger: TriggerWaitInput) WaitResult {
         _ = frame_ready;
         var events = HostScheduler.HostEventQueue.init();
         if (redraw_requested) events.append(.redraw_requested);
-        if (trigger.present_surface_triggered) events.append(.present_surface_triggered);
+        if (trigger.surface_present_triggered) events.append(.surface_present_triggered);
         const wait = Processor.computeLoopWaitWithPendingEvents(pending_events, &events, frame_deadline_ns, now_ns);
         return .{ .wait_for_window = wait.for_window, .wait_ms = wait.timeout_ms };
     }
 
-    pub fn derivePresentReason(host_redraw_requested: bool, host_visual_changed: bool, step: RuntimeTab.TurnStep) PresentReason {
+    pub fn derivePresentReason(host_redraw_requested: bool, host_visual_changed: bool, step: RuntimeTab.TurnStep) TestingPresentReason {
         var events = HostScheduler.HostEventQueue.init();
         if (host_redraw_requested or host_visual_changed) events.append(.redraw_requested);
-        return switch (HostScheduler.choosePresent(&events, Processor.terminalFrameReady(step))) {
+        return switch (Processor.choosePresentReason(&events, Processor.terminalFrameReady(step))) {
             .none => .none,
             .host_redraw => .host_damage,
             .terminal_frame => .terminal_frame,
@@ -658,21 +670,21 @@ fn testTabBarConfig() TabBarConfig {
     return .{ .height = 30, .min_tabs_for_bar = 2 };
 }
 
-test "present surface trigger event prevents wait" {
+test "surface present trigger event prevents wait" {
     var events = HostScheduler.HostEventQueue.init();
-    events.append(.present_surface_triggered);
+    events.append(.surface_present_triggered);
 
     const wait = Processor.computeLoopWaitWithPendingEvents(false, &events, null, 1);
 
     try std.testing.expect(!wait.for_window);
 }
 
-test "present surface trigger listener requests redraw" {
+test "surface present trigger listener requests redraw" {
     var app_window = testWindow(false, false);
     var processor: Processor = undefined;
     processor.window = &app_window;
 
-    Processor.handleTypedHostEvent(&processor, .present_surface_triggered);
+    Processor.handleTypedHostEvent(&processor, .surface_present_triggered);
 
     try std.testing.expect(app_window.hasRequestedRedraw());
     try std.testing.expect(!app_window.hasFrame());

@@ -48,7 +48,7 @@ fn progressThreadMainWith(target_value: ProgressThreadTarget, comptime Ops: type
         if (!waitForTransport(target_value, Ops)) continue;
         while (!target_value.progress.stop.load(.acquire)) {
             const progress = Ops.driveProgress(target_value.term, EventLoop.nowNs());
-            if (progress.should_redraw or !progress.alive) signalPresentSurface(target_value, Ops);
+            if (progress.should_redraw or !progress.alive) triggerSurfacePresent(target_value, Ops);
             if (!progress.alive) return;
             if (!progress.keep) break;
         }
@@ -65,9 +65,9 @@ fn waitForTransport(target_value: ProgressThreadTarget, comptime Ops: type) bool
     return true;
 }
 
-fn signalPresentSurface(target_value: ProgressThreadTarget, comptime Ops: type) void {
+fn triggerSurfacePresent(target_value: ProgressThreadTarget, comptime Ops: type) void {
     _ = target_value.progress;
-    Ops.triggerPresentSurface(target_value.term);
+    Ops.triggerSurfacePresent(target_value.term);
 }
 
 const ProgressThreadOps = struct {
@@ -83,8 +83,8 @@ const ProgressThreadOps = struct {
         return pty_session.isAlive(term);
     }
 
-    fn triggerPresentSurface(term: *Term) void {
-        term.triggerPresentSurface();
+    fn triggerSurfacePresent(term: *Term) void {
+        term.triggerSurfacePresent();
     }
 };
 
@@ -144,13 +144,13 @@ test "progress target carries explicit term and wait owner" {
     try std.testing.expectEqual(&progress, target_value.progress);
 }
 
-test "signal present surface forwards every redraw edge to term trigger" {
+test "surface present signal forwards every redraw edge to term trigger" {
     fake_state = .{};
     var term: FakeTerm = undefined;
     var progress = WaitThread{};
     const target_value = fakeTarget(&term, &progress);
-    signalPresentSurface(target_value, FakeOps);
-    signalPresentSurface(target_value, FakeOps);
+    triggerSurfacePresent(target_value, FakeOps);
+    triggerSurfacePresent(target_value, FakeOps);
     try std.testing.expectEqual(@as(u8, 2), fake_state.trigger_calls);
 }
 
@@ -185,7 +185,7 @@ test "stop and kick wakes an indefinite transport wait target" {
     try std.testing.expectEqual(@as(u8, 1), fake_state.kick_calls);
 }
 
-test "wait for transport ignores already triggered texture present" {
+test "wait for transport ignores already triggered surface present" {
     fake_state = .{};
     fake_state.transport_ready_after = 1;
     var term: FakeTerm = undefined;
@@ -248,7 +248,7 @@ const FakeOps = struct {
         return fake_state.is_alive;
     }
 
-    fn triggerPresentSurface(_: *Term) void {
+    fn triggerSurfacePresent(_: *Term) void {
         fake_state.trigger_calls += 1;
     }
 };

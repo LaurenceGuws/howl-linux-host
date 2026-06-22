@@ -1,5 +1,6 @@
 const std = @import("std");
 const EventLoop = @import("../events/event_loop.zig");
+const surface_present = @import("../events/surface_present.zig");
 const window = @import("../events/window.zig");
 const term_texture = @import("../texture/term.zig");
 const HostInput = @import("../input.zig").Input;
@@ -99,7 +100,7 @@ pub const Surface = struct {
     progress: pty_wait_thread.WaitThread = .{},
     live: bool,
     term_texture: render_c.HowlRenderHostSurface,
-    present_surface_trigger: term_texture.PresentSurfaceTrigger,
+    surface_present_trigger: surface_present.Trigger,
     render_surface_textures: term_texture.RenderResourceTextures,
     conf: *const TerminalConfig,
     input: *HostInput,
@@ -160,7 +161,7 @@ pub const Surface = struct {
         self.progress = .{};
         self.live = false;
         self.term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 };
-        term_texture.initPresentSurfaceTrigger(&self.present_surface_trigger);
+        surface_present.initTrigger(&self.surface_present_trigger);
         self.render_surface_textures = .{};
         self.conf = request.conf;
         self.input = request.input;
@@ -376,8 +377,8 @@ pub const Surface = struct {
         try initRenderText(&self.term.render, render_init);
         self.term.vt_state = .{};
         self.term.mutex = .{};
-        term_texture.initPresentSurfaceTrigger(&self.present_surface_trigger);
-        self.term.initPresentSurfaceTrigger(&self.present_surface_trigger, self.event_loop);
+        surface_present.initTrigger(&self.surface_present_trigger);
+        self.term.initSurfacePresentTrigger(&self.surface_present_trigger, self.event_loop);
         self.term.initTitle();
         self.live = true;
         try initRenderState(&self.term.vt_state);
@@ -535,8 +536,8 @@ pub const Surface = struct {
         return term_texture.uploadRenderSurface(&self.render_surface_textures, &self.term_texture, surface_frame);
     }
 
-    pub fn consumePresentSurfaceTrigger(self: *Term) bool {
-        return term_texture.consumePresentSurfaceTrigger(&self.present_surface_trigger);
+    pub fn consumeSurfacePresentTrigger(self: *Term) bool {
+        return surface_present.consumeTrigger(&self.surface_present_trigger);
     }
 
     fn submitStep(result: render_retained.SubmitResult) TurnStep {
@@ -1170,13 +1171,13 @@ fn testSurfaceBase() Surface {
             }),
             .vt_state = .{},
             .mutex = .{},
-            .present_surface_trigger = null,
-            .present_surface_wake_loop = null,
+            .surface_present_trigger = null,
+            .surface_present_wake_loop = null,
         },
         .progress = .{},
         .live = false,
         .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
-        .present_surface_trigger = .{},
+        .surface_present_trigger = .{},
         .render_surface_textures = .{},
         .conf = &test_terminal_conf,
         .input = undefined,

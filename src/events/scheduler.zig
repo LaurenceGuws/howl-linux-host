@@ -1,9 +1,9 @@
-//! Main host scheduling owner.
+//! Timer/deadline scheduling owner.
 //!
-//! The main host thread owns event-loop wait policy, frame cadence timers, and present-path
-//! selection because those choices coordinate window/input/render owners without mutating their
-//! internal state. Timed work is represented as typed host events so wake, redraw, and terminal
-//! progress cannot be smuggled through broad fact buckets.
+//! This owner calculates timers, deadlines, and event-loop wait values only. It does not choose
+//! presentation, mutate window/render/texture state, or admit texture presents; those decisions stay
+//! in the main/window event spine, and typed timer events prove this file cannot smuggle render
+//! policy through generic scheduling facts.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -12,7 +12,7 @@ const FrameTimer = @import("frame_timer.zig").FrameTimer;
 const window = @import("window.zig");
 
 pub const HostEvent = enum {
-    present_surface_triggered,
+    surface_present_triggered,
     input_pending,
     window_geometry_changed,
     window_focus_changed,
@@ -67,12 +67,6 @@ pub const HostEventQueue = struct {
 pub const Wait = struct {
     for_window: bool,
     timeout_ms: ?u32,
-};
-
-pub const Present = enum {
-    none,
-    host_redraw,
-    terminal_frame,
 };
 
 const timer_count = @typeInfo(TimerTopic).@"enum".fields.len;
@@ -152,12 +146,6 @@ pub fn chooseWait(pending_events: bool, events: *const HostEventQueue, closest_d
     };
 }
 
-pub fn choosePresent(events: *const HostEventQueue, terminal_frame_ready: bool) Present {
-    if (terminal_frame_ready) return .terminal_frame;
-    if (events.contains(.redraw_requested)) return .host_redraw;
-    return .none;
-}
-
 pub fn waitMsFromDeadline(now_ns: u64, deadline_ns: ?u64) ?u32 {
     assert(now_ns > 0);
     const deadline = deadline_ns orelse return null;
@@ -194,30 +182,14 @@ fn testWindow(has_frame: bool) window.Window {
     };
 }
 
-test "present surface trigger prevents indefinite wait without granting progress admission" {
+test "surface present trigger prevents indefinite wait without granting progress admission" {
     var events = HostEventQueue.init();
-    events.append(.present_surface_triggered);
+    events.append(.surface_present_triggered);
 
     const wait = chooseWait(false, &events, null, 1);
 
     try std.testing.expect(!wait.for_window);
     try std.testing.expectEqual(@as(?u32, null), wait.timeout_ms);
-    try std.testing.expectEqual(Present.none, choosePresent(&events, false));
-}
-
-test "dirty redraw is a typed event gated by frame availability" {
-    var events = HostEventQueue.init();
-    try std.testing.expectEqual(Present.none, choosePresent(&events, false));
-
-    events.append(.redraw_requested);
-    try std.testing.expectEqual(Present.host_redraw, choosePresent(&events, false));
-}
-
-test "terminal frame present is a real current outcome" {
-    var events = HostEventQueue.init();
-    events.append(.redraw_requested);
-
-    try std.testing.expectEqual(Present.terminal_frame, choosePresent(&events, true));
 }
 
 test "closest real timer topic wins when no host event is ready" {
@@ -278,13 +250,4 @@ test "frame timer publishes frame ready and clears timer" {
     try std.testing.expect(events.contains(.frame_ready));
     try std.testing.expectEqual(@as(?u64, null), deadline_ns);
     try std.testing.expect(!scheduler.timers[@intFromEnum(TimerTopic.frame)].active);
-}
-
-test "present selection has no retire outcome" {
-    var events = HostEventQueue.init();
-
-    try std.testing.expectEqual(Present.none, choosePresent(&events, false));
-    events.append(.redraw_requested);
-    try std.testing.expectEqual(Present.host_redraw, choosePresent(&events, false));
-    try std.testing.expectEqual(Present.terminal_frame, choosePresent(&events, true));
 }

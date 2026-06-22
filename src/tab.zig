@@ -226,11 +226,11 @@ pub const Tab = struct {
         return self.driveCursorEvent(selection, now_ns, .trail);
     }
 
-    pub fn consumePresentSurfaceTriggers(self: *Tab) bool {
+    pub fn consumeSurfacePresentTriggers(self: *Tab) bool {
         self.assertInvariants();
         var triggered = false;
         for (self.initializedPanes()) |*runtime_pane| {
-            triggered = runtime_pane.consumePresentSurfaceTrigger() or triggered;
+            triggered = runtime_pane.consumeSurfacePresentTrigger() or triggered;
         }
         return triggered;
     }
@@ -863,15 +863,15 @@ test "runtime tab session outcome follows active pane without runtime failure" {
     try std.testing.expectEqual(pty_session.SessionOutcome.exited, tab.sessionOutcome());
 }
 
-test "runtime tab consumes present surface triggers from contained panes" {
+test "runtime tab consumes surface present triggers from contained panes" {
     var tab = initializedTestTab();
     installSplitForTest(&tab, .left_right);
-    tab.pane(.first).term.present_surface_trigger = &tab.pane(.first).present_surface_trigger;
-    tab.pane(.first).term.present_surface_wake_loop = null;
-    tab.pane(.first).term.triggerPresentSurface();
+    tab.pane(.first).term.surface_present_trigger = &tab.pane(.first).surface_present_trigger;
+    tab.pane(.first).term.surface_present_wake_loop = null;
+    tab.pane(.first).term.triggerSurfacePresent();
 
-    try std.testing.expect(tab.consumePresentSurfaceTriggers());
-    try std.testing.expect(!tab.consumePresentSurfaceTriggers());
+    try std.testing.expect(tab.consumeSurfacePresentTriggers());
+    try std.testing.expect(!tab.consumeSurfacePresentTriggers());
 }
 
 test "cursor trail event mutates terminal cursor owner and reports redraw" {
@@ -953,9 +953,9 @@ fn canInstallSplit(tab: *const Tab) bool {
 
 fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u64) void {
     pane.term.mutex = .{};
-    pane.present_surface_trigger = .{};
-    pane.term.present_surface_trigger = null;
-    pane.term.present_surface_wake_loop = null;
+    pane.surface_present_trigger = .{};
+    pane.term.surface_present_trigger = null;
+    pane.term.surface_present_wake_loop = null;
     pane.term.vt_state = .{};
     pane.term.pty = .{ .launch = .{ .shell = test_terminal_conf.shell } };
     pane.term.initTitle();
