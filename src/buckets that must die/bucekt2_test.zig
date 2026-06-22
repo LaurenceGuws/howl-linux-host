@@ -60,7 +60,7 @@ var submit_hook_state: struct {
     submit_calls: u8 = 0,
     last_term_surface: render_retained.TermSurface = std.mem.zeroes(render_retained.TermSurface),
     expected_info: render_retained.PreparedInfo = std.mem.zeroes(render_retained.PreparedInfo),
-    expected_surface: render_c.HowlRenderSurfaceFrame = std.mem.zeroes(render_c.HowlRenderSurfaceFrame),
+    expected_surface: render_c.HowlRenderTermSurfacePrepared = std.mem.zeroes(render_c.HowlRenderTermSurfacePrepared),
 } = .{};
 
 fn testSurfaceBase() Surface {
@@ -114,7 +114,7 @@ fn uploadedSurface(surface: *Surface, prepared: Surface.PreparedSurface, mode: S
     submit_hook_state.saw_unlocked = surface.term.mutex.tryLockUnfair();
     if (submit_hook_state.saw_unlocked) surface.term.mutex.unlock();
     std.debug.assert(prepared.frame.token.snapshot_seq == submit_hook_state.expected_info.snapshot_seq);
-    std.debug.assert(prepared.frame.token.frame_seq == submit_hook_state.expected_surface.token.frame_seq);
+    std.debug.assert(prepared.frame.token.prepare_seq == submit_hook_state.expected_surface.token.prepare_seq);
     std.debug.assert(prepared.frame.token.layout_epoch == submit_hook_state.expected_surface.token.layout_epoch);
     std.debug.assert(prepared.frame.render_px.width == submit_hook_state.expected_info.render_px.width);
     std.debug.assert(prepared.frame.render_px.height == submit_hook_state.expected_info.render_px.height);
@@ -151,7 +151,7 @@ fn installSubmitHooks(mode: SubmitUploadMode) void {
     submit_hook_state.submit_calls = 0;
     submit_hook_state.last_term_surface = std.mem.zeroes(render_retained.TermSurface);
     submit_hook_state.expected_info = std.mem.zeroes(render_retained.PreparedInfo);
-    submit_hook_state.expected_surface = std.mem.zeroes(render_c.HowlRenderSurfaceFrame);
+    submit_hook_state.expected_surface = std.mem.zeroes(render_c.HowlRenderTermSurfacePrepared);
     surface_testing.installHooks(.{
         .before_render_submit = beforeRenderSubmitHook,
         .observe_submit_surface = observeSubmitSurfaceHook,
@@ -198,7 +198,7 @@ fn recordExpectedPreparedUpload(surface: *Surface) !void {
     try std.testing.expect(surface.term.render.preparedUpload(&upload));
     defer upload.deinit();
     submit_hook_state.expected_info = upload.info;
-    submit_hook_state.expected_surface = upload.surface_frame.?.*;
+    submit_hook_state.expected_surface = upload.term_surface_prepared.?.*;
 }
 
 test "retained prepare emits visible full clear surface" {
@@ -217,22 +217,22 @@ test "retained prepare emits visible full clear surface" {
     try std.testing.expect(retained.preparedUpload(&upload));
     defer upload.deinit();
 
-    const prepared_surface = upload.surface_frame orelse return error.TestUnexpectedResult;
+    const prepared_surface = upload.term_surface_prepared orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 1), upload.info.snapshot_seq);
     try std.testing.expectEqual(@as(u16, 4), upload.info.render_px.width);
     try std.testing.expectEqual(@as(u16, 2), upload.info.render_px.height);
     try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.snapshot_seq);
-    try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.frame_seq);
+    try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.prepare_seq);
     try std.testing.expectEqual(@as(u64, 1), prepared_surface.token.layout_epoch);
     try std.testing.expectEqual(@as(u64, 0), prepared_surface.token.resource_epoch);
     try std.testing.expectEqual(@as(u16, 4), prepared_surface.render_px.width);
     try std.testing.expectEqual(@as(u16, 2), prepared_surface.render_px.height);
     try std.testing.expectEqual(@as(u32, 1), prepared_surface.damage.count);
     try std.testing.expect(prepared_surface.damage.ptr != null);
-    try std.testing.expectEqual(render_c.HOWL_RENDER_SURFACE_FRAME_DAMAGE_FULL, prepared_surface.damage.ptr[0].kind);
+    try std.testing.expectEqual(render_c.HOWL_RENDER_TERM_SURFACE_DAMAGE_FULL, prepared_surface.damage.ptr[0].kind);
     try std.testing.expectEqual(@as(u32, 1), prepared_surface.commands.count);
     try std.testing.expect(prepared_surface.commands.ptr != null);
-    try std.testing.expectEqual(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, prepared_surface.commands.ptr[0].kind);
+    try std.testing.expectEqual(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, prepared_surface.commands.ptr[0].kind);
     try std.testing.expect(prepared_surface.commands.ptr[0].color_rgba != 0x000000ff);
     try std.testing.expectEqual(@as(u8, 0xff), @as(u8, @intCast(prepared_surface.commands.ptr[0].color_rgba & 0xff)));
 }
@@ -515,7 +515,7 @@ test "resize success path submits full surface and acks matching present token" 
     const prepared_surface = submit_hook_state.expected_surface;
     try std.testing.expect(info.snapshot_seq != 0);
     try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.snapshot_seq);
-    try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.frame_seq);
+    try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.prepare_seq);
     try std.testing.expectEqual(surface.term.render.layout_epoch, prepared_surface.token.layout_epoch);
     try std.testing.expectEqual(@as(u64, 0), prepared_surface.token.resource_epoch);
     try std.testing.expectEqual(info.render_px.width, prepared_surface.render_px.width);

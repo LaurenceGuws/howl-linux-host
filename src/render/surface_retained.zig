@@ -63,8 +63,8 @@ pub const PreparedUploadStatus = enum {
 
 pub const PreparedUpload = struct {
     info: PreparedInfo,
-    surface_frame_status: PreparedUploadStatus,
-    surface_frame: ?*const c.HowlRenderSurfaceFrame,
+    term_surface_status: PreparedUploadStatus,
+    term_surface_prepared: ?*const c.HowlRenderTermSurfacePrepared,
 
     pub fn deinit(self: *PreparedUpload) void {
         self.* = undefined;
@@ -103,16 +103,16 @@ pub const SubmitOutput = struct {
     term_surface: TermSurface = .{ .term_surface_id = 0, .width = 0, .height = 0 },
 };
 
-pub const PreparedHandle = ?*const c.HowlRenderSurfaceFrame;
+pub const PreparedHandle = ?*const c.HowlRenderTermSurfacePrepared;
 
 pub const State = struct {
     surface_layout: SurfaceLayout,
     layout_epoch: u64 = 1,
     prepared_surface: PreparedHandle = null,
     text_handle: c.HowlRenderTextHandle = null,
-    surface: c.HowlRenderSurfaceFrame = emptySurface(),
-    damage: [1]c.HowlRenderSurfaceFrameDamageItem = undefined,
-    commands: [1]c.HowlRenderSurfaceFrameCommand = undefined,
+    surface: c.HowlRenderTermSurfacePrepared = emptySurface(),
+    damage: [1]c.HowlRenderTermSurfaceDamageItem = undefined,
+    commands: [1]c.HowlRenderTermSurfaceCommand = undefined,
     snapshot_seq: u64 = 0,
     present_in_flight: ?PresentInFlight = null,
     retained_state: RetainedState = .idle,
@@ -252,15 +252,15 @@ pub const State = struct {
         const surface = self.prepared_surface orelse {
             upload_out.* = .{
                 .info = .{},
-                .surface_frame_status = .missing,
-                .surface_frame = null,
+                .term_surface_status = .missing,
+                .term_surface_prepared = null,
             };
             return true;
         };
         upload_out.* = .{
             .info = .{ .snapshot_seq = self.snapshot_seq, .render_px = self.surface_layout.render_px },
-            .surface_frame_status = .invalid,
-            .surface_frame = surface,
+            .term_surface_status = .invalid,
+            .term_surface_prepared = surface,
         };
         return true;
     }
@@ -269,13 +269,13 @@ pub const State = struct {
         std.debug.assert(snapshot_seq != 0);
         self.snapshot_seq = snapshot_seq;
         self.damage[0] = .{
-            .kind = c.HOWL_RENDER_SURFACE_FRAME_DAMAGE_FULL,
+            .kind = c.HOWL_RENDER_TERM_SURFACE_DAMAGE_FULL,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = self.surface_layout.render_px.width, .height_px = self.surface_layout.render_px.height },
         };
         self.commands[0] = .{
-            .kind = c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT,
+            .kind = c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT,
             .reserved0 = 0,
             .reserved1 = 0,
             .rect = .{ .x_px = 0, .y_px = 0, .width_px = self.surface_layout.render_px.width, .height_px = self.surface_layout.render_px.height },
@@ -284,7 +284,7 @@ pub const State = struct {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         };
         self.surface = emptySurface();
-        self.surface.token = .{ .snapshot_seq = snapshot_seq, .frame_seq = snapshot_seq, .layout_epoch = self.layout_epoch, .resource_epoch = 0 };
+        self.surface.token = .{ .snapshot_seq = snapshot_seq, .prepare_seq = snapshot_seq, .layout_epoch = self.layout_epoch, .resource_epoch = 0 };
         self.surface.render_px = self.surface_layout.render_px;
         self.surface.cell_px = self.surface_layout.cell_px;
         self.surface.grid = .{ .cols = self.surface_layout.cols, .rows = self.surface_layout.rows };
@@ -315,7 +315,7 @@ pub const State = struct {
             .cursor_trail_rects = self.cursor_cadence.cursor_trail_rects,
         };
         if (c.howl_render_text_prepare(handle, &prepare_input, &upload) != c.HOWL_RENDER_CALL_OK) return self.failPrepare();
-        const surface = upload.surface_frame orelse return self.failPrepare();
+        const surface = upload.term_surface_prepared orelse return self.failPrepare();
         std.debug.assert(upload.snapshot_seq != 0);
         self.snapshot_seq = upload.snapshot_seq;
         self.prepared_surface = surface;
@@ -330,11 +330,11 @@ pub const State = struct {
     }
 };
 
-fn emptySurface() c.HowlRenderSurfaceFrame {
+fn emptySurface() c.HowlRenderTermSurfacePrepared {
     return .{
-        .frame_version = c.HOWL_RENDER_SURFACE_FRAME_VERSION,
+        .prepared_version = c.HOWL_RENDER_TERM_SURFACE_PREPARED_VERSION,
         .reserved0 = 0,
-        .token = .{ .snapshot_seq = 0, .frame_seq = 0, .layout_epoch = 0, .resource_epoch = 0 },
+        .token = .{ .snapshot_seq = 0, .prepare_seq = 0, .layout_epoch = 0, .resource_epoch = 0 },
         .render_px = .{ .width = 0, .height = 0 },
         .cell_px = .{ .width = 0, .height = 0 },
         .grid = .{ .cols = 0, .rows = 0 },

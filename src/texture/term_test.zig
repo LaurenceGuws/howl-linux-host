@@ -4,16 +4,16 @@ const term = @import("term.zig");
 
 const RenderResourceTextures = term.RenderResourceTextures;
 const term_testing = term.testing;
-const SurfaceCommand = render_c.HowlRenderSurfaceFrameCommand;
+const SurfaceCommand = render_c.HowlRenderTermSurfaceCommand;
 const ResourceUpload = render_c.HowlRenderResourceUpload;
-const SurfaceRect = render_c.HowlRenderSurfaceRect;
+const SurfaceRect = render_c.HowlRenderTermSurfaceRect;
 const TextureSlot = term_testing.TextureSlot;
 
 fn testResource(value: u64, kind: u32) render_c.HowlRenderResourceId {
     return .{ .value = value, .generation = 1, .kind = kind };
 }
 
-fn testRect(width: u16, height: u16) render_c.HowlRenderSurfaceRect {
+fn testRect(width: u16, height: u16) render_c.HowlRenderTermSurfaceRect {
     return .{ .x_px = 0, .y_px = 0, .width_px = width, .height_px = height };
 }
 
@@ -35,7 +35,7 @@ fn testCommand(kind: u8, rect: SurfaceRect, color_rgba: u32, resource: render_c.
 
 fn testGlyphCommand(rect: SurfaceRect, glyph: ?*render_c.HowlRenderGlyphRef, count: u32, count_max: u32) SurfaceCommand {
     return .{
-        .kind = render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN,
+        .kind = render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_DRAW_GLYPH_RUN,
         .reserved0 = 0,
         .reserved1 = 0,
         .rect = rect,
@@ -82,11 +82,11 @@ fn testUpload(resource: render_c.HowlRenderResourceId, rect: SurfaceRect, bytes:
     };
 }
 
-fn commandSpan(commands: []const render_c.HowlRenderSurfaceFrameCommand) render_c.HowlRenderSurfaceFrameCommandSpan {
+fn commandSpan(commands: []const render_c.HowlRenderTermSurfaceCommand) render_c.HowlRenderTermSurfaceCommandSpan {
     return .{
         .ptr = commands.ptr,
         .count = @intCast(commands.len),
-        .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_COMMANDS_MAX,
+        .count_max = render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_COMMANDS_MAX,
     };
 }
 
@@ -94,43 +94,43 @@ fn uploadSpan(uploads: []const render_c.HowlRenderResourceUpload, bytes_count_to
     return .{
         .ptr = uploads.ptr,
         .count = @intCast(uploads.len),
-        .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_UPLOADS_MAX,
+        .count_max = render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_UPLOADS_MAX,
         .bytes_count_total = bytes_count_total,
-        .bytes_count_max = render_c.HOWL_RENDER_SURFACE_FRAME_UPLOAD_BYTES_MAX,
+        .bytes_count_max = render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_UPLOAD_BYTES_MAX,
     };
 }
 
-fn testSurface() render_c.HowlRenderSurfaceFrame {
+fn testSurface() render_c.HowlRenderTermSurfacePrepared {
     return .{
-        .frame_version = render_c.HOWL_RENDER_SURFACE_FRAME_VERSION,
+        .prepared_version = render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_VERSION,
         .reserved0 = 0,
         .token = .{
             .snapshot_seq = 1,
-            .frame_seq = 1,
+            .prepare_seq = 1,
             .layout_epoch = 1,
             .resource_epoch = 1,
         },
         .render_px = .{ .width = 1, .height = 1 },
         .cell_px = .{ .width = 1, .height = 1 },
         .grid = .{ .cols = 1, .rows = 1 },
-        .damage = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_DAMAGE_ITEMS_MAX },
-        .creates = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_CREATES_MAX },
+        .damage = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_TERM_SURFACE_DAMAGE_ITEMS_MAX },
+        .creates = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_CREATES_MAX },
         .uploads = .{
             .ptr = null,
             .count = 0,
-            .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_UPLOADS_MAX,
+            .count_max = render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_UPLOADS_MAX,
             .bytes_count_total = 0,
-            .bytes_count_max = render_c.HOWL_RENDER_SURFACE_FRAME_UPLOAD_BYTES_MAX,
+            .bytes_count_max = render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_UPLOAD_BYTES_MAX,
         },
-        .commands = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_COMMANDS_MAX },
-        .retires = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_SURFACE_FRAME_RETIRES_MAX },
+        .commands = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_COMMANDS_MAX },
+        .retires = .{ .ptr = null, .count = 0, .count_max = render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_RETIRES_MAX },
     };
 }
 
 test "render surface fill classifier rejects out of bounds fill" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(2, 2), 0xffffffff, testResourceNull()),
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 1 }, 0xffffffff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(2, 2), 0xffffffff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 1 }, 0xffffffff, testResourceNull()),
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -146,8 +146,8 @@ test "render surface fbo y coordinates target texture row zero first" {
 
 test "render surface fill only accepts full clear and fill commands" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, testRect(1, 1), 0xffffffff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, testRect(1, 1), 0xffffffff, testResourceNull()),
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
@@ -157,8 +157,8 @@ test "render surface fill only accepts full clear and fill commands" {
 
 test "render surface fill only accepts full non-overlapping coverage without clear" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, 0x000000ff, testResourceNull()),
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, 0xffffffff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, 0xffffffff, testResourceNull()),
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -169,7 +169,7 @@ test "render surface fill only accepts full non-overlapping coverage without cle
 
 test "render surface fill only rejects coverage gaps without clear" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, 0x000000ff, testResourceNull()),
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -180,8 +180,8 @@ test "render surface fill only rejects coverage gaps without clear" {
 
 test "render surface fill only rejects coverage overlap without clear" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 }, 0x000000ff, testResourceNull()),
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 1 }, 0xffffffff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 0, .y_px = 0, .width_px = 2, .height_px = 2 }, 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 1 }, 0xffffffff, testResourceNull()),
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -192,7 +192,7 @@ test "render surface fill only rejects coverage overlap without clear" {
 
 test "render surface fill patch accepts partial bounded fills" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, 0x000000ff, testResourceNull()),
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -203,8 +203,8 @@ test "render surface fill patch accepts partial bounded fills" {
 
 test "render surface fill patch accepts bounded clear and fill commands" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, 0x000000ff, testResourceNull()),
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, 0xffffffff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, .{ .x_px = 0, .y_px = 0, .width_px = 1, .height_px = 2 }, 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, 0xffffffff, testResourceNull()),
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -214,12 +214,12 @@ test "render surface fill patch accepts bounded clear and fill commands" {
 }
 
 test "render surface classification names fill and fill patch shapes" {
-    var fill_commands = [_]SurfaceCommand{testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(1, 1), 0xffffffff, testResourceNull())};
+    var fill_commands = [_]SurfaceCommand{testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(1, 1), 0xffffffff, testResourceNull())};
     var fill_surface = testSurface();
     fill_surface.commands = commandSpan(&fill_commands);
 
     var patch_commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, 0xffffffff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 2 }, 0xffffffff, testResourceNull()),
     };
     var patch_surface = testSurface();
     patch_surface.render_px = .{ .width = 2, .height = 2 };
@@ -231,7 +231,7 @@ test "render surface classification names fill and fill patch shapes" {
 
 test "render surface fill patch rejects out of bounds fill" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 2 }, 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 2, .height_px = 2 }, 0x000000ff, testResourceNull()),
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -263,7 +263,7 @@ test "render surface fill upload tile repeats the same rgba row" {
 
 test "render surface fill only rejects mixed resource commands" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(9, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(9, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
@@ -273,8 +273,8 @@ test "render surface fill only rejects mixed resource commands" {
 
 test "render surface sprite surface accepts clear fill and sprite commands" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(10, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(10, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
@@ -284,7 +284,7 @@ test "render surface sprite surface accepts clear fill and sprite commands" {
 
 test "render surface sprite patch accepts bounded sprite commands without clear" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(15, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(15, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
@@ -294,14 +294,14 @@ test "render surface sprite patch accepts bounded sprite commands without clear"
 
 test "render surface classification names sprite and sprite patch shapes" {
     var sprite_commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(30, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(30, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
     };
     var sprite_surface = testSurface();
     sprite_surface.commands = commandSpan(&sprite_commands);
 
     var patch_commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(31, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(31, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
     };
     var patch_surface = testSurface();
     patch_surface.commands = commandSpan(&patch_commands);
@@ -312,7 +312,7 @@ test "render surface classification names sprite and sprite patch shapes" {
 
 test "render surface sprite patch rejects glyph commands" {
     var glyph = testGlyph(testResource(16, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), 0, 0);
-    var commands = [_]SurfaceCommand{testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX)};
+    var commands = [_]SurfaceCommand{testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX)};
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
@@ -358,7 +358,7 @@ test "render surface future upload detects command visibility mismatch" {
 test "render surface glyph future upload detects command visibility mismatch" {
     const resource = testResource(19, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA);
     var glyph = render_c.HowlRenderGlyphRef{ .atlas_resource = resource, .atlas_rect = testRect(1, 1), .x_px = 0, .y_px = 0, .glyph_id = 1, .color_rgba = 0xffffffff };
-    const command = testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX);
+    const command = testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX);
     var bytes = [_]u8{255};
     var uploads = [_]ResourceUpload{
         testUpload(resource, testRect(1, 1), bytes[0..], 1, 1, 1),
@@ -382,8 +382,8 @@ test "render surface sprite surface rejects glyph commands" {
 test "render surface glyph surface accepts clear fill sprite and glyph commands" {
     var glyph = testGlyph(testResource(12, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), 0, 0);
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
-        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
+        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX),
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
@@ -394,8 +394,8 @@ test "render surface glyph surface accepts clear fill sprite and glyph commands"
 test "render surface glyph surface rejects no full clear glyph patch frames" {
     var glyph = testGlyph(testResource(22, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), 0, 0);
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
-        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
+        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX),
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -407,9 +407,9 @@ test "render surface glyph surface rejects no full clear glyph patch frames" {
 test "render surface glyph patch accepts bounded fill clear and glyph commands" {
     var glyph = testGlyph(testResource(23, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), 1, 0);
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 1 }, 0xffffffff, testResourceNull()),
-        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT, .{ .x_px = 1, .y_px = 0, .width_px = 1, .height_px = 1 }, 0xffffffff, testResourceNull()),
+        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX),
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 2 };
@@ -421,15 +421,15 @@ test "render surface glyph patch accepts bounded fill clear and glyph commands" 
 test "render surface classification names glyph and glyph patch shapes" {
     var full_glyph = testGlyph(testResource(32, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), 0, 0);
     var glyph_commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
-        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &full_glyph, 1, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
+        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &full_glyph, 1, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX),
     };
     var glyph_surface = testSurface();
     glyph_surface.commands = commandSpan(&glyph_commands);
 
     var patch_glyph = testGlyph(testResource(33, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), 1, 0);
     var patch_commands = [_]SurfaceCommand{
-        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &patch_glyph, 1, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX),
+        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &patch_glyph, 1, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX),
     };
     var patch_surface = testSurface();
     patch_surface.render_px = .{ .width = 2, .height = 1 };
@@ -450,9 +450,9 @@ test "render surface classification rejects unsupported shapes" {
 test "render surface glyph patch accepts bounded sprite and glyph commands" {
     var glyph = testGlyph(testResource(45, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_ALPHA), 1, 0);
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(2, 1), 0x000000ff, testResourceNull()),
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(46, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
-        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(2, 1), 0x000000ff, testResourceNull()),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(46, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
+        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX),
     };
     var surface = testSurface();
     surface.render_px = .{ .width = 2, .height = 1 };
@@ -463,7 +463,7 @@ test "render surface glyph patch accepts bounded sprite and glyph commands" {
 
 test "render surface glyph patch rejects sprite and unknown commands" {
     var sprite_commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(24, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_DRAW_SPRITE, testRect(1, 1), 0xffffffff, testResource(24, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA)),
     };
     var sprite_surface = testSurface();
     sprite_surface.commands = commandSpan(&sprite_commands);
@@ -479,8 +479,8 @@ test "render surface glyph patch rejects sprite and unknown commands" {
 test "render surface glyph surface rejects color atlas" {
     var glyph = testGlyph(testResource(13, render_c.HOWL_RENDER_RESOURCE_GLYPH_ATLAS_COLOR), 0, 0);
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
-        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
+        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, &glyph, 1, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX),
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
@@ -490,8 +490,8 @@ test "render surface glyph surface rejects color atlas" {
 
 test "render surface glyph surface rejects invalid glyph span" {
     var commands = [_]SurfaceCommand{
-        testCommand(render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
-        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, null, 1, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX),
+        testCommand(render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT, testRect(1, 1), 0x000000ff, testResourceNull()),
+        testGlyphCommand(.{ .x_px = 0, .y_px = 0, .width_px = 0, .height_px = 0 }, null, 1, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX),
     };
     var surface = testSurface();
     surface.commands = commandSpan(&commands);

@@ -29,7 +29,7 @@ pub const Presenter = struct {
         self.term_surface.height = 0;
     }
 
-    pub fn upload(self: *Presenter, surface: *const render_c.HowlRenderSurfaceFrame) bool {
+    pub fn upload(self: *Presenter, surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
         return uploadRenderSurface(&self.resources, &self.term_surface, surface);
     }
 
@@ -38,7 +38,7 @@ pub const Presenter = struct {
     }
 };
 
-pub fn uploadRenderSurface(textures: *RenderResourceTextures, term_surface: *render_c.HowlRenderTermSurface, surface: *const render_c.HowlRenderSurfaceFrame) bool {
+pub fn uploadRenderSurface(textures: *RenderResourceTextures, term_surface: *render_c.HowlRenderTermSurface, surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
     std.debug.assert(surface.render_px.width > 0);
     std.debug.assert(surface.render_px.height > 0);
     const had_matching_term_surface = term_surface.term_surface_id != 0 and
@@ -124,7 +124,7 @@ pub const testing = struct {
     pub const TextureSlot = frame_resources.testing.TextureSlot;
     pub const SurfaceClass = frame_commands.testing.SurfaceClass;
 
-    pub fn classifyRenderSurface(surface: *const render_c.HowlRenderSurfaceFrame) ?SurfaceClass {
+    pub fn classifyRenderSurface(surface: *const render_c.HowlRenderTermSurfacePrepared) ?SurfaceClass {
         return frame_commands.classifyRenderSurface(surface);
     }
 
@@ -132,7 +132,7 @@ pub const testing = struct {
         frame_resources.testing.commitUploadMetadata(textures, uploads);
     }
 
-    pub fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderSurfaceFrame, command: render_c.HowlRenderSurfaceFrameCommand, command_index: u32) bool {
+    pub fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderTermSurfacePrepared, command: render_c.HowlRenderTermSurfaceCommand, command_index: u32) bool {
         return frame_commands.testing.glyphCommandHasFutureUpload(surface, command, command_index);
     }
 
@@ -148,15 +148,15 @@ pub const testing = struct {
         frame_commands.testing.stageFillUploadTile(tile, width, rows, rgba);
     }
 
-    pub fn resourceHasFutureUpload(surface: *const render_c.HowlRenderSurfaceFrame, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
+    pub fn resourceHasFutureUpload(surface: *const render_c.HowlRenderTermSurfacePrepared, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
         return frame_commands.testing.resourceHasFutureUpload(surface, resource, command_index);
     }
 
-    pub fn spriteUploadCoversCommand(slot: TextureSlot, command_rect: render_c.HowlRenderSurfaceRect) bool {
+    pub fn spriteUploadCoversCommand(slot: TextureSlot, command_rect: render_c.HowlRenderTermSurfaceRect) bool {
         return frame_commands.testing.spriteUploadCoversCommand(slot, command_rect);
     }
 
-    pub fn validateSurface(textures: *RenderResourceTextures, surface: *const render_c.HowlRenderSurfaceFrame) void {
+    pub fn validateSurface(textures: *RenderResourceTextures, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
         frame_resources.testing.validateSurface(textures, surface);
     }
 };

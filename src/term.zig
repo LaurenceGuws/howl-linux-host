@@ -71,7 +71,7 @@ pub const Term = struct {
         handle: render_retained.PreparedHandle,
         snapshot_seq: u64,
         render_px: render_c.HowlRenderPixelSize,
-        frame: *const render_c.HowlRenderSurfaceFrame,
+        frame: *const render_c.HowlRenderTermSurfacePrepared,
         damage: PresentDamage,
     };
 
@@ -305,12 +305,12 @@ pub const Term = struct {
         std.debug.assert(upload.info.snapshot_seq != 0);
         std.debug.assert(!self.render.presentPending());
 
-        const render_surface = upload.surface_frame orelse {
-            if (upload.surface_frame_status == .command_bound_overflow) {
+        const render_surface = upload.term_surface_prepared orelse {
+            if (upload.term_surface_status == .command_bound_overflow) {
                 self.render.noteRetainedFailure();
                 return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
             }
-            std.debug.panic("trusted render surface retrieval failed: status={}", .{upload.surface_frame_status});
+            std.debug.panic("trusted render surface retrieval failed: status={}", .{upload.term_surface_status});
             return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
         };
 
