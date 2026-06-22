@@ -82,6 +82,16 @@ pub const Tab = struct {
         turn: TerminalSurface.TurnResult,
     };
 
+    pub const PaneSurfaceReadiness = struct {
+        id: PaneId,
+        ready: bool,
+    };
+
+    pub const PaneUpload = struct {
+        id: PaneId,
+        upload: TerminalSurface.UploadedSurface,
+    };
+
     pub const TurnResult = struct {
         panes: [max_frame_panes]PaneTurn,
         pane_count: usize,
@@ -235,14 +245,39 @@ pub const Tab = struct {
         return triggered;
     }
 
-    pub fn renderTurn(self: *Tab) TurnResult {
+    pub fn renderTurn(self: *Tab, readiness: []const PaneSurfaceReadiness) TurnResult {
         self.assertInvariants();
+        std.debug.assert(readiness.len >= self.pane_count);
         var result = TurnResult{ .panes = undefined, .pane_count = self.pane_count, .step = .surface_idle, .present_damage = .fullFrame() };
         for (self.initializedPanes(), 0..) |*runtime_pane, i| {
-            const turn = runtime_pane.renderTurn();
+            const id = paneIdFromIndex(i);
+            std.debug.assert(readiness[i].id == id);
+            const turn = runtime_pane.renderTurn(readiness[i].ready);
             result.panes[i] = .{ .id = paneIdFromIndex(i), .turn = turn };
             result.step = aggregateTurnStep(result.step, turn.step);
-            if (turn.step == .rendered) result.present_damage = .fullFrame();
+        }
+        return result;
+    }
+
+    pub fn submitUploaded(self: *Tab, uploads: []const PaneUpload) TurnResult {
+        self.assertInvariants();
+        var result = TurnResult{ .panes = undefined, .pane_count = self.pane_count, .step = .surface_idle, .present_damage = .fullFrame() };
+        for (self.initializedPanes(), 0..) |_, i| {
+            result.panes[i] = .{ .id = paneIdFromIndex(i), .turn = idleTurn() };
+        }
+        for (uploads) |pane_upload| {
+            const submit = self.pane(pane_upload.id).submitUploaded(pane_upload.upload);
+            const turn = TerminalSurface.TurnResult{
+                .state_before = .submit_ready,
+                .state_after = self.pane(pane_upload.id).term.render.retainedState(),
+                .prepared = false,
+                .step = submitStep(submit.result),
+                .present_snapshot_seq = if (submit.result == .rendered) submit.snapshot_seq else 0,
+                .present_damage = submit.damage,
+            };
+            result.panes[paneIndex(pane_upload.id)] = .{ .id = pane_upload.id, .turn = turn };
+            result.step = aggregateTurnStep(result.step, turn.step);
+            if (turn.step == .rendered) result.present_damage = turn.present_damage;
         }
         return result;
     }
@@ -266,12 +301,14 @@ pub const Tab = struct {
         for (self.initializedPanes()) |*runtime_pane| runtime_pane.completePresent(token);
     }
 
-    pub fn renderedPaneTexturesReady(self: *const Tab, turn: TurnResult) bool {
+    pub fn renderedPaneTexturesReady(self: *const Tab, readiness: []const PaneSurfaceReadiness, turn: TurnResult) bool {
         self.assertInvariants();
         std.debug.assert(turn.pane_count == self.pane_count);
-        for (turn.panes[0..turn.pane_count]) |pane_turn| {
+        std.debug.assert(readiness.len >= turn.pane_count);
+        for (turn.panes[0..turn.pane_count], 0..) |pane_turn, i| {
             if (pane_turn.turn.step != .rendered) continue;
-            if (self.paneConst(pane_turn.id).term_texture.host_surface_id == 0) return false;
+            std.debug.assert(readiness[i].id == pane_turn.id);
+            if (!readiness[i].ready) return false;
         }
         return true;
     }
@@ -299,31 +336,31 @@ pub const Tab = struct {
         unreachable;
     }
 
-    pub fn framePanes(self: *Tab, tab_body: Layout.tab.Body, out: []Layout.FramePane) []Layout.FramePane {
+    pub fn frameFacts(self: *Tab, selection: TabSelection, out: []Layout.PaneFrameFacts) []Layout.PaneFrameFacts {
         self.assertInvariants();
         std.debug.assert(out.len >= self.pane_count);
-        var placements_buf: [max_frame_panes]Layout.pane.Placement = undefined;
-        const placements = self.place(tab_body, placements_buf[0..]);
         var frame_count: usize = 0;
-        for (placements) |placement| {
-            const info = self.paneInfoOne(.selected, placement.id);
+        for (self.initializedPanes(), 0..) |*runtime_pane, i| {
+            const id = paneIdFromIndex(i);
+            const info = self.paneInfoOne(selection, id);
             if (info.visibility == .hidden) continue;
-            const runtime_pane = self.pane(placement.id);
-            const terminal = Layout.pane.terminal(placement, paneTextureSize(runtime_pane));
-            const scroll_view = terminal_scrollbar.viewFromTerm(terminal_scrollbar.scrollState(&runtime_pane.term));
-            const logical_width = runtime_pane.surface_layout.logical_w;
-            const logical_height = runtime_pane.surface_layout.logical_h;
-            const scrollbar = terminal_scrollbar.placeScrollbar(&runtime_pane.scrollbar, terminal.texture_rect, scroll_view, logical_width, logical_height, runtime_pane.window_focused);
             out[frame_count] = .{
-                .id = placement.id,
-                .term_texture_id = @intCast(runtime_pane.term_texture.host_surface_id),
-                .term_texture_rect = terminal.texture_rect,
-                .scrollbar = scrollbar,
-                .scroll_chip = terminal_scrollbar.placeScrollChip(&runtime_pane.scrollbar, terminal.texture_rect, scroll_view, logical_width, logical_height, runtime_pane.window_focused),
+                .id = id,
+                .term_texture_size = paneTextureSize(runtime_pane),
+                .scroll_view = terminal_scrollbar.viewFromTerm(terminal_scrollbar.scrollState(&runtime_pane.term)),
+                .logical_width = runtime_pane.surface_layout.logical_w,
+                .logical_height = runtime_pane.surface_layout.logical_h,
+                .window_focused = runtime_pane.window_focused,
+                .scrollbar_state = &runtime_pane.scrollbar,
             };
             frame_count += 1;
         }
         return out[0..frame_count];
+    }
+
+    pub fn splitTree(self: *const Tab) Layout.splits.Tree {
+        self.assertInvariants();
+        return self.split_tree;
     }
 
     fn place(self: *const Tab, tab_body: Layout.tab.Body, out: []Layout.pane.Placement) []Layout.pane.Placement {
@@ -512,6 +549,26 @@ pub const Tab = struct {
         };
     }
 
+    fn submitStep(result: render_retained.SubmitResult) TurnStep {
+        return switch (result) {
+            .rendered => .rendered,
+            .failed => .failed,
+            .idle, .stale, .needs_prepare => .idle_submit,
+        };
+    }
+
+    fn idleTurn() TerminalSurface.TurnResult {
+        return .{
+            .state_before = .idle,
+            .state_after = .idle,
+            .prepared = false,
+            .step = .surface_idle,
+            .present_snapshot_seq = 0,
+            .present_damage = .fullFrame(),
+            .upload = null,
+        };
+    }
+
     const CursorEvent = enum { blink, blink_timeout, trail };
 
     fn driveCursorEvent(self: *Tab, selection: TabSelection, now_ns: u64, event: CursorEvent) bool {
@@ -669,12 +726,18 @@ test "runtime tab frame panes after resize must expose resized placement for bot
     installResizeTerminalStateForTest(&tab);
     defer deinitResizeTerminalStateForTest(&tab);
     const next_body = testResizedTabBody();
+    var facts_buf: [Tab.max_frame_panes]Layout.PaneFrameFacts = undefined;
+    var textures = [_]Layout.PaneTexture{
+        .{ .id = .first, .id_value = 10 },
+        .{ .id = second_pane, .id_value = 11 },
+    };
     var panes: [Tab.max_frame_panes]Layout.FramePane = undefined;
 
     tab.resize(next_body);
     try std.testing.expectEqual(Layout.Size{ .width = 600, .height = 720 }, Tab.paneTextureSize(tab.paneConst(.first)));
     try std.testing.expectEqual(Layout.Size{ .width = 600, .height = 720 }, Tab.paneTextureSize(tab.paneConst(second_pane)));
-    const frame_panes = tab.framePanes(next_body, panes[0..]);
+    const facts = tab.frameFacts(.selected, facts_buf[0..]);
+    const frame_panes = Layout.framePanes(next_body, tab.splitTree(), facts, textures[0..], panes[0..]);
 
     try std.testing.expectEqual(@as(usize, 2), frame_panes.len);
     try std.testing.expectEqual(PaneId.first, frame_panes[0].id);
@@ -952,6 +1015,7 @@ fn canInstallSplit(tab: *const Tab) bool {
 }
 
 fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u64) void {
+    _ = texture_id;
     pane.term.mutex = .{};
     pane.surface_present_trigger = .{};
     pane.term.surface_present_trigger = null;
@@ -966,7 +1030,6 @@ fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u
         .rows = height,
         .cell_px = .{ .width = 1, .height = 1 },
     });
-    pane.term_texture = .{ .host_surface_id = texture_id, .width = width, .height = height };
     pane.progress = .{};
     pane.live = true;
     pane.conf = &test_terminal_conf;

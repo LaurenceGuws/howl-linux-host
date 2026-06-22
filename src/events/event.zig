@@ -61,9 +61,15 @@ pub const Processor = struct {
         damage: RuntimeTab.PresentDamage,
     };
 
+    const RenderUpload = struct {
+        panes: [RuntimeTab.max_frame_panes]RuntimeTab.PaneUpload,
+        pane_count: usize,
+    };
+
     const RenderFrame = struct {
         tab: *RuntimeTab,
         turn: RuntimeTab.TurnResult,
+        upload: RenderUpload,
         snapshot: RenderSnapshot,
     };
 
@@ -319,12 +325,18 @@ pub const Processor = struct {
     fn render(self: *Self) RenderFrame {
         const tab = activeTab(self.tabs.items(), self.active_tab_idx.*);
         self.window.clearRedrawRequest();
-        const turn = tab.renderTurn();
+        var readiness: [RuntimeTab.max_frame_panes]RuntimeTab.PaneSurfaceReadiness = undefined;
+        const ready = paneSurfaceReadiness(self.texture_frame, tab, readiness[0..]);
+        const prepare_turn = tab.renderTurn(ready);
+        tab.noteRenderTurn(prepare_turn);
+        const uploads = uploadPreparedPanes(self.texture_frame, prepare_turn);
+        const turn = tab.submitUploaded(uploads.panes[0..uploads.pane_count]);
         tab.noteRenderTurn(turn);
         syncActiveWindowTitle(self.window, tab);
         const snapshot = renderSnapshot(self, tab);
-        std.debug.assert(tab.renderedPaneTexturesReady(turn));
-        return .{ .tab = tab, .turn = turn, .snapshot = snapshot };
+        const next_ready = paneSurfaceReadiness(self.texture_frame, tab, readiness[0..]);
+        std.debug.assert(tab.renderedPaneTexturesReady(next_ready, turn));
+        return .{ .tab = tab, .turn = turn, .upload = uploads, .snapshot = snapshot };
     }
 
     fn syncActiveWindowTitle(app_window: *window.Window, tab: *RuntimeTab) void {
@@ -337,7 +349,11 @@ pub const Processor = struct {
         const tabs = self.tabs.items();
         const tab_bar_snapshot = self.tab_bar.snapshot(self.active_tab_idx.*, tabTitles(tabs, title_buf[0..]));
         var panes: [RuntimeTab.max_frame_panes]Layout.FramePane = undefined;
-        const frame_panes = tab.framePanes(LayoutTab.body(window_interior), panes[0..]);
+        var facts_buf: [RuntimeTab.max_frame_panes]Layout.PaneFrameFacts = undefined;
+        var textures_buf: [RuntimeTab.max_frame_panes]Layout.PaneTexture = undefined;
+        const facts = tab.frameFacts(.selected, facts_buf[0..]);
+        for (facts, 0..) |fact, i| textures_buf[i] = .{ .id = fact.id, .id_value = self.texture_frame.termTextureId(fact.id) };
+        const frame_panes = Layout.framePanes(LayoutTab.body(window_interior), tab.splitTree(), facts, textures_buf[0..facts.len], panes[0..]);
         return .{
             .panes = panes,
             .pane_count = frame_panes.len,
@@ -347,6 +363,28 @@ pub const Processor = struct {
             .labels = tab_bar_snapshot.labels,
             .damage = .fullFrame(),
         };
+    }
+
+    fn paneSurfaceReadiness(texture_frame: *const TextureFrame.State, tab: *RuntimeTab, out: []RuntimeTab.PaneSurfaceReadiness) []RuntimeTab.PaneSurfaceReadiness {
+        var facts_buf: [RuntimeTab.max_frame_panes]Layout.PaneFrameFacts = undefined;
+        const facts = tab.frameFacts(.selected, facts_buf[0..]);
+        std.debug.assert(out.len >= facts.len);
+        for (facts, 0..) |fact, i| out[i] = .{ .id = fact.id, .ready = texture_frame.termSurfaceReady(fact.id) };
+        return out[0..facts.len];
+    }
+
+    fn uploadPreparedPanes(texture_frame: *TextureFrame.State, turn: RuntimeTab.TurnResult) RenderUpload {
+        var upload = RenderUpload{ .panes = undefined, .pane_count = 0 };
+        for (turn.panes[0..turn.pane_count]) |pane_turn| {
+            const prepared = pane_turn.turn.upload orelse continue;
+            const uploaded = texture_frame.uploadTermSurface(pane_turn.id, prepared.frame);
+            upload.panes[upload.pane_count] = .{
+                .id = pane_turn.id,
+                .upload = .{ .prepared = prepared, .surface = uploaded.surface, .ok = uploaded.ok },
+            };
+            upload.pane_count += 1;
+        }
+        return upload;
     }
 
     fn submitPresent(self: *Self, frame: RenderFrame, reason: PresentReason) void {
@@ -616,6 +654,7 @@ test "present frame carries one current runtime pane" {
             .step = .surface_idle,
             .present_damage = .fullFrame(),
         },
+        .upload = .{ .panes = undefined, .pane_count = 0 },
         .snapshot = snapshot,
     };
     const frame = Processor.presentFrame(&render_frame);
@@ -649,6 +688,7 @@ test "present frame slices only active snapshot pane count" {
     const render_frame = Processor.RenderFrame{
         .tab = &tab,
         .turn = .{ .panes = undefined, .pane_count = 1, .step = .surface_idle, .present_damage = .fullFrame() },
+        .upload = .{ .panes = undefined, .pane_count = 0 },
         .snapshot = .{
             .panes = snapshot_panes,
             .pane_count = 1,

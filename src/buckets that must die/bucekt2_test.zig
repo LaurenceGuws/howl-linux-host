@@ -49,7 +49,6 @@ const test_terminal_conf = term_config.Config{
 const SubmitUploadMode = enum {
     success,
     fail,
-    fail_zero_dimensions,
     mutate_handle,
 };
 
@@ -57,12 +56,8 @@ var submit_hook_state: struct {
     mode: SubmitUploadMode = .success,
     saw_unlocked: bool = false,
     submit_observed_locked: bool = false,
-    host_upload_calls: u8 = 0,
-    host_upload_had_matching_surface: bool = false,
-    host_upload_render_px: render_c.HowlRenderPixelSize = .{ .width = 0, .height = 0 },
-    host_upload_surface_px: render_c.HowlRenderPixelSize = .{ .width = 0, .height = 0 },
     submit_calls: u8 = 0,
-    last_execution: render_retained.SubmitExecution = std.mem.zeroes(render_retained.SubmitExecution),
+    last_surface: render_retained.HostSurface = std.mem.zeroes(render_retained.HostSurface),
     expected_info: render_retained.PreparedInfo = std.mem.zeroes(render_retained.PreparedInfo),
     expected_surface: render_c.HowlRenderSurfaceFrame = std.mem.zeroes(render_c.HowlRenderSurfaceFrame),
 } = .{};
@@ -82,9 +77,7 @@ fn testSurfaceBase() Surface {
         },
         .progress = .{},
         .live = false,
-        .term_texture = .{ .host_surface_id = 1, .width = 2, .height = 1 },
         .surface_present_trigger = .{},
-        .render_surface_textures = .{},
         .conf = &test_terminal_conf,
         .input = undefined,
         .event_loop = undefined,
@@ -116,41 +109,27 @@ fn testSurfaceLayout(render_width: u16, render_height: u16, grid_width: u16, gri
     };
 }
 
-fn uploadRenderSurfaceHook(surface: *Surface, surface_frame: *const render_c.HowlRenderSurfaceFrame) bool {
+fn uploadedSurface(surface: *Surface, prepared: Surface.PreparedSurface, mode: SubmitUploadMode) Surface.UploadedSurface {
     submit_hook_state.saw_unlocked = surface.term.mutex.tryLockUnfair();
     if (submit_hook_state.saw_unlocked) surface.term.mutex.unlock();
-    std.debug.assert(surface_frame.token.snapshot_seq == submit_hook_state.expected_info.snapshot_seq);
-    std.debug.assert(surface_frame.token.frame_seq == submit_hook_state.expected_surface.token.frame_seq);
-    std.debug.assert(surface_frame.token.layout_epoch == submit_hook_state.expected_surface.token.layout_epoch);
-    std.debug.assert(surface_frame.render_px.width == submit_hook_state.expected_info.render_px.width);
-    std.debug.assert(surface_frame.render_px.height == submit_hook_state.expected_info.render_px.height);
-    submit_hook_state.host_upload_calls += 1;
-    submit_hook_state.host_upload_had_matching_surface = surface.term_texture.host_surface_id != 0 and
-        surface.term_texture.width == submit_hook_state.expected_info.render_px.width and
-        surface.term_texture.height == submit_hook_state.expected_info.render_px.height;
-    submit_hook_state.host_upload_render_px = submit_hook_state.expected_info.render_px;
-    submit_hook_state.host_upload_surface_px = surface_frame.render_px;
+    std.debug.assert(prepared.frame.token.snapshot_seq == submit_hook_state.expected_info.snapshot_seq);
+    std.debug.assert(prepared.frame.token.frame_seq == submit_hook_state.expected_surface.token.frame_seq);
+    std.debug.assert(prepared.frame.token.layout_epoch == submit_hook_state.expected_surface.token.layout_epoch);
+    std.debug.assert(prepared.frame.render_px.width == submit_hook_state.expected_info.render_px.width);
+    std.debug.assert(prepared.frame.render_px.height == submit_hook_state.expected_info.render_px.height);
 
-    switch (submit_hook_state.mode) {
-        .success => {
-            surface.term_texture = .{
-                .host_surface_id = 2,
-                .width = submit_hook_state.expected_info.render_px.width,
-                .height = submit_hook_state.expected_info.render_px.height,
-            };
-            return true;
-        },
-        .fail => return false,
-        .fail_zero_dimensions => {
-            surface.term_texture.width = 0;
-            surface.term_texture.height = 0;
-            return false;
-        },
+    switch (mode) {
         .mutate_handle => {
             surface.term.render.forgetPreparedSurfaceHandle();
-            return true;
+            return .{ .prepared = prepared, .surface = testUploadSurface(prepared), .ok = true };
         },
+        .success => return .{ .prepared = prepared, .surface = testUploadSurface(prepared), .ok = true },
+        .fail => return .{ .prepared = prepared, .surface = testUploadSurface(prepared), .ok = false },
     }
+}
+
+fn testUploadSurface(prepared: Surface.PreparedSurface) render_retained.HostSurface {
+    return .{ .host_surface_id = 2, .width = prepared.render_px.width, .height = prepared.render_px.height };
 }
 
 fn beforeRenderSubmitHook(surface: *Surface) void {
@@ -160,27 +139,34 @@ fn beforeRenderSubmitHook(surface: *Surface) void {
     submit_hook_state.submit_calls += 1;
 }
 
-fn observeSubmitExecutionHook(_: *Surface, execution: *const render_retained.SubmitExecution) void {
-    submit_hook_state.last_execution = execution.*;
+fn observeSubmitSurfaceHook(_: *Surface, surface: render_retained.HostSurface) void {
+    submit_hook_state.last_surface = surface;
 }
 
 fn installSubmitHooks(mode: SubmitUploadMode) void {
     submit_hook_state.mode = mode;
     submit_hook_state.saw_unlocked = false;
     submit_hook_state.submit_observed_locked = false;
-    submit_hook_state.host_upload_calls = 0;
-    submit_hook_state.host_upload_had_matching_surface = false;
-    submit_hook_state.host_upload_render_px = .{ .width = 0, .height = 0 };
-    submit_hook_state.host_upload_surface_px = .{ .width = 0, .height = 0 };
     submit_hook_state.submit_calls = 0;
-    submit_hook_state.last_execution = std.mem.zeroes(render_retained.SubmitExecution);
+    submit_hook_state.last_surface = std.mem.zeroes(render_retained.HostSurface);
     submit_hook_state.expected_info = std.mem.zeroes(render_retained.PreparedInfo);
     submit_hook_state.expected_surface = std.mem.zeroes(render_c.HowlRenderSurfaceFrame);
     surface_testing.installHooks(.{
-        .upload_render_surface = uploadRenderSurfaceHook,
         .before_render_submit = beforeRenderSubmitHook,
-        .observe_submit_execution = observeSubmitExecutionHook,
+        .observe_submit_surface = observeSubmitSurfaceHook,
     });
+}
+
+fn renderUpload(surface: *Surface, ready: bool) !Surface.PreparedSurface {
+    const turn = surface.renderTurn(ready);
+    try std.testing.expectEqual(Surface.TurnStep.idle_submit, turn.step);
+    return turn.upload orelse error.TestUnexpectedResult;
+}
+
+fn submitRendered(surface: *Surface, mode: SubmitUploadMode) !surface_testing.SubmitPreparedResult {
+    const prepared = try renderUpload(surface, false);
+    const uploaded = uploadedSurface(surface, prepared, mode);
+    return surface_testing.submitUploaded(surface, uploaded);
 }
 
 fn makeSubmitSurface() !Surface {
@@ -391,10 +377,8 @@ test "cursor activity pushes blink deadline while visible" {
         .term = undefined,
         .progress = .{},
         .live = false,
-        .term_texture = .{ .host_surface_id = 0, .width = 0, .height = 0 },
         .surface_present_trigger = .{},
-        .render_surface_textures = .{},
-        .conf = undefined,
+        .conf = &test_terminal_conf,
         .input = undefined,
         .event_loop = undefined,
         .surface_layout = undefined,
@@ -468,241 +452,48 @@ test "retained submit failure stays on failed retained path until refreshed" {
     defer surface_testing.resetHooks();
     try prepareSubmitSurface(&surface, 61);
 
-    const submit = surface_testing.submitPrepared(&surface);
+    const submit = try submitRendered(&surface, .fail);
 
     try std.testing.expectEqual(render_retained.SubmitResult.failed, submit.result);
     try std.testing.expectEqual(render_retained.RetainedState.failed, surface.term.render.retainedState());
 }
 
-fn testPreparedUploadInfo() render_retained.PreparedInfo {
-    return .{
-        .snapshot_seq = 51,
-        .render_px = .{ .width = 2, .height = 1 },
-    };
-}
-
-const TestResizeOperation = enum {
-    resize,
-    layout_commit,
-    host_upload,
-    host_present_submit,
-    wrong_present_complete,
-    matching_present_complete,
-};
-
-const TestRenderOperation = enum {
-    layout_sync,
-    prepare,
-    prepared_upload,
-    submit,
-    present_submitted,
-    present_completed,
-};
-
-const TestSubmitRender = struct {
-    submit_calls: u8 = 0,
-    submit_observed_locked: bool = false,
-    last_execution: render_retained.SubmitExecution = std.mem.zeroes(render_retained.SubmitExecution),
-    mutex: ?*FairMutex = null,
-    prepared_surface: render_retained.PreparedHandle = null,
-    layout_epoch: u64 = 1,
-    present_in_flight: ?struct { snapshot_seq: u64, token: u64 } = null,
-    render_px: render_c.HowlRenderPixelSize = .{ .width = 2, .height = 1 },
-    prepared_info: render_retained.PreparedInfo = testPreparedUploadInfo(),
-    surface_frame: render_c.HowlRenderSurfaceFrame = testRenderSurface(testPreparedUploadInfo()),
-    operations: [8]TestRenderOperation = undefined,
-    operation_count: u8 = 0,
-
-    fn record(self: *@This(), operation: TestRenderOperation) void {
-        std.debug.assert(self.operation_count < self.operations.len);
-        self.operations[self.operation_count] = operation;
-        self.operation_count += 1;
-    }
-
-    fn syncTestLayout(self: *@This(), surface_px: render_c.HowlRenderPixelSize) void {
-        std.debug.assert(surface_px.width > 0);
-        std.debug.assert(surface_px.height > 0);
-        self.record(.layout_sync);
-        self.layout_epoch += 1;
-        self.render_px = surface_px;
-    }
-
-    fn prepareTestSurface(self: *@This()) void {
-        self.record(.prepare);
-        self.prepared_info = testPreparedUploadInfo();
-        self.prepared_info.snapshot_seq = 52;
-        self.prepared_info.render_px = self.render_px;
-        self.surface_frame = testRenderSurface(self.prepared_info);
-    }
-
-    pub fn preparedUpload(self: *@This(), upload: *render_retained.PreparedUpload) bool {
-        self.record(.prepared_upload);
-        upload.* = .{
-            .info = self.prepared_info,
-            .surface_frame_status = .invalid,
-            .surface_frame = &self.surface_frame,
-        };
-        return true;
-    }
-
-    pub fn preparedSurfaceHandle(self: *@This()) render_retained.PreparedHandle {
-        return self.prepared_surface;
-    }
-
-    pub fn presentPending(self: *@This()) bool {
-        return self.present_in_flight != null;
-    }
-
-    pub fn submit(self: *@This(), execution: *const render_retained.SubmitExecution, result: *render_retained.SubmitOutput) render_retained.SubmitResult {
-        self.record(.submit);
-        self.submit_calls += 1;
-        self.last_execution = execution.*;
-        if (self.mutex) |mutex| {
-            const relock_probe = mutex.tryLockUnfair();
-            if (relock_probe) mutex.unlock();
-            self.submit_observed_locked = !relock_probe;
-        }
-        result.* = .{ .host_surface = execution.host_surface };
-        return .rendered;
-    }
-
-    pub fn notePresentSubmitted(self: *@This(), snapshot_seq: u64, token: u64) void {
-        std.debug.assert(snapshot_seq != 0);
-        std.debug.assert(token != 0);
-        std.debug.assert(self.present_in_flight == null);
-        self.record(.present_submitted);
-        self.present_in_flight = .{ .snapshot_seq = snapshot_seq, .token = token };
-    }
-
-    pub fn completePresent(self: *@This(), token: u64) ?u64 {
-        const present = self.present_in_flight orelse return null;
-        if (present.token != token) return null;
-        self.record(.present_completed);
-        self.present_in_flight = null;
-        return present.snapshot_seq;
-    }
-};
-
-fn testRenderSurface(info: render_retained.PreparedInfo) render_c.HowlRenderSurfaceFrame {
-    var surface = std.mem.zeroes(render_c.HowlRenderSurfaceFrame);
-    surface.token = .{
-        .snapshot_seq = info.snapshot_seq,
-        .frame_seq = info.snapshot_seq,
-        .layout_epoch = 1,
-        .resource_epoch = 0,
-    };
-    surface.render_px = info.render_px;
-    surface.cell_px = .{ .width = 1, .height = 1 };
-    surface.grid = .{ .cols = info.render_px.width, .rows = info.render_px.height };
-    return surface;
-}
-
-const TestSubmitTerm = struct {
-    mutex: FairMutex = .{},
-    render: TestSubmitRender = .{},
-};
-
-const TestSubmitContext = struct {
-    term: TestSubmitTerm = .{},
-    term_texture: render_c.HowlRenderHostSurface = .{
-        .host_surface_id = 1,
-        .width = 2,
-        .height = 1,
-    },
-    surface_layout: surface_layout.SurfaceResize = surface_layout.init(2, 1, 2, 1),
-    scrollbar: terminal_scrollbar.State = .{},
-    host_upload_calls: u8 = 0,
-    host_upload_had_matching_surface: bool = false,
-    host_upload_render_px: render_c.HowlRenderPixelSize = .{ .width = 0, .height = 0 },
-    host_upload_surface_px: render_c.HowlRenderPixelSize = .{ .width = 0, .height = 0 },
-    operations: [8]TestResizeOperation = undefined,
-    operation_count: u8 = 0,
-
-    fn record(self: *@This(), operation: TestResizeOperation) void {
-        std.debug.assert(self.operation_count < self.operations.len);
-        self.operations[self.operation_count] = operation;
-        self.operation_count += 1;
-    }
-
-    fn resizeForTest(self: *@This(), render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {
-        self.record(.resize);
-        surface_layout.resize(&self.surface_layout, &self.scrollbar, render_width, render_height, logical_width, logical_height);
-    }
-
-    fn commitLayoutForTest(self: *@This()) render_c.HowlRenderPixelSize {
-        self.record(.layout_commit);
-        const surface_px = blk: {
-            self.surface_layout.surface_px_w = self.surface_layout.pending_surface_px_w;
-            self.surface_layout.surface_px_h = self.surface_layout.pending_surface_px_h;
-            self.surface_layout.last_resize_ns = 0;
-            break :blk surface_layout.readSurfacePixelsLocked(&self.surface_layout);
-        };
-        self.term.render.syncTestLayout(surface_px);
-        return surface_px;
-    }
-};
-
-fn executionFromContext(context: *TestSubmitContext, prepared_upload: *const render_retained.PreparedUpload) render_retained.SubmitExecution {
-    return .{
-        .host_surface = .{
-            .host_surface_id = context.term_texture.host_surface_id,
-            .width = prepared_upload.info.render_px.width,
-            .height = prepared_upload.info.render_px.height,
-        },
-    };
-}
-
-test "submit backend upload observes terminal mutex unlocked" {
+test "caller supplied upload observes terminal mutex unlocked" {
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
     installSubmitHooks(.success);
     defer surface_testing.resetHooks();
     try prepareSubmitSurface(&surface, 51);
 
-    const result = surface_testing.submitPrepared(&surface);
+    const result = try submitRendered(&surface, .success);
 
     try std.testing.expect(submit_hook_state.saw_unlocked);
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
 }
 
-test "render submit runs under terminal mutex after backend upload" {
+test "render submit runs under terminal mutex after caller upload" {
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
     installSubmitHooks(.success);
     defer surface_testing.resetHooks();
     try prepareSubmitSurface(&surface, 51);
 
-    const result = surface_testing.submitPrepared(&surface);
+    const result = try submitRendered(&surface, .success);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
     try std.testing.expect(submit_hook_state.submit_observed_locked);
+    try std.testing.expectEqual(@as(u64, 2), submit_hook_state.last_surface.host_surface_id);
 }
 
-test "context submit backend reports prepared upload count after upload succeeds" {
-    var surface = try makeSubmitSurface();
-    defer surface.term.render.deinit();
-    installSubmitHooks(.success);
-    defer surface_testing.resetHooks();
-    try prepareSubmitSurface(&surface, 51);
-
-    const result = surface_testing.submitPrepared(&surface);
-
-    try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
-    try std.testing.expectEqual(surface.term_texture.host_surface_id, submit_hook_state.last_execution.host_surface.host_surface_id);
-    try std.testing.expectEqual(surface.term_texture.width, submit_hook_state.last_execution.host_surface.width);
-    try std.testing.expectEqual(surface.term_texture.height, submit_hook_state.last_execution.host_surface.height);
-}
-
-test "host upload failure returns failed submit without render submit" {
+test "caller upload failure returns failed submit without render submit" {
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
     installSubmitHooks(.fail);
     defer surface_testing.resetHooks();
     try prepareSubmitSurface(&surface, 51);
 
-    const result = surface_testing.submitPrepared(&surface);
+    const result = try submitRendered(&surface, .fail);
 
     try std.testing.expect(submit_hook_state.saw_unlocked);
     try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
@@ -711,14 +502,14 @@ test "host upload failure returns failed submit without render submit" {
     try std.testing.expectEqual(render_retained.RetainedState.failed, surface.term.render.retainedState());
 }
 
-test "prepared handle mutation after upload returns stale and restores prepare-needed state" {
+test "prepared handle mutation after caller upload returns stale and restores prepare-needed state" {
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
     installSubmitHooks(.mutate_handle);
     defer surface_testing.resetHooks();
     try prepareSubmitSurface(&surface, 51);
 
-    const result = surface_testing.submitPrepared(&surface);
+    const result = try submitRendered(&surface, .mutate_handle);
 
     try std.testing.expect(submit_hook_state.saw_unlocked);
     try std.testing.expectEqual(render_retained.SubmitResult.stale, result.result);
@@ -752,21 +543,13 @@ test "resize success path submits full surface and acks matching present token" 
     try std.testing.expectEqual(info.render_px.width, prepared_surface.render_px.width);
     try std.testing.expectEqual(info.render_px.height, prepared_surface.render_px.height);
 
-    const submit = surface_testing.submitPrepared(&surface);
+    const submit = try submitRendered(&surface, .success);
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, submit.result);
     try std.testing.expectEqual(info.snapshot_seq, submit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
-    try std.testing.expect(!submit_hook_state.host_upload_had_matching_surface);
-    try std.testing.expectEqual(info.render_px.width, submit_hook_state.host_upload_render_px.width);
-    try std.testing.expectEqual(info.render_px.height, submit_hook_state.host_upload_render_px.height);
-    try std.testing.expectEqual(info.render_px.width, submit_hook_state.host_upload_surface_px.width);
-    try std.testing.expectEqual(info.render_px.height, submit_hook_state.host_upload_surface_px.height);
-    try std.testing.expectEqual(info.render_px.width, surface.term_texture.width);
-    try std.testing.expectEqual(info.render_px.height, surface.term_texture.height);
-    try std.testing.expectEqual(info.render_px.width, submit_hook_state.last_execution.host_surface.width);
-    try std.testing.expectEqual(info.render_px.height, submit_hook_state.last_execution.host_surface.height);
+    try std.testing.expectEqual(info.render_px.width, submit_hook_state.last_surface.width);
+    try std.testing.expectEqual(info.render_px.height, submit_hook_state.last_surface.height);
 
     const token: u64 = 900;
     surface.notePresentSubmitted(submit.snapshot_seq, token);
@@ -789,234 +572,6 @@ test "resize success path submits full surface and acks matching present token" 
     try std.testing.expectEqual(@as(u8, 1), completion_count);
     try std.testing.expectEqual(submit.snapshot_seq, ack_snapshot_seq);
     try std.testing.expect(!surface.term.render.presentPending());
-}
-
-test "resize upload failure zeros host dimensions and retry submits same full frame" {
-    var surface = try makeSubmitSurface();
-    defer surface.term.render.deinit();
-    installSubmitHooks(.fail_zero_dimensions);
-    defer surface_testing.resetHooks();
-
-    try std.testing.expectEqual(@as(u16, 2), surface.term_texture.width);
-    try std.testing.expectEqual(@as(u16, 1), surface.term_texture.height);
-    const surface_px = try resizeSubmitSurface(&surface, 4, 2);
-    try std.testing.expectEqual(@as(u16, 4), surface_px.width);
-    try std.testing.expectEqual(@as(u16, 2), surface_px.height);
-
-    try prepareSubmitSurface(&surface, 52);
-    const info = submit_hook_state.expected_info;
-    const prepared_surface = submit_hook_state.expected_surface;
-    try std.testing.expectEqual(@as(u64, 1), info.snapshot_seq);
-    try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.snapshot_seq);
-    try std.testing.expectEqual(info.snapshot_seq, prepared_surface.token.frame_seq);
-    try std.testing.expectEqual(@as(u64, 3), prepared_surface.token.layout_epoch);
-    try std.testing.expectEqual(@as(u32, 1), prepared_surface.damage.count);
-    try std.testing.expectEqual(render_c.HOWL_RENDER_SURFACE_FRAME_DAMAGE_FULL, prepared_surface.damage.ptr[0].kind);
-
-    const failed_submit = surface_testing.submitPrepared(&surface);
-
-    try std.testing.expectEqual(render_retained.SubmitResult.failed, failed_submit.result);
-    try std.testing.expectEqual(info.snapshot_seq, failed_submit.snapshot_seq);
-    try std.testing.expectEqual(@as(u8, 0), submit_hook_state.submit_calls);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
-    try std.testing.expect(!submit_hook_state.host_upload_had_matching_surface);
-    try std.testing.expectEqual(info.render_px.width, submit_hook_state.host_upload_render_px.width);
-    try std.testing.expectEqual(info.render_px.height, submit_hook_state.host_upload_render_px.height);
-    try std.testing.expectEqual(info.render_px.width, submit_hook_state.host_upload_surface_px.width);
-    try std.testing.expectEqual(info.render_px.height, submit_hook_state.host_upload_surface_px.height);
-    try std.testing.expectEqual(@as(u16, 0), surface.term_texture.width);
-    try std.testing.expectEqual(@as(u16, 0), surface.term_texture.height);
-
-    installSubmitHooks(.success);
-    try recordExpectedPreparedUpload(&surface);
-    const retried_submit = surface_testing.submitPrepared(&surface);
-
-    try std.testing.expectEqual(render_retained.SubmitResult.rendered, retried_submit.result);
-    try std.testing.expectEqual(info.snapshot_seq, retried_submit.snapshot_seq);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
-    try std.testing.expect(!submit_hook_state.host_upload_had_matching_surface);
-    try std.testing.expectEqual(info.render_px.width, surface.term_texture.width);
-    try std.testing.expectEqual(info.render_px.height, surface.term_texture.height);
-    try std.testing.expectEqual(info.render_px.width, submit_hook_state.last_execution.host_surface.width);
-    try std.testing.expectEqual(info.render_px.height, submit_hook_state.last_execution.host_surface.height);
-}
-
-test "resize while present pending waits for matching ack before resized submit" {
-    var completion_count: u8 = 0;
-    var ack_snapshot_seq: u64 = 0;
-    var surface = try makeSubmitSurface();
-    defer surface.term.render.deinit();
-    installSubmitHooks(.success);
-    defer surface_testing.resetHooks();
-    try prepareSubmitSurface(&surface, 51);
-
-    const prior_submit = surface_testing.submitPrepared(&surface);
-
-    try std.testing.expectEqual(render_retained.SubmitResult.rendered, prior_submit.result);
-    try std.testing.expectEqual(@as(u64, 1), prior_submit.snapshot_seq);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-
-    const prior_token: u64 = 900;
-    surface.notePresentSubmitted(prior_submit.snapshot_seq, prior_token);
-    try std.testing.expect(surface.term.render.presentPending());
-
-    const surface_px = try resizeSubmitSurface(&surface, 4, 2);
-    try std.testing.expectEqual(@as(u16, 4), surface_px.width);
-    try std.testing.expectEqual(@as(u16, 2), surface_px.height);
-    try std.testing.expectEqual(@as(u64, 3), surface.term.render.layout_epoch);
-
-    try prepareSubmitSurface(&surface, 52);
-    try std.testing.expectEqual(@as(u64, 2), submit_hook_state.expected_info.snapshot_seq);
-    try std.testing.expectEqual(@as(u64, 3), submit_hook_state.expected_surface.token.layout_epoch);
-
-    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.admitRenderTurn(false).state);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
-
-    if (surface.term.render.completePresent(prior_token + 1)) |snapshot_seq| {
-        completion_count += 1;
-        ack_snapshot_seq = snapshot_seq;
-    }
-    try std.testing.expectEqual(@as(u8, 0), completion_count);
-    try std.testing.expect(surface.term.render.presentPending());
-    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.admitRenderTurn(false).state);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-
-    if (surface.term.render.completePresent(prior_token)) |snapshot_seq| {
-        completion_count += 1;
-        ack_snapshot_seq = snapshot_seq;
-    }
-    try std.testing.expectEqual(@as(u8, 1), completion_count);
-    try std.testing.expectEqual(prior_submit.snapshot_seq, ack_snapshot_seq);
-    try std.testing.expect(!surface.term.render.presentPending());
-
-    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, surface.term.render.admitRenderTurn(false).state);
-
-    installSubmitHooks(.success);
-    try recordExpectedPreparedUpload(&surface);
-    const resized_submit = surface_testing.submitPrepared(&surface);
-
-    try std.testing.expectEqual(render_retained.SubmitResult.rendered, resized_submit.result);
-    try std.testing.expectEqual(@as(u64, 2), resized_submit.snapshot_seq);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
-    try std.testing.expect(!submit_hook_state.host_upload_had_matching_surface);
-    try std.testing.expectEqual(@as(u16, 6), surface.term_texture.width);
-    try std.testing.expectEqual(@as(u16, 12), surface.term_texture.height);
-}
-
-test "cursor visibility change while present pending submits latest snapshot after stale completion retires" {
-    var completion_count: u8 = 0;
-    var ack_snapshot_seq: u64 = 0;
-    var surface = try makeSubmitSurface();
-    defer surface.term.render.deinit();
-    installSubmitHooks(.success);
-    defer surface_testing.resetHooks();
-    try prepareSubmitSurfaceWithCursor(&surface, 51, true);
-
-    const prior_submit = surface_testing.submitPrepared(&surface);
-
-    try std.testing.expectEqual(render_retained.SubmitResult.rendered, prior_submit.result);
-    try std.testing.expectEqual(@as(u64, 1), prior_submit.snapshot_seq);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-
-    const prior_token: u64 = 900;
-    surface.notePresentSubmitted(prior_submit.snapshot_seq, prior_token);
-    try std.testing.expect(surface.term.render.presentPending());
-
-    try prepareSubmitSurfaceWithCursor(&surface, 52, false);
-    try std.testing.expectEqual(@as(u64, 2), submit_hook_state.expected_info.snapshot_seq);
-    try std.testing.expectEqual(render_retained.RetainedState.present_in_flight, surface.term.render.admitRenderTurn(false).state);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-
-    if (surface.term.render.completePresent(prior_token + 1)) |snapshot_seq| {
-        completion_count += 1;
-        ack_snapshot_seq = snapshot_seq;
-    }
-    try std.testing.expectEqual(@as(u8, 0), completion_count);
-    try std.testing.expect(surface.term.render.presentPending());
-
-    if (surface.term.render.completePresent(prior_token)) |snapshot_seq| {
-        completion_count += 1;
-        ack_snapshot_seq = snapshot_seq;
-    }
-    try std.testing.expectEqual(@as(u8, 1), completion_count);
-    try std.testing.expectEqual(@as(u64, 1), ack_snapshot_seq);
-    try std.testing.expect(!surface.term.render.presentPending());
-    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, surface.term.render.admitRenderTurn(false).state);
-
-    installSubmitHooks(.success);
-    try recordExpectedPreparedUpload(&surface);
-    const latest_submit = surface_testing.submitPrepared(&surface);
-
-    try std.testing.expectEqual(render_retained.SubmitResult.rendered, latest_submit.result);
-    try std.testing.expectEqual(@as(u64, 2), latest_submit.snapshot_seq);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.host_upload_calls);
-}
-
-test "terminal frame follows finite frame wait after pty-driven submit without further input" {
-    const PresentTab = struct {
-        surface: *Surface,
-
-        pub fn notePresentSubmitted(self: *@This(), snapshot_seq: u64, token: u64) void {
-            self.surface.notePresentSubmitted(snapshot_seq, token);
-        }
-
-        pub fn completePresent(self: *@This(), token: u64) void {
-            _ = self.surface.term.render.completePresent(token);
-        }
-    };
-    const FakePresenter = struct {
-        next_token: u64 = 900,
-
-        pub fn submitPresentSync(self: *@This(), _: anytype) u64 {
-            self.next_token += 1;
-            return self.next_token;
-        }
-    };
-    var surface = try makeSubmitSurface();
-    defer surface.term.render.deinit();
-    installSubmitHooks(.success);
-    defer surface_testing.resetHooks();
-    var tab = PresentTab{ .surface = &surface };
-    var presenter = FakePresenter{};
-
-    try prepareSubmitSurface(&surface, 51);
-    const wake_wait = event_mod.testing.computeLoopWaitFromTrigger(1_000, false, true, false, null, .{
-        .surface_present_triggered = true,
-    });
-    try std.testing.expect(!wake_wait.wait_for_window);
-    try std.testing.expectEqual(@as(?u32, null), wake_wait.wait_ms);
-
-    const first_turn = surface.renderTurn();
-    try std.testing.expectEqual(Surface.TurnStep.rendered, first_turn.step);
-    const first_reason = event_mod.testing.derivePresentReason(false, false, first_turn.step);
-    try std.testing.expectEqual(@as(@TypeOf(first_reason), .terminal_frame), first_reason);
-    const first_token = presenter.submitPresentSync(.{});
-    tab.notePresentSubmitted(first_turn.present_snapshot_seq, first_token);
-    tab.completePresent(first_token);
-    try std.testing.expect(!surface.term.render.presentPending());
-    try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-
-    try prepareSubmitSurface(&surface, 52);
-    const next_admission = surface.term.render.admitRenderTurn(false);
-    try std.testing.expectEqual(render_retained.RetainedState.submit_ready, next_admission.state);
-    const resumed_wait = event_mod.testing.computeLoopWaitFromTrigger(17_001_000, false, true, next_admission.needsRenderTurn(), null, .{
-        .surface_present_triggered = false,
-    });
-    try std.testing.expect(!resumed_wait.wait_for_window);
-    try std.testing.expectEqual(@as(?u32, null), resumed_wait.wait_ms);
-
-    const second_turn = surface.renderTurn();
-    try std.testing.expectEqual(Surface.TurnStep.rendered, second_turn.step);
-    const second_reason = event_mod.testing.derivePresentReason(false, false, second_turn.step);
-    try std.testing.expectEqual(@as(@TypeOf(second_reason), .terminal_frame), second_reason);
-    const second_token = presenter.submitPresentSync(.{});
-    tab.notePresentSubmitted(second_turn.present_snapshot_seq, second_token);
-    tab.completePresent(second_token);
-    try std.testing.expectEqual(@as(u8, 2), submit_hook_state.submit_calls);
 }
 
 test "autonomous cursor-only rendered snapshot plans terminal frame through event present seam" {

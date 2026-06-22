@@ -35,6 +35,7 @@ test {
     _ = Texture.frame;
     _ = Texture.egl_swap;
     _ = Texture.scroll_bar;
+    _ = Texture.surface;
     _ = Texture.tab_bar;
     _ = @import("tab_bar.zig").cell_surface;
     _ = @import("tab_bar.zig").surface;

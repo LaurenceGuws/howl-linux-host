@@ -4,9 +4,10 @@ const render_c = @import("howl_render_c");
 const frame_commands = @import("frame_commands.zig");
 const frame_resources = @import("frame_resources.zig");
 
-// Terminal texture owns terminal render-surface GL uploads and host-side texture resources on the
-// main/window control spine. It does not own cross-thread surface-present triggers; term instances
-// own that wake edge, proving texture helpers cannot smuggle scheduling or presentation policy.
+// Term texture presenter owns one `surface.Type.term` GL upload/resource slot on the main/window
+// texture control spine. It does not own terminal instance state, surface-present wake, layout
+// placement, present submission, or frame cadence; callers borrow this slot from the window texture
+// owner and keep PTY/VT/render internals outside texture.
 pub const RenderResourceTextures = frame_resources.RenderResourceTextures;
 pub const RenderSurfaceClass = frame_commands.RenderSurfaceClass;
 pub const classifyRenderSurface = frame_commands.classifyRenderSurface;
@@ -16,6 +17,26 @@ pub const renderSurfaceSprite = frame_commands.renderSurfaceSprite;
 pub const renderSurfaceSpritePatch = frame_commands.renderSurfaceSpritePatch;
 pub const renderSurfaceGlyphs = frame_commands.renderSurfaceGlyphs;
 pub const renderSurfaceGlyphPatch = frame_commands.renderSurfaceGlyphPatch;
+
+pub const Presenter = struct {
+    host_surface: render_c.HowlRenderHostSurface = .{ .host_surface_id = 0, .width = 0, .height = 0 },
+    resources: RenderResourceTextures = .{},
+
+    pub fn deinit(self: *Presenter) void {
+        deleteTexture(&self.host_surface.host_surface_id);
+        self.resources.deinit();
+        self.host_surface.width = 0;
+        self.host_surface.height = 0;
+    }
+
+    pub fn upload(self: *Presenter, surface: *const render_c.HowlRenderSurfaceFrame) bool {
+        return uploadRenderSurface(&self.resources, &self.host_surface, surface);
+    }
+
+    pub fn hostSurface(self: *const Presenter) render_c.HowlRenderHostSurface {
+        return self.host_surface;
+    }
+};
 
 pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurfaceFrame) bool {
     std.debug.assert(surface.render_px.width > 0);

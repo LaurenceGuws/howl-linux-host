@@ -243,6 +243,11 @@ pub const State = struct {
         return .rendered;
     }
 
+    pub fn submitWithHostSurface(self: *State, surface: HostSurface, result: *SubmitOutput) SubmitResult {
+        const execution: SubmitExecution = .{ .host_surface = surface };
+        return self.submit(&execution, result);
+    }
+
     pub fn preparedUpload(self: *State, upload_out: *PreparedUpload) bool {
         const surface = self.prepared_surface orelse {
             upload_out.* = .{

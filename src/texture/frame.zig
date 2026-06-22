@@ -11,6 +11,12 @@ const std = @import("std");
 const tab_cell_surface = @import("../tab_bar/cell_surface.zig");
 const tab_bar_surface = @import("../tab_bar/surface.zig");
 const texture_tab_bar = @import("tab_bar.zig");
+const texture_term = @import("term.zig");
+
+// Current tab frames can expose at most two visible terminal panes. Keep this local to avoid a
+// texture->tab owner dependency while the dying bucket still sits under tab; if Tab.max_frame_panes
+// changes, this bound must move through an owner-true frame/pane contract instead of guessing here.
+pub const max_term_surfaces = 2;
 
 pub const C = struct {
     pub const SDL_GL_CONTEXT_MAJOR_VERSION = sdl_c.SDL_GL_CONTEXT_MAJOR_VERSION;
@@ -73,8 +79,12 @@ pub const PresentToken = u64;
 
 pub fn GenericState(comptime c: type) type {
     return struct {
+        // Window/main-thread texture owner for GL draw/present and surface-type presenter slots.
+        // The state owns GL resources and presenter orchestration only; PTY/VT/render internals,
+        // scheduler timers, layout placement, and frame cadence stay with their explicit owners.
         window: ?*c.SDL_Window,
         gl_context: ?c.SDL_GLContext,
+        term_surfaces: [max_term_surfaces]texture_term.Presenter,
         tab_texture_id: c_uint,
         tab_cache_valid: bool,
         tab_cache_w: c_int,
@@ -88,8 +98,35 @@ pub fn GenericState(comptime c: type) type {
         pub fn submitPresentSync(self: *@This(), frame: Layout.Frame) PresentToken {
             return submitFrameSync(C, self, frame);
         }
+
+        pub fn termPresenter(self: *@This(), id: Layout.pane.PaneId) *texture_term.Presenter {
+            const index = @intFromEnum(id);
+            std.debug.assert(index < self.term_surfaces.len);
+            return &self.term_surfaces[index];
+        }
+
+        pub fn termTextureId(self: *const @This(), id: Layout.pane.PaneId) u32 {
+            const index = @intFromEnum(id);
+            std.debug.assert(index < self.term_surfaces.len);
+            return @intCast(self.term_surfaces[index].host_surface.host_surface_id);
+        }
+
+        pub fn termSurfaceReady(self: *const @This(), id: Layout.pane.PaneId) bool {
+            return self.termTextureId(id) != 0;
+        }
+
+        pub fn uploadTermSurface(self: *@This(), id: Layout.pane.PaneId, surface: *const render_c.HowlRenderSurfaceFrame) TermUpload {
+            const presenter = self.termPresenter(id);
+            const ok = presenter.upload(surface);
+            return .{ .surface = presenter.hostSurface(), .ok = ok };
+        }
     };
 }
+
+pub const TermUpload = struct {
+    surface: render_c.HowlRenderHostSurface,
+    ok: bool,
+};
 
 pub fn flags(comptime c: type) c_uint {
     return @intCast(c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_OPENGL);
@@ -99,6 +136,7 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window, ta
     state.* = .{
         .window = handle,
         .gl_context = null,
+        .term_surfaces = [_]texture_term.Presenter{.{}} ** max_term_surfaces,
         .tab_texture_id = 0,
         .tab_cache_valid = false,
         .tab_cache_w = 0,
@@ -117,12 +155,13 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window, ta
     state.gl_context = ctx;
     _ = c.SDL_GL_MakeCurrent(handle, ctx);
     _ = c.SDL_GL_SetSwapInterval(0);
-    try initTabText(state, tab_text_config);
+    try initTabText(c, state, tab_text_config);
 }
 
 pub fn deinit(comptime c: type, state: *GenericState(c)) void {
     if (state.tab_text_handle) |handle| render_c.howl_render_text_deinit(handle);
     state.tab_text_handle = null;
+    for (&state.term_surfaces) |*presenter| presenter.deinit();
     state.tab_resources.deinit();
     releaseTabCache(c, state);
     if (state.gl_context) |ctx| {
@@ -192,20 +231,20 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int
     } else {
         c.glCopyTexSubImage2D(c.GL_TEXTURE_2D, 0, 0, 0, 0, fb_h - bar_h, fb_w, bar_h);
     }
-    uploadTabTextSurface(state, fb_w, bar_h, frame);
+    uploadTabTextSurface(c, state, fb_w, bar_h, frame);
     state.tab_cache_valid = true;
     state.tab_cache_w = fb_w;
     state.tab_cache_h = bar_h;
     state.tab_cache_revision = frame.tab_bar_revision;
 }
 
-fn initTabText(state: anytype, config: *const render_c.HowlRenderTextConfig) !void {
+fn initTabText(comptime c: type, state: *GenericState(c), config: *const render_c.HowlRenderTextConfig) !void {
     var handle: render_c.HowlRenderTextHandle = null;
     if (render_c.howl_render_text_init(&handle, config) != render_c.HOWL_RENDER_CALL_OK) return error.TabTextInitFailed;
     state.tab_text_handle = handle;
 }
 
-fn uploadTabTextSurface(state: anytype, fb_w: c_int, bar_h: c_int, frame: Layout.Frame) void {
+fn uploadTabTextSurface(comptime c: type, state: *GenericState(c), fb_w: c_int, bar_h: c_int, frame: Layout.Frame) void {
     const handle = state.tab_text_handle orelse return;
     const tab_layout = tab_cell_surface.layout(frame.tab_bar_font_size_px, fb_w, bar_h);
     texture_tab_bar.writeCells(&state.tab_surface, frame, tab_layout.visible_cells);
@@ -362,6 +401,7 @@ fn testState() GenericState(FakeC) {
     return .{
         .window = @ptrFromInt(1),
         .gl_context = null,
+        .term_surfaces = [_]texture_term.Presenter{.{}} ** max_term_surfaces,
         .tab_texture_id = 0,
         .tab_cache_valid = false,
         .tab_cache_w = 0,

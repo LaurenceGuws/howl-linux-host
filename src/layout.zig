@@ -3,6 +3,7 @@ const std = @import("std");
 const PresentDamage = @import("texture/egl_swap.zig").Damage;
 const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 const HostInput = @import("input.zig").Input;
+const terminal_scrollbar = @import("scroll_bar.zig");
 
 pub const window = @import("layout/window.zig");
 pub const tab = @import("layout/tab.zig");
@@ -43,6 +44,52 @@ pub const Frame = struct {
     tab_labels: []const []const u8,
     damage: PresentDamage,
 };
+
+pub const PaneFrameFacts = struct {
+    id: pane.PaneId,
+    term_texture_size: Size,
+    scroll_view: terminal_scrollbar.View,
+    logical_width: c_int,
+    logical_height: c_int,
+    window_focused: bool,
+    scrollbar_state: *terminal_scrollbar.State,
+};
+
+pub const PaneTexture = struct {
+    id: pane.PaneId,
+    id_value: u32,
+};
+
+pub fn framePanes(tab_body: tab.Body, split_tree: splits.Tree, facts: []const PaneFrameFacts, textures: []const PaneTexture, out: []FramePane) []FramePane {
+    // Layout owns presentable frame snapshot construction: active tab callers provide runtime facts
+    // and texture ids, while layout owns pane placement, scrollbar placement, and frame readiness facts.
+    std.debug.assert(facts.len <= out.len);
+    std.debug.assert(facts.len <= textures.len);
+    var placements_buf: [2]pane.Placement = undefined;
+    std.debug.assert(facts.len <= placements_buf.len);
+    const placements = tab.placePanes(tab_body, split_tree, placements_buf[0..]);
+    std.debug.assert(placements.len >= facts.len);
+
+    for (facts, 0..) |fact, i| {
+        std.debug.assert(textures[i].id == fact.id);
+        const placement = placementForPane(placements, fact.id);
+        const terminal = pane.terminal(placement, fact.term_texture_size);
+        const bar = terminal_scrollbar.placeScrollbar(fact.scrollbar_state, terminal.texture_rect, fact.scroll_view, fact.logical_width, fact.logical_height, fact.window_focused);
+        out[i] = .{
+            .id = fact.id,
+            .term_texture_id = textures[i].id_value,
+            .term_texture_rect = terminal.texture_rect,
+            .scrollbar = bar,
+            .scroll_chip = terminal_scrollbar.placeScrollChip(fact.scrollbar_state, terminal.texture_rect, fact.scroll_view, fact.logical_width, fact.logical_height, fact.window_focused),
+        };
+    }
+    return out[0..facts.len];
+}
+
+fn placementForPane(placements: []const pane.Placement, id: pane.PaneId) pane.Placement {
+    for (placements) |placement| if (placement.id == id) return placement;
+    unreachable;
+}
 
 pub fn contentPixelSize(app_window: anytype, tab_bar_height: u32) Size {
     return .{
