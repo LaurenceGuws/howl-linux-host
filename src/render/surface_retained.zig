@@ -93,14 +93,14 @@ pub const HostCursorCadence = extern struct {
     now_ns: u64,
 };
 
-pub const HostSurface = c.HowlRenderHostSurface;
+pub const TermSurface = c.HowlRenderTermSurface;
 
 pub const SubmitExecution = struct {
-    host_surface: HostSurface,
+    term_surface: TermSurface,
 };
 
 pub const SubmitOutput = struct {
-    host_surface: HostSurface = .{ .host_surface_id = 0, .width = 0, .height = 0 },
+    term_surface: TermSurface = .{ .term_surface_id = 0, .width = 0, .height = 0 },
 };
 
 pub const PreparedHandle = ?*const c.HowlRenderSurfaceFrame;
@@ -232,19 +232,19 @@ pub const State = struct {
 
     pub fn submit(self: *State, execution: *const SubmitExecution, result: *SubmitOutput) SubmitResult {
         if (self.text_handle) |handle| {
-            if (c.howl_render_text_submit(handle, execution.host_surface, &result.host_surface) != c.HOWL_RENDER_CALL_OK) return .failed;
+            if (c.howl_render_text_submit_term_surface(handle, execution.term_surface, &result.term_surface) != c.HOWL_RENDER_CALL_OK) return .failed;
             self.prepared_surface = null;
             self.retained_state = .idle;
             return .rendered;
         }
-        result.host_surface = execution.host_surface;
+        result.term_surface = execution.term_surface;
         self.prepared_surface = null;
         self.retained_state = .idle;
         return .rendered;
     }
 
-    pub fn submitWithHostSurface(self: *State, surface: HostSurface, result: *SubmitOutput) SubmitResult {
-        const execution: SubmitExecution = .{ .host_surface = surface };
+    pub fn submitWithTermSurface(self: *State, term_surface: TermSurface, result: *SubmitOutput) SubmitResult {
+        const execution: SubmitExecution = .{ .term_surface = term_surface };
         return self.submit(&execution, result);
     }
 

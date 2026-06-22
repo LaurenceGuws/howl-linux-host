@@ -2,7 +2,7 @@ const std = @import("std");
 const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 
-const event_mod = @import("../events/event.zig");
+const host_present = @import("../host_present.zig");
 const host_layout = @import("../layout.zig");
 const surface_mod = @import("bucket2.zig");
 const cursor_blink = @import("../cursor/blink.zig");
@@ -13,6 +13,7 @@ const terminal_scrollbar = @import("../scroll_bar.zig");
 const term_config = @import("../config/term.zig");
 
 const Surface = surface_mod.Surface;
+const HowlTerm = @import("../term.zig").Term;
 const HostInput = @import("../input.zig").Input;
 const SurfaceLayout = render_retained.SurfaceLayout;
 const surface_testing = surface_mod.testing;
@@ -57,7 +58,7 @@ var submit_hook_state: struct {
     saw_unlocked: bool = false,
     submit_observed_locked: bool = false,
     submit_calls: u8 = 0,
-    last_surface: render_retained.HostSurface = std.mem.zeroes(render_retained.HostSurface),
+    last_term_surface: render_retained.TermSurface = std.mem.zeroes(render_retained.TermSurface),
     expected_info: render_retained.PreparedInfo = std.mem.zeroes(render_retained.PreparedInfo),
     expected_surface: render_c.HowlRenderSurfaceFrame = std.mem.zeroes(render_c.HowlRenderSurfaceFrame),
 } = .{};
@@ -121,26 +122,26 @@ fn uploadedSurface(surface: *Surface, prepared: Surface.PreparedSurface, mode: S
     switch (mode) {
         .mutate_handle => {
             surface.term.render.forgetPreparedSurfaceHandle();
-            return .{ .prepared = prepared, .surface = testUploadSurface(prepared), .ok = true };
+            return .{ .prepared = prepared, .term_surface = testUploadSurface(prepared), .ok = true };
         },
-        .success => return .{ .prepared = prepared, .surface = testUploadSurface(prepared), .ok = true },
-        .fail => return .{ .prepared = prepared, .surface = testUploadSurface(prepared), .ok = false },
+        .success => return .{ .prepared = prepared, .term_surface = testUploadSurface(prepared), .ok = true },
+        .fail => return .{ .prepared = prepared, .term_surface = testUploadSurface(prepared), .ok = false },
     }
 }
 
-fn testUploadSurface(prepared: Surface.PreparedSurface) render_retained.HostSurface {
-    return .{ .host_surface_id = 2, .width = prepared.render_px.width, .height = prepared.render_px.height };
+fn testUploadSurface(prepared: Surface.PreparedSurface) render_retained.TermSurface {
+    return .{ .term_surface_id = 2, .width = prepared.render_px.width, .height = prepared.render_px.height };
 }
 
-fn beforeRenderSubmitHook(surface: *Surface) void {
-    const relock_probe = surface.term.mutex.tryLockUnfair();
-    if (relock_probe) surface.term.mutex.unlock();
+fn beforeRenderSubmitHook(term: *HowlTerm) void {
+    const relock_probe = term.mutex.tryLockUnfair();
+    if (relock_probe) term.mutex.unlock();
     submit_hook_state.submit_observed_locked = !relock_probe;
     submit_hook_state.submit_calls += 1;
 }
 
-fn observeSubmitSurfaceHook(_: *Surface, surface: render_retained.HostSurface) void {
-    submit_hook_state.last_surface = surface;
+fn observeSubmitSurfaceHook(_: *HowlTerm, term_surface: render_retained.TermSurface) void {
+    submit_hook_state.last_term_surface = term_surface;
 }
 
 fn installSubmitHooks(mode: SubmitUploadMode) void {
@@ -148,7 +149,7 @@ fn installSubmitHooks(mode: SubmitUploadMode) void {
     submit_hook_state.saw_unlocked = false;
     submit_hook_state.submit_observed_locked = false;
     submit_hook_state.submit_calls = 0;
-    submit_hook_state.last_surface = std.mem.zeroes(render_retained.HostSurface);
+    submit_hook_state.last_term_surface = std.mem.zeroes(render_retained.TermSurface);
     submit_hook_state.expected_info = std.mem.zeroes(render_retained.PreparedInfo);
     submit_hook_state.expected_surface = std.mem.zeroes(render_c.HowlRenderSurfaceFrame);
     surface_testing.installHooks(.{
@@ -422,29 +423,6 @@ test "submit path runs once no host present is in flight" {
     try std.testing.expectEqual(render_retained.RetainedState.submit_ready, admission.state);
 }
 
-test "idle render action constructor reports decision facts" {
-    const result = surface_testing.idleDrive(.idle, .surface_idle);
-
-    try std.testing.expect(!result.prepared);
-    try std.testing.expectEqual(render_retained.RetainedState.idle, result.state_after);
-    try std.testing.expectEqual(Surface.TurnStep.surface_idle, result.step);
-    try std.testing.expectEqual(@as(u64, 0), result.present_snapshot_seq);
-}
-
-test "failed upload constructor reports failed snapshot" {
-    const result = surface_testing.failedUploadSubmit(77);
-
-    try std.testing.expectEqual(render_retained.SubmitResult.failed, result.result);
-    try std.testing.expectEqual(@as(u64, 77), result.snapshot_seq);
-}
-
-test "stale handle constructor reports failed snapshot" {
-    const result = surface_testing.stalePreparedUploadSubmit(88);
-
-    try std.testing.expectEqual(render_retained.SubmitResult.stale, result.result);
-    try std.testing.expectEqual(@as(u64, 88), result.snapshot_seq);
-}
-
 test "retained submit failure stays on failed retained path until refreshed" {
     var surface = try makeSubmitSurface();
     defer surface.term.render.deinit();
@@ -483,7 +461,7 @@ test "render submit runs under terminal mutex after caller upload" {
 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, result.result);
     try std.testing.expect(submit_hook_state.submit_observed_locked);
-    try std.testing.expectEqual(@as(u64, 2), submit_hook_state.last_surface.host_surface_id);
+    try std.testing.expectEqual(@as(u64, 2), submit_hook_state.last_term_surface.term_surface_id);
 }
 
 test "caller upload failure returns failed submit without render submit" {
@@ -548,8 +526,8 @@ test "resize success path submits full surface and acks matching present token" 
     try std.testing.expectEqual(render_retained.SubmitResult.rendered, submit.result);
     try std.testing.expectEqual(info.snapshot_seq, submit.snapshot_seq);
     try std.testing.expectEqual(@as(u8, 1), submit_hook_state.submit_calls);
-    try std.testing.expectEqual(info.render_px.width, submit_hook_state.last_surface.width);
-    try std.testing.expectEqual(info.render_px.height, submit_hook_state.last_surface.height);
+    try std.testing.expectEqual(info.render_px.width, submit_hook_state.last_term_surface.width);
+    try std.testing.expectEqual(info.render_px.height, submit_hook_state.last_term_surface.height);
 
     const token: u64 = 900;
     surface.notePresentSubmitted(submit.snapshot_seq, token);
@@ -575,110 +553,13 @@ test "resize success path submits full surface and acks matching present token" 
 }
 
 test "autonomous cursor-only rendered snapshot plans terminal frame through event present seam" {
-    const processor_testing = event_mod.testing;
+    const present_testing = host_present.testing;
 
-    const keydown_reason = processor_testing.derivePresentReason(false, false, .rendered);
+    const keydown_reason = present_testing.derivePresentReason(false, false, .rendered);
     try std.testing.expectEqual(@as(@TypeOf(keydown_reason), .terminal_frame), keydown_reason);
 
-    const autonomous_reason = processor_testing.derivePresentReason(false, true, .rendered);
+    const autonomous_reason = present_testing.derivePresentReason(false, true, .rendered);
     try std.testing.expectEqual(@as(@TypeOf(autonomous_reason), .terminal_frame), autonomous_reason);
-}
-
-test "complete present acks matching host-owned token once and clears" {
-    const FakeRender = struct {
-        present_in_flight: ?struct { snapshot_seq: u64, token: u64 } = .{ .snapshot_seq = 17, .token = 170 },
-
-        pub fn completePresent(self: *@This(), token: u64) ?u64 {
-            const present = self.present_in_flight orelse return null;
-            if (present.token != token) return null;
-            self.present_in_flight = null;
-            return present.snapshot_seq;
-        }
-    };
-    const FakeTerm = struct {
-        render: FakeRender = .{},
-    };
-    const FakeOps = struct {
-        var completion_count: u8 = 0;
-        var last_snapshot_seq: u64 = 0;
-
-        fn reset() void {
-            completion_count = 0;
-            last_snapshot_seq = 0;
-        }
-
-        pub fn ack(_: *FakeTerm, snapshot_seq: u64) void {
-            completion_count += 1;
-            last_snapshot_seq = snapshot_seq;
-        }
-    };
-
-    FakeOps.reset();
-    var term = FakeTerm{};
-
-    if (term.render.completePresent(170)) |snapshot_seq| {
-        FakeOps.completion_count += 1;
-        FakeOps.last_snapshot_seq = snapshot_seq;
-    }
-    try std.testing.expectEqual(@as(u8, 1), FakeOps.completion_count);
-    try std.testing.expectEqual(@as(u64, 17), FakeOps.last_snapshot_seq);
-    try std.testing.expect(term.render.present_in_flight == null);
-
-    if (term.render.completePresent(170)) |snapshot_seq| {
-        FakeOps.completion_count += 1;
-        FakeOps.last_snapshot_seq = snapshot_seq;
-    }
-    try std.testing.expectEqual(@as(u8, 1), FakeOps.completion_count);
-    try std.testing.expectEqual(@as(u64, 17), FakeOps.last_snapshot_seq);
-}
-
-test "mismatched complete present does not ack or clear" {
-    const FakeRender = struct {
-        present_in_flight: ?struct { snapshot_seq: u64, token: u64 } = .{ .snapshot_seq = 19, .token = 190 },
-
-        pub fn completePresent(self: *@This(), token: u64) ?u64 {
-            const present = self.present_in_flight orelse return null;
-            if (present.token != token) return null;
-            self.present_in_flight = null;
-            return present.snapshot_seq;
-        }
-    };
-    const FakeTerm = struct {
-        render: FakeRender = .{},
-    };
-    const FakeOps = struct {
-        var completion_count: u8 = 0;
-        var last_snapshot_seq: u64 = 0;
-
-        fn reset() void {
-            completion_count = 0;
-            last_snapshot_seq = 0;
-        }
-
-        pub fn ack(_: *FakeTerm, snapshot_seq: u64) void {
-            completion_count += 1;
-            last_snapshot_seq = snapshot_seq;
-        }
-    };
-
-    FakeOps.reset();
-    var term = FakeTerm{};
-
-    if (term.render.completePresent(191)) |snapshot_seq| {
-        FakeOps.completion_count += 1;
-        FakeOps.last_snapshot_seq = snapshot_seq;
-    }
-    try std.testing.expectEqual(@as(u8, 0), FakeOps.completion_count);
-    try std.testing.expectEqual(@as(u64, 0), FakeOps.last_snapshot_seq);
-    try std.testing.expect(term.render.present_in_flight != null);
-
-    if (term.render.completePresent(190)) |snapshot_seq| {
-        FakeOps.completion_count += 1;
-        FakeOps.last_snapshot_seq = snapshot_seq;
-    }
-    try std.testing.expectEqual(@as(u8, 1), FakeOps.completion_count);
-    try std.testing.expectEqual(@as(u64, 19), FakeOps.last_snapshot_seq);
-    try std.testing.expect(term.render.present_in_flight == null);
 }
 
 test "host cursor facts preserve explicit no-shape as visible no-draw truth" {

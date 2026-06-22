@@ -2,6 +2,7 @@ const std = @import("std");
 const cli = @import("cli.zig");
 const Config = @import("config.zig");
 const Events = @import("events.zig");
+const HostLoop = @import("host_loop.zig");
 const Input = @import("input.zig").Input;
 const Render = @import("render.zig");
 const TabBarUnit = @import("tab_bar.zig");
@@ -10,7 +11,7 @@ const window_icon = @import("window_icon.zig");
 const window = Events.window;
 
 const EventLoop = Events.event_loop;
-const Processor = Events.Processor;
+const Loop = HostLoop.Loop;
 const TabBar = TabBarUnit.TabBar;
 const TabSlots = TabBarUnit.tab_slots.Slots;
 const TextureFrame = Texture.frame;
@@ -94,7 +95,7 @@ noinline fn start(io: std.Io, options: Args) !void {
 
     applyChildEnvironmentPolicy();
 
-    var processor = Processor{
+    var loop = Loop{
         .conf = conf,
         .io = io,
         .window = app_window,
@@ -106,10 +107,10 @@ noinline fn start(io: std.Io, options: Args) !void {
         .event_loop = event_loop,
         .scheduler = Events.scheduler.Scheduler.init(),
     };
-    try processor.openTab();
-    processor.configureInputPolicies();
+    try loop.openTab();
+    loop.configureInputPolicies();
 
-    try processor.run();
+    try loop.run();
 }
 
 fn initVideo() !void {

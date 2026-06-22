@@ -19,51 +19,51 @@ pub const renderSurfaceGlyphs = frame_commands.renderSurfaceGlyphs;
 pub const renderSurfaceGlyphPatch = frame_commands.renderSurfaceGlyphPatch;
 
 pub const Presenter = struct {
-    host_surface: render_c.HowlRenderHostSurface = .{ .host_surface_id = 0, .width = 0, .height = 0 },
+    term_surface: render_c.HowlRenderTermSurface = .{ .term_surface_id = 0, .width = 0, .height = 0 },
     resources: RenderResourceTextures = .{},
 
     pub fn deinit(self: *Presenter) void {
-        deleteTexture(&self.host_surface.host_surface_id);
+        deleteTexture(&self.term_surface.term_surface_id);
         self.resources.deinit();
-        self.host_surface.width = 0;
-        self.host_surface.height = 0;
+        self.term_surface.width = 0;
+        self.term_surface.height = 0;
     }
 
     pub fn upload(self: *Presenter, surface: *const render_c.HowlRenderSurfaceFrame) bool {
-        return uploadRenderSurface(&self.resources, &self.host_surface, surface);
+        return uploadRenderSurface(&self.resources, &self.term_surface, surface);
     }
 
-    pub fn hostSurface(self: *const Presenter) render_c.HowlRenderHostSurface {
-        return self.host_surface;
+    pub fn submittedTermSurface(self: *const Presenter) render_c.HowlRenderTermSurface {
+        return self.term_surface;
     }
 };
 
-pub fn uploadRenderSurface(textures: *RenderResourceTextures, host_surface: *render_c.HowlRenderHostSurface, surface: *const render_c.HowlRenderSurfaceFrame) bool {
+pub fn uploadRenderSurface(textures: *RenderResourceTextures, term_surface: *render_c.HowlRenderTermSurface, surface: *const render_c.HowlRenderSurfaceFrame) bool {
     std.debug.assert(surface.render_px.width > 0);
     std.debug.assert(surface.render_px.height > 0);
-    const had_matching_texture = host_surface.host_surface_id != 0 and
-        host_surface.width == surface.render_px.width and
-        host_surface.height == surface.render_px.height;
+    const had_matching_term_surface = term_surface.term_surface_id != 0 and
+        term_surface.width == surface.render_px.width and
+        term_surface.height == surface.render_px.height;
     textures.syncRenderResources(surface);
-    ensureTexture(host_surface, surface.render_px.width, surface.render_px.height);
+    ensureTexture(term_surface, surface.render_px.width, surface.render_px.height);
     const class = frame_commands.classifyRenderSurface(surface) orelse std.debug.panic("trusted render surface has unsupported shape", .{});
-    frame_commands.assertRenderSurfacePatchHostSurface(class, had_matching_texture);
+    frame_commands.assertRenderSurfacePatchTermSurface(class, had_matching_term_surface);
     const surface_uploaded = switch (class) {
         .fill,
         .fill_patch,
-        => frame_commands.uploadFillCommands(host_surface.*, surface),
+        => frame_commands.uploadFillCommands(term_surface.*, surface),
         .sprite,
         .sprite_patch,
         .glyph,
         .glyph_patch,
         => blk: {
-            frame_commands.uploadRenderSurfaceCommands(textures, host_surface.*, surface);
+            frame_commands.uploadTermSurfaceCommands(textures, term_surface.*, surface);
             break :blk true;
         },
     };
     if (!surface_uploaded) {
-        host_surface.width = 0;
-        host_surface.height = 0;
+        term_surface.width = 0;
+        term_surface.height = 0;
         return false;
     }
     return true;
@@ -76,19 +76,19 @@ pub fn deleteTexture(surface_id: *u64) void {
     surface_id.* = 0;
 }
 
-pub fn ensureTexture(surface: *render_c.HowlRenderHostSurface, width: u16, height: u16) void {
+pub fn ensureTexture(term_surface: *render_c.HowlRenderTermSurface, width: u16, height: u16) void {
     std.debug.assert(width > 0);
     std.debug.assert(height > 0);
-    if (surface.host_surface_id != 0 and surface.width == width and surface.height == height) return;
-    if (surface.host_surface_id != 0) deleteTexture(&surface.host_surface_id);
-    surface.width = 0;
-    surface.height = 0;
+    if (term_surface.term_surface_id != 0 and term_surface.width == width and term_surface.height == height) return;
+    if (term_surface.term_surface_id != 0) deleteTexture(&term_surface.term_surface_id);
+    term_surface.width = 0;
+    term_surface.height = 0;
 
     var texture_id: c_uint = 0;
     gl_c.glGenTextures(1, &texture_id);
     if (texture_id == 0) panicGlBroken("glGenTextures returned zero for host texture", 0);
-    surface.host_surface_id = texture_id;
-    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(surface.host_surface_id));
+    term_surface.term_surface_id = texture_id;
+    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(term_surface.term_surface_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
     gl_c.glTexParameteri(gl_c.GL_TEXTURE_2D, gl_c.GL_TEXTURE_MIN_FILTER, gl_c.GL_NEAREST);
     gl_c.glTexParameteri(gl_c.GL_TEXTURE_2D, gl_c.GL_TEXTURE_MAG_FILTER, gl_c.GL_NEAREST);
@@ -107,13 +107,13 @@ pub fn ensureTexture(surface: *render_c.HowlRenderHostSurface, width: u16, heigh
     );
     const error_code = gl_c.glGetError();
     if (error_code != 0) {
-        deleteTexture(&surface.host_surface_id);
-        surface.width = 0;
-        surface.height = 0;
+        deleteTexture(&term_surface.term_surface_id);
+        term_surface.width = 0;
+        term_surface.height = 0;
         panicGlBroken("glTexImage2D failed for host texture", error_code);
     }
-    surface.width = width;
-    surface.height = height;
+    term_surface.width = width;
+    term_surface.height = height;
 }
 
 fn panicGlBroken(comptime message: []const u8, code: c_uint) noreturn {

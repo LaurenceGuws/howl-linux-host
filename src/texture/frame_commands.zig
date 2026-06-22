@@ -21,12 +21,19 @@ const glyph_atlas_height_px = 1024;
 const c_uchar_bool = u8;
 
 const RenderResourceTextures = frame_resources.RenderResourceTextures;
-const HostSurface = render_c.HowlRenderHostSurface;
+const TermSurface = render_c.HowlRenderTermSurface;
+const TabBarSurface = render_c.HowlRenderTabBarSurface;
 const SurfaceRect = render_c.HowlRenderSurfaceRect;
 const rectFitsResource = frame_resources.rectFitsResource;
 const sameResource = frame_resources.sameResource;
 const bytesPerPixel = frame_resources.bytesPerPixel;
 const spanSlice = frame_resources.spanSlice;
+
+const DrawTarget = struct {
+    texture_id: u64,
+    width: u16,
+    height: u16,
+};
 
 pub const RenderSurfaceClass = enum {
     fill,
@@ -90,7 +97,7 @@ fn destinationOverlaps(render_px: render_c.HowlRenderPixelSize, x_px: i32, y_px:
     return true;
 }
 
-fn spanCountValid(ptr: anytype, count: u32, count_max: u32, expected_max: u32) bool {
+fn glyphSpanCountValid(ptr: ?[*]const render_c.HowlRenderGlyphRef, count: u32, count_max: u32, expected_max: u32) bool {
     if (count_max != expected_max) return false;
     if (count > count_max) return false;
     if (count > 0 and ptr == null) return false;
@@ -107,19 +114,19 @@ pub fn classifyRenderSurface(surface: *const render_c.HowlRenderSurfaceFrame) ?R
     return null;
 }
 
-pub fn assertRenderSurfacePatchHostSurface(class: RenderSurfaceClass, had_matching_surface: bool) void {
+pub fn assertRenderSurfacePatchTermSurface(class: RenderSurfaceClass, had_matching_term_surface: bool) void {
     if (!class.patch()) return;
-    std.debug.assert(had_matching_surface);
-    if (!had_matching_surface) std.debug.panic("trusted render surface patch requires matching host surface", .{});
+    std.debug.assert(had_matching_term_surface);
+    if (!had_matching_term_surface) std.debug.panic("trusted render surface patch requires matching term surface", .{});
 }
 
-pub fn uploadFillCommands(host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurfaceFrame) bool {
+pub fn uploadFillCommands(term_surface: TermSurface, render_surface: *const render_c.HowlRenderSurfaceFrame) bool {
     std.debug.assert(renderSurfaceFillOnly(render_surface) or renderSurfaceFillPatch(render_surface));
-    std.debug.assert(host_surface.host_surface_id != 0);
-    std.debug.assert(host_surface.width == render_surface.render_px.width);
-    std.debug.assert(host_surface.height == render_surface.render_px.height);
+    std.debug.assert(term_surface.term_surface_id != 0);
+    std.debug.assert(term_surface.width == render_surface.render_px.width);
+    std.debug.assert(term_surface.height == render_surface.render_px.height);
 
-    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(host_surface.host_surface_id));
+    gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, @intCast(term_surface.term_surface_id));
     defer gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
     gl_c.glPixelStorei(gl_c.GL_UNPACK_ALIGNMENT, 1);
     gl_c.glPixelStorei(gl_c.GL_UNPACK_ROW_LENGTH, 0);
@@ -131,10 +138,18 @@ pub fn uploadFillCommands(host_surface: render_c.HowlRenderHostSurface, render_s
     return true;
 }
 
-pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surface: render_c.HowlRenderHostSurface, render_surface: *const render_c.HowlRenderSurfaceFrame) void {
-    std.debug.assert(host_surface.host_surface_id != 0);
-    std.debug.assert(host_surface.width == render_surface.render_px.width);
-    std.debug.assert(host_surface.height == render_surface.render_px.height);
+pub fn uploadTermSurfaceCommands(textures: *RenderResourceTextures, term_surface: TermSurface, render_surface: *const render_c.HowlRenderSurfaceFrame) void {
+    uploadSurfaceCommands(textures, termDrawTarget(term_surface), render_surface);
+}
+
+pub fn uploadTabBarSurfaceCommands(textures: *RenderResourceTextures, tab_bar_surface: TabBarSurface, render_surface: *const render_c.HowlRenderSurfaceFrame) void {
+    uploadSurfaceCommands(textures, tabBarDrawTarget(tab_bar_surface), render_surface);
+}
+
+fn uploadSurfaceCommands(textures: *RenderResourceTextures, target: DrawTarget, render_surface: *const render_c.HowlRenderSurfaceFrame) void {
+    std.debug.assert(target.texture_id != 0);
+    std.debug.assert(target.width == render_surface.render_px.width);
+    std.debug.assert(target.height == render_surface.render_px.height);
 
     var framebuffer: c_uint = 0;
     glGenFramebuffers(1, &framebuffer);
@@ -145,7 +160,7 @@ pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surfa
     gl_c.glGetIntegerv(gl_c.GL_FRAMEBUFFER_BINDING, &prior_framebuffer);
     glBindFramebuffer(gl_c.GL_FRAMEBUFFER, framebuffer);
     defer glBindFramebuffer(gl_c.GL_FRAMEBUFFER, @intCast(prior_framebuffer));
-    glFramebufferTexture2D(gl_c.GL_FRAMEBUFFER, gl_c.GL_COLOR_ATTACHMENT0, gl_c.GL_TEXTURE_2D, @intCast(host_surface.host_surface_id), 0);
+    glFramebufferTexture2D(gl_c.GL_FRAMEBUFFER, gl_c.GL_COLOR_ATTACHMENT0, gl_c.GL_TEXTURE_2D, @intCast(target.texture_id), 0);
     const framebuffer_status = glCheckFramebufferStatus(gl_c.GL_FRAMEBUFFER);
     if (framebuffer_status != gl_c.GL_FRAMEBUFFER_COMPLETE) {
         std.debug.panic("GL backend invariant failed: framebuffer incomplete: status={}", .{framebuffer_status});
@@ -166,7 +181,7 @@ pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surfa
     defer glBlendFuncSeparate(@intCast(prior_blend_src_rgb), @intCast(prior_blend_dst_rgb), @intCast(prior_blend_src_alpha), @intCast(prior_blend_dst_alpha));
     defer if (prior_blend_enabled) gl_c.glEnable(gl_c.GL_BLEND) else gl_c.glDisable(gl_c.GL_BLEND);
 
-    gl_c.glViewport(0, 0, host_surface.width, host_surface.height);
+    gl_c.glViewport(0, 0, target.width, target.height);
     gl_c.glDisable(gl_c.GL_DEPTH_TEST);
     gl_c.glEnable(gl_c.GL_BLEND);
     glBlendFuncSeparate(gl_c.GL_SRC_ALPHA, gl_c.GL_ONE_MINUS_SRC_ALPHA, gl_c.GL_ONE, gl_c.GL_ONE_MINUS_SRC_ALPHA);
@@ -180,26 +195,34 @@ pub fn uploadRenderSurfaceCommands(textures: *RenderResourceTextures, host_surfa
             render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_CLEAR_RECT,
             render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_FILL_RECT,
             => {
-                drawFillCommand(host_surface, command);
+                drawFillCommand(target, command);
             },
             render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_SPRITE => {
                 const slot = textures.textureSlotFor(command.resource) orelse std.debug.panic("trusted sprite command missing texture slot", .{});
                 if (resourceHasFutureUpload(render_surface, command.resource, @intCast(command_index))) {
                     std.debug.panic("trusted sprite command used before final upload", .{});
                 }
-                drawSpriteCommand(host_surface, command, slot);
+                drawSpriteCommand(target, command, slot);
             },
             render_c.HOWL_RENDER_SURFACE_FRAME_COMMAND_DRAW_GLYPH_RUN => {
                 if (glyphCommandHasFutureUpload(render_surface, command, @intCast(command_index))) {
                     std.debug.panic("trusted glyph command used before final upload", .{});
                 }
-                uploadGlyphRunCommand(textures, host_surface, command);
+                uploadGlyphRunCommand(textures, target, command);
             },
             else => std.debug.panic("trusted render surface has unknown command kind={}", .{command.kind}),
         }
     }
     const error_code = gl_c.glGetError();
     if (error_code != 0) std.debug.panic("GL backend invariant failed: render surface command upload failed: error={}", .{error_code});
+}
+
+fn termDrawTarget(term_surface: TermSurface) DrawTarget {
+    return .{ .texture_id = term_surface.term_surface_id, .width = term_surface.width, .height = term_surface.height };
+}
+
+fn tabBarDrawTarget(tab_bar_surface: TabBarSurface) DrawTarget {
+    return .{ .texture_id = tab_bar_surface.tab_bar_surface_id, .width = tab_bar_surface.width, .height = tab_bar_surface.height };
 }
 
 pub fn renderSurfaceFillOnly(surface: *const render_c.HowlRenderSurfaceFrame) bool {
@@ -372,7 +395,7 @@ fn glyphCommandValid(surface: *const render_c.HowlRenderSurfaceFrame, command: r
 }
 
 fn glyphSpanValid(command: render_c.HowlRenderSurfaceFrameCommand) bool {
-    return spanCountValid(command.glyphs.ptr, command.glyphs.count, command.glyphs.count_max, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX);
+    return glyphSpanCountValid(command.glyphs.ptr, command.glyphs.count, command.glyphs.count_max, render_c.HOWL_RENDER_SURFACE_FRAME_GLYPHS_PER_RUN_MAX);
 }
 
 fn hasCommands(surface: *const render_c.HowlRenderSurfaceFrame) bool {
@@ -450,14 +473,14 @@ fn stageFillUploadTile(tile: []u8, width: u16, rows: u16, rgba: [4]u8) void {
     }
 }
 
-fn drawFillCommand(surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceFrameCommand) void {
+fn drawFillCommand(surface: DrawTarget, command: render_c.HowlRenderSurfaceFrameCommand) void {
     gl_c.glDisable(gl_c.GL_TEXTURE_2D);
     const rgba = unpackRenderSurfaceRgba(command.color_rgba);
     gl_c.glColor4ub(rgba[0], rgba[1], rgba[2], rgba[3]);
     drawQuad(surface, command.rect);
 }
 
-fn drawSpriteCommand(surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceFrameCommand, slot: RenderResourceTextures.Slot) void {
+fn drawSpriteCommand(surface: DrawTarget, command: render_c.HowlRenderSurfaceFrameCommand, slot: RenderResourceTextures.Slot) void {
     std.debug.assert(spriteUploadCoversCommand(slot, command.rect));
     gl_c.glEnable(gl_c.GL_TEXTURE_2D);
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
@@ -495,7 +518,7 @@ fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderSurfaceFrame, 
     return false;
 }
 
-fn uploadGlyphRunCommand(textures: *RenderResourceTextures, surface: render_c.HowlRenderHostSurface, command: render_c.HowlRenderSurfaceFrameCommand) void {
+fn uploadGlyphRunCommand(textures: *RenderResourceTextures, surface: DrawTarget, command: render_c.HowlRenderSurfaceFrameCommand) void {
     const glyphs = spanSlice(render_c.HowlRenderGlyphRef, command.glyphs.ptr, command.glyphs.count);
     gl_c.glEnable(gl_c.GL_TEXTURE_2D);
     defer gl_c.glDisable(gl_c.GL_TEXTURE_2D);
@@ -518,7 +541,7 @@ fn uploadGlyphRunCommand(textures: *RenderResourceTextures, surface: render_c.Ho
     gl_c.glBindTexture(gl_c.GL_TEXTURE_2D, 0);
 }
 
-fn drawQuad(surface: render_c.HowlRenderHostSurface, rect: render_c.HowlRenderSurfaceRect) void {
+fn drawQuad(surface: DrawTarget, rect: render_c.HowlRenderSurfaceRect) void {
     const left = ndcX(rect.x_px, surface.width);
     const right = ndcX(rect.x_px + rect.width_px, surface.width);
     const top = ndcY(rect.y_px, surface.height);
@@ -539,13 +562,13 @@ fn emitQuadVerticesWithTex(left: f32, right: f32, top: f32, bottom: f32, tex_lef
     gl_c.glVertex2f(left, bottom);
 }
 
-fn drawTexturedQuad(surface: HostSurface, rect: SurfaceRect, texture_rect: SurfaceRect, texture_width: u32, texture_height: u32) void {
+fn drawTexturedQuad(surface: DrawTarget, rect: SurfaceRect, texture_rect: SurfaceRect, texture_width: u32, texture_height: u32) void {
     gl_c.glBegin(gl_c.GL_QUADS);
     emitTexturedQuadVertices(surface, rect, texture_rect, texture_width, texture_height);
     gl_c.glEnd();
 }
 
-fn emitTexturedQuadVertices(surface: HostSurface, rect: SurfaceRect, texture_rect: SurfaceRect, texture_width: u32, texture_height: u32) void {
+fn emitTexturedQuadVertices(surface: DrawTarget, rect: SurfaceRect, texture_rect: SurfaceRect, texture_width: u32, texture_height: u32) void {
     const left = ndcX(rect.x_px, surface.width);
     const right = ndcX(rect.x_px + rect.width_px, surface.width);
     const top = ndcY(rect.y_px, surface.height);

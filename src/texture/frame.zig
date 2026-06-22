@@ -108,7 +108,7 @@ pub fn GenericState(comptime c: type) type {
         pub fn termTextureId(self: *const @This(), id: Layout.pane.PaneId) u32 {
             const index = @intFromEnum(id);
             std.debug.assert(index < self.term_surfaces.len);
-            return @intCast(self.term_surfaces[index].host_surface.host_surface_id);
+            return @intCast(self.term_surfaces[index].term_surface.term_surface_id);
         }
 
         pub fn termSurfaceReady(self: *const @This(), id: Layout.pane.PaneId) bool {
@@ -118,13 +118,13 @@ pub fn GenericState(comptime c: type) type {
         pub fn uploadTermSurface(self: *@This(), id: Layout.pane.PaneId, surface: *const render_c.HowlRenderSurfaceFrame) TermUpload {
             const presenter = self.termPresenter(id);
             const ok = presenter.upload(surface);
-            return .{ .surface = presenter.hostSurface(), .ok = ok };
+            return .{ .term_surface = presenter.submittedTermSurface(), .ok = ok };
         }
     };
 }
 
 pub const TermUpload = struct {
-    surface: render_c.HowlRenderHostSurface,
+    term_surface: render_c.HowlRenderTermSurface,
     ok: bool,
 };
 
@@ -261,9 +261,9 @@ fn uploadTabTextSurface(comptime c: type, state: *GenericState(c), fb_w: c_int, 
     if (status != render_c.HOWL_RENDER_CALL_OK) std.debug.panic("trusted tab cell surface prepare failed: status={}", .{status});
     const surface = upload.surface_frame orelse std.debug.panic("trusted tab cell surface prepare returned no frame", .{});
     state.tab_resources.syncRenderResources(surface);
-    frame_commands.uploadRenderSurfaceCommands(
+    frame_commands.uploadTabBarSurfaceCommands(
         &state.tab_resources,
-        .{ .host_surface_id = state.tab_texture_id, .width = prepare.render_px.width, .height = prepare.render_px.height },
+        .{ .tab_bar_surface_id = state.tab_texture_id, .width = prepare.render_px.width, .height = prepare.render_px.height },
         surface,
     );
 }

@@ -3,19 +3,15 @@ const EventLoop = @import("../events/event_loop.zig");
 const surface_present = @import("../events/surface_present.zig");
 const window = @import("../events/window.zig");
 const HostInput = @import("../input.zig").Input;
-const pty_c = @import("howl_pty_c");
 const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
 const pty_wait_thread = @import("../pty/wait_thread.zig");
 const terminal_fonts = @import("../render/fonts.zig");
 const pty_session = @import("../pty/session.zig");
 const render_retained = @import("../render/surface_retained.zig");
-const vt_surface = @import("../vt/surface.zig");
 const HowlTerm = @import("../term.zig").Term;
-const VtState = @import("../term.zig").VtState;
 const Config = @import("../config.zig");
 const TerminalConfig = Config.Terminal;
-const CursorStyle = @import("../config/term.zig").CursorStyle;
 const ClipboardOsc52Policy = @import("../config/term.zig").ClipboardOsc52Policy;
 const font_size = terminal_fonts;
 const surface_layout = @import("../render/surface_layout.zig");
@@ -30,68 +26,15 @@ const cursor_trail = @import("../cursor/trail.zig");
 const terminal_scrollbar = @import("../scroll_bar.zig");
 const terminal_selection = @import("../selection.zig");
 
-// TODO move capacity limit to config
-const history_capacity: u16 = 4096;
-const max_fallback_font_paths: u8 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
-
-const TestingHooks = struct {
-    before_render_submit: ?*const fn (*Surface) void = null,
-    observe_submit_surface: ?*const fn (*Surface, render_retained.HostSurface) void = null,
-};
-
-var testing_hooks: TestingHooks = .{};
-
-const RenderInit = struct {
-    surface_px: render_c.HowlRenderPixelSize,
-    font_size_px: u16,
-    primary_font_path: ?[:0]const u8 = null,
-    fallback_font_paths: []const [:0]const u8 = &.{},
-};
-
-const VtInitConf = struct {
-    default_cursor_style: struct {
-        shape: CursorStyle,
-        blink: bool,
-    } = .{ .shape = .block, .blink = true },
-};
-
 pub const Surface = struct {
     const Term = @This();
 
-    pub const PresentDamage = @import("../texture/egl_swap.zig").Damage;
-
-    pub const TurnStep = enum {
-        surface_idle,
-        idle_prepare,
-        idle_submit,
-        blocked_present,
-        rendered,
-        failed,
-    };
-
-    pub const TurnResult = struct {
-        state_before: render_retained.RetainedState,
-        state_after: render_retained.RetainedState,
-        prepared: bool,
-        step: TurnStep,
-        present_snapshot_seq: u64,
-        present_damage: PresentDamage,
-        upload: ?PreparedSurface = null,
-    };
-
-    pub const PreparedSurface = struct {
-        handle: render_retained.PreparedHandle,
-        snapshot_seq: u64,
-        render_px: render_c.HowlRenderPixelSize,
-        frame: *const render_c.HowlRenderSurfaceFrame,
-        damage: PresentDamage,
-    };
-
-    pub const UploadedSurface = struct {
-        prepared: PreparedSurface,
-        surface: render_retained.HostSurface,
-        ok: bool,
-    };
+    pub const PresentDamage = HowlTerm.PresentDamage;
+    pub const TurnStep = HowlTerm.TurnStep;
+    pub const TurnResult = HowlTerm.TurnResult;
+    pub const PreparedSurface = HowlTerm.PreparedSurface;
+    pub const UploadedSurface = HowlTerm.UploadedSurface;
+    pub const SubmitPreparedResult = HowlTerm.SubmitPreparedResult;
 
     pub const CursorFacts = struct {
         cadence: cursor_blink.CursorBlink.CadenceFacts,
@@ -204,11 +147,7 @@ pub const Surface = struct {
         if (self.progress.thread) |handle| handle.join();
         self.progress.thread = null;
         if (self.live) {
-            pty_session.stop(&self.term);
-            self.term.render.deinit();
-            self.term.vt_state.deinit(self.term.allocator);
-            deinitVt(self.term.vt);
-            pty_session.deinitHandle(self.term.session);
+            self.term.deinitTerminal();
         }
         self.live = false;
         self.progress.deinit();
@@ -326,39 +265,19 @@ pub const Surface = struct {
     }
 
     pub fn renderTurn(self: *Term, has_present_surface: bool) TurnResult {
-        self.term.mutex.lockFair();
-        defer self.term.mutex.unlock();
-        const bootstrap_surface = !has_present_surface;
-        const admission_before = self.term.render.admitRenderTurn(bootstrap_surface);
-        const drive_result = self.driveRenderLocked(admission_before);
-        return .{
-            .state_before = admission_before.state,
-            .state_after = drive_result.state_after,
-            .prepared = drive_result.prepared,
-            .step = drive_result.step,
-            .present_snapshot_seq = drive_result.present_snapshot_seq,
-            .present_damage = drive_result.present_damage,
-            .upload = drive_result.upload,
-        };
+        return self.term.renderTurn(has_present_surface, self, syncPendingSurfacePixelsForTerm, hoverDecorationForTerm, clearHoverPendingForTerm, publishCursorInfoForTerm);
     }
 
     pub fn notePresentSubmitted(self: *Term, snapshot_seq: u64, token: u64) void {
-        self.term.mutex.lockFair();
-        defer self.term.mutex.unlock();
-        self.term.render.notePresentSubmitted(snapshot_seq, token);
+        self.term.notePresentSubmitted(snapshot_seq, token);
     }
 
     pub fn completePresent(self: *Term, token: u64) void {
-        self.term.mutex.lockFair();
-        defer self.term.mutex.unlock();
-        const snapshot_seq = self.term.render.completePresent(token) orelse return;
-        std.debug.assert(snapshot_seq != 0);
-        _ = vt_surface.ackPublishedSourceLocked(&self.term, snapshot_seq);
+        self.term.completePresent(token);
     }
 
     pub fn noteRenderTurn(self: *Term, turn: TurnResult) void {
-        if (turn.step == .surface_idle) return;
-        if (turn.prepared and turn.state_after == .submit_ready) self.notePreparedStep(turn.state_after);
+        self.term.noteRenderTurn(turn);
     }
 
     fn initTerm(self: *Term) !void {
@@ -367,29 +286,24 @@ pub const Surface = struct {
         defer resolved_fonts.deinit(std.heap.c_allocator);
 
         const launch = launchConfig(self.conf);
-        const render_init = renderInit(self, surface_px, &resolved_fonts);
-        const term_init = try initTermState(self.conf, launch, render_init);
-        self.term.allocator = std.heap.c_allocator;
-        self.term.pty = .{ .launch = launch };
-        self.term.session = term_init.session;
-        self.term.vt = term_init.vt;
-        self.term.render = .init(term_init.surface_layout);
-        try initRenderText(&self.term.render, render_init);
-        self.term.vt_state = .{};
-        self.term.mutex = .{};
         surface_present.initTrigger(&self.surface_present_trigger);
-        self.term.initSurfacePresentTrigger(&self.surface_present_trigger, self.event_loop);
-        self.term.initTitle();
+        try self.term.initTerminal(
+            std.heap.c_allocator,
+            launch,
+            surface_px,
+            @max(self.conf.font_size, 1),
+            resolved_fonts.primary,
+            resolved_fonts.fallbacks,
+            self.conf.cursor_shape,
+            self.conf.cursor_blink,
+            &self.surface_present_trigger,
+            self.event_loop,
+        );
         self.live = true;
-        try initRenderState(&self.term.vt_state);
-        try surface_layout.setTermCellPixelSize(&self.term, term_init.surface_layout.cell_px.width, term_init.surface_layout.cell_px.height);
-        self.term.render.syncSurfaceLayout(term_init.surface_layout);
     }
 
     fn startRuntime(self: *Term) !void {
-        self.term.setTitleFromLaunch();
-        try pty_session.start(&self.term);
-        if (!pty_session.isAlive(&self.term)) return error.TransportUnavailable;
+        try self.term.startTerminal();
         self.syncInputFocus();
         self.progress.init();
         self.progress.stop.store(false, .release);
@@ -398,187 +312,37 @@ pub const Surface = struct {
         self.progress.thread = progress_thread;
     }
 
-    const DriveResult = struct {
-        prepared: bool,
-        state_after: render_retained.RetainedState,
-        step: TurnStep,
-        present_snapshot_seq: u64,
-        present_damage: PresentDamage,
-        upload: ?PreparedSurface = null,
-    };
-
-    fn driveRenderLocked(self: *Term, admission: render_retained.RenderTurnAdmission) DriveResult {
-        return switch (admission.state) {
-            .idle => idleDrive(.idle, .surface_idle),
-            .present_in_flight => idleDrive(.present_in_flight, .blocked_present),
-            .submit_ready => uploadDriveResult(false, self.preparedUploadLocked()),
-            .failed => idleDrive(.failed, .failed),
-            .prepare_needed => blk: {
-                _ = self.syncPendingSurfacePixelsLocked();
-                var visible = vt_surface.captureRenderStateLocked(&self.term, terminal_links.hoverDecoration(self)) catch {
-                    self.links.hover_publish_pending = false;
-                    self.term.render.noteRetainedFailure();
-                    break :blk idleDrive(self.term.render.retainedState(), .failed);
-                };
-                defer visible.deinit(self.term.allocator);
-                self.links.hover_publish_pending = false;
-                self.publishCursorInfo(visible.state, EventLoop.nowNs()) catch {
-                    self.term.render.noteRetainedFailure();
-                    break :blk idleDrive(self.term.render.retainedState(), .failed);
-                };
-                const prepare_result = self.term.render.prepare(visible.state);
-                break :blk switch (prepare_result) {
-                    .idle => idleDrive(self.term.render.retainedState(), .idle_prepare),
-                    .failed => idleDrive(self.term.render.retainedState(), .failed),
-                    .prepared => uploadDriveResult(true, self.preparedUploadLocked()),
-                };
-            },
-        };
-    }
-
     fn syncPendingSurfacePixelsLocked(self: *Term) bool {
         return surface_layout.syncPendingSurfacePixelsLocked(&self.surface_layout, &self.term);
     }
 
+    fn syncPendingSurfacePixelsForTerm(owner: *anyopaque, term: *HowlTerm) bool {
+        const self: *Term = @ptrCast(@alignCast(owner));
+        std.debug.assert(term == &self.term);
+        return self.syncPendingSurfacePixelsLocked();
+    }
+
+    fn hoverDecorationForTerm(owner: *anyopaque) ?terminal_links.HyperlinkHover {
+        const self: *Term = @ptrCast(@alignCast(owner));
+        return terminal_links.hoverDecoration(self);
+    }
+
+    fn clearHoverPendingForTerm(owner: *anyopaque) void {
+        const self: *Term = @ptrCast(@alignCast(owner));
+        self.links.hover_publish_pending = false;
+    }
+
+    fn publishCursorInfoForTerm(owner: *anyopaque, state: vt_c.HowlVtRenderStateHandle, now_ns: u64) !void {
+        const self: *Term = @ptrCast(@alignCast(owner));
+        try self.publishCursorInfo(state, now_ns);
+    }
+
     pub fn submitUploaded(self: *Term, uploaded: UploadedSurface) SubmitPreparedResult {
-        self.term.mutex.lockFair();
-        defer self.term.mutex.unlock();
-        return self.submitUploadedLocked(uploaded);
-    }
-
-    fn preparedUploadLocked(self: *Term) PreparedUploadResult {
-        var upload = std.mem.zeroes(render_retained.PreparedUpload);
-        if (!self.term.render.preparedUpload(&upload)) {
-            self.term.render.noteRetainedFailure();
-            return .{ .result = .failed, .snapshot_seq = 0 };
-        }
-        defer upload.deinit();
-        const prepared_surface_handle = self.term.render.preparedSurfaceHandle();
-        std.debug.assert(prepared_surface_handle != null);
-        std.debug.assert(upload.info.snapshot_seq != 0);
-        std.debug.assert(!self.term.render.presentPending());
-
-        const render_surface = upload.surface_frame orelse {
-            if (upload.surface_frame_status == .command_bound_overflow) {
-                self.term.render.noteRetainedFailure();
-                return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
-            }
-            std.debug.panic("trusted render surface retrieval failed: status={}", .{upload.surface_frame_status});
-            return .{ .result = .failed, .snapshot_seq = upload.info.snapshot_seq };
-        };
-
-        return .{
-            .result = .ready,
-            .snapshot_seq = upload.info.snapshot_seq,
-            .upload = .{
-                .handle = prepared_surface_handle,
-                .snapshot_seq = upload.info.snapshot_seq,
-                .render_px = upload.info.render_px,
-                .frame = render_surface,
-                .damage = PresentDamage.fromRenderFrame(render_surface),
-            },
-        };
-    }
-
-    fn submitUploadedLocked(self: *Term, uploaded: UploadedSurface) SubmitPreparedResult {
-        const current_handle = self.term.render.preparedSurfaceHandle();
-        std.debug.assert(!self.term.render.presentPending());
-        if (current_handle != uploaded.prepared.handle) {
-            self.term.render.notePrepareNeeded();
-            return stalePreparedUploadSubmit(uploaded.prepared.snapshot_seq);
-        }
-        if (!uploaded.ok) {
-            self.term.render.noteRetainedFailure();
-            return failedUploadSubmit(uploaded.prepared.snapshot_seq);
-        }
-
-        var submit_result = std.mem.zeroes(render_retained.SubmitOutput);
-        if (testing_hooks.before_render_submit) |hook| hook(self);
-        if (testing_hooks.observe_submit_surface) |hook| hook(self, uploaded.surface);
-        const result = self.term.render.submitWithHostSurface(uploaded.surface, &submit_result);
-        return .{ .result = result, .snapshot_seq = uploaded.prepared.snapshot_seq, .damage = uploaded.prepared.damage };
-    }
-
-    const PreparedUploadResult = struct {
-        result: enum { ready, failed },
-        snapshot_seq: u64,
-        upload: ?PreparedSurface = null,
-    };
-
-    const SubmitPreparedResult = struct {
-        result: render_retained.SubmitResult,
-        snapshot_seq: u64,
-        damage: PresentDamage = .fullFrame(),
-    };
-
-    fn idleDrive(state_after: render_retained.RetainedState, step: TurnStep) DriveResult {
-        std.debug.assert(step == .surface_idle or step == .blocked_present or step == .idle_prepare or step == .failed);
-        return .{
-            .prepared = false,
-            .state_after = state_after,
-            .step = step,
-            .present_snapshot_seq = 0,
-            .present_damage = .fullFrame(),
-            .upload = null,
-        };
-    }
-
-    fn failedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
-        return .{ .result = .failed, .snapshot_seq = snapshot_seq };
-    }
-
-    fn stalePreparedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
-        return .{ .result = .stale, .snapshot_seq = snapshot_seq };
+        return self.term.submitUploaded(uploaded);
     }
 
     pub fn consumeSurfacePresentTrigger(self: *Term) bool {
         return surface_present.consumeTrigger(&self.surface_present_trigger);
-    }
-
-    fn submitStep(result: render_retained.SubmitResult) TurnStep {
-        return switch (result) {
-            .rendered => .rendered,
-            .failed => .failed,
-            .idle, .stale, .needs_prepare => .idle_submit,
-        };
-    }
-
-    fn submitDriveResult(self: *Term, prepared: bool, submit_result: SubmitPreparedResult) DriveResult {
-        const step = submitStep(submit_result.result);
-        return .{
-            .prepared = prepared,
-            .state_after = self.term.render.retainedState(),
-            .step = step,
-            .present_snapshot_seq = if (step == .rendered) submit_result.snapshot_seq else 0,
-            .present_damage = if (step == .rendered) submit_result.damage else .fullFrame(),
-            .upload = null,
-        };
-    }
-
-    fn uploadDriveResult(prepared: bool, upload_result: PreparedUploadResult) DriveResult {
-        return switch (upload_result.result) {
-            .failed => .{
-                .prepared = prepared,
-                .state_after = .failed,
-                .step = .failed,
-                .present_snapshot_seq = 0,
-                .present_damage = .fullFrame(),
-                .upload = null,
-            },
-            .ready => .{
-                .prepared = prepared,
-                .state_after = .submit_ready,
-                .step = .idle_submit,
-                .present_snapshot_seq = 0,
-                .present_damage = .fullFrame(),
-                .upload = upload_result.upload,
-            },
-        };
-    }
-
-    fn notePreparedStep(self: *Term, state: render_retained.RetainedState) void {
-        _ = self;
-        std.debug.assert(state == .submit_ready or state == .present_in_flight);
     }
 
     fn driveCursor(self: *Term, now_ns: u64) bool {
@@ -794,12 +558,6 @@ pub const Surface = struct {
         return .{ .inside = cell.inside != 0, .row = cell.row, .col = cell.col };
     }
 
-    const TermInit = struct {
-        surface_layout: render_retained.SurfaceLayout,
-        session: pty_c.HowlPtySessionHandle,
-        vt: vt_c.HowlVtHandle,
-    };
-
     fn launchConfig(conf: *const TerminalConfig) pty_session.Launch {
         return .{
             .shell = conf.shell,
@@ -807,130 +565,25 @@ pub const Surface = struct {
             .command = conf.command,
         };
     }
-
-    fn renderInit(self: *Term, surface_px: render_c.HowlRenderPixelSize, resolved_fonts: *const terminal_fonts.ResolvedFonts) RenderInit {
-        return .{
-            .surface_px = surface_px,
-            .font_size_px = @max(self.conf.font_size, 1),
-            .primary_font_path = resolved_fonts.primary,
-            .fallback_font_paths = resolved_fonts.fallbacks,
-        };
-    }
-
-    fn initTermState(conf: *const TerminalConfig, launch: pty_session.Launch, render_init: RenderInit) !TermInit {
-        const layout = try initSurfaceLayout(render_init);
-        const session_handle = try pty_session.initHandle(launch, layout.cols, layout.rows);
-        errdefer if (session_handle) |handle| pty_session.deinitHandle(handle);
-        const vt = try initVt(layout.rows, layout.cols, .{
-            .default_cursor_style = .{
-                .shape = conf.cursor_shape,
-                .blink = conf.cursor_blink,
-            },
-        });
-        errdefer if (vt) |handle| deinitVt(handle);
-        return .{
-            .surface_layout = layout,
-            .session = session_handle.?,
-            .vt = vt.?,
-        };
-    }
 };
 
-fn initRenderState(vt_state: *VtState) !void {
-    std.debug.assert(vt_state.render_state == null);
-    var state: vt_c.HowlVtRenderStateHandle = null;
-    if (vt_c.howl_vt_render_state_init(&state) != vt_c.HOWL_VT_CALL_OK) return error.VtInitFailed;
-    std.debug.assert(state != null);
-    vt_state.render_state = state;
-}
-
-fn initSurfaceLayout(render_init: RenderInit) !render_retained.SurfaceLayout {
-    assertRenderInit(render_init);
-    var fallback_paths: [max_fallback_font_paths]?[*:0]const u8 = [_]?[*:0]const u8{null} ** max_fallback_font_paths;
-    for (render_init.fallback_font_paths, 0..) |path, index| fallback_paths[index] = path.ptr;
-    const config = render_c.HowlRenderTextConfig{
-        .font_size_px = render_init.font_size_px,
-        .fallback_font_path_count = @intCast(render_init.fallback_font_paths.len),
-        .reserved0 = 0,
-        .primary_font_path = if (render_init.primary_font_path) |path| path.ptr else null,
-        .fallback_font_paths = &fallback_paths,
-    };
-    var handle: render_c.HowlRenderTextHandle = null;
-    if (render_c.howl_render_text_init(&handle, &config) != render_c.HOWL_RENDER_CALL_OK) return error.RenderInitFailed;
-    defer render_c.howl_render_text_deinit(handle);
-    return try surface_layout.querySurfaceLayout(handle, render_init.surface_px);
-}
-
-fn initRenderText(render: *render_retained.State, render_init: RenderInit) !void {
-    assertRenderInit(render_init);
-    var fallback_paths: [max_fallback_font_paths]?[*:0]const u8 = [_]?[*:0]const u8{null} ** max_fallback_font_paths;
-    for (render_init.fallback_font_paths, 0..) |path, index| fallback_paths[index] = path.ptr;
-    const config = render_c.HowlRenderTextConfig{
-        .font_size_px = render_init.font_size_px,
-        .fallback_font_path_count = @intCast(render_init.fallback_font_paths.len),
-        .reserved0 = 0,
-        .primary_font_path = if (render_init.primary_font_path) |path| path.ptr else null,
-        .fallback_font_paths = &fallback_paths,
-    };
-    if (!render.initText(&config)) return error.RenderInitFailed;
-}
-
-fn initVt(rows: u16, cols: u16, options: VtInitConf) !vt_c.HowlVtHandle {
-    std.debug.assert(rows > 0);
-    std.debug.assert(cols > 0);
-    const handle = vt_c.howl_vt_terminal_init_with_options(rows, cols, history_capacity, .{
-        .default_cursor_style = .{
-            .shape = switch (options.default_cursor_style.shape) {
-                .block => 0,
-                .underline => 1,
-                .bar => 2,
-            },
-            .blink = @intFromBool(options.default_cursor_style.blink),
-        },
-    });
-    if (handle == null) return error.VtInitFailed;
-    return handle;
-}
-
-fn deinitVt(handle: vt_c.HowlVtHandle) void {
-    std.debug.assert(handle != null);
-    vt_c.howl_vt_terminal_deinit(handle);
-}
-
-fn assertRenderInit(render_init: RenderInit) void {
-    std.debug.assert(render_init.surface_px.width > 0);
-    std.debug.assert(render_init.surface_px.height > 0);
-    std.debug.assert(render_init.font_size_px > 0);
-    std.debug.assert(render_init.fallback_font_paths.len <= max_fallback_font_paths);
-}
-
 pub const testing = struct {
-    pub const Hooks = TestingHooks;
+    const term_testing = @import("../term.zig").testing;
+
+    pub const Hooks = term_testing.Hooks;
     pub const SubmitPreparedResult = Surface.SubmitPreparedResult;
     pub const UploadedSurface = Surface.UploadedSurface;
 
     pub fn installHooks(hooks: Hooks) void {
-        testing_hooks = hooks;
+        term_testing.installHooks(hooks);
     }
 
     pub fn resetHooks() void {
-        testing_hooks = .{};
+        term_testing.resetHooks();
     }
 
     pub fn submitUploaded(surface: *Surface, uploaded: UploadedSurface) SubmitPreparedResult {
-        return surface.submitUploaded(uploaded);
-    }
-
-    pub fn idleDrive(state_after: render_retained.RetainedState, step: Surface.TurnStep) Surface.DriveResult {
-        return Surface.idleDrive(state_after, step);
-    }
-
-    pub fn failedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
-        return Surface.failedUploadSubmit(snapshot_seq);
-    }
-
-    pub fn stalePreparedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
-        return Surface.stalePreparedUploadSubmit(snapshot_seq);
+        return term_testing.submitUploaded(&surface.term, uploaded);
     }
 };
 

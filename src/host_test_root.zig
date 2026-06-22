@@ -20,6 +20,10 @@ test {
     _ = @import("config.zig");
     _ = @import("cursor.zig");
     _ = @import("events.zig");
+    _ = @import("host_input.zig");
+    _ = @import("host_loop.zig");
+    _ = @import("host_present.zig");
+    _ = @import("host_tabs.zig");
     _ = @import("input.zig");
     _ = @import("layout.zig");
     _ = @import("pty.zig");
@@ -63,13 +67,15 @@ test "host imports no obsolete layout cells owner" {
 
 test "host source has no rejected scroll layer noun" {
     try expectNoRejectedScrollLayerNoun(@embedFile("layout.zig"));
-    try expectNoRejectedScrollLayerNoun(@embedFile("events/event.zig"));
+    try expectNoRejectedScrollLayerNoun(@embedFile("host_loop.zig"));
+    try expectNoRejectedScrollLayerNoun(@embedFile("host_present.zig"));
     try expectNoRejectedScrollLayerNoun(@embedFile("buckets that must die/bucket2.zig"));
 }
 
 test "host source has no temporary layout window symbols" {
     try expectNoTemporaryLayoutWindowSymbol(@embedFile("layout/window.zig"));
-    try expectNoTemporaryLayoutWindowSymbol(@embedFile("events/event.zig"));
+    try expectNoTemporaryLayoutWindowSymbol(@embedFile("host_loop.zig"));
+    try expectNoTemporaryLayoutWindowSymbol(@embedFile("host_present.zig"));
 }
 
 test "host layout structure has no rejected owner names" {
