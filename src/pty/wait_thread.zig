@@ -1,7 +1,7 @@
 const pty_session = @import("../pty/session.zig");
 const pty_pump = @import("../pty/pump.zig");
 const Term = @import("../term.zig").Term;
-const EventLoop = @import("../events/event_loop.zig");
+const sdl_c = @import("sdl_c");
 const std = @import("std");
 
 pub const TransportWait = union(enum) {
@@ -48,7 +48,7 @@ fn progressThreadMainWith(target_value: ProgressThreadTarget, comptime Ops: type
     while (!target_value.progress.stop.load(.acquire)) {
         if (!waitForTransport(target_value, Ops)) continue;
         while (!target_value.progress.stop.load(.acquire)) {
-            const progress = Ops.driveProgress(target_value.term, EventLoop.nowNs());
+            const progress = Ops.driveProgress(target_value.term, nowNs());
             if (progress.should_redraw or !progress.alive) triggerSurfacePresent(target_value, Ops);
             if (!progress.alive) return;
             if (!progress.keep) break;
@@ -69,6 +69,10 @@ fn waitForTransport(target_value: ProgressThreadTarget, comptime Ops: type) bool
 fn triggerSurfacePresent(target_value: ProgressThreadTarget, comptime Ops: type) void {
     _ = target_value.progress;
     Ops.triggerSurfacePresent(target_value.term);
+}
+
+fn nowNs() u64 {
+    return sdl_c.SDL_GetTicksNS();
 }
 
 const ProgressThreadOps = struct {

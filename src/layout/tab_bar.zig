@@ -4,7 +4,7 @@ const std = @import("std");
 
 const Config = @import("../config/tab_bar.zig").Config;
 const Events = @import("../events.zig");
-const Layout = @import("../layout.zig");
+const Layout = @import("../window.zig");
 const Window = Events.window.Window;
 
 pub const Band = struct {

@@ -71,6 +71,7 @@ pub const Window = struct {
     }
 
     pub fn requestRedraw(self: *Window) void {
+        if (!self.requested_redraw) std.debug.print("window layout wake false -> true\n", .{});
         self.requested_redraw = true;
     }
 
@@ -88,6 +89,7 @@ pub const Window = struct {
     }
 
     pub fn clearRedrawRequest(self: *Window) void {
+        if (self.requested_redraw) std.debug.print("window layout wake true -> false\n", .{});
         self.requested_redraw = false;
     }
 

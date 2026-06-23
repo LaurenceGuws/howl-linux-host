@@ -1,11 +1,9 @@
 const std = @import("std");
-const Events = @import("events.zig");
-const Layout = @import("layout.zig");
+const Layout = @import("window.zig");
 const HostInput = @import("input.zig").Input;
 const Term = @import("term.zig").Term;
+const sdl_c = @import("sdl_c");
 const vt_c = @import("howl_vt_c");
-
-const EventLoop = Events.event_loop;
 
 const min_width_logical: c_int = 3;
 const max_width_logical: c_int = 11;
@@ -349,11 +347,15 @@ pub fn handleMouse(term: *Term, state: *State, mouse_event: HostInput.Mouse.Even
 }
 
 pub fn placeScrollbar(state: *State, texture_rect: Layout.Rect, view: View, logical_width: c_int, logical_height: c_int, window_focused: bool) Layout.scrollbar.Placement {
-    return state.scrollbar(texture_rect, view, logical_width, logical_height, window_focused, EventLoop.nowNs());
+    return state.scrollbar(texture_rect, view, logical_width, logical_height, window_focused, nowNs());
 }
 
 pub fn placeScrollChip(state: *State, texture_rect: Layout.Rect, view: View, logical_width: c_int, logical_height: c_int, window_focused: bool) Layout.scroll_chip.Placement {
-    return state.scrollChip(texture_rect, view, logical_width, logical_height, window_focused, EventLoop.nowNs());
+    return state.scrollChip(texture_rect, view, logical_width, logical_height, window_focused, nowNs());
+}
+
+fn nowNs() u64 {
+    return sdl_c.SDL_GetTicksNS();
 }
 
 fn setOffset(term: *Term, state: *State, offset: u32) bool {

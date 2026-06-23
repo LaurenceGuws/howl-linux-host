@@ -3,7 +3,7 @@
 const std = @import("std");
 
 const Events = @import("../events.zig");
-const Layout = @import("../layout.zig");
+const Layout = @import("../window.zig");
 const TabBar = @import("tab_bar.zig");
 const TabBarConfig = @import("../config/tab_bar.zig").Config;
 const Window = Events.window.Window;

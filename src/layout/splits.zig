@@ -2,7 +2,7 @@
 
 const std = @import("std");
 
-const Layout = @import("../layout.zig");
+const Layout = @import("../window.zig");
 const Pane = @import("pane.zig");
 
 /// Split axis named after tmux layout cells: left-right divides width, top-bottom divides height.

@@ -2,7 +2,7 @@
 
 const std = @import("std");
 
-const Layout = @import("../layout.zig");
+const Layout = @import("../window.zig");
 const Scrollbar = @import("scrollbar.zig");
 const ZIndex = @import("z_index.zig").ZIndex;
 

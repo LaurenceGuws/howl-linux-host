@@ -1,6 +1,6 @@
 const std = @import("std");
-const EventLoop = @import("../events/event_loop.zig");
 const c = @import("howl_render_c");
+const sdl_c = @import("sdl_c");
 const vt_c = @import("howl_vt_c");
 const pty_session = @import("../pty/session.zig");
 const retained = @import("surface_retained.zig");
@@ -61,8 +61,12 @@ pub fn resize(surface_resize: *SurfaceResize, scrollbar: *terminal_scrollbar.Sta
     surface_resize.logical_h = lh;
     surface_resize.pending_surface_px_w = surface_w;
     surface_resize.pending_surface_px_h = surface_h;
-    surface_resize.last_resize_ns = EventLoop.nowNs();
+    surface_resize.last_resize_ns = nowNs();
     scrollbar.invalidate();
+}
+
+fn nowNs() u64 {
+    return sdl_c.SDL_GetTicksNS();
 }
 
 pub fn assertPendingResize(surface_resize: *SurfaceResize, render_width: c_int, render_height: c_int, logical_width: c_int, logical_height: c_int) void {

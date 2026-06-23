@@ -1,11 +1,11 @@
 const std = @import("std");
-const EventLoop = @import("../events/event_loop.zig");
-const Layout = @import("../layout.zig");
+const Layout = @import("../window.zig");
 const HostInput = @import("../input.zig").Input;
 const terminal_selection = @import("../selection.zig");
 const term_input = @import("../vt/input.zig");
 const Term = @import("../term.zig").Term;
 const render_retained = @import("../render/surface_retained.zig");
+const sdl_c = @import("sdl_c");
 
 const Self = @This();
 const MouseEvent = HostInput.Mouse.Event;
@@ -101,13 +101,13 @@ pub fn processTextInputEvent(selected: *TermInput, event: HostInput.Event, input
         .bytes => |bytes| {
             if (selected.write_bytes_to_pty(selected.surface, bytes.slice())) {
                 input_published.* = true;
-                host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, EventLoop.nowNs()) or host_visual_changed.*;
+                host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, nowNs()) or host_visual_changed.*;
             }
         },
         .key => |key| {
             if (selected.write_key_to_pty(selected.surface, key)) {
                 input_published.* = true;
-                host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, EventLoop.nowNs()) or host_visual_changed.*;
+                host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, nowNs()) or host_visual_changed.*;
             }
         },
         .mouse => {},
@@ -131,7 +131,7 @@ pub fn processPointerEvent(selected: *TermInput, event: HostInput.Event, origin_
             if (local_mouse.kind == .wheel) {
                 if (selected.write_mouse_to_pty(selected.surface, local_mouse)) {
                     input_published.* = true;
-                    host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, EventLoop.nowNs()) or host_visual_changed.*;
+                    host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, nowNs()) or host_visual_changed.*;
                 } else {
                     host_visual_changed.* = selected.scroll_viewport_by_wheel(selected.surface, local_mouse) or host_visual_changed.*;
                 }
@@ -153,7 +153,7 @@ pub fn processPointerEvent(selected: *TermInput, event: HostInput.Event, origin_
 
             if (selected.write_mouse_to_pty(selected.surface, local_mouse)) {
                 input_published.* = true;
-                host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, EventLoop.nowNs()) or host_visual_changed.*;
+                host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, nowNs()) or host_visual_changed.*;
             }
         },
     }
@@ -169,6 +169,10 @@ pub fn mouseEventInsideContent(
     render_px_h: c_int,
 ) ?HostInput.Mouse.Event {
     return Layout.mouseEventInsideContent(mouse_event, origin_x, origin_y, logical_width, logical_height, render_px_w, render_px_h);
+}
+
+fn nowNs() u64 {
+    return sdl_c.SDL_GetTicksNS();
 }
 
 const TestTermInputState = struct {

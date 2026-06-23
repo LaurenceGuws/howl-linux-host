@@ -1,8 +1,8 @@
-//! Layout pane data. Runtime policy lives in ../layout.zig.
+//! Layout pane data. Runtime policy lives in ../window.zig.
 
 const std = @import("std");
 
-const Layout = @import("../layout.zig");
+const Layout = @import("../window.zig");
 const Term = @import("../term.zig").Term;
 const render_links = @import("../render/links.zig");
 const render_retained = @import("../render/surface_retained.zig");

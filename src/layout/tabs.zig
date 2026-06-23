@@ -1,4 +1,4 @@
-//! Layout tab-list data. Runtime policy lives in ../layout.zig.
+//! Layout tab-list data. Runtime policy lives in ../window.zig.
 
 const TabBar = @import("../tab_bar.zig").TabBar;
 const Tab = @import("tab.zig").Tab;

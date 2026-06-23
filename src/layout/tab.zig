@@ -1,11 +1,11 @@
-//! Layout tab data. Runtime policy lives in ../layout.zig.
+//! Layout tab data. Runtime policy lives in ../window.zig.
 
 const std = @import("std");
 
-const Layout = @import("../layout.zig");
+const Layout = @import("../window.zig");
 const Pane = @import("pane.zig");
 const Splits = @import("splits.zig");
-const WindowLayout = @import("window.zig");
+const InteriorLayout = @import("window.zig");
 
 pub const max_panes = 2;
 
@@ -21,7 +21,7 @@ pub const Body = struct {
     logical_size: Layout.Size,
 };
 
-pub fn body(window: WindowLayout.Interior) Body {
+pub fn body(window: InteriorLayout.Interior) Body {
     return .{
         .rect = window.tab_body_rect,
         .pixel_size = window.tab_body_px,
@@ -94,7 +94,7 @@ test "single pane matches split leaf placement" {
     try std.testing.expectEqual(split_leaf, single);
 }
 
-fn testInterior() WindowLayout.Interior {
+fn testInterior() InteriorLayout.Interior {
     return .{
         .tab_bar = .{ .rect = .{ .x = 0, .y = 0, .width = 960, .height = 30 }, .pixel_height = 30, .logical_height = 30 },
         .tab_body_rect = .{ .x = 0, .y = 30, .width = 960, .height = 570 },

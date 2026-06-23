@@ -3,18 +3,19 @@ const cli = @import("cli.zig");
 const Config = @import("config.zig");
 const Events = @import("events.zig");
 const Input = @import("input.zig").Input;
-const Layout = @import("layout.zig");
 const Render = @import("render.zig");
 const TabBarUnit = @import("tab_bar.zig");
 const Texture = @import("texture.zig");
+const WindowPolicy = @import("window.zig");
 const window_icon = @import("window_icon.zig");
+const sdl_c = @import("sdl_c");
 const window = Events.window;
 
-const EventLoop = Events.event_loop;
 const TabBar = TabBarUnit.TabBar;
 const TextureFrame = Texture.frame;
 const render_fonts = Render.fonts;
 const tab_bar_surface_layout = TabBarUnit.surface_layout;
+const max_sdl_events_per_turn = 256;
 
 pub const Args = cli.Args;
 const child_term_value: [*:0]const u8 = "xterm-256color";
@@ -69,42 +70,36 @@ noinline fn start(io: std.Io, options: Args) !void {
     tab_bar.* = .{};
     defer std.heap.c_allocator.destroy(tab_bar);
 
-    const layout = try std.heap.c_allocator.create(Layout.Layout);
+    const layout = try std.heap.c_allocator.create(WindowPolicy.Layout);
     layout.init();
 
     const input = try std.heap.c_allocator.create(Input);
-    const event_loop = try std.heap.c_allocator.create(EventLoop.EventLoop);
     defer {
         layout.deinit();
         std.heap.c_allocator.destroy(layout);
         std.heap.c_allocator.destroy(input);
-        std.heap.c_allocator.destroy(event_loop);
     }
     input.* = try initInput();
     input.setBindings(Input.Bindings.Configured.init(conf));
     input.setRedrawWindow(app_window);
-
-    event_loop.* = .{};
-    event_loop.init();
-    event_loop.initWakeEventType();
 
     applyChildEnvironmentPolicy();
 
     _ = io;
     try layout.openTab(std.heap.c_allocator, conf, app_window, texture_frame.textHandle());
     layout.configureInputPolicies(conf, input);
-    try runMainLoop(conf, app_window, texture_frame, tab_bar, layout, input, event_loop);
+    try runMainLoop(conf, app_window, texture_frame, tab_bar, layout, input);
 }
 
-fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture_frame: *TextureFrame.State, tab_bar: *TabBar, layout: *Layout.Layout, input: *Input, event_loop: *EventLoop.EventLoop) !void {
-    while (!event_loop.quitRequested()) {
+fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture_frame: *TextureFrame.State, tab_bar: *TabBar, layout: *WindowPolicy.Layout, input: *Input) !void {
+    while (true) {
         var events = Events.scheduler.HostEventQueue.init();
         const had_layout_trigger = layout.consumeSurfaceUpdateTriggers();
         if (had_layout_trigger) events.append(.surface_present_triggered);
         if (app_window.hasRequestedRedraw()) events.append(.redraw_requested);
 
         const wait_for_sdl = !input.hasPendingEvents() and !app_window.hasRequestedRedraw() and !had_layout_trigger;
-        if (event_loop.pumpInput(input, wait_for_sdl, null) == .quit) return;
+        if (pumpInput(input, wait_for_sdl)) return;
 
         layout.applyFocusChange(app_window, input, &events);
         while (input.drainBindingAction()) |action| try layout.handleBindingAction(conf, app_window, action, texture_frame.textHandle());
@@ -125,6 +120,42 @@ fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture
             const reason = layout.choosePresentReason(&events, layout.terminalFrameReady(present_turn.turn.step));
             layout.submitPresent(texture_frame, present_turn, reason);
         }
+    }
+}
+
+fn pumpInput(input: *Input, wait: bool) bool {
+    if (wait) {
+        var event: sdl_c.SDL_Event = undefined;
+        if (sdl_c.SDL_WaitEvent(&event)) {
+            if (processSdlEvent(input, &event)) return true;
+            return drainPendingInput(input, 1);
+        }
+        return drainPendingInput(input, 0);
+    }
+    return drainPendingInput(input, 0);
+}
+
+fn drainPendingInput(input: *Input, processed_start: usize) bool {
+    var processed = processed_start;
+    var event: sdl_c.SDL_Event = undefined;
+    while (processed < max_sdl_events_per_turn) : (processed += 1) {
+        if (!sdl_c.SDL_PollEvent(&event)) break;
+        if (processSdlEvent(input, &event)) return true;
+    }
+    return false;
+}
+
+fn processSdlEvent(input: *Input, event: *const sdl_c.SDL_Event) bool {
+    switch (event.type) {
+        sdl_c.SDL_EVENT_QUIT,
+        sdl_c.SDL_EVENT_TERMINATING,
+        sdl_c.SDL_EVENT_WINDOW_CLOSE_REQUESTED,
+        sdl_c.SDL_EVENT_WINDOW_DESTROYED,
+        => return true,
+        else => {
+            input.processEvent(event);
+            return false;
+        },
     }
 }
 

@@ -1,5 +1,5 @@
 const gl_c = @import("gl_c");
-const Layout = @import("../layout.zig");
+const Layout = @import("../window.zig");
 const egl_swap = @import("egl_swap.zig");
 const render_c = @import("howl_render_c");
 const gl_quad = @import("quad.zig");

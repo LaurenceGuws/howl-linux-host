@@ -1,5 +1,5 @@
 const std = @import("std");
-const Layout = @import("../layout.zig");
+const Layout = @import("../window.zig");
 const Surface = @import("../tab_bar/surface.zig").Surface;
 const Style = @import("../tab_bar/style.zig").Colors;
 const TabIndex = @import("../tab_bar.zig").TabBar.TabIndex;

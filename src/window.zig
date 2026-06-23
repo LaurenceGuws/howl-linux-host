@@ -4,7 +4,6 @@ const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 const HostInput = @import("input.zig").Input;
 const terminal_scrollbar = @import("scroll_bar.zig");
 const Config = @import("config.zig");
-const EventLoop = @import("events/event_loop.zig");
 const HostScheduler = @import("events/scheduler.zig");
 const Window = @import("events/window.zig").Window;
 const TabBar = @import("tab_bar.zig").TabBar;
@@ -21,7 +20,7 @@ const term_input = @import("vt/input.zig");
 const vt_surface = @import("vt/surface.zig");
 const vt_c = @import("howl_vt_c");
 
-pub const window = @import("layout/window.zig");
+pub const interior = @import("layout/window.zig");
 pub const tabs = @import("layout/tabs.zig");
 pub const tab = @import("layout/tab.zig");
 pub const pane = @import("layout/pane.zig");
@@ -153,8 +152,8 @@ pub const Layout = struct {
         self.assertTabs();
         if (self.tabs.free_count == 0) return;
         const before_height = tab_bar.height(&conf.tab_bar, self.tabs.active_count);
-        const interior = window.interior(app_window, &conf.tab_bar, self.tabs.active_count + 1);
-        const body_value = tab.body(interior);
+        const window_interior = interior.interior(app_window, &conf.tab_bar, self.tabs.active_count + 1);
+        const body_value = tab.body(window_interior);
         const placement = tab.singlePane(body_value, .first);
         self.tabs.free_count -= 1;
         const slot = self.tabs.free_slots[self.tabs.free_count];
@@ -166,7 +165,7 @@ pub const Layout = struct {
         self.tabs.active_panes[self.tabs.active_count] = .first;
         self.tabs.active_tab = self.tabs.active_count;
         self.tabs.active_count += 1;
-        if (before_height != interior.tab_bar.pixel_height) self.applyBody(body_value);
+        if (before_height != window_interior.tab_bar.pixel_height) self.applyBody(body_value);
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
         app_window.requestRedraw();
@@ -188,8 +187,8 @@ pub const Layout = struct {
         self.tabs.free_slots[self.tabs.free_count] = removed_slot;
         self.tabs.free_count += 1;
         if (self.tabs.active_tab >= self.tabs.active_count) self.tabs.active_tab = self.tabs.active_count - 1;
-        const interior = window.interior(app_window, &conf.tab_bar, self.tabs.active_count);
-        if (before_height != interior.tab_bar.pixel_height) self.applyBody(tab.body(interior));
+        const window_interior = interior.interior(app_window, &conf.tab_bar, self.tabs.active_count);
+        if (before_height != window_interior.tab_bar.pixel_height) self.applyBody(tab.body(window_interior));
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
         app_window.requestRedraw();
@@ -257,19 +256,19 @@ pub const Layout = struct {
 
     pub fn forwardTerminalInput(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, input: *HostInput, host_visual_changed: *bool) void {
         const active_pane = self.activePane();
-        const interior = window.interior(app_window, &conf.tab_bar, self.tabs.active_count);
+        const window_interior = interior.interior(app_window, &conf.tab_bar, self.tabs.active_count);
         const terminal = pane.terminal(active_pane.placement, self.paneTextureSize(active_pane));
         var input_published = false;
         var selected = self.termInput(active_pane);
         input_processor.drainTextInputFastPath(&selected, input, &input_published, host_visual_changed);
-        input_processor.drainPointerInput(&selected, input, 0, @intCast(interior.tab_bar.logical_height), terminal.logical_size.width, terminal.logical_size.height, &input_published, host_visual_changed);
+        input_processor.drainPointerInput(&selected, input, 0, @intCast(window_interior.tab_bar.logical_height), terminal.logical_size.width, terminal.logical_size.height, &input_published, host_visual_changed);
         terminal_scrollbar.handlePages(&active_pane.term, &active_pane.scrollbar, input);
     }
 
     pub fn applyWindowResize(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, input: *HostInput) bool {
         if (!input.drainWindowGeometryChanged()) return false;
         if (!app_window.refreshGeometry()) return false;
-        self.applyBody(tab.body(window.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
+        self.applyBody(tab.body(interior.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
         return true;
     }
 
@@ -492,7 +491,7 @@ pub const Layout = struct {
     }
 
     fn frame(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) Frame {
-        const interior = window.interior(app_window, &conf.tab_bar, self.tabs.active_count);
+        const window_interior = interior.interior(app_window, &conf.tab_bar, self.tabs.active_count);
         var title_buf: [TabBar.max_tabs][]const u8 = undefined;
         const labels = self.tabTitles(title_buf[0..]);
         const snapshot = bar.snapshot(self.tabs.active_tab, labels);
@@ -504,8 +503,8 @@ pub const Layout = struct {
             facts_buf[index] = self.frameFacts(pane_value);
             textures_buf[index] = .{ .id = pane_value.id, .id_value = texture_frame.termTextureId(pane_value.id) };
         }
-        const frame_panes = framePanes(tab.body(interior), tab_value.split_tree, facts_buf[0..tab_value.pane_count], textures_buf[0..tab_value.pane_count], panes_buf[0..]);
-        return .{ .panes = frame_panes, .tab_bar_height_px = @intCast(interior.tab_bar.pixel_height), .tab_count = @intCast(labels.len), .active_tab = snapshot.active_idx, .tab_bar_revision = self.tabBarRevision(), .tab_bar_font_size_px = self.activePane().font_size_px, .tab_labels = snapshot.labels };
+        const frame_panes = framePanes(tab.body(window_interior), tab_value.split_tree, facts_buf[0..tab_value.pane_count], textures_buf[0..tab_value.pane_count], panes_buf[0..]);
+        return .{ .panes = frame_panes, .tab_bar_height_px = @intCast(window_interior.tab_bar.pixel_height), .tab_count = @intCast(labels.len), .active_tab = snapshot.active_idx, .tab_bar_revision = self.tabBarRevision(), .tab_bar_font_size_px = self.activePane().font_size_px, .tab_labels = snapshot.labels };
     }
 
     fn frameFacts(self: *Layout, pane_value: *pane.Pane) PaneFrameFacts {

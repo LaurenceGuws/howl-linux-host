@@ -1,4 +1,4 @@
-const Coordinates = @import("../layout.zig");
+const Coordinates = @import("../window.zig");
 
 pub fn solidRect(comptime c: type, fb_w: c_int, fb_h: c_int, x: c_int, y: c_int, width: c_int, height: c_int, r: f32, g: f32, b: f32, a: f32) void {
     if (width <= 0 or height <= 0) return;

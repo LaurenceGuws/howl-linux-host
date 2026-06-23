@@ -1,8 +1,8 @@
 const std = @import("std");
 const CursorStyle = @import("config/term.zig").CursorStyle;
-const EventLoop = @import("events/event_loop.zig");
 const pty_c = @import("howl_pty_c");
 const render_c = @import("howl_render_c");
+const sdl_c = @import("sdl_c");
 const vt_c = @import("howl_vt_c");
 const surface_present = @import("events/surface_present.zig");
 const surface_layout = @import("render/surface_layout.zig");
@@ -286,7 +286,7 @@ pub const Term = struct {
                 };
                 defer visible.deinit(self.allocator);
                 clear_hover_pending(owner);
-                publish_cursor_info(owner, visible.state, EventLoop.nowNs()) catch {
+                publish_cursor_info(owner, visible.state, nowNs()) catch {
                     self.render.noteRetainedFailure();
                     break :blk idleDrive(self.render.retainedState(), .failed);
                 };
@@ -391,6 +391,10 @@ pub const Term = struct {
         return std.mem.trim(u8, std.fs.path.basename(launch.shell), " \t\r\n");
     }
 };
+
+fn nowNs() u64 {
+    return sdl_c.SDL_GetTicksNS();
+}
 
 fn initSurfaceLayout(surface_px: render_c.HowlRenderPixelSize, font_size_px: u16, primary_font_path: ?[:0]const u8, fallback_font_paths: []const [:0]const u8) !render_retained.SurfaceLayout {
     assertRenderText(surface_px, font_size_px, fallback_font_paths);
