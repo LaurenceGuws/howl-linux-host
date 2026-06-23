@@ -289,37 +289,22 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     render_surface_tests.root_module.link_libc = true;
     const run_render_surface_tests = addTestRunArtifact(b, render_surface_tests);
 
-    const terminal_surface_tests = b.addTest(.{
-        .name = "test-terminal-surface",
-        .root_module = terminalSurfaceTestModule(b, deps),
-        .filters = filters,
-    });
-    configureHostTests(terminal_surface_tests, deps);
-    const run_terminal_surface_tests = addTestRunArtifact(b, terminal_surface_tests);
-
     stageTestArtifact(steps.test_unit_build, cli_args_tests);
     stageTestArtifact(steps.test_unit_build, config_env_tests);
     stageTestArtifact(steps.test_unit_build, tab_bar_tests);
     stageTestArtifact(steps.test_unit_build, retained_tests);
     stageTestArtifact(steps.test_unit_build, render_surface_tests);
-    stageTestArtifact(steps.test_unit_build, terminal_surface_tests);
     steps.test_unit.dependOn(&run_cli_args_tests.step);
     steps.test_unit.dependOn(&run_config_env_tests.step);
     steps.test_unit.dependOn(&run_tab_bar_tests.step);
     steps.test_unit.dependOn(&run_retained_tests.step);
     steps.test_unit.dependOn(&run_render_surface_tests.step);
-    steps.test_unit.dependOn(&run_terminal_surface_tests.step);
     steps.test_all.dependOn(steps.test_unit);
-
-    const host_test_mod = hostTestRootModule(b, deps);
 
     const integration_test_mod = b.createModule(.{
         .root_source_file = b.path("src/integration_test_root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "host", .module = host_test_mod },
-        },
     });
 
     const integration_tests = b.addTest(.{
@@ -356,14 +341,6 @@ fn renderSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
     module.addImport("gl_c", deps.gl_c);
     module.addImport("howl_render_c", deps.howl_render_c);
     return module;
-}
-
-fn terminalSurfaceTestModule(b: *Build, deps: HostDeps) *Module {
-    return hostTestRootModule(b, deps);
-}
-
-fn hostTestRootModule(b: *Build, deps: HostDeps) *Module {
-    return createHostModule(b, deps, "src/host_test_root.zig");
 }
 
 fn configureHostTests(mod_tests: *Compile, deps: HostDeps) void {

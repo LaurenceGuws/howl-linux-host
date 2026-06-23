@@ -23,7 +23,8 @@ pub const WaitThread = struct {
     }
 
     pub fn deinit(self: *WaitThread) void {
-        self.stop.store(false, .release);
+        self.stop.store(true, .release);
+        std.debug.assert(self.thread == null);
     }
 };
 

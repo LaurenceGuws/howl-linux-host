@@ -2,7 +2,7 @@ const gl_c = @import("gl_c");
 const Layout = @import("../layout.zig");
 const egl_swap = @import("egl_swap.zig");
 const render_c = @import("howl_render_c");
-const gl_quad = @import("../render/gl_quad.zig");
+const gl_quad = @import("quad.zig");
 const resource_store = @import("resource_store.zig");
 const texture_scroll_bar = @import("scroll_bar.zig");
 const sdl_c = @import("sdl_c");
@@ -202,7 +202,8 @@ pub fn submitFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.
     }
     for (frame.panes) |pane| texture_scroll_bar.draw(c, @max(fb_w, 1), @max(fb_h, 1), pane.scrollbar);
     for (frame.panes) |pane| texture_scroll_bar.drawChip(c, @max(fb_w, 1), @max(fb_h, 1), pane.scroll_chip);
-    _ = egl_swap.swapDamaged(c, handle, frame.damage.rects[0..frame.damage.count], @max(fb_w, 1), @max(fb_h, 1), frame.damage.full, false);
+    const damage = egl_swap.Damage.fullFrame();
+    _ = egl_swap.swapDamaged(c, handle, damage.rects[0..damage.count], @max(fb_w, 1), @max(fb_h, 1), damage.full, false);
     return token;
 }
 
@@ -421,7 +422,6 @@ fn testFrame() Layout.Frame {
         .tab_bar_revision = 1,
         .tab_bar_font_size_px = 16,
         .tab_labels = &.{},
-        .damage = .fullFrame(),
     };
 }
 

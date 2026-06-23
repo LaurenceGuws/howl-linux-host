@@ -1,9 +1,10 @@
 const std = @import("std");
 const CursorStyle = @import("config/term.zig").CursorStyle;
+const EventLoop = @import("events/event_loop.zig");
 const pty_c = @import("howl_pty_c");
 const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
-const Trigger = @import("events/surface_present.zig").Trigger;
+const surface_present = @import("events/surface_present.zig");
 const surface_layout = @import("render/surface_layout.zig");
 const Pty = @import("pty.zig");
 const Render = @import("render.zig");
@@ -12,6 +13,7 @@ const Vt = @import("vt.zig");
 const vt_surface = @import("vt/surface.zig");
 
 const pty_session = Pty.session;
+const pty_wait_thread = Pty.wait_thread;
 const render_retained = Render.surface_retained;
 const FairMutex = Sync.FairMutex;
 const vt_state = Vt.state;
@@ -41,10 +43,9 @@ pub const Term = struct {
     render: render_retained.State,
     vt_state: VtState = .{},
     mutex: FairMutex = .{},
-    surface_present_trigger: ?*Trigger.Trigger = null,
+    surface_present_trigger: ?*surface_present.Trigger = null,
+    progress_thread: pty_wait_thread.WaitThread = .{},
     host_title: vt_title.HostTitle = .{},
-
-    pub const PresentDamage = @import("layout.zig").Damage;
 
     pub const TurnStep = enum {
         surface_idle,
@@ -61,7 +62,6 @@ pub const Term = struct {
         prepared: bool,
         step: TurnStep,
         present_snapshot_seq: u64,
-        present_damage: PresentDamage,
         upload: ?PreparedSurface = null,
     };
 
@@ -70,7 +70,6 @@ pub const Term = struct {
         snapshot_seq: u64,
         render_px: render_c.HowlRenderPixelSize,
         frame: *const render_c.HowlRenderTermSurfacePrepared,
-        damage: PresentDamage,
     };
 
     pub const UploadedSurface = struct {
@@ -82,7 +81,6 @@ pub const Term = struct {
     pub const SubmitPreparedResult = struct {
         result: render_retained.SubmitResult,
         snapshot_seq: u64,
-        damage: PresentDamage = .fullFrame(),
     };
 
     pub fn initTerminal(
@@ -95,7 +93,7 @@ pub const Term = struct {
         fallback_font_paths: []const [:0]const u8,
         cursor_shape: CursorStyle,
         cursor_blink: bool,
-        trigger: *Trigger.Trigger,
+        trigger: *surface_present.Trigger,
     ) !void {
         const terminal_layout = try initSurfaceLayout(surface_px, font_size_px, primary_font_path, fallback_font_paths);
         const session = try pty_session.initHandle(launch, terminal_layout.cols, terminal_layout.rows);
@@ -123,8 +121,12 @@ pub const Term = struct {
             .vt_state = next_vt_state,
             .mutex = .{},
             .surface_present_trigger = trigger,
+            .progress_thread = .{},
             .host_title = .{},
         };
+        std.debug.print("pty init\n", .{});
+        self.progress_thread.init();
+        std.debug.print("pty started\n", .{});
         session_owned_by_local = false;
         vt_owned_by_local = false;
         render_owned_by_local = false;
@@ -136,17 +138,21 @@ pub const Term = struct {
     }
 
     pub fn deinitTerminal(self: *Term) void {
+        self.stopProgressThread();
         pty_session.stop(self);
         self.render.deinit();
         self.vt_state.deinit(self.allocator);
         deinitVt(self.vt);
         pty_session.deinitHandle(self.session);
+        self.progress_thread.deinit();
     }
 
     pub fn startTerminal(self: *Term) !void {
         self.setTitleFromLaunch();
         try pty_session.start(self);
+        errdefer pty_session.stop(self);
         if (!pty_session.isAlive(self)) return error.TransportUnavailable;
+        self.progress_thread.thread = try std.Thread.spawn(.{}, pty_wait_thread.progressThreadMain, .{pty_wait_thread.target(self, &self.progress_thread)});
     }
 
     pub fn initTitle(self: *Term) void {
@@ -179,15 +185,21 @@ pub const Term = struct {
         vt_title.refreshHost(&self.host_title, &self.vt_state.title, fallback);
     }
 
-    pub fn initSurfacePresentTrigger(self: *Term, trigger: *Trigger.Trigger) void {
+    pub fn initSurfacePresentTrigger(self: *Term, trigger: *surface_present.Trigger) void {
         self.surface_present_trigger = trigger;
     }
 
     pub fn triggerSurfacePresent(self: *Term) void {
         const trigger = self.surface_present_trigger orelse return;
-        if (!Trigger.trigger(trigger)) return;
-        const event_loop = self.surface_present_wake_loop orelse return;
-        event_loop.wake();
+        _ = surface_present.trigger(trigger);
+    }
+
+    fn stopProgressThread(self: *Term) void {
+        pty_wait_thread.stopAndKick(pty_wait_thread.target(self, &self.progress_thread));
+        if (self.progress_thread.thread) |thread| {
+            thread.join();
+            self.progress_thread.thread = null;
+        }
     }
 
     // Terminal surface turns own retained render sequencing and VT publish acknowledgement.
@@ -212,7 +224,6 @@ pub const Term = struct {
             .prepared = drive_result.prepared,
             .step = drive_result.step,
             .present_snapshot_seq = drive_result.present_snapshot_seq,
-            .present_damage = drive_result.present_damage,
             .upload = drive_result.upload,
         };
     }
@@ -247,7 +258,6 @@ pub const Term = struct {
         state_after: render_retained.RetainedState,
         step: TurnStep,
         present_snapshot_seq: u64,
-        present_damage: PresentDamage,
         upload: ?PreparedSurface = null,
     };
 
@@ -274,7 +284,7 @@ pub const Term = struct {
                 };
                 defer visible.deinit(self.allocator);
                 clear_hover_pending(owner);
-                publish_cursor_info(owner, visible.state, @import("layout.zig").nowNs()) catch {
+                publish_cursor_info(owner, visible.state, EventLoop.nowNs()) catch {
                     self.render.noteRetainedFailure();
                     break :blk idleDrive(self.render.retainedState(), .failed);
                 };
@@ -317,7 +327,6 @@ pub const Term = struct {
                 .snapshot_seq = upload.info.snapshot_seq,
                 .render_px = upload.info.render_px,
                 .frame = render_surface,
-                .damage = PresentDamage.fromRenderFrame(render_surface),
             },
         };
     }
@@ -338,7 +347,7 @@ pub const Term = struct {
         if (testing_hooks.before_render_submit) |hook| hook(self);
         if (testing_hooks.observe_submit_surface) |hook| hook(self, uploaded.term_surface);
         const result = self.render.submitWithTermSurface(uploaded.term_surface, &submit_result);
-        return .{ .result = result, .snapshot_seq = uploaded.prepared.snapshot_seq, .damage = uploaded.prepared.damage };
+        return .{ .result = result, .snapshot_seq = uploaded.prepared.snapshot_seq };
     }
 
     const PreparedUploadResult = struct {
@@ -349,7 +358,7 @@ pub const Term = struct {
 
     fn idleDrive(state_after: render_retained.RetainedState, step: TurnStep) DriveResult {
         std.debug.assert(step == .surface_idle or step == .blocked_present or step == .idle_prepare or step == .failed);
-        return .{ .prepared = false, .state_after = state_after, .step = step, .present_snapshot_seq = 0, .present_damage = .fullFrame(), .upload = null };
+        return .{ .prepared = false, .state_after = state_after, .step = step, .present_snapshot_seq = 0, .upload = null };
     }
 
     fn failedUploadSubmit(snapshot_seq: u64) SubmitPreparedResult {
@@ -362,8 +371,8 @@ pub const Term = struct {
 
     fn uploadDriveResult(prepared: bool, upload_result: PreparedUploadResult) DriveResult {
         return switch (upload_result.result) {
-            .failed => .{ .prepared = prepared, .state_after = .failed, .step = .failed, .present_snapshot_seq = 0, .present_damage = .fullFrame(), .upload = null },
-            .ready => .{ .prepared = prepared, .state_after = .submit_ready, .step = .idle_submit, .present_snapshot_seq = 0, .present_damage = .fullFrame(), .upload = upload_result.upload },
+            .failed => .{ .prepared = prepared, .state_after = .failed, .step = .failed, .present_snapshot_seq = 0, .upload = null },
+            .ready => .{ .prepared = prepared, .state_after = .submit_ready, .step = .idle_submit, .present_snapshot_seq = 0, .upload = upload_result.upload },
         };
     }
 

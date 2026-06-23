@@ -1,5 +1,5 @@
 const Layout = @import("../layout.zig");
-const gl_quad = @import("../render/gl_quad.zig");
+const gl_quad = @import("quad.zig");
 
 pub fn draw(comptime c: type, fb_w: c_int, fb_h: c_int, value: Layout.scrollbar.Placement) void {
     if (!value.visible or value.rect.width <= 0 or value.rect.height <= 0) return;

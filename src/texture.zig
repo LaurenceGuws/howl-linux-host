@@ -1,5 +1,6 @@
 pub const egl_swap = @import("texture/egl_swap.zig");
 pub const frame = @import("texture/frame.zig");
+pub const quad = @import("texture/quad.zig");
 pub const resource_store = @import("texture/resource_store.zig");
 pub const scroll_bar = @import("texture/scroll_bar.zig");
 pub const surface = @import("texture/surface.zig");

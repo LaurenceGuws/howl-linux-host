@@ -4,7 +4,7 @@ const Surface = @import("../tab_bar/surface.zig").Surface;
 const Style = @import("../tab_bar/style.zig").Colors;
 const TabIndex = @import("../tab_bar.zig").TabBar.TabIndex;
 const gl_c = @import("gl_c");
-const gl_quad = @import("../render/gl_quad.zig");
+const gl_quad = @import("quad.zig");
 const render_c = @import("howl_render_c");
 const resource_store = @import("resource_store.zig");
 

@@ -3,7 +3,7 @@ const vt_c = @import("howl_vt_c");
 const Term = @import("../term.zig").Term;
 const vt_retained = @import("../vt/surface_retained.zig");
 const vt_title = @import("../vt/title.zig");
-const FairMutex = @import("../sync/fair_mutex.zig").FairMutex;
+const FairMutex = @import("../sync.zig").FairMutex;
 const std = @import("std");
 
 const transport_mode: pty_session.TransportPumpMode = .normal;

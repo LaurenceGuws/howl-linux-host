@@ -1,6 +1,5 @@
 const std = @import("std");
 
-const PresentDamage = @import("texture/egl_swap.zig").Damage;
 const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 const HostInput = @import("input.zig").Input;
 const terminal_scrollbar = @import("scroll_bar.zig");
@@ -21,8 +20,6 @@ const surface_present = @import("events/surface_present.zig");
 const term_input = @import("vt/input.zig");
 const vt_surface = @import("vt/surface.zig");
 const vt_c = @import("howl_vt_c");
-
-pub const Damage = PresentDamage;
 
 pub const window = @import("layout/window.zig");
 pub const tabs = @import("layout/tabs.zig");
@@ -62,7 +59,6 @@ pub const Frame = struct {
     tab_bar_revision: u64,
     tab_bar_font_size_px: u16,
     tab_labels: []const []const u8,
-    damage: PresentDamage,
 };
 
 pub const PaneFrameFacts = struct {
@@ -78,6 +74,31 @@ pub const PaneFrameFacts = struct {
 pub const PaneTexture = struct {
     id: pane.PaneId,
     id_value: u32,
+};
+
+pub const UpdateBatch = struct {
+    active_tab: TabIndex,
+    commands: []const UpdateCommand,
+};
+
+pub const UpdateCommand = union(enum) {
+    pane_surface: PaneSurfaceUpdate,
+    tab_bar_cell: TabBarCellUpdate,
+};
+
+pub const PaneSurfaceUpdate = struct {
+    tab_index: TabIndex,
+    pane_id: pane.PaneId,
+    surface: SurfaceUpdate,
+};
+
+pub const SurfaceUpdate = union(enum) {
+    full,
+    partial: Rect,
+};
+
+pub const TabBarCellUpdate = struct {
+    tab_index: TabIndex,
 };
 
 pub const ActiveTabProblem = enum { exited, runtime_failed };
@@ -104,7 +125,6 @@ pub const TurnResult = struct {
     panes: [tab.max_panes]PaneTurn,
     pane_count: usize,
     step: Term.TurnStep,
-    present_damage: PresentDamage,
 };
 
 pub const PresentTurn = struct {
@@ -272,7 +292,7 @@ pub const Layout = struct {
         var tab_index_value: usize = 0;
         while (tab_index_value < self.tabs.active_count) : (tab_index_value += 1) {
             const tab_value = self.tabAt(tab_index_value);
-            for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| triggered = surface_present.consume(&pane_value.surface_update_trigger) or triggered;
+            for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| triggered = surface_present.consumeTrigger(&pane_value.surface_update_trigger) or triggered;
         }
         return triggered;
     }
@@ -302,7 +322,7 @@ pub const Layout = struct {
         self.noteRenderTurn(prepare_turn);
         const turn = self.submitUploaded(texture_frame, prepare_turn);
         self.noteRenderTurn(turn);
-        return .{ .turn = turn, .frame = self.frame(conf, app_window, texture_frame, bar, turn.present_damage) };
+        return .{ .turn = turn, .frame = self.frame(conf, app_window, texture_frame, bar) };
     }
 
     pub fn submitPresent(self: *Layout, texture_frame: *TextureFrame.State, present_turn: PresentTurn, reason: PresentReason) void {
@@ -423,7 +443,7 @@ pub const Layout = struct {
 
     fn renderTurn(self: *Layout, readiness: []const PaneSurfaceReadiness) TurnResult {
         const tab_value = self.activeTab();
-        var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle, .present_damage = .fullFrame() };
+        var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle };
         for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| {
             std.debug.assert(readiness[index].id == pane_value.id);
             const turn = pane_value.term.renderTurn(readiness[index].ready, pane_value, syncPendingPixelsLocked, hoverDecoration, clearHoverPending, publishCursorInfo);
@@ -435,17 +455,16 @@ pub const Layout = struct {
 
     fn submitUploaded(self: *Layout, texture_frame: *TextureFrame.State, prepare_turn: TurnResult) TurnResult {
         const tab_value = self.activeTab();
-        var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle, .present_damage = .fullFrame() };
+        var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle };
         for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| result.panes[index] = .{ .id = pane_value.id, .turn = idleTurn() };
         for (prepare_turn.panes[0..prepare_turn.pane_count]) |pane_turn| {
             const prepared = pane_turn.turn.upload orelse continue;
             const uploaded = texture_frame.uploadTermSurface(pane_turn.id, prepared.frame);
             const pane_value = &tab_value.panes[tab.paneIndex(pane_turn.id)];
             const submit = pane_value.term.submitUploaded(.{ .prepared = prepared, .term_surface = uploaded.term_surface, .ok = uploaded.ok });
-            const turn = Term.TurnResult{ .state_before = .submit_ready, .state_after = pane_value.term.render.retainedState(), .prepared = false, .step = submitStep(submit.result), .present_snapshot_seq = if (submit.result == .rendered) submit.snapshot_seq else 0, .present_damage = submit.damage, .upload = null };
+            const turn = Term.TurnResult{ .state_before = .submit_ready, .state_after = pane_value.term.render.retainedState(), .prepared = false, .step = submitStep(submit.result), .present_snapshot_seq = if (submit.result == .rendered) submit.snapshot_seq else 0, .upload = null };
             result.panes[tab.paneIndex(pane_turn.id)] = .{ .id = pane_turn.id, .turn = turn };
             result.step = aggregateTurnStep(result.step, turn.step);
-            if (turn.step == .rendered) result.present_damage = turn.present_damage;
         }
         return result;
     }
@@ -472,7 +491,7 @@ pub const Layout = struct {
         return out[0..tab_value.pane_count];
     }
 
-    fn frame(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar, damage: PresentDamage) Frame {
+    fn frame(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) Frame {
         const interior = window.interior(app_window, &conf.tab_bar, self.tabs.active_count);
         var title_buf: [TabBar.max_tabs][]const u8 = undefined;
         const labels = self.tabTitles(title_buf[0..]);
@@ -486,7 +505,7 @@ pub const Layout = struct {
             textures_buf[index] = .{ .id = pane_value.id, .id_value = texture_frame.termTextureId(pane_value.id) };
         }
         const frame_panes = framePanes(tab.body(interior), tab_value.split_tree, facts_buf[0..tab_value.pane_count], textures_buf[0..tab_value.pane_count], panes_buf[0..]);
-        return .{ .panes = frame_panes, .tab_bar_height_px = @intCast(interior.tab_bar.pixel_height), .tab_count = @intCast(labels.len), .active_tab = snapshot.active_idx, .tab_bar_revision = self.tabBarRevision(), .tab_bar_font_size_px = self.activePane().font_size_px, .tab_labels = snapshot.labels, .damage = damage };
+        return .{ .panes = frame_panes, .tab_bar_height_px = @intCast(interior.tab_bar.pixel_height), .tab_count = @intCast(labels.len), .active_tab = snapshot.active_idx, .tab_bar_revision = self.tabBarRevision(), .tab_bar_font_size_px = self.activePane().font_size_px, .tab_labels = snapshot.labels };
     }
 
     fn frameFacts(self: *Layout, pane_value: *pane.Pane) PaneFrameFacts {
@@ -579,7 +598,9 @@ fn processSelectionMouse(_: *anyopaque, _: HostInput.Mouse.Event) input_processo
 }
 
 fn processLinkMouse(surface: *anyopaque, mouse: HostInput.Mouse.Event) input_processor.MouseHandlingOutcome {
-    return render_links.handleMouse(paneOwner(surface), mouse);
+    _ = surface;
+    _ = mouse;
+    return .{ .consumed = false, .host_visual_changed = false };
 }
 
 fn syncPendingPixelsLocked(surface: *anyopaque, term_value: *Term) bool {
@@ -626,7 +647,7 @@ fn submitStep(result: render_retained.SubmitResult) Term.TurnStep {
 }
 
 fn idleTurn() Term.TurnResult {
-    return .{ .state_before = .idle, .state_after = .idle, .prepared = false, .step = .surface_idle, .present_snapshot_seq = 0, .present_damage = .fullFrame(), .upload = null };
+    return .{ .state_before = .idle, .state_after = .idle, .prepared = false, .step = .surface_idle, .present_snapshot_seq = 0, .upload = null };
 }
 
 pub fn framePanes(tab_body: tab.Body, split_tree: splits.Tree, facts: []const PaneFrameFacts, textures: []const PaneTexture, out: []FramePane) []FramePane {

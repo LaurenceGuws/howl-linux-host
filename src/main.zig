@@ -93,20 +93,38 @@ noinline fn start(io: std.Io, options: Args) !void {
     _ = io;
     try layout.openTab(std.heap.c_allocator, conf, app_window);
     layout.configureInputPolicies(conf, input);
-    try runMainLoop(conf, app_window, layout, input, event_loop);
+    try runMainLoop(conf, app_window, texture_frame, tab_bar, layout, input, event_loop);
 }
 
-fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, layout: *Layout.Layout, input: *Input, event_loop: *EventLoop.EventLoop) !void {
-    var events = Events.scheduler.HostEventQueue.init();
+fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture_frame: *TextureFrame.State, tab_bar: *TabBar, layout: *Layout.Layout, input: *Input, event_loop: *EventLoop.EventLoop) !void {
     while (!event_loop.quitRequested()) {
-        if (event_loop.pumpInput(input, true, null) == .quit) return;
+        var events = Events.scheduler.HostEventQueue.init();
+        const had_layout_trigger = layout.consumeSurfaceUpdateTriggers();
+        if (had_layout_trigger) events.append(.surface_present_triggered);
+        if (app_window.hasRequestedRedraw()) events.append(.redraw_requested);
+
+        const wait_for_sdl = !input.hasPendingEvents() and !app_window.hasRequestedRedraw() and !had_layout_trigger;
+        if (event_loop.pumpInput(input, wait_for_sdl, null) == .quit) return;
+
         layout.applyFocusChange(app_window, input, &events);
         while (input.drainBindingAction()) |action| try layout.handleBindingAction(conf, app_window, action);
         var host_visual_changed = false;
         layout.forwardTerminalInput(conf, app_window, input, &host_visual_changed);
         if (layout.applyWindowResize(conf, app_window, input)) app_window.requestRedraw();
-        if (layout.consumeSurfaceUpdateTriggers()) app_window.requestRedraw();
+        if (layout.consumeSurfaceUpdateTriggers()) {
+            events.append(.surface_present_triggered);
+        }
+        if (host_visual_changed) app_window.requestRedraw();
         layout.configureInputPolicies(conf, input);
+        if (app_window.hasRequestedRedraw() and !events.contains(.redraw_requested)) events.append(.redraw_requested);
+
+        const layout_update_pending = events.contains(.surface_present_triggered);
+        const present_pending = app_window.hasRequestedRedraw() or layout_update_pending;
+        if (present_pending and app_window.hasFrame()) {
+            const present_turn = layout.render(conf, app_window, texture_frame, tab_bar);
+            const reason = layout.choosePresentReason(&events, layout.terminalFrameReady(present_turn.turn.step));
+            layout.submitPresent(texture_frame, present_turn, reason);
+        }
     }
 }
 
