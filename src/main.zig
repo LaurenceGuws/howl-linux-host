@@ -2,8 +2,8 @@ const std = @import("std");
 const cli = @import("cli.zig");
 const Config = @import("config.zig");
 const Events = @import("events.zig");
-const HostLoop = @import("host_loop.zig");
 const Input = @import("input.zig").Input;
+const Layout = @import("layout.zig");
 const Render = @import("render.zig");
 const TabBarUnit = @import("tab_bar.zig");
 const Texture = @import("texture.zig");
@@ -11,9 +11,7 @@ const window_icon = @import("window_icon.zig");
 const window = Events.window;
 
 const EventLoop = Events.event_loop;
-const Loop = HostLoop.Loop;
 const TabBar = TabBarUnit.TabBar;
-const TabSlots = TabBarUnit.tab_slots.Slots;
 const TextureFrame = Texture.frame;
 const render_fonts = Render.fonts;
 const tab_bar_surface_layout = TabBarUnit.surface_layout;
@@ -71,19 +69,16 @@ noinline fn start(io: std.Io, options: Args) !void {
     tab_bar.* = .{};
     defer std.heap.c_allocator.destroy(tab_bar);
 
-    const tabs = try std.heap.c_allocator.create(TabSlots);
-    tabs.initForHostStartup();
-    const active_tab_idx = try std.heap.c_allocator.create(TabBar.TabIndex);
-    active_tab_idx.* = 0;
+    const layout = try std.heap.c_allocator.create(Layout.Layout);
+    layout.init();
 
     const input = try std.heap.c_allocator.create(Input);
     const event_loop = try std.heap.c_allocator.create(EventLoop.EventLoop);
     defer {
-        destroyTabs(tabs);
-        std.heap.c_allocator.destroy(tabs);
+        layout.deinit();
+        std.heap.c_allocator.destroy(layout);
         std.heap.c_allocator.destroy(input);
         std.heap.c_allocator.destroy(event_loop);
-        std.heap.c_allocator.destroy(active_tab_idx);
     }
     input.* = try initInput();
     input.setBindings(Input.Bindings.Configured.init(conf));
@@ -95,22 +90,24 @@ noinline fn start(io: std.Io, options: Args) !void {
 
     applyChildEnvironmentPolicy();
 
-    var loop = Loop{
-        .conf = conf,
-        .io = io,
-        .window = app_window,
-        .texture_frame = texture_frame,
-        .tab_bar = tab_bar,
-        .tabs = tabs,
-        .active_tab_idx = active_tab_idx,
-        .input = input,
-        .event_loop = event_loop,
-        .scheduler = Events.scheduler.Scheduler.init(),
-    };
-    try loop.openTab();
-    loop.configureInputPolicies();
+    _ = io;
+    try layout.openTab(std.heap.c_allocator, conf, app_window);
+    layout.configureInputPolicies(conf, input);
+    try runMainLoop(conf, app_window, layout, input, event_loop);
+}
 
-    try loop.run();
+fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, layout: *Layout.Layout, input: *Input, event_loop: *EventLoop.EventLoop) !void {
+    var events = Events.scheduler.HostEventQueue.init();
+    while (!event_loop.quitRequested()) {
+        if (event_loop.pumpInput(input, true, null) == .quit) return;
+        layout.applyFocusChange(app_window, input, &events);
+        while (input.drainBindingAction()) |action| try layout.handleBindingAction(conf, app_window, action);
+        var host_visual_changed = false;
+        layout.forwardTerminalInput(conf, app_window, input, &host_visual_changed);
+        if (layout.applyWindowResize(conf, app_window, input)) app_window.requestRedraw();
+        if (layout.consumeSurfaceUpdateTriggers()) app_window.requestRedraw();
+        layout.configureInputPolicies(conf, input);
+    }
 }
 
 fn initVideo() !void {
@@ -142,10 +139,6 @@ fn initInput() !Input {
 
 fn applyChildEnvironmentPolicy() void {
     std.debug.assert(setenv("TERM", child_term_value, 1) == 0);
-}
-
-fn destroyTabs(tabs: *TabSlots) void {
-    for (tabs.items()) |tab| tab.deinit();
 }
 
 fn setCurrentThreadName(name: [:0]const u8) void {

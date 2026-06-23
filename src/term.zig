@@ -1,10 +1,9 @@
 const std = @import("std");
-const EventLoop = @import("events/event_loop.zig");
 const CursorStyle = @import("config/term.zig").CursorStyle;
 const pty_c = @import("howl_pty_c");
 const render_c = @import("howl_render_c");
 const vt_c = @import("howl_vt_c");
-const surface_present = @import("events/surface_present.zig");
+const Trigger = @import("events/surface_present.zig").Trigger;
 const surface_layout = @import("render/surface_layout.zig");
 const Pty = @import("pty.zig");
 const Render = @import("render.zig");
@@ -42,11 +41,10 @@ pub const Term = struct {
     render: render_retained.State,
     vt_state: VtState = .{},
     mutex: FairMutex = .{},
-    surface_present_trigger: ?*surface_present.Trigger = null,
-    surface_present_wake_loop: ?*EventLoop.EventLoop = null,
+    surface_present_trigger: ?*Trigger.Trigger = null,
     host_title: vt_title.HostTitle = .{},
 
-    pub const PresentDamage = @import("texture/egl_swap.zig").Damage;
+    pub const PresentDamage = @import("layout.zig").Damage;
 
     pub const TurnStep = enum {
         surface_idle,
@@ -97,8 +95,7 @@ pub const Term = struct {
         fallback_font_paths: []const [:0]const u8,
         cursor_shape: CursorStyle,
         cursor_blink: bool,
-        trigger: *surface_present.Trigger,
-        event_loop: *EventLoop.EventLoop,
+        trigger: *Trigger.Trigger,
     ) !void {
         const terminal_layout = try initSurfaceLayout(surface_px, font_size_px, primary_font_path, fallback_font_paths);
         const session = try pty_session.initHandle(launch, terminal_layout.cols, terminal_layout.rows);
@@ -126,7 +123,6 @@ pub const Term = struct {
             .vt_state = next_vt_state,
             .mutex = .{},
             .surface_present_trigger = trigger,
-            .surface_present_wake_loop = event_loop,
             .host_title = .{},
         };
         session_owned_by_local = false;
@@ -183,14 +179,13 @@ pub const Term = struct {
         vt_title.refreshHost(&self.host_title, &self.vt_state.title, fallback);
     }
 
-    pub fn initSurfacePresentTrigger(self: *Term, trigger: *surface_present.Trigger, event_loop: *EventLoop.EventLoop) void {
+    pub fn initSurfacePresentTrigger(self: *Term, trigger: *Trigger.Trigger) void {
         self.surface_present_trigger = trigger;
-        self.surface_present_wake_loop = event_loop;
     }
 
     pub fn triggerSurfacePresent(self: *Term) void {
         const trigger = self.surface_present_trigger orelse return;
-        if (!surface_present.trigger(trigger)) return;
+        if (!Trigger.trigger(trigger)) return;
         const event_loop = self.surface_present_wake_loop orelse return;
         event_loop.wake();
     }
@@ -279,7 +274,7 @@ pub const Term = struct {
                 };
                 defer visible.deinit(self.allocator);
                 clear_hover_pending(owner);
-                publish_cursor_info(owner, visible.state, EventLoop.nowNs()) catch {
+                publish_cursor_info(owner, visible.state, @import("layout.zig").nowNs()) catch {
                     self.render.noteRetainedFailure();
                     break :blk idleDrive(self.render.retainedState(), .failed);
                 };

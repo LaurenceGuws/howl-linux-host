@@ -3,7 +3,6 @@ const std = @import("std");
 pub const surface = @import("tab_bar/surface.zig");
 pub const surface_layout = @import("tab_bar/surface_layout.zig");
 pub const style = @import("tab_bar/style.zig");
-pub const tab_slots = @import("tab_bar/tab_slots.zig");
 
 pub const TabBar = struct {
     pub const TabIndex = u8;

@@ -4,8 +4,28 @@ const PresentDamage = @import("texture/egl_swap.zig").Damage;
 const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 const HostInput = @import("input.zig").Input;
 const terminal_scrollbar = @import("scroll_bar.zig");
+const Config = @import("config.zig");
+const EventLoop = @import("events/event_loop.zig");
+const HostScheduler = @import("events/scheduler.zig");
+const Window = @import("events/window.zig").Window;
+const TabBar = @import("tab_bar.zig").TabBar;
+const TextureFrame = @import("texture/frame.zig");
+const Term = @import("term.zig").Term;
+const input_processor = @import("input/processor.zig");
+const pty_session = @import("pty/session.zig");
+const render_c = @import("howl_render_c");
+const render_links = @import("render/links.zig");
+const render_retained = @import("render/surface_retained.zig");
+const surface_layout = @import("render/surface_layout.zig");
+const surface_present = @import("events/surface_present.zig");
+const term_input = @import("vt/input.zig");
+const vt_surface = @import("vt/surface.zig");
+const vt_c = @import("howl_vt_c");
+
+pub const Damage = PresentDamage;
 
 pub const window = @import("layout/window.zig");
+pub const tabs = @import("layout/tabs.zig");
 pub const tab = @import("layout/tab.zig");
 pub const pane = @import("layout/pane.zig");
 pub const splits = @import("layout/splits.zig");
@@ -59,6 +79,555 @@ pub const PaneTexture = struct {
     id: pane.PaneId,
     id_value: u32,
 };
+
+pub const ActiveTabProblem = enum { exited, runtime_failed };
+pub const ActiveTabExitAction = enum { close_tab, quit };
+pub const CursorEvent = enum { blink, blink_timeout, trail };
+pub const PresentReason = enum { none, host_redraw, terminal_frame };
+
+pub const PaneTurn = struct {
+    id: pane.PaneId,
+    turn: Term.TurnResult,
+};
+
+pub const PaneSurfaceReadiness = struct {
+    id: pane.PaneId,
+    ready: bool,
+};
+
+pub const PaneUpload = struct {
+    id: pane.PaneId,
+    upload: Term.UploadedSurface,
+};
+
+pub const TurnResult = struct {
+    panes: [tab.max_panes]PaneTurn,
+    pane_count: usize,
+    step: Term.TurnStep,
+    present_damage: PresentDamage,
+};
+
+pub const PresentTurn = struct {
+    turn: TurnResult,
+    frame: Frame,
+};
+
+pub const Layout = struct {
+    tabs: tabs.Tabs = .{},
+
+    pub fn init(self: *Layout) void {
+        self.* = .{};
+        self.tabs.free_count = tabs.max_tabs;
+        for (0..tabs.max_tabs) |slot| self.tabs.free_slots[slot] = @intCast(tabs.max_tabs - 1 - slot);
+        self.assertTabs();
+    }
+
+    pub fn deinit(self: *Layout) void {
+        var index: usize = 0;
+        while (index < self.tabs.active_count) : (index += 1) self.deinitTab(index);
+        self.tabs.active_count = 0;
+        self.tabs.free_count = tabs.max_tabs;
+    }
+
+    pub fn openTab(self: *Layout, allocator: std.mem.Allocator, conf: *const Config.UiConfig, app_window: *Window) !void {
+        self.assertTabs();
+        if (self.tabs.free_count == 0) return;
+        const before_height = tab_bar.height(&conf.tab_bar, self.tabs.active_count);
+        const interior = window.interior(app_window, &conf.tab_bar, self.tabs.active_count + 1);
+        const body_value = tab.body(interior);
+        const placement = tab.singlePane(body_value, .first);
+        self.tabs.free_count -= 1;
+        const slot = self.tabs.free_slots[self.tabs.free_count];
+        self.tabs.tabs[slot] = .{};
+        try self.initPane(allocator, &self.tabs.tabs[slot].panes[0], .first, conf, placement);
+        self.tabs.tabs[slot].pane_count = 1;
+        self.tabs.tabs[slot].split_tree = splits.leaf(.first);
+        self.tabs.active_slots[self.tabs.active_count] = slot;
+        self.tabs.active_panes[self.tabs.active_count] = .first;
+        self.tabs.active_tab = self.tabs.active_count;
+        self.tabs.active_count += 1;
+        if (before_height != interior.tab_bar.pixel_height) self.applyBody(body_value);
+        self.syncFocus(app_window.focused);
+        app_window.setTitle(self.activePane().term.titleSlice());
+        app_window.requestRedraw();
+        self.assertTabs();
+    }
+
+    pub fn closeActiveTab(self: *Layout, conf: *const Config.UiConfig, app_window: *Window) void {
+        self.assertTabs();
+        if (self.tabs.active_count <= 1) return;
+        const before_height = tab_bar.height(&conf.tab_bar, self.tabs.active_count);
+        const removed_slot = self.tabs.active_slots[self.tabs.active_tab];
+        self.deinitSlot(removed_slot);
+        var index = self.tabs.active_tab;
+        while (index + 1 < self.tabs.active_count) : (index += 1) {
+            self.tabs.active_slots[index] = self.tabs.active_slots[index + 1];
+            self.tabs.active_panes[index] = self.tabs.active_panes[index + 1];
+        }
+        self.tabs.active_count -= 1;
+        self.tabs.free_slots[self.tabs.free_count] = removed_slot;
+        self.tabs.free_count += 1;
+        if (self.tabs.active_tab >= self.tabs.active_count) self.tabs.active_tab = self.tabs.active_count - 1;
+        const interior = window.interior(app_window, &conf.tab_bar, self.tabs.active_count);
+        if (before_height != interior.tab_bar.pixel_height) self.applyBody(tab.body(interior));
+        self.syncFocus(app_window.focused);
+        app_window.setTitle(self.activePane().term.titleSlice());
+        app_window.requestRedraw();
+        self.assertTabs();
+    }
+
+    pub fn selectRelative(self: *Layout, app_window: *Window, delta: i32) void {
+        if (self.tabs.active_count <= 1) return;
+        const len_i: i32 = @intCast(self.tabs.active_count);
+        self.tabs.active_tab = @intCast(@mod(@as(i32, @intCast(self.tabs.active_tab)) + delta, len_i));
+        self.syncFocus(app_window.focused);
+        app_window.setTitle(self.activePane().term.titleSlice());
+        app_window.requestRedraw();
+    }
+
+    pub fn select(self: *Layout, app_window: *Window, index: TabIndex) void {
+        if (index >= self.tabs.active_count or index == self.tabs.active_tab) return;
+        self.tabs.active_tab = index;
+        self.syncFocus(app_window.focused);
+        app_window.setTitle(self.activePane().term.titleSlice());
+        app_window.requestRedraw();
+    }
+
+    pub fn focusPane(self: *Layout, app_window: *Window, direction: pane.Direction) void {
+        const current = self.tabs.active_panes[self.tabs.active_tab];
+        const tree = self.activeTab().split_tree;
+        const next = switch (tree) {
+            .leaf => return,
+            .pair => |pair| switch (pair.direction) {
+                .left_right => switch (direction) {
+                    .left => if (current == tab.secondPaneId()) pane.PaneId.first else return,
+                    .right => if (current == .first) tab.secondPaneId() else return,
+                    .up, .down => return,
+                },
+                .top_bottom => switch (direction) {
+                    .up => if (current == tab.secondPaneId()) pane.PaneId.first else return,
+                    .down => if (current == .first) tab.secondPaneId() else return,
+                    .left, .right => return,
+                },
+            },
+        };
+        self.tabs.active_panes[self.tabs.active_tab] = next;
+        self.syncFocus(app_window.focused);
+        app_window.setTitle(self.activePane().term.titleSlice());
+        app_window.requestRedraw();
+    }
+
+    pub fn configureInputPolicies(self: *Layout, conf: *const Config.UiConfig, input: *HostInput) void {
+        const active_pane = self.activePane();
+        input.setHostMousePolicy(.{
+            .listen_always = conf.window.mouse.listen_always,
+            .link_hover = active_pane.conf.link_hover != .off,
+            .terminal_hover = term_input.wouldReportUnpressedMouseMotion(&active_pane.term),
+        });
+        input.setTerminalMousePolicy(.{ .bypass_mod = conf.term.mouse_bypass_mod });
+    }
+
+    pub fn applyFocusChange(self: *Layout, app_window: *Window, input: *HostInput, events: *HostScheduler.HostEventQueue) void {
+        if (input.drainWindowFocusChanged()) |focused| {
+            _ = app_window.setFocused(focused);
+            self.syncFocus(focused);
+            events.append(.window_focus_changed);
+        }
+    }
+
+    pub fn forwardTerminalInput(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, input: *HostInput, host_visual_changed: *bool) void {
+        const active_pane = self.activePane();
+        const interior = window.interior(app_window, &conf.tab_bar, self.tabs.active_count);
+        const terminal = pane.terminal(active_pane.placement, self.paneTextureSize(active_pane));
+        var input_published = false;
+        var selected = self.termInput(active_pane);
+        input_processor.drainTextInputFastPath(&selected, input, &input_published, host_visual_changed);
+        input_processor.drainPointerInput(&selected, input, 0, @intCast(interior.tab_bar.logical_height), terminal.logical_size.width, terminal.logical_size.height, &input_published, host_visual_changed);
+        terminal_scrollbar.handlePages(&active_pane.term, &active_pane.scrollbar, input);
+    }
+
+    pub fn applyWindowResize(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, input: *HostInput) bool {
+        if (!input.drainWindowGeometryChanged()) return false;
+        if (!app_window.refreshGeometry()) return false;
+        self.applyBody(tab.body(window.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
+        return true;
+    }
+
+    pub fn handleBindingAction(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, action: HostInput.Bindings.Action) !void {
+        switch (action) {
+            .terminal_new_tab => try self.openTab(std.heap.c_allocator, conf, app_window),
+            .terminal_close_tab => self.closeActiveTab(conf, app_window),
+            .terminal_next_tab => self.selectRelative(app_window, 1),
+            .terminal_prev_tab => self.selectRelative(app_window, -1),
+            .terminal_focus_pane_left => self.focusPane(app_window, .left),
+            .terminal_focus_pane_right => self.focusPane(app_window, .right),
+            .terminal_focus_pane_up => self.focusPane(app_window, .up),
+            .terminal_focus_pane_down => self.focusPane(app_window, .down),
+            else => if (HostInput.Bindings.focusTabIndex(action)) |index| self.select(app_window, index),
+        }
+    }
+
+    pub fn consumeSurfaceUpdateTriggers(self: *Layout) bool {
+        var triggered = false;
+        var tab_index_value: usize = 0;
+        while (tab_index_value < self.tabs.active_count) : (tab_index_value += 1) {
+            const tab_value = self.tabAt(tab_index_value);
+            for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| triggered = surface_present.consume(&pane_value.surface_update_trigger) or triggered;
+        }
+        return triggered;
+    }
+
+    pub fn activeTabProblem(self: *Layout) ?ActiveTabProblem {
+        if (self.tabs.active_count == 0) return .exited;
+        for (self.activeTab().panes[0..self.activeTab().pane_count]) |*pane_value| {
+            if (pty_session.outcome(&pane_value.term) == .runtime_failed) return .runtime_failed;
+        }
+        return switch (pty_session.outcome(&self.activePane().term)) {
+            .active => null,
+            .exited => .exited,
+            .runtime_failed => .runtime_failed,
+        };
+    }
+
+    pub fn activeTabExitAction(self: *const Layout) ActiveTabExitAction {
+        std.debug.assert(self.tabs.active_count > 0);
+        return if (self.tabs.active_count == 1) .quit else .close_tab;
+    }
+
+    pub fn render(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) PresentTurn {
+        app_window.clearRedrawRequest();
+        var readiness: [tab.max_panes]PaneSurfaceReadiness = undefined;
+        const ready = self.paneSurfaceReadiness(texture_frame, readiness[0..]);
+        const prepare_turn = self.renderTurn(ready);
+        self.noteRenderTurn(prepare_turn);
+        const turn = self.submitUploaded(texture_frame, prepare_turn);
+        self.noteRenderTurn(turn);
+        return .{ .turn = turn, .frame = self.frame(conf, app_window, texture_frame, bar, turn.present_damage) };
+    }
+
+    pub fn submitPresent(self: *Layout, texture_frame: *TextureFrame.State, present_turn: PresentTurn, reason: PresentReason) void {
+        switch (reason) {
+            .none => {},
+            .host_redraw => _ = texture_frame.submitPresentSync(present_turn.frame),
+            .terminal_frame => {
+                const token = texture_frame.submitPresentSync(present_turn.frame);
+                self.notePresentSubmitted(present_turn.turn, token);
+                self.completePresent(token);
+            },
+        }
+    }
+
+    pub fn terminalFrameReady(_: *Layout, step: Term.TurnStep) bool {
+        return step == .rendered;
+    }
+
+    pub fn choosePresentReason(_: *Layout, events: *const HostScheduler.HostEventQueue, terminal_ready: bool) PresentReason {
+        if (terminal_ready) return .terminal_frame;
+        if (events.contains(.redraw_requested)) return .host_redraw;
+        return .none;
+    }
+
+    fn initPane(self: *Layout, allocator: std.mem.Allocator, pane_value: *pane.Pane, id: pane.PaneId, conf: *const Config.UiConfig, placement: pane.Placement) !void {
+        _ = self;
+        surface_present.initTrigger(&pane_value.surface_update_trigger);
+        const surface_px = render_c.HowlRenderPixelSize{ .width = @intCast(placement.pixel_size.width), .height = @intCast(placement.pixel_size.height) };
+        pane_value.* = .{
+            .id = id,
+            .placement = placement,
+            .term = undefined,
+            .surface_resize = surface_layout.init(placement.pixel_size.width, placement.pixel_size.height, placement.logical_size.width, placement.logical_size.height),
+            .conf = &conf.term,
+            .font_size_px = @max(conf.term.font_size, 1),
+        };
+        surface_present.initTrigger(&pane_value.surface_update_trigger);
+        try pane_value.term.initTerminal(allocator, .{ .shell = conf.term.shell, .start_path = conf.term.start_path, .command = conf.term.command }, surface_px, pane_value.font_size_px, conf.term.fonts.primary, conf.term.fonts.mono, conf.term.cursor_shape, conf.term.cursor_blink, &pane_value.surface_update_trigger);
+        try pane_value.term.startTerminal();
+        pane_value.live = true;
+    }
+
+    fn deinitTab(self: *Layout, index: usize) void {
+        self.deinitSlot(self.tabs.active_slots[index]);
+    }
+
+    fn deinitSlot(self: *Layout, slot: TabIndex) void {
+        var tab_value = &self.tabs.tabs[slot];
+        var index: usize = tab_value.pane_count;
+        while (index > 0) {
+            index -= 1;
+            if (tab_value.panes[index].live) tab_value.panes[index].term.deinitTerminal();
+            tab_value.panes[index].live = false;
+        }
+        tab_value.pane_count = 0;
+    }
+
+    fn activeTab(self: *Layout) *tab.Tab {
+        return self.tabAt(self.tabs.active_tab);
+    }
+
+    fn tabAt(self: *Layout, index: usize) *tab.Tab {
+        std.debug.assert(index < self.tabs.active_count);
+        return &self.tabs.tabs[self.tabs.active_slots[index]];
+    }
+
+    fn activePane(self: *Layout) *pane.Pane {
+        return &self.activeTab().panes[tab.paneIndex(self.tabs.active_panes[self.tabs.active_tab])];
+    }
+
+    fn applyBody(self: *Layout, body_value: tab.Body) void {
+        var tab_index_value: usize = 0;
+        while (tab_index_value < self.tabs.active_count) : (tab_index_value += 1) {
+            var placements: [tab.max_panes]pane.Placement = undefined;
+            const tab_value = self.tabAt(tab_index_value);
+            const placed = tab.placePanes(body_value, tab_value.split_tree, placements[0..]);
+            for (placed) |placement| {
+                const pane_value = &tab_value.panes[tab.paneIndex(placement.id)];
+                pane_value.placement = placement;
+                surface_layout.resize(&pane_value.surface_resize, &pane_value.scrollbar, placement.pixel_size.width, placement.pixel_size.height, placement.logical_size.width, placement.logical_size.height);
+            }
+        }
+    }
+
+    fn syncFocus(self: *Layout, focused: bool) void {
+        var tab_index_value: usize = 0;
+        while (tab_index_value < self.tabs.active_count) : (tab_index_value += 1) {
+            const tab_value = self.tabAt(tab_index_value);
+            for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| {
+                pane_value.window_focused = focused;
+                pane_value.widget_focused = tab_index_value == self.tabs.active_tab and pane_value.id == self.tabs.active_panes[self.tabs.active_tab];
+                _ = term_input.publishFocus(&pane_value.term, pane_value.window_focused and pane_value.widget_focused) catch false;
+            }
+        }
+    }
+
+    fn paneTextureSize(_: *Layout, pane_value: *const pane.Pane) Size {
+        return .{ .width = @intCast(pane_value.term.render.surface_layout.render_px.width), .height = @intCast(pane_value.term.render.surface_layout.render_px.height) };
+    }
+
+    fn termInput(_: *Layout, pane_value: *pane.Pane) input_processor.TermInput {
+        return .{
+            .surface = pane_value,
+            .term = &pane_value.term,
+            .surface_layout = &pane_value.term.render.surface_layout,
+            .reset_cursor_blink_activity = resetCursorBlinkActivity,
+            .write_bytes_to_pty = writeBytesToPty,
+            .write_key_to_pty = writeKeyToPty,
+            .write_mouse_to_pty = writeMouseToPty,
+            .surface_point_cell = surfacePointCell,
+            .process_scrollbar_mouse = processScrollbarMouse,
+            .clear_hovered_link = clearHoveredLink,
+            .scroll_viewport_by_wheel = scrollViewportByWheel,
+            .process_selection_mouse = processSelectionMouse,
+            .process_link_mouse = processLinkMouse,
+        };
+    }
+
+    fn renderTurn(self: *Layout, readiness: []const PaneSurfaceReadiness) TurnResult {
+        const tab_value = self.activeTab();
+        var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle, .present_damage = .fullFrame() };
+        for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| {
+            std.debug.assert(readiness[index].id == pane_value.id);
+            const turn = pane_value.term.renderTurn(readiness[index].ready, pane_value, syncPendingPixelsLocked, hoverDecoration, clearHoverPending, publishCursorInfo);
+            result.panes[index] = .{ .id = pane_value.id, .turn = turn };
+            result.step = aggregateTurnStep(result.step, turn.step);
+        }
+        return result;
+    }
+
+    fn submitUploaded(self: *Layout, texture_frame: *TextureFrame.State, prepare_turn: TurnResult) TurnResult {
+        const tab_value = self.activeTab();
+        var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle, .present_damage = .fullFrame() };
+        for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| result.panes[index] = .{ .id = pane_value.id, .turn = idleTurn() };
+        for (prepare_turn.panes[0..prepare_turn.pane_count]) |pane_turn| {
+            const prepared = pane_turn.turn.upload orelse continue;
+            const uploaded = texture_frame.uploadTermSurface(pane_turn.id, prepared.frame);
+            const pane_value = &tab_value.panes[tab.paneIndex(pane_turn.id)];
+            const submit = pane_value.term.submitUploaded(.{ .prepared = prepared, .term_surface = uploaded.term_surface, .ok = uploaded.ok });
+            const turn = Term.TurnResult{ .state_before = .submit_ready, .state_after = pane_value.term.render.retainedState(), .prepared = false, .step = submitStep(submit.result), .present_snapshot_seq = if (submit.result == .rendered) submit.snapshot_seq else 0, .present_damage = submit.damage, .upload = null };
+            result.panes[tab.paneIndex(pane_turn.id)] = .{ .id = pane_turn.id, .turn = turn };
+            result.step = aggregateTurnStep(result.step, turn.step);
+            if (turn.step == .rendered) result.present_damage = turn.present_damage;
+        }
+        return result;
+    }
+
+    fn noteRenderTurn(self: *Layout, turn: TurnResult) void {
+        for (turn.panes[0..turn.pane_count]) |pane_turn| self.activeTab().panes[tab.paneIndex(pane_turn.id)].term.noteRenderTurn(pane_turn.turn);
+    }
+
+    fn notePresentSubmitted(self: *Layout, turn: TurnResult, token: u64) void {
+        for (turn.panes[0..turn.pane_count]) |pane_turn| {
+            if (pane_turn.turn.step != .rendered) continue;
+            self.activeTab().panes[tab.paneIndex(pane_turn.id)].term.notePresentSubmitted(pane_turn.turn.present_snapshot_seq, token);
+        }
+    }
+
+    fn completePresent(self: *Layout, token: u64) void {
+        const tab_value = self.activeTab();
+        for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| pane_value.term.completePresent(token);
+    }
+
+    fn paneSurfaceReadiness(self: *Layout, texture_frame: *const TextureFrame.State, out: []PaneSurfaceReadiness) []PaneSurfaceReadiness {
+        const tab_value = self.activeTab();
+        for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| out[index] = .{ .id = pane_value.id, .ready = texture_frame.termSurfaceReady(pane_value.id) };
+        return out[0..tab_value.pane_count];
+    }
+
+    fn frame(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar, damage: PresentDamage) Frame {
+        const interior = window.interior(app_window, &conf.tab_bar, self.tabs.active_count);
+        var title_buf: [TabBar.max_tabs][]const u8 = undefined;
+        const labels = self.tabTitles(title_buf[0..]);
+        const snapshot = bar.snapshot(self.tabs.active_tab, labels);
+        var panes_buf: [tab.max_panes]FramePane = undefined;
+        var facts_buf: [tab.max_panes]PaneFrameFacts = undefined;
+        var textures_buf: [tab.max_panes]PaneTexture = undefined;
+        const tab_value = self.activeTab();
+        for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| {
+            facts_buf[index] = self.frameFacts(pane_value);
+            textures_buf[index] = .{ .id = pane_value.id, .id_value = texture_frame.termTextureId(pane_value.id) };
+        }
+        const frame_panes = framePanes(tab.body(interior), tab_value.split_tree, facts_buf[0..tab_value.pane_count], textures_buf[0..tab_value.pane_count], panes_buf[0..]);
+        return .{ .panes = frame_panes, .tab_bar_height_px = @intCast(interior.tab_bar.pixel_height), .tab_count = @intCast(labels.len), .active_tab = snapshot.active_idx, .tab_bar_revision = self.tabBarRevision(), .tab_bar_font_size_px = self.activePane().font_size_px, .tab_labels = snapshot.labels, .damage = damage };
+    }
+
+    fn frameFacts(self: *Layout, pane_value: *pane.Pane) PaneFrameFacts {
+        return .{ .id = pane_value.id, .term_texture_size = self.paneTextureSize(pane_value), .scroll_view = terminal_scrollbar.viewFromTerm(terminal_scrollbar.scrollState(&pane_value.term)), .logical_width = pane_value.surface_resize.logical_w, .logical_height = pane_value.surface_resize.logical_h, .window_focused = pane_value.window_focused, .scrollbar_state = &pane_value.scrollbar };
+    }
+
+    fn tabTitles(self: *Layout, buf: [][]const u8) []const []const u8 {
+        std.debug.assert(buf.len >= self.tabs.active_count);
+        var index: usize = 0;
+        while (index < self.tabs.active_count) : (index += 1) {
+            const tab_value = self.tabAt(index);
+            buf[index] = tab_value.panes[tab.paneIndex(self.tabs.active_panes[index])].term.titleSlice();
+        }
+        return buf[0..self.tabs.active_count];
+    }
+
+    fn tabBarRevision(self: *Layout) u64 {
+        var revision: u64 = @as(u64, self.tabs.active_count) << 32;
+        revision ^= @as(u64, self.tabs.active_tab) << 16;
+        var index: usize = 0;
+        while (index < self.tabs.active_count) : (index += 1) {
+            const tab_value = self.tabAt(index);
+            const generation = tab_value.panes[tab.paneIndex(self.tabs.active_panes[index])].term.titleGeneration();
+            revision ^= generation +% (@as(u64, index) + 1) * 0x9e3779b97f4a7c15;
+            revision = std.math.rotl(u64, revision, 7);
+        }
+        return revision;
+    }
+
+    fn assertTabs(self: *const Layout) void {
+        std.debug.assert(self.tabs.active_count <= tabs.max_tabs);
+        std.debug.assert(self.tabs.free_count <= tabs.max_tabs);
+        std.debug.assert(self.tabs.active_count + self.tabs.free_count <= tabs.max_tabs);
+        std.debug.assert(self.tabs.active_count == 0 or self.tabs.active_tab < self.tabs.active_count);
+    }
+};
+
+fn paneOwner(surface: *anyopaque) *pane.Pane {
+    return @ptrCast(@alignCast(surface));
+}
+
+fn resetCursorBlinkActivity(surface: *anyopaque, now_ns: u64) bool {
+    return paneOwner(surface).cursor_blink.resetActivity(now_ns);
+}
+
+fn writeBytesToPty(surface: *anyopaque, bytes: []const u8) bool {
+    pty_session.publishInputBytes(&paneOwner(surface).term, bytes) catch return false;
+    return true;
+}
+
+fn writeKeyToPty(surface: *anyopaque, key: HostInput.Keys.Event) bool {
+    const key_code = term_input.key(key.key) orelse return false;
+    term_input.publishKey(&paneOwner(surface).term, key_code, term_input.mods(key.mods)) catch return false;
+    return true;
+}
+
+fn writeMouseToPty(surface: *anyopaque, mouse: HostInput.Mouse.Event) bool {
+    const cell = surfacePointCell(surface, mouse);
+    if (!cell.inside) return false;
+    return term_input.publishMouse(&paneOwner(surface).term, .{ .kind = term_input.mouseKind(mouse.kind), .button = term_input.mouseButton(mouse.button), .row = @intCast(cell.row), .col = cell.col, .pixel_x = if (mouse.pixel_x < 0) null else @intCast(mouse.pixel_x), .pixel_y = if (mouse.pixel_y < 0) null else @intCast(mouse.pixel_y), .mods = term_input.mods(mouse.mods), .buttons_down = term_input.buttons(mouse.buttons_down) }) catch false;
+}
+
+fn surfacePointCell(_: *anyopaque, mouse: HostInput.Mouse.Event) input_processor.SurfacePointCell {
+    return .{ .inside = mouse.pixel_x >= 0 and mouse.pixel_y >= 0, .row = @intCast(@max(mouse.pixel_y, 0)), .col = @intCast(@max(mouse.pixel_x, 0)) };
+}
+
+fn processScrollbarMouse(surface: *anyopaque, mouse: HostInput.Mouse.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int) input_processor.ScrollMouseOutcome {
+    const pane_value = paneOwner(surface);
+    const changed = terminal_scrollbar.handleMouse(&pane_value.term, &pane_value.scrollbar, mouse, origin_x, origin_y, logical_width, logical_height, pane_value.window_focused);
+    return .{ .consumed = changed, .host_visual_changed = changed };
+}
+
+fn clearHoveredLink(surface: *anyopaque) bool {
+    return render_links.clearHoveredLink(paneOwner(surface));
+}
+
+fn scrollViewportByWheel(surface: *anyopaque, mouse: HostInput.Mouse.Event) bool {
+    const delta: i32 = switch (mouse.button) {
+        .wheel_up => -3,
+        .wheel_down => 3,
+        else => return false,
+    };
+    const pane_value = paneOwner(surface);
+    terminal_scrollbar.byRows(&pane_value.term, &pane_value.scrollbar, delta);
+    return true;
+}
+
+fn processSelectionMouse(_: *anyopaque, _: HostInput.Mouse.Event) input_processor.MouseHandlingOutcome {
+    return .{ .consumed = false, .host_visual_changed = false };
+}
+
+fn processLinkMouse(surface: *anyopaque, mouse: HostInput.Mouse.Event) input_processor.MouseHandlingOutcome {
+    return render_links.handleMouse(paneOwner(surface), mouse);
+}
+
+fn syncPendingPixelsLocked(surface: *anyopaque, term_value: *Term) bool {
+    return surface_layout.syncPendingSurfacePixelsLocked(&paneOwner(surface).surface_resize, term_value);
+}
+
+fn hoverDecoration(surface: *anyopaque) ?vt_surface.HyperlinkHover {
+    return render_links.hoverDecoration(paneOwner(surface));
+}
+
+fn clearHoverPending(surface: *anyopaque) void {
+    paneOwner(surface).links.hover_publish_pending = false;
+}
+
+fn publishCursorInfo(surface: *anyopaque, state: vt_c.HowlVtRenderStateHandle, now_ns: u64) !void {
+    _ = now_ns;
+    const pane_value = paneOwner(surface);
+    const collected = try @import("cursor/source.zig").collectCursorInfo(state);
+    pane_value.cursor_render_info = collected.info;
+    pane_value.cursor_text_blinking = collected.text_blinking;
+}
+
+fn aggregateTurnStep(current: Term.TurnStep, next: Term.TurnStep) Term.TurnStep {
+    return if (turnStepRank(next) > turnStepRank(current)) next else current;
+}
+
+fn turnStepRank(step: Term.TurnStep) u8 {
+    return switch (step) {
+        .surface_idle => 0,
+        .idle_prepare => 1,
+        .idle_submit => 2,
+        .failed => 3,
+        .blocked_present => 4,
+        .rendered => 5,
+    };
+}
+
+fn submitStep(result: render_retained.SubmitResult) Term.TurnStep {
+    return switch (result) {
+        .rendered => .rendered,
+        .failed => .failed,
+        .idle, .stale, .needs_prepare => .idle_submit,
+    };
+}
+
+fn idleTurn() Term.TurnResult {
+    return .{ .state_before = .idle, .state_after = .idle, .prepared = false, .step = .surface_idle, .present_snapshot_seq = 0, .present_damage = .fullFrame(), .upload = null };
+}
 
 pub fn framePanes(tab_body: tab.Body, split_tree: splits.Tree, facts: []const PaneFrameFacts, textures: []const PaneTexture, out: []FramePane) []FramePane {
     // Layout owns presentable frame snapshot construction: active tab callers provide runtime facts

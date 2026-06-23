@@ -1,4 +1,4 @@
-//! Host tab body and single-pane placement.
+//! Layout tab data. Runtime policy lives in ../layout.zig.
 
 const std = @import("std");
 
@@ -6,6 +6,14 @@ const Layout = @import("../layout.zig");
 const Pane = @import("pane.zig");
 const Splits = @import("splits.zig");
 const WindowLayout = @import("window.zig");
+
+pub const max_panes = 2;
+
+pub const Tab = struct {
+    panes: [max_panes]Pane.Pane = undefined,
+    pane_count: u8 = 0,
+    split_tree: Splits.Tree = Splits.leaf(.first),
+};
 
 pub const Body = struct {
     rect: Layout.Rect,
@@ -28,6 +36,21 @@ pub fn singlePane(body_value: Body, pane_id: Pane.PaneId) Pane.Placement {
 
 pub fn placePanes(body_value: Body, tree: Splits.Tree, out: []Pane.Placement) []Pane.Placement {
     return Splits.place(body_value.rect, body_value.pixel_size, body_value.logical_size, tree, out);
+}
+
+pub fn paneIndex(id: Pane.PaneId) usize {
+    const index = @intFromEnum(id);
+    std.debug.assert(index < max_panes);
+    return index;
+}
+
+pub fn paneIdFromIndex(index: usize) Pane.PaneId {
+    std.debug.assert(index < max_panes);
+    return @enumFromInt(index);
+}
+
+pub fn secondPaneId() Pane.PaneId {
+    return @enumFromInt(1);
 }
 
 test "body maps window interior tab body exactly" {

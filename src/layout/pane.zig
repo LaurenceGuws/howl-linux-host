@@ -1,8 +1,18 @@
-//! Host pane identity and placement geometry.
+//! Layout pane data. Runtime policy lives in ../layout.zig.
 
 const std = @import("std");
 
 const Layout = @import("../layout.zig");
+const Term = @import("../term.zig").Term;
+const render_links = @import("../render/links.zig");
+const render_retained = @import("../render/surface_retained.zig");
+const surface_layout = @import("../render/surface_layout.zig");
+const surface_present = @import("../events/surface_present.zig");
+const terminal_scrollbar = @import("../scroll_bar.zig");
+const cursor_blink = @import("../cursor/blink.zig");
+const cursor_source = @import("../cursor/source.zig");
+const cursor_trail = @import("../cursor/trail.zig");
+const Config = @import("../config.zig");
 
 pub const PaneId = enum(u16) { first = 0, _ };
 
@@ -11,6 +21,28 @@ pub const Direction = enum { left, right, up, down };
 pub const Kind = enum { tiled, floating };
 
 pub const Visibility = enum { visible, hidden };
+
+pub const Pane = struct {
+    id: PaneId,
+    placement: Placement,
+    term: Term,
+    surface_resize: surface_layout.SurfaceResize,
+    surface_update_trigger: surface_present.Trigger = .{},
+    scrollbar: terminal_scrollbar.State = .{},
+    links: render_links.Links = .{},
+    cursor_blink: cursor_blink.CursorBlink = .{},
+    cursor_render_info: cursor_source.CursorRenderInfo = .{},
+    cursor_trail: cursor_trail.CursorTrail = .{},
+    cursor_position_sequence: u64 = 0,
+    cursor_client_moved_at_ns: u64 = 0,
+    cursor_text_blinking: bool = false,
+    cursor_render: render_retained.HostCursorCadence = std.mem.zeroes(render_retained.HostCursorCadence),
+    window_focused: bool = true,
+    widget_focused: bool = true,
+    font_size_px: u16 = 1,
+    live: bool = false,
+    conf: *const Config.Terminal,
+};
 
 pub const Placement = struct {
     id: PaneId,
