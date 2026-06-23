@@ -119,6 +119,10 @@ pub fn GenericState(comptime c: type) type {
             const ok = texture_term.uploadRenderSurface(&self.resource_store, &presenter.term_surface, surface);
             return .{ .term_surface = presenter.submittedTermSurface(), .ok = ok };
         }
+
+        pub fn textHandle(self: *const @This()) render_c.HowlRenderTextHandle {
+            return self.tab_text_handle;
+        }
     };
 }
 

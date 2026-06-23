@@ -110,6 +110,7 @@ pub const State = struct {
     layout_epoch: u64 = 1,
     prepared_surface: PreparedHandle = null,
     text_handle: c.HowlRenderTextHandle = null,
+    owns_text_handle: bool = false,
     surface: c.HowlRenderTermSurfacePrepared = emptySurface(),
     damage: [1]c.HowlRenderTermSurfaceDamageItem = undefined,
     commands: [1]c.HowlRenderTermSurfaceCommand = undefined,
@@ -124,17 +125,26 @@ pub const State = struct {
     }
 
     pub fn deinit(self: *State) void {
-        if (self.text_handle) |handle| c.howl_render_text_deinit(handle);
+        if (self.owns_text_handle) if (self.text_handle) |handle| c.howl_render_text_deinit(handle);
         self.text_handle = null;
+        self.owns_text_handle = false;
         self.prepared_surface = null;
     }
 
     pub fn initText(self: *State, config: *const c.HowlRenderTextConfig) bool {
         var handle: c.HowlRenderTextHandle = null;
         if (c.howl_render_text_init(&handle, config) != c.HOWL_RENDER_CALL_OK) return false;
-        if (self.text_handle) |old| c.howl_render_text_deinit(old);
+        if (self.owns_text_handle) if (self.text_handle) |old| c.howl_render_text_deinit(old);
         self.text_handle = handle;
+        self.owns_text_handle = true;
         return true;
+    }
+
+    pub fn borrowText(self: *State, handle: c.HowlRenderTextHandle) void {
+        std.debug.assert(handle != null);
+        if (self.owns_text_handle) if (self.text_handle) |old| c.howl_render_text_deinit(old);
+        self.text_handle = handle;
+        self.owns_text_handle = false;
     }
 
     pub fn surfaceLayoutSync(self: *const State, next: SurfaceLayout) SurfaceLayoutSync {

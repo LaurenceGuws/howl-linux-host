@@ -93,8 +93,10 @@ pub const Term = struct {
         fallback_font_paths: []const [:0]const u8,
         cursor_shape: CursorStyle,
         cursor_blink: bool,
+        render_text_handle: render_c.HowlRenderTextHandle,
         trigger: *surface_present.Trigger,
     ) !void {
+        std.debug.assert(render_text_handle != null);
         const terminal_layout = try initSurfaceLayout(surface_px, font_size_px, primary_font_path, fallback_font_paths);
         const session = try pty_session.initHandle(launch, terminal_layout.cols, terminal_layout.rows);
         var session_owned_by_local = true;
@@ -105,7 +107,7 @@ pub const Term = struct {
         var render = render_retained.State.init(terminal_layout);
         var render_owned_by_local = true;
         errdefer if (render_owned_by_local) render.deinit();
-        try initRenderText(&render, font_size_px, primary_font_path, fallback_font_paths);
+        render.borrowText(render_text_handle);
 
         var next_vt_state = VtState{};
         var vt_state_owned_by_local = true;
@@ -405,21 +407,6 @@ fn initSurfaceLayout(surface_px: render_c.HowlRenderPixelSize, font_size_px: u16
     if (render_c.howl_render_text_init(&handle, &config) != render_c.HOWL_RENDER_CALL_OK) return error.RenderInitFailed;
     defer render_c.howl_render_text_deinit(handle);
     return try surface_layout.querySurfaceLayout(handle, surface_px);
-}
-
-fn initRenderText(render: *render_retained.State, font_size_px: u16, primary_font_path: ?[:0]const u8, fallback_font_paths: []const [:0]const u8) !void {
-    std.debug.assert(font_size_px > 0);
-    std.debug.assert(fallback_font_paths.len <= max_fallback_font_paths);
-    var fallback_paths: [max_fallback_font_paths]?[*:0]const u8 = [_]?[*:0]const u8{null} ** max_fallback_font_paths;
-    for (fallback_font_paths, 0..) |path, index| fallback_paths[index] = path.ptr;
-    const config = render_c.HowlRenderTextConfig{
-        .font_size_px = font_size_px,
-        .fallback_font_path_count = @intCast(fallback_font_paths.len),
-        .reserved0 = 0,
-        .primary_font_path = if (primary_font_path) |path| path.ptr else null,
-        .fallback_font_paths = &fallback_paths,
-    };
-    if (!render.initText(&config)) return error.RenderInitFailed;
 }
 
 fn initVt(rows: u16, cols: u16, cursor_shape: CursorStyle, cursor_blink: bool) !vt_c.HowlVtHandle {

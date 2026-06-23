@@ -149,7 +149,7 @@ pub const Layout = struct {
         self.tabs.free_count = tabs.max_tabs;
     }
 
-    pub fn openTab(self: *Layout, allocator: std.mem.Allocator, conf: *const Config.UiConfig, app_window: *Window) !void {
+    pub fn openTab(self: *Layout, allocator: std.mem.Allocator, conf: *const Config.UiConfig, app_window: *Window, render_text_handle: render_c.HowlRenderTextHandle) !void {
         self.assertTabs();
         if (self.tabs.free_count == 0) return;
         const before_height = tab_bar.height(&conf.tab_bar, self.tabs.active_count);
@@ -159,7 +159,7 @@ pub const Layout = struct {
         self.tabs.free_count -= 1;
         const slot = self.tabs.free_slots[self.tabs.free_count];
         self.tabs.tabs[slot] = .{};
-        try self.initPane(allocator, &self.tabs.tabs[slot].panes[0], .first, conf, placement);
+        try self.initPane(allocator, &self.tabs.tabs[slot].panes[0], .first, conf, placement, render_text_handle);
         self.tabs.tabs[slot].pane_count = 1;
         self.tabs.tabs[slot].split_tree = splits.leaf(.first);
         self.tabs.active_slots[self.tabs.active_count] = slot;
@@ -273,9 +273,9 @@ pub const Layout = struct {
         return true;
     }
 
-    pub fn handleBindingAction(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, action: HostInput.Bindings.Action) !void {
+    pub fn handleBindingAction(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, action: HostInput.Bindings.Action, render_text_handle: render_c.HowlRenderTextHandle) !void {
         switch (action) {
-            .terminal_new_tab => try self.openTab(std.heap.c_allocator, conf, app_window),
+            .terminal_new_tab => try self.openTab(std.heap.c_allocator, conf, app_window, render_text_handle),
             .terminal_close_tab => self.closeActiveTab(conf, app_window),
             .terminal_next_tab => self.selectRelative(app_window, 1),
             .terminal_prev_tab => self.selectRelative(app_window, -1),
@@ -347,7 +347,7 @@ pub const Layout = struct {
         return .none;
     }
 
-    fn initPane(self: *Layout, allocator: std.mem.Allocator, pane_value: *pane.Pane, id: pane.PaneId, conf: *const Config.UiConfig, placement: pane.Placement) !void {
+    fn initPane(self: *Layout, allocator: std.mem.Allocator, pane_value: *pane.Pane, id: pane.PaneId, conf: *const Config.UiConfig, placement: pane.Placement, render_text_handle: render_c.HowlRenderTextHandle) !void {
         _ = self;
         surface_present.initTrigger(&pane_value.surface_update_trigger);
         const surface_px = render_c.HowlRenderPixelSize{ .width = @intCast(placement.pixel_size.width), .height = @intCast(placement.pixel_size.height) };
@@ -360,7 +360,7 @@ pub const Layout = struct {
             .font_size_px = @max(conf.term.font_size, 1),
         };
         surface_present.initTrigger(&pane_value.surface_update_trigger);
-        try pane_value.term.initTerminal(allocator, .{ .shell = conf.term.shell, .start_path = conf.term.start_path, .command = conf.term.command }, surface_px, pane_value.font_size_px, conf.term.fonts.primary, conf.term.fonts.mono, conf.term.cursor_shape, conf.term.cursor_blink, &pane_value.surface_update_trigger);
+        try pane_value.term.initTerminal(allocator, .{ .shell = conf.term.shell, .start_path = conf.term.start_path, .command = conf.term.command }, surface_px, pane_value.font_size_px, conf.term.fonts.primary, conf.term.fonts.mono, conf.term.cursor_shape, conf.term.cursor_blink, render_text_handle, &pane_value.surface_update_trigger);
         try pane_value.term.startTerminal();
         pane_value.live = true;
     }

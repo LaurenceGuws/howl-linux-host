@@ -91,7 +91,7 @@ noinline fn start(io: std.Io, options: Args) !void {
     applyChildEnvironmentPolicy();
 
     _ = io;
-    try layout.openTab(std.heap.c_allocator, conf, app_window);
+    try layout.openTab(std.heap.c_allocator, conf, app_window, texture_frame.textHandle());
     layout.configureInputPolicies(conf, input);
     try runMainLoop(conf, app_window, texture_frame, tab_bar, layout, input, event_loop);
 }
@@ -107,7 +107,7 @@ fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture
         if (event_loop.pumpInput(input, wait_for_sdl, null) == .quit) return;
 
         layout.applyFocusChange(app_window, input, &events);
-        while (input.drainBindingAction()) |action| try layout.handleBindingAction(conf, app_window, action);
+        while (input.drainBindingAction()) |action| try layout.handleBindingAction(conf, app_window, action, texture_frame.textHandle());
         var host_visual_changed = false;
         layout.forwardTerminalInput(conf, app_window, input, &host_visual_changed);
         if (layout.applyWindowResize(conf, app_window, input)) app_window.requestRedraw();
