@@ -3,8 +3,7 @@ const Layout = @import("../layout.zig");
 const egl_swap = @import("egl_swap.zig");
 const render_c = @import("howl_render_c");
 const gl_quad = @import("../render/gl_quad.zig");
-const frame_commands = @import("frame_commands.zig");
-const frame_resources = @import("frame_resources.zig");
+const resource_store = @import("resource_store.zig");
 const texture_scroll_bar = @import("scroll_bar.zig");
 const sdl_c = @import("sdl_c");
 const std = @import("std");
@@ -91,7 +90,7 @@ pub fn GenericState(comptime c: type) type {
         tab_cache_h: c_int,
         tab_cache_revision: u64,
         tab_text_handle: render_c.HowlRenderTextHandle,
-        tab_resources: frame_resources.RenderResourceTextures,
+        resource_store: resource_store.GlResourceStore,
         tab_surface: tab_bar_surface.Surface,
         next_present_token: PresentToken,
 
@@ -117,7 +116,7 @@ pub fn GenericState(comptime c: type) type {
 
         pub fn uploadTermSurface(self: *@This(), id: Layout.pane.PaneId, surface: *const render_c.HowlRenderTermSurfacePrepared) TermUpload {
             const presenter = self.termPresenter(id);
-            const ok = presenter.upload(surface);
+            const ok = texture_term.uploadRenderSurface(&self.resource_store, &presenter.term_surface, surface);
             return .{ .term_surface = presenter.submittedTermSurface(), .ok = ok };
         }
     };
@@ -143,7 +142,7 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window, ta
         .tab_cache_h = 0,
         .tab_cache_revision = 0,
         .tab_text_handle = null,
-        .tab_resources = .{},
+        .resource_store = .{},
         .tab_surface = .{},
         .next_present_token = 1,
     };
@@ -162,7 +161,7 @@ pub fn deinit(comptime c: type, state: *GenericState(c)) void {
     if (state.tab_text_handle) |handle| render_c.howl_render_text_deinit(handle);
     state.tab_text_handle = null;
     for (&state.term_surfaces) |*presenter| presenter.deinit();
-    state.tab_resources.deinit();
+    state.resource_store.deinit();
     releaseTabCache(c, state);
     if (state.gl_context) |ctx| {
         _ = ctx;
@@ -260,9 +259,8 @@ fn uploadTabTextSurface(comptime c: type, state: *GenericState(c), fb_w: c_int, 
     const status = render_c.howl_render_tab_bar_surface_prepare(handle, &prepare, &upload);
     if (status != render_c.HOWL_RENDER_CALL_OK) std.debug.panic("trusted tab_bar_surface prepare failed: status={}", .{status});
     const prepared_tab_bar_surface = upload.tab_bar_surface_prepared orelse std.debug.panic("trusted tab_bar_surface prepare returned no prepared surface", .{});
-    state.tab_resources.syncTabBarResources(prepared_tab_bar_surface);
-    frame_commands.uploadTabBarSurfaceCommands(
-        &state.tab_resources,
+    texture_tab_bar.uploadRenderSurface(
+        &state.resource_store,
         .{ .tab_bar_surface_id = state.tab_texture_id, .width = prepare.render_px.width, .height = prepare.render_px.height },
         prepared_tab_bar_surface,
     );
@@ -408,7 +406,7 @@ fn testState() GenericState(FakeC) {
         .tab_cache_h = 0,
         .tab_cache_revision = 0,
         .tab_text_handle = null,
-        .tab_resources = .{},
+        .resource_store = .{},
         .tab_surface = .{},
         .next_present_token = 1,
     };

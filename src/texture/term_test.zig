@@ -2,12 +2,12 @@ const std = @import("std");
 const render_c = @import("howl_render_c");
 const term = @import("term.zig");
 
-const RenderResourceTextures = term.RenderResourceTextures;
+const GlResourceStore = term.GlResourceStore;
 const term_testing = term.testing;
 const SurfaceCommand = render_c.HowlRenderTermSurfaceCommand;
 const ResourceUpload = render_c.HowlRenderResourceUpload;
 const SurfaceRect = render_c.HowlRenderTermSurfaceRect;
-const TextureSlot = term_testing.TextureSlot;
+const ResourceSlot = term_testing.ResourceSlot;
 
 fn testResource(value: u64, kind: u32) render_c.HowlRenderResourceId {
     return .{ .value = value, .generation = 1, .kind = kind };
@@ -56,7 +56,7 @@ fn testGlyph(resource: render_c.HowlRenderResourceId, x_px: i32, y_px: i32) rend
     };
 }
 
-fn testSlot(resource: render_c.HowlRenderResourceId) TextureSlot {
+fn testSlot(resource: render_c.HowlRenderResourceId) ResourceSlot {
     return .{
         .state = .live,
         .resource = resource,
@@ -136,7 +136,7 @@ test "render surface fill classifier rejects out of bounds fill" {
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!term.renderSurfaceFillOnly(&surface));
+    try std.testing.expect(!term.fillOnly(&surface));
 }
 
 test "render surface fbo y coordinates target texture row zero first" {
@@ -152,7 +152,7 @@ test "render surface fill only accepts full clear and fill commands" {
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(term.renderSurfaceFillOnly(&surface));
+    try std.testing.expect(term.fillOnly(&surface));
 }
 
 test "render surface fill only accepts full non-overlapping coverage without clear" {
@@ -164,7 +164,7 @@ test "render surface fill only accepts full non-overlapping coverage without cle
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(term.renderSurfaceFillOnly(&surface));
+    try std.testing.expect(term.fillOnly(&surface));
 }
 
 test "render surface fill only rejects coverage gaps without clear" {
@@ -175,7 +175,7 @@ test "render surface fill only rejects coverage gaps without clear" {
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!term.renderSurfaceFillOnly(&surface));
+    try std.testing.expect(!term.fillOnly(&surface));
 }
 
 test "render surface fill only rejects coverage overlap without clear" {
@@ -187,7 +187,7 @@ test "render surface fill only rejects coverage overlap without clear" {
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!term.renderSurfaceFillOnly(&surface));
+    try std.testing.expect(!term.fillOnly(&surface));
 }
 
 test "render surface fill patch accepts partial bounded fills" {
@@ -198,7 +198,7 @@ test "render surface fill patch accepts partial bounded fills" {
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(term.renderSurfaceFillPatch(&surface));
+    try std.testing.expect(term.fillPatch(&surface));
 }
 
 test "render surface fill patch accepts bounded clear and fill commands" {
@@ -210,7 +210,7 @@ test "render surface fill patch accepts bounded clear and fill commands" {
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(term.renderSurfaceFillPatch(&surface));
+    try std.testing.expect(term.fillPatch(&surface));
 }
 
 test "render surface classification names fill and fill patch shapes" {
@@ -225,8 +225,8 @@ test "render surface classification names fill and fill patch shapes" {
     patch_surface.render_px = .{ .width = 2, .height = 2 };
     patch_surface.commands = commandSpan(&patch_commands);
 
-    try std.testing.expectEqual(term_testing.SurfaceClass.fill, term_testing.classifyRenderSurface(&fill_surface).?);
-    try std.testing.expectEqual(term_testing.SurfaceClass.fill_patch, term_testing.classifyRenderSurface(&patch_surface).?);
+    try std.testing.expectEqual(term_testing.SurfaceClass.fill, term_testing.classifyTermSurface(&fill_surface).?);
+    try std.testing.expectEqual(term_testing.SurfaceClass.fill_patch, term_testing.classifyTermSurface(&patch_surface).?);
 }
 
 test "render surface fill patch rejects out of bounds fill" {
@@ -237,7 +237,7 @@ test "render surface fill patch rejects out of bounds fill" {
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!term.renderSurfaceFillPatch(&surface));
+    try std.testing.expect(!term.fillPatch(&surface));
 }
 
 test "render surface fill upload rows per chunk stays bounded by tile bytes" {
@@ -268,7 +268,7 @@ test "render surface fill only rejects mixed resource commands" {
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!term.renderSurfaceFillOnly(&surface));
+    try std.testing.expect(!term.fillOnly(&surface));
 }
 
 test "render surface sprite surface accepts clear fill and sprite commands" {
@@ -279,7 +279,7 @@ test "render surface sprite surface accepts clear fill and sprite commands" {
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(term.renderSurfaceSprite(&surface));
+    try std.testing.expect(term.sprite(&surface));
 }
 
 test "render surface sprite patch accepts bounded sprite commands without clear" {
@@ -289,7 +289,7 @@ test "render surface sprite patch accepts bounded sprite commands without clear"
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(term.renderSurfaceSpritePatch(&surface));
+    try std.testing.expect(term.spritePatch(&surface));
 }
 
 test "render surface classification names sprite and sprite patch shapes" {
@@ -306,8 +306,8 @@ test "render surface classification names sprite and sprite patch shapes" {
     var patch_surface = testSurface();
     patch_surface.commands = commandSpan(&patch_commands);
 
-    try std.testing.expectEqual(term_testing.SurfaceClass.sprite, term_testing.classifyRenderSurface(&sprite_surface).?);
-    try std.testing.expectEqual(term_testing.SurfaceClass.sprite_patch, term_testing.classifyRenderSurface(&patch_surface).?);
+    try std.testing.expectEqual(term_testing.SurfaceClass.sprite, term_testing.classifyTermSurface(&sprite_surface).?);
+    try std.testing.expectEqual(term_testing.SurfaceClass.sprite_patch, term_testing.classifyTermSurface(&patch_surface).?);
 }
 
 test "render surface sprite patch rejects glyph commands" {
@@ -316,7 +316,7 @@ test "render surface sprite patch rejects glyph commands" {
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!term.renderSurfaceSpritePatch(&surface));
+    try std.testing.expect(!term.spritePatch(&surface));
 }
 
 test "render surface sprite upload coverage matches command bounds" {
@@ -328,7 +328,7 @@ test "render surface sprite upload coverage matches command bounds" {
 
 test "render surface upload metadata commits after upload success" {
     const resource = testResource(20, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
-    var textures = RenderResourceTextures{};
+    var textures = GlResourceStore{};
     textures.slots[0] = .{ .state = .live, .resource = resource, .texture_id = 1, .width_px = 2, .height_px = 2, .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8 };
     var bytes = [_]u8{ 1, 2, 3, 4 };
     var uploads = [_]ResourceUpload{
@@ -376,7 +376,7 @@ test "render surface sprite surface rejects glyph commands" {
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!term.renderSurfaceSprite(&surface));
+    try std.testing.expect(!term.sprite(&surface));
 }
 
 test "render surface glyph surface accepts clear fill sprite and glyph commands" {
@@ -388,7 +388,7 @@ test "render surface glyph surface accepts clear fill sprite and glyph commands"
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(term.renderSurfaceGlyphs(&surface));
+    try std.testing.expect(term.glyphs(&surface));
 }
 
 test "render surface glyph surface rejects no full clear glyph patch frames" {
@@ -401,7 +401,7 @@ test "render surface glyph surface rejects no full clear glyph patch frames" {
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!term.renderSurfaceGlyphs(&surface));
+    try std.testing.expect(!term.glyphs(&surface));
 }
 
 test "render surface glyph patch accepts bounded fill clear and glyph commands" {
@@ -415,7 +415,7 @@ test "render surface glyph patch accepts bounded fill clear and glyph commands" 
     surface.render_px = .{ .width = 2, .height = 2 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(term.renderSurfaceGlyphPatch(&surface));
+    try std.testing.expect(term.glyphPatch(&surface));
 }
 
 test "render surface classification names glyph and glyph patch shapes" {
@@ -435,8 +435,8 @@ test "render surface classification names glyph and glyph patch shapes" {
     patch_surface.render_px = .{ .width = 2, .height = 1 };
     patch_surface.commands = commandSpan(&patch_commands);
 
-    try std.testing.expectEqual(term_testing.SurfaceClass.glyph, term_testing.classifyRenderSurface(&glyph_surface).?);
-    try std.testing.expectEqual(term_testing.SurfaceClass.glyph_patch, term_testing.classifyRenderSurface(&patch_surface).?);
+    try std.testing.expectEqual(term_testing.SurfaceClass.glyph, term_testing.classifyTermSurface(&glyph_surface).?);
+    try std.testing.expectEqual(term_testing.SurfaceClass.glyph_patch, term_testing.classifyTermSurface(&patch_surface).?);
 }
 
 test "render surface classification rejects unsupported shapes" {
@@ -444,7 +444,7 @@ test "render surface classification rejects unsupported shapes" {
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expectEqual(@as(?term_testing.SurfaceClass, null), term_testing.classifyRenderSurface(&surface));
+    try std.testing.expectEqual(@as(?term_testing.SurfaceClass, null), term_testing.classifyTermSurface(&surface));
 }
 
 test "render surface glyph patch accepts bounded sprite and glyph commands" {
@@ -458,7 +458,7 @@ test "render surface glyph patch accepts bounded sprite and glyph commands" {
     surface.render_px = .{ .width = 2, .height = 1 };
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(term.renderSurfaceGlyphPatch(&surface));
+    try std.testing.expect(term.glyphPatch(&surface));
 }
 
 test "render surface glyph patch rejects sprite and unknown commands" {
@@ -472,8 +472,8 @@ test "render surface glyph patch rejects sprite and unknown commands" {
     var unknown_surface = testSurface();
     unknown_surface.commands = commandSpan(&unknown_commands);
 
-    try std.testing.expect(!term.renderSurfaceGlyphPatch(&sprite_surface));
-    try std.testing.expect(!term.renderSurfaceGlyphPatch(&unknown_surface));
+    try std.testing.expect(!term.glyphPatch(&sprite_surface));
+    try std.testing.expect(!term.glyphPatch(&unknown_surface));
 }
 
 test "render surface glyph surface rejects color atlas" {
@@ -485,7 +485,7 @@ test "render surface glyph surface rejects color atlas" {
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!term.renderSurfaceGlyphs(&surface));
+    try std.testing.expect(!term.glyphs(&surface));
 }
 
 test "render surface glyph surface rejects invalid glyph span" {
@@ -496,12 +496,12 @@ test "render surface glyph surface rejects invalid glyph span" {
     var surface = testSurface();
     surface.commands = commandSpan(&commands);
 
-    try std.testing.expect(!term.renderSurfaceGlyphs(&surface));
+    try std.testing.expect(!term.glyphs(&surface));
 }
 
 test "render surface textures accept live-slot persistent upload" {
     const resource = testResource(44, render_c.HOWL_RENDER_RESOURCE_SPRITE_ALPHA);
-    var textures = RenderResourceTextures{};
+    var textures = GlResourceStore{};
     textures.slots[0] = .{ .state = .live, .resource = resource, .texture_id = 1, .width_px = 2, .height_px = 2, .format = render_c.HOWL_RENDER_UPLOAD_ALPHA8 };
     var bytes = [_]u8{ 1, 2, 3, 4 };
     var uploads = [_]ResourceUpload{

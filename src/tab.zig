@@ -9,8 +9,8 @@ const EventLoop = @import("events/event_loop.zig");
 const HostInput = @import("input.zig").Input;
 const input_processor = @import("input/processor.zig");
 const Layout = @import("layout.zig");
-const terminal_bucket = @import("buckets that must die/bucket2.zig");
-const TerminalSurface = terminal_bucket.Surface;
+const term = @import("term.zig");
+const Term = term.Term;
 const pty_session = @import("pty/session.zig");
 const render_retained = @import("render/surface_retained.zig");
 const surface_layout = @import("render/surface_layout.zig");
@@ -45,7 +45,7 @@ const second_pane: PaneId = @enumFromInt(1);
 /// - `resize` is the geometry-application knob. Input is a tab body.
 ///   Invariant: every initialized pane records the new placement size, independent of focus.
 pub const Tab = struct {
-    panes: [max_frame_panes]TerminalSurface = undefined,
+    panes: [max_frame_panes]Term = undefined,
     pane_count: u8 = 0,
     active_pane: PaneId = .first,
     split_tree: Layout.splits.Tree = Layout.splits.leaf(.first),
@@ -54,8 +54,8 @@ pub const Tab = struct {
 
     pub const max_frame_panes = 2;
 
-    pub const PresentDamage = TerminalSurface.PresentDamage;
-    pub const TurnStep = TerminalSurface.TurnStep;
+    pub const PresentDamage = Term.PresentDamage;
+    pub const TurnStep = Term.TurnStep;
 
     pub const TabSelection = enum { selected, unselected };
 
@@ -79,7 +79,7 @@ pub const Tab = struct {
 
     pub const PaneTurn = struct {
         id: PaneId,
-        turn: TerminalSurface.TurnResult,
+        turn: Term.TurnResult,
     };
 
     pub const PaneSurfaceReadiness = struct {
@@ -89,7 +89,7 @@ pub const Tab = struct {
 
     pub const PaneUpload = struct {
         id: PaneId,
-        upload: TerminalSurface.UploadedSurface,
+        upload: Term.UploadedSurface,
     };
 
     pub const TurnResult = struct {
@@ -125,19 +125,19 @@ pub const Tab = struct {
         return out[0..self.pane_count];
     }
 
-    pub fn pane(self: *Tab, id: PaneId) *TerminalSurface {
+    pub fn pane(self: *Tab, id: PaneId) *Term {
         return &self.panes[self.checkedPaneIndex(id)];
     }
 
-    fn paneConst(self: *const Tab, id: PaneId) *const TerminalSurface {
+    fn paneConst(self: *const Tab, id: PaneId) *const Term {
         return &self.panes[self.checkedPaneIndex(id)];
     }
 
-    fn activePane(self: *Tab) *TerminalSurface {
+    fn activePane(self: *Tab) *Term {
         return self.pane(self.active_pane);
     }
 
-    fn activePaneConst(self: *const Tab) *const TerminalSurface {
+    fn activePaneConst(self: *const Tab) *const Term {
         return self.paneConst(self.active_pane);
     }
 
@@ -267,7 +267,7 @@ pub const Tab = struct {
         }
         for (uploads) |pane_upload| {
             const submit = self.pane(pane_upload.id).submitUploaded(pane_upload.upload);
-            const turn = TerminalSurface.TurnResult{
+            const turn = Term.TurnResult{
                 .state_before = .submit_ready,
                 .state_after = self.pane(pane_upload.id).term.render.retainedState(),
                 .prepared = false,
@@ -462,11 +462,11 @@ pub const Tab = struct {
         }
     }
 
-    fn initializedPanes(self: *Tab) []TerminalSurface {
+    fn initializedPanes(self: *Tab) []Term {
         return self.panes[0..self.pane_count];
     }
 
-    fn initializedPanesConst(self: *const Tab) []const TerminalSurface {
+    fn initializedPanesConst(self: *const Tab) []const Term {
         return self.panes[0..self.pane_count];
     }
 
@@ -515,7 +515,7 @@ pub const Tab = struct {
         };
     }
 
-    fn paneTextureSize(pane_value: *const TerminalSurface) Layout.Size {
+    fn paneTextureSize(pane_value: *const Term) Layout.Size {
         const render_px = pane_value.term.render.surface_layout.render_px;
         const width = @as(c_int, @intCast(render_px.width));
         const height = @as(c_int, @intCast(render_px.height));
@@ -524,11 +524,11 @@ pub const Tab = struct {
         return .{ .width = width, .height = height };
     }
 
-    fn assertPaneResizePending(pane_value: *TerminalSurface, placement: Layout.pane.Placement) void {
+    fn assertPaneResizePending(pane_value: *Term, placement: Layout.pane.Placement) void {
         surface_layout.assertPendingResize(&pane_value.surface_layout, placement.pixel_size.width, placement.pixel_size.height, placement.logical_size.width, placement.logical_size.height);
     }
 
-    fn assertPaneTextureSize(pane_value: *const TerminalSurface, size: Layout.Size) void {
+    fn assertPaneTextureSize(pane_value: *const Term, size: Layout.Size) void {
         const texture_size = paneTextureSize(pane_value);
         std.debug.assert(texture_size.width == size.width);
         std.debug.assert(texture_size.height == size.height);
@@ -557,7 +557,7 @@ pub const Tab = struct {
         };
     }
 
-    fn idleTurn() TerminalSurface.TurnResult {
+    fn idleTurn() Term.TurnResult {
         return .{
             .state_before = .idle,
             .state_after = .idle,
@@ -1014,7 +1014,7 @@ fn canInstallSplit(tab: *const Tab) bool {
     return tab.pane_count == 1;
 }
 
-fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u64) void {
+fn setTestTexture(pane: *Term, width: u16, height: u16, texture_id: u64) void {
     _ = texture_id;
     pane.term.mutex = .{};
     pane.surface_present_trigger = .{};
@@ -1048,7 +1048,7 @@ fn setTestTexture(pane: *TerminalSurface, width: u16, height: u16, texture_id: u
     pane.font_size_px = 16;
 }
 
-fn installSessionForTest(pane: *TerminalSurface, lifecycle: pty_session.LifecycleState, status: pty_session.SessionStatus) !void {
+fn installSessionForTest(pane: *Term, lifecycle: pty_session.LifecycleState, status: pty_session.SessionStatus) !void {
     pane.term.pty = .{ .launch = .{ .shell = test_terminal_conf.shell }, .lifecycle = lifecycle };
     pane.term.session = try pty_session.initHandle(pane.term.pty.launch, 80, 24);
     errdefer {
@@ -1063,7 +1063,7 @@ fn installSessionForTest(pane: *TerminalSurface, lifecycle: pty_session.Lifecycl
     pane.term.pty.lifecycle = lifecycle;
 }
 
-fn deinitSessionForTest(pane: *TerminalSurface) void {
+fn deinitSessionForTest(pane: *Term) void {
     pty_session.deinitHandle(pane.term.session);
     pane.term.session = null;
 }

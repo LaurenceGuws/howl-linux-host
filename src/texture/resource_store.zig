@@ -4,11 +4,11 @@ const render_c = @import("howl_render_c");
 
 const gl_alpha = 0x1906;
 
-pub const RenderResourceTextures = struct {
-    slots: [render_c.HOWL_RENDER_TEXT_RESOURCES_MAX]Slot = [_]Slot{.{}} **
+pub const GlResourceStore = struct {
+    slots: [render_c.HOWL_RENDER_TEXT_RESOURCES_MAX]ResourceSlot = [_]ResourceSlot{.{}} **
         render_c.HOWL_RENDER_TEXT_RESOURCES_MAX,
 
-    pub const Slot = struct {
+    pub const ResourceSlot = struct {
         state: State = .empty,
         resource: render_c.HowlRenderResourceId = .{ .value = 0, .generation = 0, .kind = 0 },
         texture_id: u64 = 0,
@@ -22,62 +22,38 @@ pub const RenderResourceTextures = struct {
         pub const State = enum { empty, live, retired };
     };
 
-    pub fn deinit(self: *RenderResourceTextures) void {
+    pub fn deinit(self: *GlResourceStore) void {
         for (&self.slots) |*slot| deleteSlot(slot);
     }
 
-    pub fn syncRenderResources(self: *RenderResourceTextures, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+    pub fn syncRenderResources(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
         self.syncRenderResourcesLocked(surface);
     }
 
-    pub fn syncTabBarResources(self: *RenderResourceTextures, surface: *const render_c.HowlRenderTabBarSurfacePrepared) void {
+    pub fn syncTabBarResources(self: *GlResourceStore, surface: *const render_c.HowlRenderTabBarSurfacePrepared) void {
         self.validateTabBarSurface(surface);
-        const creates = spanSlice(
-            render_c.HowlRenderResourceCreate,
-            surface.creates.ptr,
-            surface.creates.count,
-        );
+        const creates = resourceCreateSlice(surface.creates.ptr, surface.creates.count);
         for (creates) |create| self.createTexture(create);
         glErrorOk("create texture upload");
-        const uploads = spanSlice(
-            render_c.HowlRenderTabBarResourceUpload,
-            surface.uploads.ptr,
-            surface.uploads.count,
-        );
+        const uploads = tabBarResourceUploadSlice(surface.uploads.ptr, surface.uploads.count);
         for (uploads) |upload| self.uploadTabBarTexture(upload);
         glErrorOk("resource upload");
         self.commitTabBarUploadMetadata(uploads);
-        const retires = spanSlice(
-            render_c.HowlRenderResourceRetire,
-            surface.retires.ptr,
-            surface.retires.count,
-        );
+        const retires = resourceRetireSlice(surface.retires.ptr, surface.retires.count);
         for (retires) |retire| self.retireTexture(retire.resource);
         glErrorOk("resource retire");
     }
 
-    fn syncRenderResourcesLocked(self: *RenderResourceTextures, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+    fn syncRenderResourcesLocked(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
         self.validateSurface(surface);
-        const creates = spanSlice(
-            render_c.HowlRenderResourceCreate,
-            surface.creates.ptr,
-            surface.creates.count,
-        );
+        const creates = resourceCreateSlice(surface.creates.ptr, surface.creates.count);
         for (creates) |create| self.createTexture(create);
         glErrorOk("create texture upload");
-        const uploads = spanSlice(
-            render_c.HowlRenderResourceUpload,
-            surface.uploads.ptr,
-            surface.uploads.count,
-        );
+        const uploads = termResourceUploadSlice(surface.uploads.ptr, surface.uploads.count);
         for (uploads) |upload| self.uploadTexture(upload);
         glErrorOk("resource upload");
         self.commitUploadMetadata(uploads);
-        const retires = spanSlice(
-            render_c.HowlRenderResourceRetire,
-            surface.retires.ptr,
-            surface.retires.count,
-        );
+        const retires = resourceRetireSlice(surface.retires.ptr, surface.retires.count);
         for (retires) |retire| self.retireTexture(retire.resource);
         glErrorOk("resource retire");
     }
@@ -88,61 +64,37 @@ pub const RenderResourceTextures = struct {
         std.debug.panic("GL backend invariant failed: {s}: error={}", .{ message, error_code });
     }
 
-    fn validateSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+    fn validateSurface(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
         _ = self.validateSurfaceTransition(surface);
     }
 
-    fn validateSurfaceTransition(self: *RenderResourceTextures, surface: *const render_c.HowlRenderTermSurfacePrepared) RenderResourceTextures {
+    fn validateSurfaceTransition(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) GlResourceStore {
         var next = self.*;
-        const creates = spanSlice(
-            render_c.HowlRenderResourceCreate,
-            surface.creates.ptr,
-            surface.creates.count,
-        );
+        const creates = resourceCreateSlice(surface.creates.ptr, surface.creates.count);
         for (creates) |create| next.noteCreate(create);
 
-        const uploads = spanSlice(
-            render_c.HowlRenderResourceUpload,
-            surface.uploads.ptr,
-            surface.uploads.count,
-        );
+        const uploads = termResourceUploadSlice(surface.uploads.ptr, surface.uploads.count);
         for (uploads) |upload| next.noteUpload(upload);
 
-        const retires = spanSlice(
-            render_c.HowlRenderResourceRetire,
-            surface.retires.ptr,
-            surface.retires.count,
-        );
+        const retires = resourceRetireSlice(surface.retires.ptr, surface.retires.count);
         for (retires) |retire| next.noteRetire(retire.resource);
         return next;
     }
 
-    fn validateTabBarSurface(self: *RenderResourceTextures, surface: *const render_c.HowlRenderTabBarSurfacePrepared) void {
+    fn validateTabBarSurface(self: *GlResourceStore, surface: *const render_c.HowlRenderTabBarSurfacePrepared) void {
         if (surface.prepared_version != render_c.HOWL_RENDER_TAB_BAR_SURFACE_PREPARED_VERSION) std.debug.panic("trusted tab_bar_surface has invalid prepared version", .{});
         var next = self.*;
-        const creates = spanSlice(
-            render_c.HowlRenderResourceCreate,
-            surface.creates.ptr,
-            surface.creates.count,
-        );
+        const creates = resourceCreateSlice(surface.creates.ptr, surface.creates.count);
         for (creates) |create| next.noteCreate(create);
 
-        const uploads = spanSlice(
-            render_c.HowlRenderTabBarResourceUpload,
-            surface.uploads.ptr,
-            surface.uploads.count,
-        );
+        const uploads = tabBarResourceUploadSlice(surface.uploads.ptr, surface.uploads.count);
         for (uploads) |upload| next.noteTabBarUpload(upload);
 
-        const retires = spanSlice(
-            render_c.HowlRenderResourceRetire,
-            surface.retires.ptr,
-            surface.retires.count,
-        );
+        const retires = resourceRetireSlice(surface.retires.ptr, surface.retires.count);
         for (retires) |retire| next.noteRetire(retire.resource);
     }
 
-    fn noteCreate(self: *RenderResourceTextures, create: render_c.HowlRenderResourceCreate) void {
+    fn noteCreate(self: *GlResourceStore, create: render_c.HowlRenderResourceCreate) void {
         if (create.width_px == 0) std.debug.panic("trusted render create has zero width", .{});
         if (create.height_px == 0) std.debug.panic("trusted render create has zero height", .{});
         if (!resourceFormatValid(create.resource.kind, create.format)) {
@@ -161,25 +113,25 @@ pub const RenderResourceTextures = struct {
         };
     }
 
-    fn noteUpload(self: *RenderResourceTextures, upload: render_c.HowlRenderResourceUpload) void {
+    fn noteUpload(self: *GlResourceStore, upload: render_c.HowlRenderResourceUpload) void {
         const slot = self.find(upload.resource) orelse std.debug.panic("trusted render upload missing texture slot", .{});
         if (upload.format != slot.format) std.debug.panic("trusted render upload format mismatch", .{});
         if (!uploadValidForSlot(slot.*, upload)) std.debug.panic("trusted render upload out of bounds", .{});
     }
 
-    fn noteTabBarUpload(self: *RenderResourceTextures, upload: render_c.HowlRenderTabBarResourceUpload) void {
+    fn noteTabBarUpload(self: *GlResourceStore, upload: render_c.HowlRenderTabBarResourceUpload) void {
         const slot = self.find(upload.resource) orelse std.debug.panic("trusted render upload missing texture slot", .{});
         if (upload.format != slot.format) std.debug.panic("trusted render upload format mismatch", .{});
         if (!tabBarUploadValidForSlot(slot.*, upload)) std.debug.panic("trusted render upload out of bounds", .{});
     }
 
-    fn noteRetire(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) void {
+    fn noteRetire(self: *GlResourceStore, resource: render_c.HowlRenderResourceId) void {
         const slot = self.find(resource) orelse std.debug.panic("trusted render retire missing texture slot", .{});
         slot.texture_id = 0;
         slot.state = .retired;
     }
 
-    fn createTexture(self: *RenderResourceTextures, create: render_c.HowlRenderResourceCreate) void {
+    fn createTexture(self: *GlResourceStore, create: render_c.HowlRenderResourceCreate) void {
         if (self.find(create.resource) != null) std.debug.panic("trusted render create reuses live resource during upload", .{});
         if (self.findValue(create.resource.value) != null) std.debug.panic("trusted render create reuses resource value during upload", .{});
         const slot = self.findEmpty() orelse std.debug.panic("trusted render create exceeded texture slot capacity during upload", .{});
@@ -214,7 +166,7 @@ pub const RenderResourceTextures = struct {
         );
     }
 
-    fn uploadTexture(self: *RenderResourceTextures, upload: render_c.HowlRenderResourceUpload) void {
+    fn uploadTexture(self: *GlResourceStore, upload: render_c.HowlRenderResourceUpload) void {
         const slot = self.find(upload.resource) orelse std.debug.panic("trusted render upload missing live slot during upload", .{});
         if (slot.texture_id == 0) std.debug.panic("trusted render upload missing GL texture id", .{});
         if (upload.format != slot.format) std.debug.panic("trusted render upload format mismatch during upload", .{});
@@ -241,7 +193,7 @@ pub const RenderResourceTextures = struct {
         );
     }
 
-    fn uploadTabBarTexture(self: *RenderResourceTextures, upload: render_c.HowlRenderTabBarResourceUpload) void {
+    fn uploadTabBarTexture(self: *GlResourceStore, upload: render_c.HowlRenderTabBarResourceUpload) void {
         const slot = self.find(upload.resource) orelse std.debug.panic("trusted render upload missing live slot during upload", .{});
         if (slot.texture_id == 0) std.debug.panic("trusted render upload missing GL texture id", .{});
         if (upload.format != slot.format) std.debug.panic("trusted render upload format mismatch during upload", .{});
@@ -268,7 +220,7 @@ pub const RenderResourceTextures = struct {
         );
     }
 
-    fn commitUploadMetadata(self: *RenderResourceTextures, uploads: []const render_c.HowlRenderResourceUpload) void {
+    fn commitUploadMetadata(self: *GlResourceStore, uploads: []const render_c.HowlRenderResourceUpload) void {
         for (uploads) |upload| {
             const slot = self.find(upload.resource) orelse continue;
             slot.upload_rect = upload.rect;
@@ -277,7 +229,7 @@ pub const RenderResourceTextures = struct {
         }
     }
 
-    fn commitTabBarUploadMetadata(self: *RenderResourceTextures, uploads: []const render_c.HowlRenderTabBarResourceUpload) void {
+    fn commitTabBarUploadMetadata(self: *GlResourceStore, uploads: []const render_c.HowlRenderTabBarResourceUpload) void {
         for (uploads) |upload| {
             const slot = self.find(upload.resource) orelse continue;
             slot.upload_rect = .{ .x_px = upload.rect.x_px, .y_px = upload.rect.y_px, .width_px = upload.rect.width_px, .height_px = upload.rect.height_px };
@@ -286,12 +238,12 @@ pub const RenderResourceTextures = struct {
         }
     }
 
-    fn retireTexture(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) void {
+    fn retireTexture(self: *GlResourceStore, resource: render_c.HowlRenderResourceId) void {
         const slot = self.find(resource) orelse std.debug.panic("trusted render retire missing live slot during upload", .{});
         retireSlot(slot);
     }
 
-    fn find(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) ?*Slot {
+    fn find(self: *GlResourceStore, resource: render_c.HowlRenderResourceId) ?*ResourceSlot {
         for (&self.slots) |*slot| {
             if (slot.state != .live) continue;
             if (sameResource(slot.resource, resource)) return slot;
@@ -299,18 +251,18 @@ pub const RenderResourceTextures = struct {
         return null;
     }
 
-    pub fn textureSlotFor(self: *RenderResourceTextures, resource: render_c.HowlRenderResourceId) ?Slot {
+    pub fn textureSlotFor(self: *GlResourceStore, resource: render_c.HowlRenderResourceId) ?ResourceSlot {
         const slot = self.find(resource) orelse return null;
         if (slot.texture_id == 0) return null;
         return slot.*;
     }
 
-    fn findEmpty(self: *RenderResourceTextures) ?*Slot {
+    fn findEmpty(self: *GlResourceStore) ?*ResourceSlot {
         for (&self.slots) |*slot| if (slot.state == .empty) return slot;
         return null;
     }
 
-    fn findValue(self: *RenderResourceTextures, value: u64) ?*Slot {
+    fn findValue(self: *GlResourceStore, value: u64) ?*ResourceSlot {
         for (&self.slots) |*slot| {
             if (slot.state == .empty) continue;
             if (slot.resource.value == value) return slot;
@@ -318,7 +270,7 @@ pub const RenderResourceTextures = struct {
         return null;
     }
 
-    fn deleteSlot(slot: *Slot) void {
+    fn deleteSlot(slot: *ResourceSlot) void {
         if (slot.texture_id != 0) {
             var value: c_uint = @intCast(slot.texture_id);
             gl_c.glDeleteTextures(1, &value);
@@ -326,7 +278,7 @@ pub const RenderResourceTextures = struct {
         slot.* = .{};
     }
 
-    fn retireSlot(slot: *Slot) void {
+    fn retireSlot(slot: *ResourceSlot) void {
         if (slot.texture_id != 0) {
             var value: c_uint = @intCast(slot.texture_id);
             gl_c.glDeleteTextures(1, &value);
@@ -346,7 +298,7 @@ fn resourceFormatValid(kind: u32, format: u32) bool {
     };
 }
 
-fn uploadValidForSlot(slot: RenderResourceTextures.Slot, upload: render_c.HowlRenderResourceUpload) bool {
+fn uploadValidForSlot(slot: GlResourceStore.ResourceSlot, upload: render_c.HowlRenderResourceUpload) bool {
     if (upload.bytes_ptr == null) return false;
     if (upload.rect.width_px == 0) return false;
     if (upload.rect.height_px == 0) return false;
@@ -362,7 +314,7 @@ fn uploadValidForSlot(slot: RenderResourceTextures.Slot, upload: render_c.HowlRe
     return true;
 }
 
-fn tabBarUploadValidForSlot(slot: RenderResourceTextures.Slot, upload: render_c.HowlRenderTabBarResourceUpload) bool {
+fn tabBarUploadValidForSlot(slot: GlResourceStore.ResourceSlot, upload: render_c.HowlRenderTabBarResourceUpload) bool {
     if (upload.bytes_ptr == null) return false;
     if (upload.rect.width_px == 0) return false;
     if (upload.rect.height_px == 0) return false;
@@ -410,19 +362,34 @@ pub fn bytesPerPixel(format: u32) u32 {
     return if (format == render_c.HOWL_RENDER_UPLOAD_ALPHA8) 1 else 4;
 }
 
-pub fn spanSlice(comptime T: type, ptr: anytype, count: u32) []const T {
+pub fn resourceCreateSlice(ptr: ?[*]const render_c.HowlRenderResourceCreate, count: u32) []const render_c.HowlRenderResourceCreate {
     if (count == 0) return &.{};
-    return ptr[0..count];
+    return (ptr orelse std.debug.panic("trusted resource create span has count without ptr", .{}))[0..count];
+}
+
+pub fn termResourceUploadSlice(ptr: ?[*]const render_c.HowlRenderResourceUpload, count: u32) []const render_c.HowlRenderResourceUpload {
+    if (count == 0) return &.{};
+    return (ptr orelse std.debug.panic("trusted term resource upload span has count without ptr", .{}))[0..count];
+}
+
+pub fn tabBarResourceUploadSlice(ptr: ?[*]const render_c.HowlRenderTabBarResourceUpload, count: u32) []const render_c.HowlRenderTabBarResourceUpload {
+    if (count == 0) return &.{};
+    return (ptr orelse std.debug.panic("trusted tab bar resource upload span has count without ptr", .{}))[0..count];
+}
+
+pub fn resourceRetireSlice(ptr: ?[*]const render_c.HowlRenderResourceRetire, count: u32) []const render_c.HowlRenderResourceRetire {
+    if (count == 0) return &.{};
+    return (ptr orelse std.debug.panic("trusted resource retire span has count without ptr", .{}))[0..count];
 }
 
 pub const testing = struct {
-    pub const TextureSlot = RenderResourceTextures.Slot;
+    pub const ResourceSlot = GlResourceStore.ResourceSlot;
 
-    pub fn commitUploadMetadata(textures: *RenderResourceTextures, uploads: []const render_c.HowlRenderResourceUpload) void {
+    pub fn commitUploadMetadata(textures: *GlResourceStore, uploads: []const render_c.HowlRenderResourceUpload) void {
         textures.commitUploadMetadata(uploads);
     }
 
-    pub fn validateSurface(textures: *RenderResourceTextures, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+    pub fn validateSurface(textures: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
         textures.validateSurface(surface);
     }
 };

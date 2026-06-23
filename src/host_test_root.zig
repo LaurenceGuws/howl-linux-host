@@ -7,7 +7,6 @@ pub const Events = @import("events.zig");
 pub const Pty = @import("pty.zig");
 pub const Render = @import("render.zig");
 pub const Texture = @import("texture.zig");
-pub const TerminalSurface = @import("buckets that must die/bucket2.zig");
 pub const EventLoop = Events.event_loop;
 pub const PtyWaitThread = Pty.wait_thread;
 pub const Window = Events.window;
@@ -59,7 +58,6 @@ test {
 }
 
 test "host imports no obsolete layout cells owner" {
-    try expectNoLayoutCellsImport(@embedFile("buckets that must die/bucket2.zig"));
     try expectNoLayoutCellsImport(@embedFile("input/processor.zig"));
     try expectNoLayoutCellsImport(@embedFile("selection.zig"));
     try expectNoLayoutCellsImport(@embedFile("render/links.zig"));
@@ -69,7 +67,6 @@ test "host source has no rejected scroll layer noun" {
     try expectNoRejectedScrollLayerNoun(@embedFile("layout.zig"));
     try expectNoRejectedScrollLayerNoun(@embedFile("host_loop.zig"));
     try expectNoRejectedScrollLayerNoun(@embedFile("host_present.zig"));
-    try expectNoRejectedScrollLayerNoun(@embedFile("buckets that must die/bucket2.zig"));
 }
 
 test "host source has no temporary layout window symbols" {
