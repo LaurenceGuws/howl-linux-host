@@ -23,7 +23,8 @@ comptime {
 
 pub const Outcome = struct {
     keep: bool,
-    should_redraw: bool,
+    term_surface_dirty: bool,
+    tab_bar_surface_dirty: bool,
     alive: bool,
 };
 
@@ -37,6 +38,7 @@ const TransportProgress = struct {
     drained_input_bytes: u64,
     reads: u32,
     bytes_read: u32,
+    title_changed: bool,
     pending_input_bytes: u64,
     hit_limit: bool,
 };
@@ -51,8 +53,8 @@ fn driveOnceWith(term: anytype, now_ns: u64, comptime Ops: type) Outcome {
     const backlog = Ops.hasOutboundInputBacklog(term);
     const alive = Ops.isAlive(term);
     const keep = backlog or transport.hit_limit or runtime.pending_now;
-    const should_redraw = transport.reads != 0 or transport.bytes_read != 0 or runtime.state_changed;
-    return .{ .keep = keep, .should_redraw = should_redraw, .alive = alive };
+    const term_surface_dirty = transport.reads != 0 or transport.bytes_read != 0 or runtime.state_changed;
+    return .{ .keep = keep, .term_surface_dirty = term_surface_dirty, .tab_bar_surface_dirty = transport.title_changed, .alive = alive };
 }
 
 const TerminalProgressOps = struct {
@@ -155,13 +157,16 @@ fn pumpTransportSliceWith(
     std.debug.assert(backlog_len <= force_threshold);
 
     var bytes_fed: u32 = 0;
+    var title_changed = false;
     var pending_input_bytes = outbound.pending_input_bytes;
     if (backlog_len != 0) {
         Ops.lockUnfair(term);
         defer Ops.unlock(term);
         std.debug.assert(backlog_len <= locked_feed_bytes);
         const chunk = scratch[0..backlog_len];
-        if (Ops.feedTermBytesLocked(term, chunk, backlog_len)) bytes_fed = backlog_len;
+        const feed = Ops.feedTermBytesLocked(term, chunk, backlog_len);
+        if (feed.ok) bytes_fed = backlog_len;
+        title_changed = feed.title_changed;
         pending_input_bytes = Ops.pendingInputBytesLocked(term);
     }
 
@@ -173,6 +178,7 @@ fn pumpTransportSliceWith(
         .drained_input_bytes = outbound.drained_input_bytes,
         .reads = reads,
         .bytes_read = bytes_fed,
+        .title_changed = title_changed,
         .pending_input_bytes = pending_input_bytes,
         .hit_limit = hit_limit,
     };
@@ -229,7 +235,7 @@ const RealTransportOps = struct {
         return pty_session.readTransportLeased(term, out);
     }
 
-    fn feedTermBytesLocked(term: *Term, bytes: []const u8, chunk_len: u32) bool {
+    fn feedTermBytesLocked(term: *Term, bytes: []const u8, chunk_len: u32) FeedProgress {
         return feedTermDataLocked(term, bytes, chunk_len);
     }
 
@@ -238,18 +244,23 @@ const RealTransportOps = struct {
     }
 };
 
-fn feedTermDataLocked(term: *Term, bytes: []const u8, chunk_len: u32) bool {
+const FeedProgress = struct {
+    ok: bool,
+    title_changed: bool,
+};
+
+fn feedTermDataLocked(term: *Term, bytes: []const u8, chunk_len: u32) FeedProgress {
     const result = vt_retained.feedLocked(term, bytes);
     if (result.status != vt_c.HOWL_VT_CALL_OK) {
         term.pty.lifecycle = .failed;
         _ = chunk_len;
-        return false;
+        return .{ .ok = false, .title_changed = false };
     }
     const title = if (result.title_changed != 0) vt_title.copyFromVt(&term.vt_state.title, term.vt) catch null else null;
     drainTerminalReplyLocked(term);
     vt_retained.finishFeed(term, result.state_changed != 0, title);
     if (result.state_changed != 0) term.render.notePrepareNeeded();
-    return true;
+    return .{ .ok = true, .title_changed = title != null };
 }
 
 fn drainTerminalReplyLocked(term: *Term) void {
@@ -282,18 +293,20 @@ test "progress drive stays quiet when nothing changes" {
     var term = FakeTerm{};
     const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(!outcome.keep);
-    try std.testing.expect(!outcome.should_redraw);
+    try std.testing.expect(!outcome.term_surface_dirty);
+    try std.testing.expect(!outcome.tab_bar_surface_dirty);
     try std.testing.expect(outcome.alive);
 }
 
-test "progress drive requests redraw on transport read" {
+test "progress drive reports term surface dirty on transport read" {
     fake_state = .{};
     fake_state.reads = 1;
     fake_state.read_bytes = 8;
     var term = FakeTerm{};
     const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(!outcome.keep);
-    try std.testing.expect(outcome.should_redraw);
+    try std.testing.expect(outcome.term_surface_dirty);
+    try std.testing.expect(!outcome.tab_bar_surface_dirty);
     try std.testing.expect(outcome.alive);
 }
 
@@ -305,7 +318,8 @@ test "progress drive requests another turn after saturated transport slice" {
     var term = FakeTerm{};
     const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(outcome.keep);
-    try std.testing.expect(outcome.should_redraw);
+    try std.testing.expect(outcome.term_surface_dirty);
+    try std.testing.expect(!outcome.tab_bar_surface_dirty);
 }
 
 test "progress drive keeps next turn alive for outbound backlog only" {
@@ -314,29 +328,43 @@ test "progress drive keeps next turn alive for outbound backlog only" {
     var term = FakeTerm{};
     const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(outcome.keep);
-    try std.testing.expect(!outcome.should_redraw);
+    try std.testing.expect(!outcome.term_surface_dirty);
+    try std.testing.expect(!outcome.tab_bar_surface_dirty);
     try std.testing.expect(outcome.alive);
 }
 
-test "progress drive reports quiet transport death without redraw" {
+test "progress drive reports quiet transport death without dirty surface" {
     fake_state = .{};
     fake_state.is_alive = false;
     var term = FakeTerm{};
     const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(!outcome.keep);
-    try std.testing.expect(!outcome.should_redraw);
+    try std.testing.expect(!outcome.term_surface_dirty);
+    try std.testing.expect(!outcome.tab_bar_surface_dirty);
     try std.testing.expect(!outcome.alive);
 }
 
-test "progress drive requests redraw and next turn for runtime obligation" {
+test "progress drive reports dirty surface and next turn for runtime obligation" {
     fake_state = .{};
     fake_state.runtime_state_changed = true;
     fake_state.runtime_pending_now = true;
     var term = FakeTerm{};
     const outcome = driveOnceWith(&term, 1, FakeOps);
     try std.testing.expect(outcome.keep);
-    try std.testing.expect(outcome.should_redraw);
+    try std.testing.expect(outcome.term_surface_dirty);
+    try std.testing.expect(!outcome.tab_bar_surface_dirty);
     try std.testing.expect(outcome.alive);
+}
+
+test "progress drive reports tab bar surface dirty on title change" {
+    fake_state = .{};
+    fake_state.reads = 1;
+    fake_state.read_bytes = 8;
+    fake_state.title_changed = true;
+    var term = FakeTerm{};
+    const outcome = driveOnceWith(&term, 1, FakeOps);
+    try std.testing.expect(outcome.term_surface_dirty);
+    try std.testing.expect(outcome.tab_bar_surface_dirty);
 }
 
 test "pending vt output clears only after successful publish" {
@@ -533,12 +561,12 @@ const TestTransportOps = struct {
         return chunk_len;
     }
 
-    fn feedTermBytesLocked(term: *TestTransportTerm, bytes: []const u8, chunk_len: u32) bool {
+    fn feedTermBytesLocked(term: *TestTransportTerm, bytes: []const u8, chunk_len: u32) FeedProgress {
         std.debug.assert(term.data_locked);
         std.debug.assert(bytes.len == chunk_len);
         test_transport.feed_calls += 1;
         test_transport.feed_bytes += chunk_len;
-        return true;
+        return .{ .ok = true, .title_changed = false };
     }
 
     fn pendingInputBytesLocked(term: *TestTransportTerm) u64 {
@@ -557,6 +585,7 @@ var fake_state: struct {
     is_alive: bool = true,
     read_bytes: u32 = 0,
     reads: u32 = 0,
+    title_changed: bool = false,
     runtime_state_changed: bool = false,
     runtime_pending_now: bool = false,
     runtime_deadline_ns: u64 = 0,
@@ -569,6 +598,7 @@ const FakeOps = struct {
             .drained_input_bytes = 0,
             .reads = fake_state.reads,
             .bytes_read = fake_state.read_bytes,
+            .title_changed = fake_state.title_changed,
             .pending_input_bytes = 0,
             .hit_limit = fake_state.hit_limit,
         };

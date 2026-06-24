@@ -4,8 +4,8 @@ const pty_c = @import("howl_pty_c");
 const render_c = @import("howl_render_c");
 const sdl_c = @import("sdl_c");
 const vt_c = @import("howl_vt_c");
-const surface_present = @import("window/surface_present.zig");
 const surface_layout = @import("render/surface_layout.zig");
+const wake_scheduler = @import("window/wake_scheduler.zig");
 const Pty = @import("pty.zig");
 const Render = @import("render.zig");
 const Sync = @import("sync.zig");
@@ -43,7 +43,8 @@ pub const Term = struct {
     render: render_retained.State,
     vt_state: VtState = .{},
     mutex: FairMutex = .{},
-    surface_present_trigger: ?*surface_present.Trigger = null,
+    host_events: ?*wake_scheduler.HostEventQueue = null,
+    host_event_address: wake_scheduler.PaneAddress = .{ .tab_slot = 0, .pane_id = 0 },
     progress_thread: pty_wait_thread.WaitThread = .{},
     host_title: vt_title.HostTitle = .{},
 
@@ -94,7 +95,8 @@ pub const Term = struct {
         cursor_shape: CursorStyle,
         cursor_blink: bool,
         render_text_handle: render_c.HowlRenderTextHandle,
-        trigger: *surface_present.Trigger,
+        host_events: *wake_scheduler.HostEventQueue,
+        address: wake_scheduler.PaneAddress,
     ) !void {
         std.debug.assert(render_text_handle != null);
         const terminal_layout = try initSurfaceLayout(surface_px, font_size_px, primary_font_path, fallback_font_paths);
@@ -122,7 +124,8 @@ pub const Term = struct {
             .render = render,
             .vt_state = next_vt_state,
             .mutex = .{},
-            .surface_present_trigger = trigger,
+            .host_events = host_events,
+            .host_event_address = address,
             .progress_thread = .{},
             .host_title = .{},
         };
@@ -187,14 +190,21 @@ pub const Term = struct {
         vt_title.refreshHost(&self.host_title, &self.vt_state.title, fallback);
     }
 
-    pub fn initSurfacePresentTrigger(self: *Term, trigger: *surface_present.Trigger) void {
-        self.surface_present_trigger = trigger;
+    pub fn initHostEvents(self: *Term, host_events: *wake_scheduler.HostEventQueue, address: wake_scheduler.PaneAddress) void {
+        self.host_events = host_events;
+        self.host_event_address = address;
     }
 
-    pub fn triggerSurfacePresent(self: *Term) void {
-        const trigger = self.surface_present_trigger orelse return;
-        const fired = surface_present.trigger(trigger);
-        std.debug.print("term present trigger fired={}\n", .{fired});
+    pub fn triggerTermSurfaceDirty(self: *Term) void {
+        const host_events = self.host_events orelse return;
+        const fired = host_events.append(.{ .term_surface_dirty = self.host_event_address });
+        std.debug.print("host event term_surface_dirty fired={}\n", .{fired});
+    }
+
+    pub fn triggerTabBarSurfaceDirty(self: *Term) void {
+        const host_events = self.host_events orelse return;
+        const fired = host_events.append(.tab_bar_surface_dirty);
+        std.debug.print("host event tab_bar_surface_dirty fired={}\n", .{fired});
     }
 
     fn stopProgressThread(self: *Term) void {
@@ -554,8 +564,8 @@ fn testTitleTerm(launch: pty_session.Launch) Term {
         .render = undefined,
         .vt_state = .{},
         .mutex = .{},
-        .surface_present_trigger = null,
-        .surface_present_wake_loop = null,
+        .host_events = null,
+        .host_event_address = .{ .tab_slot = 0, .pane_id = 0 },
         .host_title = .{},
     };
 }
@@ -575,8 +585,8 @@ fn testRenderTerm() Term {
         }),
         .vt_state = .{},
         .mutex = .{},
-        .surface_present_trigger = null,
-        .surface_present_wake_loop = null,
+        .host_events = null,
+        .host_event_address = .{ .tab_slot = 0, .pane_id = 0 },
         .host_title = .{},
     };
 }

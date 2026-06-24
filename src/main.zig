@@ -10,7 +10,7 @@ const TermConfig = @import("config/term.zig");
 const window_icon = @import("window_icon.zig");
 const render_c = @import("howl_render_c");
 const sdl_c = @import("sdl_c");
-const scheduler = WindowPolicy.scheduler;
+const wake_scheduler = WindowPolicy.wake_scheduler;
 const window = WindowPolicy.sdl_window;
 
 const TabBar = TabBarUnit.TabBar;
@@ -95,12 +95,12 @@ noinline fn start(io: std.Io, options: Args) !void {
 
 fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture_frame: *TextureFrame.State, tab_bar: *TabBar, layout: *WindowPolicy.Layout, input: *Input) !void {
     while (true) {
-        var events = scheduler.HostEventQueue.init();
-        const had_layout_trigger = layout.consumeSurfaceUpdateTriggers();
-        if (had_layout_trigger) events.append(.surface_present_triggered);
-        if (app_window.hasRequestedRedraw()) events.append(.redraw_requested);
+        var events = wake_scheduler.HostEventQueue.init();
+        var host_event_buffer: [wake_scheduler.max_host_events]wake_scheduler.HostEvent = undefined;
+        for (app_window.host_events.drain(host_event_buffer[0..])) |event| _ = events.append(event);
+        if (app_window.hasRequestedRedraw()) _ = events.append(.redraw_requested);
 
-        const wait_for_sdl = !input.hasPendingEvents() and !app_window.hasRequestedRedraw() and !had_layout_trigger;
+        const wait_for_sdl = !input.hasPendingEvents() and !app_window.hasRequestedRedraw() and events.len() == 0;
         if (pumpInput(input, wait_for_sdl)) return;
 
         layout.applyFocusChange(app_window, input, &events);
@@ -108,15 +108,12 @@ fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture
         var host_visual_changed = false;
         layout.forwardTerminalInput(conf, app_window, input, &host_visual_changed);
         if (layout.applyWindowResize(conf, app_window, input)) app_window.requestRedraw();
-        if (layout.consumeSurfaceUpdateTriggers()) {
-            events.append(.surface_present_triggered);
-        }
+        for (app_window.host_events.drain(host_event_buffer[0..])) |event| _ = events.append(event);
         if (host_visual_changed) app_window.requestRedraw();
         layout.configureInputPolicies(conf, input);
-        if (app_window.hasRequestedRedraw() and !events.contains(.redraw_requested)) events.append(.redraw_requested);
+        if (app_window.hasRequestedRedraw() and !events.contains(.redraw_requested)) _ = events.append(.redraw_requested);
 
-        const layout_update_pending = events.contains(.surface_present_triggered);
-        const present_pending = app_window.hasRequestedRedraw() or layout_update_pending;
+        const present_pending = app_window.hasRequestedRedraw() or events.contains(.term_surface_dirty) or events.contains(.tab_bar_surface_dirty);
         if (present_pending and app_window.hasFrame()) {
             const present_turn = layout.render(conf, app_window, texture_frame, tab_bar);
             const reason = layout.choosePresentReason(&events, layout.terminalFrameReady(present_turn.turn.step));

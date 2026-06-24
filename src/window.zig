@@ -18,14 +18,14 @@ const vt_surface = @import("vt/surface.zig");
 
 pub const frame_contract = @import("window/frame.zig");
 pub const geometry = @import("window/geometry.zig");
-pub const scheduler = @import("window/scheduler.zig");
+pub const present_scheduler = @import("window/present_scheduler.zig");
 pub const sdl_window = @import("window/sdl_window.zig");
 pub const status = @import("window/status.zig");
-pub const surface_present = @import("window/surface_present.zig");
 pub const turn_contract = @import("window/turn.zig");
 pub const update_contract = @import("window/update.zig");
+pub const wake_scheduler = @import("window/wake_scheduler.zig");
 
-const HostScheduler = scheduler;
+const HostWakeScheduler = wake_scheduler;
 const Window = sdl_window.Window;
 
 pub const interior = @import("layout/window.zig");
@@ -85,7 +85,7 @@ pub const Layout = struct {
         self.tabs.free_count -= 1;
         const slot = self.tabs.free_slots[self.tabs.free_count];
         self.tabs.tabs[slot] = .{};
-        try self.initPane(allocator, &self.tabs.tabs[slot].panes[0], .first, conf, placement, render_text_handle);
+        try self.initPane(allocator, app_window, slot, &self.tabs.tabs[slot].panes[0], .first, conf, placement, render_text_handle);
         self.tabs.tabs[slot].pane_count = 1;
         self.tabs.tabs[slot].split_tree = splits.leaf(.first);
         self.tabs.active_slots[self.tabs.active_count] = slot;
@@ -95,6 +95,7 @@ pub const Layout = struct {
         if (before_height != window_interior.tab_bar.pixel_height) self.applyBody(body_value);
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
+        _ = app_window.host_events.append(.tab_bar_surface_dirty);
         app_window.requestRedraw();
         self.assertTabs();
     }
@@ -118,6 +119,7 @@ pub const Layout = struct {
         if (before_height != window_interior.tab_bar.pixel_height) self.applyBody(tab.body(window_interior));
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
+        _ = app_window.host_events.append(.tab_bar_surface_dirty);
         app_window.requestRedraw();
         self.assertTabs();
     }
@@ -128,6 +130,7 @@ pub const Layout = struct {
         self.tabs.active_tab = @intCast(@mod(@as(i32, @intCast(self.tabs.active_tab)) + delta, len_i));
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
+        _ = app_window.host_events.append(.tab_bar_surface_dirty);
         app_window.requestRedraw();
     }
 
@@ -136,6 +139,7 @@ pub const Layout = struct {
         self.tabs.active_tab = index;
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
+        _ = app_window.host_events.append(.tab_bar_surface_dirty);
         app_window.requestRedraw();
     }
 
@@ -160,6 +164,7 @@ pub const Layout = struct {
         self.tabs.active_panes[self.tabs.active_tab] = next;
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
+        _ = app_window.host_events.append(.tab_bar_surface_dirty);
         app_window.requestRedraw();
     }
 
@@ -173,11 +178,11 @@ pub const Layout = struct {
         input.setTerminalMousePolicy(.{ .bypass_mod = conf.term.mouse_bypass_mod });
     }
 
-    pub fn applyFocusChange(self: *Layout, app_window: *Window, input: *HostInput, events: *HostScheduler.HostEventQueue) void {
+    pub fn applyFocusChange(self: *Layout, app_window: *Window, input: *HostInput, events: *HostWakeScheduler.HostEventQueue) void {
         if (input.drainWindowFocusChanged()) |focused| {
             _ = app_window.setFocused(focused);
             self.syncFocus(focused);
-            events.append(.window_focus_changed);
+            _ = events.append(.window_focus_changed);
         }
     }
 
@@ -196,6 +201,7 @@ pub const Layout = struct {
         if (!input.drainWindowGeometryChanged()) return false;
         if (!app_window.refreshGeometry()) return false;
         self.applyBody(tab.body(interior.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
+        _ = app_window.host_events.append(.tab_bar_surface_dirty);
         return true;
     }
 
@@ -211,16 +217,6 @@ pub const Layout = struct {
             .terminal_focus_pane_down => self.focusPane(app_window, .down),
             else => if (HostInput.Bindings.focusTabIndex(action)) |index| self.select(app_window, index),
         }
-    }
-
-    pub fn consumeSurfaceUpdateTriggers(self: *Layout) bool {
-        var triggered = false;
-        var tab_index_value: usize = 0;
-        while (tab_index_value < self.tabs.active_count) : (tab_index_value += 1) {
-            const tab_value = self.tabAt(tab_index_value);
-            for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| triggered = surface_present.consumeTrigger(&pane_value.surface_update_trigger) or triggered;
-        }
-        return triggered;
     }
 
     pub fn activeTabProblem(self: *Layout) ?ActiveTabProblem {
@@ -254,7 +250,9 @@ pub const Layout = struct {
     pub fn submitPresent(self: *Layout, texture_frame: *TextureFrame.State, present_turn: PresentTurn, reason: PresentReason) void {
         switch (reason) {
             .none => {},
-            .host_redraw => _ = texture_frame.submitPresentSync(present_turn.frame),
+            .host_redraw,
+            .tab_bar_surface,
+            => _ = texture_frame.submitPresentSync(present_turn.frame),
             .terminal_frame => {
                 const token = texture_frame.submitPresentSync(present_turn.frame);
                 self.notePresentSubmitted(present_turn.turn, token);
@@ -267,15 +265,16 @@ pub const Layout = struct {
         return step == .rendered;
     }
 
-    pub fn choosePresentReason(_: *Layout, events: *const HostScheduler.HostEventQueue, terminal_ready: bool) PresentReason {
+    pub fn choosePresentReason(_: *Layout, events: *const HostWakeScheduler.HostEventQueue, terminal_ready: bool) PresentReason {
         if (terminal_ready) return .terminal_frame;
+        if (events.contains(.tab_bar_surface_dirty)) return .tab_bar_surface;
         if (events.contains(.redraw_requested)) return .host_redraw;
         return .none;
     }
 
-    fn initPane(self: *Layout, allocator: std.mem.Allocator, pane_value: *pane.Pane, id: pane.PaneId, conf: *const Config.UiConfig, placement: pane.Placement, render_text_handle: render_c.HowlRenderTextHandle) !void {
+    fn initPane(self: *Layout, allocator: std.mem.Allocator, app_window: *Window, slot: TabIndex, pane_value: *pane.Pane, id: pane.PaneId, conf: *const Config.UiConfig, placement: pane.Placement, render_text_handle: render_c.HowlRenderTextHandle) !void {
         _ = self;
-        surface_present.initTrigger(&pane_value.surface_update_trigger);
+        std.debug.assert(slot < tabs.max_tabs);
         const surface_px = render_c.HowlRenderPixelSize{ .width = @intCast(placement.pixel_size.width), .height = @intCast(placement.pixel_size.height) };
         pane_value.* = .{
             .id = id,
@@ -285,8 +284,7 @@ pub const Layout = struct {
             .conf = &conf.term,
             .font_size_px = @max(conf.term.font_size, 1),
         };
-        surface_present.initTrigger(&pane_value.surface_update_trigger);
-        try pane_value.term.initTerminal(allocator, .{ .shell = conf.term.shell, .start_path = conf.term.start_path, .command = conf.term.command }, surface_px, pane_value.font_size_px, conf.term.fonts.primary, conf.term.fonts.mono, conf.term.cursor_shape, conf.term.cursor_blink, render_text_handle, &pane_value.surface_update_trigger);
+        try pane_value.term.initTerminal(allocator, .{ .shell = conf.term.shell, .start_path = conf.term.start_path, .command = conf.term.command }, surface_px, pane_value.font_size_px, conf.term.fonts.primary, conf.term.fonts.mono, conf.term.cursor_shape, conf.term.cursor_blink, render_text_handle, &app_window.host_events, .{ .tab_slot = slot, .pane_id = @intFromEnum(id) });
         try pane_value.term.startTerminal();
         pane_value.live = true;
     }

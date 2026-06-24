@@ -49,7 +49,8 @@ fn progressThreadMainWith(target_value: ProgressThreadTarget, comptime Ops: type
         if (!waitForTransport(target_value, Ops)) continue;
         while (!target_value.progress.stop.load(.acquire)) {
             const progress = Ops.driveProgress(target_value.term, nowNs());
-            if (progress.should_redraw or !progress.alive) triggerSurfacePresent(target_value, Ops);
+            if (progress.term_surface_dirty or !progress.alive) triggerWake(target_value, Ops);
+            if (progress.tab_bar_surface_dirty) Ops.triggerTabBarSurfaceDirty(target_value.term);
             if (!progress.alive) return;
             if (!progress.keep) break;
         }
@@ -66,9 +67,9 @@ fn waitForTransport(target_value: ProgressThreadTarget, comptime Ops: type) bool
     return true;
 }
 
-fn triggerSurfacePresent(target_value: ProgressThreadTarget, comptime Ops: type) void {
+fn triggerWake(target_value: ProgressThreadTarget, comptime Ops: type) void {
     _ = target_value.progress;
-    Ops.triggerSurfacePresent(target_value.term);
+    Ops.triggerTermSurfaceDirty(target_value.term);
 }
 
 fn nowNs() u64 {
@@ -88,8 +89,12 @@ const ProgressThreadOps = struct {
         return pty_session.isAlive(term);
     }
 
-    fn triggerSurfacePresent(term: *Term) void {
-        term.triggerSurfacePresent();
+    fn triggerTermSurfaceDirty(term: *Term) void {
+        term.triggerTermSurfaceDirty();
+    }
+
+    fn triggerTabBarSurfaceDirty(term: *Term) void {
+        term.triggerTabBarSurfaceDirty();
     }
 };
 
@@ -125,7 +130,7 @@ test "progress thread drains kept turns before waiting again" {
     fake_state = .{};
     fake_state.drive_alive_calls = 2;
     fake_state.drive_keep_calls = 1;
-    fake_state.drive_should_redraw = true;
+    fake_state.drive_term_surface_dirty = true;
     fake_state.set_stop_after_wait_call = 2;
     var term: FakeTerm = undefined;
     var progress = WaitThread{};
@@ -149,13 +154,13 @@ test "progress target carries explicit term and wait owner" {
     try std.testing.expectEqual(&progress, target_value.progress);
 }
 
-test "surface present signal forwards every redraw edge to term trigger" {
+test "surface dirty signal forwards every producer edge to wake trigger" {
     fake_state = .{};
     var term: FakeTerm = undefined;
     var progress = WaitThread{};
     const target_value = fakeTarget(&term, &progress);
-    triggerSurfacePresent(target_value, FakeOps);
-    triggerSurfacePresent(target_value, FakeOps);
+    triggerWake(target_value, FakeOps);
+    triggerWake(target_value, FakeOps);
     try std.testing.expectEqual(@as(u8, 2), fake_state.trigger_calls);
 }
 
@@ -215,7 +220,8 @@ var fake_state: struct {
     set_stop_after_wait_call: ?u8 = null,
     drive_alive_calls: u8 = 0,
     drive_keep_calls: u8 = 0,
-    drive_should_redraw: bool = false,
+    drive_term_surface_dirty: bool = false,
+    drive_tab_bar_surface_dirty: bool = false,
     kick_calls: u8 = 0,
     last_wait: ?TransportWait = null,
 } = .{};
@@ -228,7 +234,8 @@ const FakeOps = struct {
         fake_state.drive_calls += 1;
         return .{
             .keep = index < fake_state.drive_keep_calls,
-            .should_redraw = fake_state.drive_should_redraw,
+            .term_surface_dirty = fake_state.drive_term_surface_dirty,
+            .tab_bar_surface_dirty = fake_state.drive_tab_bar_surface_dirty,
             .alive = index < fake_state.drive_alive_calls,
         };
     }
@@ -253,7 +260,11 @@ const FakeOps = struct {
         return fake_state.is_alive;
     }
 
-    fn triggerSurfacePresent(_: *Term) void {
+    fn triggerTermSurfaceDirty(_: *Term) void {
+        fake_state.trigger_calls += 1;
+    }
+
+    fn triggerTabBarSurfaceDirty(_: *Term) void {
         fake_state.trigger_calls += 1;
     }
 };

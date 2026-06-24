@@ -45,6 +45,7 @@ fn testWindow() Window {
     return .{
         .handle = undefined,
         .current_title = @constCast("test"),
+        .host_events = Layout.wake_scheduler.HostEventQueue.init(),
         .has_frame = true,
         .requested_redraw = false,
         .px_w = 960,

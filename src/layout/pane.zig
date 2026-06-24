@@ -6,7 +6,6 @@ const Layout = @import("../window.zig");
 const Term = @import("../term.zig").Term;
 const render_links = @import("../render/links.zig");
 const surface_layout = @import("../render/surface_layout.zig");
-const surface_present = @import("../window/surface_present.zig");
 const terminal_scrollbar = @import("../scroll_bar.zig");
 const Config = @import("../config.zig");
 
@@ -23,7 +22,6 @@ pub const Pane = struct {
     placement: Placement,
     term: Term,
     surface_resize: surface_layout.SurfaceResize,
-    surface_update_trigger: surface_present.Trigger = .{},
     scrollbar: terminal_scrollbar.State = .{},
     links: render_links.Links = .{},
     window_focused: bool = true,
