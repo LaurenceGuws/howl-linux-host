@@ -18,7 +18,6 @@ pub const Window = struct {
     current_title: [:0]u8,
     host_events: wake_scheduler.HostEventQueue,
     has_frame: bool,
-    requested_redraw: bool,
     px_w: c_int,
     px_h: c_int,
     logical_w: c_int,
@@ -34,9 +33,8 @@ pub const Window = struct {
         var self = Window{
             .handle = handle,
             .current_title = current_title,
-            .host_events = wake_scheduler.HostEventQueue.init(),
+            .host_events = wake_scheduler.HostEventQueue.initWaker(),
             .has_frame = true,
-            .requested_redraw = false,
             .px_w = 1,
             .px_h = 1,
             .logical_w = 1,
@@ -73,11 +71,6 @@ pub const Window = struct {
         return true;
     }
 
-    pub fn requestRedraw(self: *Window) void {
-        if (!self.requested_redraw) std.debug.print("window layout wake false -> true\n", .{});
-        self.requested_redraw = true;
-    }
-
     pub fn markFrameUsed(self: *Window) void {
         std.debug.assert(self.has_frame);
         self.has_frame = false;
@@ -89,15 +82,6 @@ pub const Window = struct {
 
     pub fn hasFrame(self: *const Window) bool {
         return self.has_frame;
-    }
-
-    pub fn clearRedrawRequest(self: *Window) void {
-        if (self.requested_redraw) std.debug.print("window layout wake true -> false\n", .{});
-        self.requested_redraw = false;
-    }
-
-    pub fn hasRequestedRedraw(self: *const Window) bool {
-        return self.requested_redraw;
     }
 
     pub fn setTitle(self: *Window, title: []const u8) void {
@@ -126,7 +110,8 @@ const TitleOps = struct {
 };
 
 pub fn initVideo() bool {
-    return sdl_c.SDL_Init(sdl_c.SDL_INIT_VIDEO);
+    if (!sdl_c.SDL_Init(sdl_c.SDL_INIT_VIDEO)) return false;
+    return wake_scheduler.initSdlWakeEvent();
 }
 
 pub fn quit() void {
@@ -237,7 +222,6 @@ test "window title updates only when content changes" {
         .current_title = try std.testing.allocator.dupeZ(u8, "old"),
         .host_events = wake_scheduler.HostEventQueue.init(),
         .has_frame = true,
-        .requested_redraw = false,
         .px_w = 1,
         .px_h = 1,
         .logical_w = 1,

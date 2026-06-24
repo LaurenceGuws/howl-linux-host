@@ -3,7 +3,7 @@ const frame = @import("frame.zig");
 const pane = @import("../layout/pane.zig");
 const tab = @import("../layout/tab.zig");
 
-pub const PresentReason = enum { none, host_redraw, tab_bar_surface, terminal_frame };
+pub const PresentReason = enum { none, tab_bar_surface, window_frame, terminal_frame };
 
 pub const PaneTurn = struct {
     id: pane.PaneId,

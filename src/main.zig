@@ -10,6 +10,7 @@ const TermConfig = @import("config/term.zig");
 const window_icon = @import("window_icon.zig");
 const render_c = @import("howl_render_c");
 const sdl_c = @import("sdl_c");
+const present_scheduler = WindowPolicy.present_scheduler;
 const wake_scheduler = WindowPolicy.wake_scheduler;
 const window = WindowPolicy.sdl_window;
 
@@ -94,44 +95,57 @@ noinline fn start(io: std.Io, options: Args) !void {
 }
 
 fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture_frame: *TextureFrame.State, tab_bar: *TabBar, layout: *WindowPolicy.Layout, input: *Input) !void {
+    var presenter = present_scheduler.Scheduler.init();
     while (true) {
         var events = wake_scheduler.HostEventQueue.init();
         var host_event_buffer: [wake_scheduler.max_host_events]wake_scheduler.HostEvent = undefined;
-        for (app_window.host_events.drain(host_event_buffer[0..])) |event| _ = events.append(event);
-        if (app_window.hasRequestedRedraw()) _ = events.append(.redraw_requested);
+        mergeHostEvents(&events, app_window.host_events.drain(host_event_buffer[0..]));
+        const first_now_ns = nowNs();
+        const closest_deadline_ns = presenter.update(&events, first_now_ns);
+        if (events.contains(.frame_ready)) app_window.markFrameReady();
 
-        const wait_for_sdl = !input.hasPendingEvents() and !app_window.hasRequestedRedraw() and events.len() == 0;
-        if (pumpInput(input, wait_for_sdl)) return;
+        const wait = present_scheduler.chooseWait(input.hasPendingEvents(), &events, closest_deadline_ns, first_now_ns);
+        if (pumpInput(input, wait)) return;
 
         layout.applyFocusChange(app_window, input, &events);
         while (input.drainBindingAction()) |action| try layout.handleBindingAction(conf, app_window, action, texture_frame.textHandle());
         var host_visual_changed = false;
         layout.forwardTerminalInput(conf, app_window, input, &host_visual_changed);
-        if (layout.applyWindowResize(conf, app_window, input)) app_window.requestRedraw();
-        for (app_window.host_events.drain(host_event_buffer[0..])) |event| _ = events.append(event);
-        if (host_visual_changed) app_window.requestRedraw();
+        _ = layout.applyWindowResize(conf, app_window, input, &events);
+        mergeHostEvents(&events, app_window.host_events.drain(host_event_buffer[0..]));
+        if (host_visual_changed) _ = events.append(.{ .term_surface_dirty = layout.activePaneAddress() });
         layout.configureInputPolicies(conf, input);
-        if (app_window.hasRequestedRedraw() and !events.contains(.redraw_requested)) _ = events.append(.redraw_requested);
 
-        const present_pending = app_window.hasRequestedRedraw() or events.contains(.term_surface_dirty) or events.contains(.tab_bar_surface_dirty);
+        const present_pending = events.hasOverflowed() or events.contains(.term_surface_dirty) or events.contains(.tab_bar_surface_dirty) or events.contains(.window_geometry_changed) or events.contains(.window_focus_changed);
         if (present_pending and app_window.hasFrame()) {
-            const present_turn = layout.render(conf, app_window, texture_frame, tab_bar);
+            const present_turn = layout.render(conf, app_window, texture_frame, tab_bar, &events);
             const reason = layout.choosePresentReason(&events, layout.terminalFrameReady(present_turn.turn.step));
             layout.submitPresent(texture_frame, present_turn, reason);
+            if (reason != .none) try presenter.requestFrame(app_window, nowNs());
         }
     }
 }
 
-fn pumpInput(input: *Input, wait: bool) bool {
-    if (wait) {
+fn mergeHostEvents(events: *wake_scheduler.HostEventQueue, drained: wake_scheduler.Drain) void {
+    if (drained.overflowed) events.markOverflowed();
+    for (drained.events) |event| _ = events.append(event);
+}
+
+fn pumpInput(input: *Input, wait: present_scheduler.Wait) bool {
+    if (wait.for_window) {
         var event: sdl_c.SDL_Event = undefined;
-        if (sdl_c.SDL_WaitEvent(&event)) {
+        const received = if (wait.timeout_ms) |timeout_ms| sdl_c.SDL_WaitEventTimeout(&event, @intCast(timeout_ms)) else sdl_c.SDL_WaitEvent(&event);
+        if (received) {
             if (processSdlEvent(input, &event)) return true;
             return drainPendingInput(input, 1);
         }
         return drainPendingInput(input, 0);
     }
     return drainPendingInput(input, 0);
+}
+
+fn nowNs() u64 {
+    return @max(@as(u64, 1), sdl_c.SDL_GetTicksNS());
 }
 
 fn drainPendingInput(input: *Input, processed_start: usize) bool {
@@ -145,6 +159,7 @@ fn drainPendingInput(input: *Input, processed_start: usize) bool {
 }
 
 fn processSdlEvent(input: *Input, event: *const sdl_c.SDL_Event) bool {
+    if (wake_scheduler.isSdlWakeEvent(event)) return false;
     switch (event.type) {
         sdl_c.SDL_EVENT_QUIT,
         sdl_c.SDL_EVENT_TERMINATING,

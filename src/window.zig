@@ -96,7 +96,6 @@ pub const Layout = struct {
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
         _ = app_window.host_events.append(.tab_bar_surface_dirty);
-        app_window.requestRedraw();
         self.assertTabs();
     }
 
@@ -120,7 +119,6 @@ pub const Layout = struct {
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
         _ = app_window.host_events.append(.tab_bar_surface_dirty);
-        app_window.requestRedraw();
         self.assertTabs();
     }
 
@@ -131,7 +129,6 @@ pub const Layout = struct {
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
         _ = app_window.host_events.append(.tab_bar_surface_dirty);
-        app_window.requestRedraw();
     }
 
     pub fn select(self: *Layout, app_window: *Window, index: TabIndex) void {
@@ -140,7 +137,6 @@ pub const Layout = struct {
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
         _ = app_window.host_events.append(.tab_bar_surface_dirty);
-        app_window.requestRedraw();
     }
 
     pub fn focusPane(self: *Layout, app_window: *Window, direction: pane.Direction) void {
@@ -164,8 +160,8 @@ pub const Layout = struct {
         self.tabs.active_panes[self.tabs.active_tab] = next;
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = app_window.host_events.append(.tab_bar_surface_dirty);
-        app_window.requestRedraw();
+        _ = app_window.host_events.append(.{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, current) });
+        _ = app_window.host_events.append(.{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, next) });
     }
 
     pub fn configureInputPolicies(self: *Layout, conf: *const Config.UiConfig, input: *HostInput) void {
@@ -183,6 +179,7 @@ pub const Layout = struct {
             _ = app_window.setFocused(focused);
             self.syncFocus(focused);
             _ = events.append(.window_focus_changed);
+            self.appendActiveTabTermSurfaceDirty(events);
         }
     }
 
@@ -197,11 +194,12 @@ pub const Layout = struct {
         terminal_scrollbar.handlePages(&active_pane.term, &active_pane.scrollbar, input);
     }
 
-    pub fn applyWindowResize(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, input: *HostInput) bool {
+    pub fn applyWindowResize(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, input: *HostInput, events: *HostWakeScheduler.HostEventQueue) bool {
         if (!input.drainWindowGeometryChanged()) return false;
         if (!app_window.refreshGeometry()) return false;
         self.applyBody(tab.body(interior.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
-        _ = app_window.host_events.append(.tab_bar_surface_dirty);
+        _ = events.append(.window_geometry_changed);
+        self.appendActiveTabTermSurfaceDirty(events);
         return true;
     }
 
@@ -236,11 +234,10 @@ pub const Layout = struct {
         return if (self.tabs.active_count == 1) .quit else .close_tab;
     }
 
-    pub fn render(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) PresentTurn {
-        app_window.clearRedrawRequest();
+    pub fn render(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar, events: *const HostWakeScheduler.HostEventQueue) PresentTurn {
         var readiness: [tab.max_panes]PaneSurfaceReadiness = undefined;
         const ready = self.paneSurfaceReadiness(texture_frame, readiness[0..]);
-        const prepare_turn = self.renderTurn(ready);
+        const prepare_turn = self.renderTurn(ready, events);
         self.noteRenderTurn(prepare_turn);
         const turn = self.submitUploaded(texture_frame, prepare_turn);
         self.noteRenderTurn(turn);
@@ -250,8 +247,8 @@ pub const Layout = struct {
     pub fn submitPresent(self: *Layout, texture_frame: *TextureFrame.State, present_turn: PresentTurn, reason: PresentReason) void {
         switch (reason) {
             .none => {},
-            .host_redraw,
             .tab_bar_surface,
+            .window_frame,
             => _ = texture_frame.submitPresentSync(present_turn.frame),
             .terminal_frame => {
                 const token = texture_frame.submitPresentSync(present_turn.frame);
@@ -267,9 +264,20 @@ pub const Layout = struct {
 
     pub fn choosePresentReason(_: *Layout, events: *const HostWakeScheduler.HostEventQueue, terminal_ready: bool) PresentReason {
         if (terminal_ready) return .terminal_frame;
+        if (events.hasOverflowed()) return .window_frame;
         if (events.contains(.tab_bar_surface_dirty)) return .tab_bar_surface;
-        if (events.contains(.redraw_requested)) return .host_redraw;
+        if (events.contains(.window_geometry_changed)) return .window_frame;
+        if (events.contains(.window_focus_changed)) return .window_frame;
         return .none;
+    }
+
+    pub fn activePaneAddress(self: *Layout) HostWakeScheduler.PaneAddress {
+        return self.paneAddress(self.tabs.active_tab, self.tabs.active_panes[self.tabs.active_tab]);
+    }
+
+    fn appendActiveTabTermSurfaceDirty(self: *Layout, events: *HostWakeScheduler.HostEventQueue) void {
+        const tab_value = self.activeTab();
+        for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| _ = events.append(.{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, pane_value.id) });
     }
 
     fn initPane(self: *Layout, allocator: std.mem.Allocator, app_window: *Window, slot: TabIndex, pane_value: *pane.Pane, id: pane.PaneId, conf: *const Config.UiConfig, placement: pane.Placement, render_text_handle: render_c.HowlRenderTextHandle) !void {
@@ -364,11 +372,15 @@ pub const Layout = struct {
         };
     }
 
-    fn renderTurn(self: *Layout, readiness: []const PaneSurfaceReadiness) TurnResult {
+    fn renderTurn(self: *Layout, readiness: []const PaneSurfaceReadiness, events: *const HostWakeScheduler.HostEventQueue) TurnResult {
         const tab_value = self.activeTab();
         var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle };
         for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| {
             std.debug.assert(readiness[index].id == pane_value.id);
+            if (readiness[index].ready and !events.hasTermSurfaceDirty(self.paneAddress(self.tabs.active_tab, pane_value.id))) {
+                result.panes[index] = .{ .id = pane_value.id, .turn = idleTurn() };
+                continue;
+            }
             const turn = pane_value.term.renderTurn(readiness[index].ready, pane_value, syncPendingPixelsLocked, hoverDecoration, clearHoverPending);
             result.panes[index] = .{ .id = pane_value.id, .turn = turn };
             result.step = aggregateTurnStep(result.step, turn.step);
@@ -412,6 +424,11 @@ pub const Layout = struct {
         const tab_value = self.activeTab();
         for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| out[index] = .{ .id = pane_value.id, .ready = texture_frame.termSurfaceReady(pane_value.id) };
         return out[0..tab_value.pane_count];
+    }
+
+    fn paneAddress(self: *Layout, tab_index_value: usize, pane_id: pane.PaneId) HostWakeScheduler.PaneAddress {
+        std.debug.assert(tab_index_value < self.tabs.active_count);
+        return .{ .tab_slot = self.tabs.active_slots[tab_index_value], .pane_id = @intFromEnum(pane_id) };
     }
 
     fn frame(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) Frame {

@@ -112,7 +112,6 @@ fn testWindow(has_frame: bool) sdl_window.Window {
         .current_title = undefined,
         .host_events = wake_scheduler.HostEventQueue.init(),
         .has_frame = has_frame,
-        .requested_redraw = false,
         .px_w = 1,
         .px_h = 1,
         .logical_w = 1,
