@@ -5,7 +5,7 @@ const assert = std.debug.assert;
 
 const FrameTimer = @import("frame_timer.zig").FrameTimer;
 const sdl_window = @import("sdl_window.zig");
-const wake_scheduler = @import("wake_scheduler.zig");
+const present_queue = @import("present_queue.zig");
 
 pub const TimerTopic = enum {
     frame,
@@ -54,7 +54,7 @@ pub const Scheduler = struct {
         timer.active = false;
     }
 
-    pub fn update(self: *Scheduler, events: *wake_scheduler.HostEventQueue, now_ns: u64) ?u64 {
+    pub fn update(self: *Scheduler, events: *present_queue.Queue, now_ns: u64) ?u64 {
         assert(now_ns > 0);
         var closest_deadline_ns: ?u64 = null;
         for (&self.timers) |*timer| {
@@ -85,7 +85,7 @@ pub const Scheduler = struct {
     }
 };
 
-pub fn chooseWait(pending_events: bool, events: *const wake_scheduler.HostEventQueue, closest_deadline_ns: ?u64, now_ns: u64) Wait {
+pub fn chooseWait(pending_events: bool, events: *const present_queue.Queue, closest_deadline_ns: ?u64, now_ns: u64) Wait {
     assert(now_ns > 0);
     return .{
         .for_window = !pending_events and events.len() == 0,
@@ -110,7 +110,6 @@ fn testWindow(has_frame: bool) sdl_window.Window {
     return .{
         .handle = undefined,
         .current_title = undefined,
-        .host_events = wake_scheduler.HostEventQueue.init(),
         .has_frame = has_frame,
         .px_w = 1,
         .px_h = 1,
@@ -121,7 +120,7 @@ fn testWindow(has_frame: bool) sdl_window.Window {
 }
 
 test "host event prevents indefinite wait without granting progress admission" {
-    var events = wake_scheduler.HostEventQueue.init();
+    var events = present_queue.Queue.init();
     _ = events.append(.{ .term_surface_dirty = .{ .tab_slot = 0, .pane_id = 0 } });
 
     const wait = chooseWait(false, &events, null, 1);
@@ -133,7 +132,7 @@ test "host event prevents indefinite wait without granting progress admission" {
 test "closest frame timer wins when no host event is ready" {
     var scheduler = Scheduler.init();
     scheduler.schedule(.frame, 40_000_000);
-    var events = wake_scheduler.HostEventQueue.init();
+    var events = present_queue.Queue.init();
 
     const deadline_ns = scheduler.update(&events, 1_000_000);
     const wait = chooseWait(false, &events, deadline_ns, 1_000_000);
@@ -157,7 +156,7 @@ test "request frame marks frame used and schedules frame topic" {
 test "frame timer publishes frame ready when deadline passes" {
     var scheduler = Scheduler.init();
     scheduler.schedule(.frame, 16_000_000);
-    var events = wake_scheduler.HostEventQueue.init();
+    var events = present_queue.Queue.init();
 
     const deadline_ns = scheduler.update(&events, 16_000_000);
 

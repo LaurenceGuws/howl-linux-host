@@ -1,6 +1,5 @@
 const std = @import("std");
 const sdl_c = @import("sdl_c");
-const wake_scheduler = @import("wake_scheduler.zig");
 
 var pointer_cursor: ?*sdl_c.SDL_Cursor = null;
 
@@ -16,7 +15,6 @@ pub const Size = struct {
 pub const Window = struct {
     handle: Ptr,
     current_title: [:0]u8,
-    host_events: wake_scheduler.HostEventQueue,
     has_frame: bool,
     px_w: c_int,
     px_h: c_int,
@@ -33,7 +31,6 @@ pub const Window = struct {
         var self = Window{
             .handle = handle,
             .current_title = current_title,
-            .host_events = wake_scheduler.HostEventQueue.initWaker(),
             .has_frame = true,
             .px_w = 1,
             .px_h = 1,
@@ -110,8 +107,7 @@ const TitleOps = struct {
 };
 
 pub fn initVideo() bool {
-    if (!sdl_c.SDL_Init(sdl_c.SDL_INIT_VIDEO)) return false;
-    return wake_scheduler.initSdlWakeEvent();
+    return sdl_c.SDL_Init(sdl_c.SDL_INIT_VIDEO);
 }
 
 pub fn quit() void {
@@ -220,7 +216,6 @@ test "window title updates only when content changes" {
     var window = Window{
         .handle = undefined,
         .current_title = try std.testing.allocator.dupeZ(u8, "old"),
-        .host_events = wake_scheduler.HostEventQueue.init(),
         .has_frame = true,
         .px_w = 1,
         .px_h = 1,

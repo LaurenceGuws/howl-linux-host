@@ -1,22 +1,19 @@
 const std = @import("std");
-const sdl_c = @import("sdl_c");
 const assert = std.debug.assert;
 
-pub const max_host_events = 64;
+pub const max_present_events = 64;
 
-var sdl_wake_event_type = std.atomic.Value(u32).init(0);
-
-pub const PaneAddress = struct {
+pub const SurfaceAddress = struct {
     tab_slot: u8,
     pane_id: u16,
 
-    pub fn eql(a: PaneAddress, b: PaneAddress) bool {
+    pub fn eql(a: SurfaceAddress, b: SurfaceAddress) bool {
         return a.tab_slot == b.tab_slot and a.pane_id == b.pane_id;
     }
 };
 
-pub const HostEvent = union(enum) {
-    term_surface_dirty: PaneAddress,
+pub const Event = union(enum) {
+    term_surface_dirty: SurfaceAddress,
     tab_bar_surface_dirty,
     input_pending,
     window_geometry_changed,
@@ -25,57 +22,45 @@ pub const HostEvent = union(enum) {
 };
 
 pub const Drain = struct {
-    events: []HostEvent,
+    events: []Event,
     overflowed: bool,
 };
 
-pub const HostEventQueue = struct {
+pub const Queue = struct {
     mutex: Mutex = .{},
-    events: [max_host_events]HostEvent = undefined,
+    events: [max_present_events]Event = undefined,
     count: u8 = 0,
     overflowed: bool = false,
-    wake_sdl: bool = false,
-    pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
-    pub fn init() HostEventQueue {
+    pub fn init() Queue {
         return .{};
     }
 
-    pub fn initWaker() HostEventQueue {
-        return .{ .wake_sdl = true };
-    }
-
-    pub fn append(self: *HostEventQueue, event: HostEvent) bool {
-        const fire = self.appendLocked(event);
-        if (fire) self.pushSdlWakeEvent();
-        return fire;
-    }
-
-    fn appendLocked(self: *HostEventQueue, event: HostEvent) bool {
+    pub fn append(self: *Queue, event: Event) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.indexOf(event)) |_| return false;
-        if (self.count == max_host_events) {
+        if (self.count == max_present_events) {
             self.overflowed = true;
-            return self.pending.swap(true, .acq_rel) == false;
+            return false;
         }
         self.events[self.count] = event;
         self.count += 1;
-        return self.pending.swap(true, .acq_rel) == false;
+        return true;
     }
 
-    pub fn len(self: *const HostEventQueue) usize {
+    pub fn len(self: *const Queue) usize {
         return self.count + @intFromBool(self.overflowed);
     }
 
-    pub fn contains(self: *const HostEventQueue, tag: std.meta.Tag(HostEvent)) bool {
+    pub fn contains(self: *const Queue, tag: std.meta.Tag(Event)) bool {
         for (self.events[0..self.count]) |queued| {
             if (queued == tag) return true;
         }
         return false;
     }
 
-    pub fn hasTermSurfaceDirty(self: *const HostEventQueue, address: PaneAddress) bool {
+    pub fn hasTermSurfaceDirty(self: *const Queue, address: SurfaceAddress) bool {
         if (self.overflowed) return true;
         for (self.events[0..self.count]) |queued| {
             switch (queued) {
@@ -86,16 +71,31 @@ pub const HostEventQueue = struct {
         return false;
     }
 
-    pub fn hasOverflowed(self: *const HostEventQueue) bool {
+    pub fn hasOverflowed(self: *const Queue) bool {
         return self.overflowed;
     }
 
-    pub fn markOverflowed(self: *HostEventQueue) void {
+    pub fn markOverflowed(self: *Queue) void {
         self.overflowed = true;
-        self.pending.store(true, .release);
     }
 
-    pub fn drain(self: *HostEventQueue, out: []HostEvent) Drain {
+    pub fn remove(self: *Queue, tag: std.meta.Tag(Event)) void {
+        var write: u8 = 0;
+        var read: u8 = 0;
+        while (read < self.count) : (read += 1) {
+            if (self.events[read] == tag) continue;
+            self.events[write] = self.events[read];
+            write += 1;
+        }
+        self.count = write;
+    }
+
+    pub fn clear(self: *Queue) void {
+        self.count = 0;
+        self.overflowed = false;
+    }
+
+    pub fn drain(self: *Queue, out: []Event) Drain {
         self.mutex.lock();
         defer self.mutex.unlock();
         assert(out.len >= self.count);
@@ -104,40 +104,19 @@ pub const HostEventQueue = struct {
         @memcpy(drained, self.events[0..self.count]);
         self.count = 0;
         self.overflowed = false;
-        self.pending.store(false, .release);
         return .{ .events = drained, .overflowed = drained_overflowed };
     }
 
-    fn indexOf(self: *const HostEventQueue, event: HostEvent) ?u8 {
+    fn indexOf(self: *const Queue, event: Event) ?u8 {
         var index: u8 = 0;
         while (index < self.count) : (index += 1) {
             if (sameEvent(self.events[index], event)) return index;
         }
         return null;
     }
-
-    fn pushSdlWakeEvent(self: *const HostEventQueue) void {
-        if (!self.wake_sdl) return;
-        const event_type = sdl_wake_event_type.load(.acquire);
-        if (event_type == 0) return;
-        var event = sdl_c.SDL_Event{ .user = .{ .type = event_type } };
-        _ = sdl_c.SDL_PushEvent(&event);
-    }
 };
 
-pub fn initSdlWakeEvent() bool {
-    const event_type = sdl_c.SDL_RegisterEvents(1);
-    if (event_type == 0) return false;
-    sdl_wake_event_type.store(event_type, .release);
-    return true;
-}
-
-pub fn isSdlWakeEvent(event: *const sdl_c.SDL_Event) bool {
-    const event_type = sdl_wake_event_type.load(.acquire);
-    return event_type != 0 and event.type == event_type;
-}
-
-fn sameEvent(a: HostEvent, b: HostEvent) bool {
+fn sameEvent(a: Event, b: Event) bool {
     switch (a) {
         .term_surface_dirty => |a_address| switch (b) {
             .term_surface_dirty => |b_address| return a_address.eql(b_address),
@@ -159,14 +138,13 @@ const Mutex = struct {
     }
 };
 
-test "host event queue coalesces wake while preserving typed surface events" {
-    var queue = HostEventQueue.init();
+test "present queue coalesces typed surface events" {
+    var queue = Queue.init();
 
     try std.testing.expect(queue.append(.{ .term_surface_dirty = .{ .tab_slot = 1, .pane_id = 0 } }));
     try std.testing.expect(!queue.append(.tab_bar_surface_dirty));
-    try std.testing.expect(queue.pending.load(.acquire));
 
-    var out: [max_host_events]HostEvent = undefined;
+    var out: [max_present_events]Event = undefined;
     const drained = queue.drain(out[0..]);
 
     try std.testing.expect(!drained.overflowed);
@@ -174,19 +152,18 @@ test "host event queue coalesces wake while preserving typed surface events" {
     try std.testing.expectEqual(@as(u8, 1), drained.events[0].term_surface_dirty.tab_slot);
     try std.testing.expectEqual(@as(u16, 0), drained.events[0].term_surface_dirty.pane_id);
     try std.testing.expect(drained.events[1] == .tab_bar_surface_dirty);
-    try std.testing.expect(!queue.pending.load(.acquire));
     try std.testing.expect(queue.append(.tab_bar_surface_dirty));
 }
 
-test "host event queue coalesces duplicate terminal surface addresses" {
-    var queue = HostEventQueue.init();
-    const address = PaneAddress{ .tab_slot = 2, .pane_id = 1 };
+test "present queue coalesces duplicate terminal surface addresses" {
+    var queue = Queue.init();
+    const address = SurfaceAddress{ .tab_slot = 2, .pane_id = 1 };
 
     try std.testing.expect(queue.append(.{ .term_surface_dirty = address }));
     try std.testing.expect(!queue.append(.{ .term_surface_dirty = address }));
     try std.testing.expect(queue.hasTermSurfaceDirty(address));
 
-    var out: [max_host_events]HostEvent = undefined;
+    var out: [max_present_events]Event = undefined;
     const drained = queue.drain(out[0..]);
 
     try std.testing.expect(!drained.overflowed);
@@ -195,30 +172,43 @@ test "host event queue coalesces duplicate terminal surface addresses" {
     try std.testing.expectEqual(@as(u16, 1), drained.events[0].term_surface_dirty.pane_id);
 }
 
-test "host event queue records overflow instead of panicking" {
-    var queue = HostEventQueue.init();
+test "present queue records overflow instead of panicking" {
+    var queue = Queue.init();
     var index: u8 = 0;
 
-    while (index < max_host_events) : (index += 1) {
+    while (index < max_present_events) : (index += 1) {
         _ = queue.append(.{ .term_surface_dirty = .{ .tab_slot = index, .pane_id = 0 } });
     }
-    try std.testing.expectEqual(@as(usize, max_host_events), queue.len());
+    try std.testing.expectEqual(@as(usize, max_present_events), queue.len());
     try std.testing.expect(!queue.hasOverflowed());
-    try std.testing.expect(!queue.append(.{ .term_surface_dirty = .{ .tab_slot = max_host_events, .pane_id = 0 } }));
+    try std.testing.expect(!queue.append(.{ .term_surface_dirty = .{ .tab_slot = max_present_events, .pane_id = 0 } }));
     try std.testing.expect(queue.hasOverflowed());
     try std.testing.expect(queue.hasTermSurfaceDirty(.{ .tab_slot = 0, .pane_id = 4 }));
 }
 
-test "host event queue drain reports overflow atomically" {
-    var queue = HostEventQueue.init();
+test "present queue drain reports overflow atomically" {
+    var queue = Queue.init();
     queue.markOverflowed();
     _ = queue.append(.tab_bar_surface_dirty);
 
-    var out: [max_host_events]HostEvent = undefined;
+    var out: [max_present_events]Event = undefined;
     const drained = queue.drain(out[0..]);
 
     try std.testing.expect(drained.overflowed);
     try std.testing.expectEqual(@as(usize, 1), drained.events.len);
     try std.testing.expect(drained.events[0] == .tab_bar_surface_dirty);
     try std.testing.expect(!queue.hasOverflowed());
+}
+
+test "present queue removes one event class without clearing terminal dirties" {
+    var queue = Queue.init();
+    const address = SurfaceAddress{ .tab_slot = 0, .pane_id = 0 };
+
+    _ = queue.append(.window_geometry_changed);
+    _ = queue.append(.{ .term_surface_dirty = address });
+    queue.remove(.window_geometry_changed);
+
+    try std.testing.expect(!queue.contains(.window_geometry_changed));
+    try std.testing.expect(queue.hasTermSurfaceDirty(address));
+    try std.testing.expectEqual(@as(usize, 1), queue.len());
 }

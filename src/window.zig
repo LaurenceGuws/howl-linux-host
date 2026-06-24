@@ -1,4 +1,5 @@
 const std = @import("std");
+const sdl_c = @import("sdl_c");
 
 const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 const HostInput = @import("input.zig").Input;
@@ -23,9 +24,9 @@ pub const sdl_window = @import("window/sdl_window.zig");
 pub const status = @import("window/status.zig");
 pub const turn_contract = @import("window/turn.zig");
 pub const update_contract = @import("window/update.zig");
-pub const wake_scheduler = @import("window/wake_scheduler.zig");
+pub const present_queue = @import("window/present_queue.zig");
 
-const HostWakeScheduler = wake_scheduler;
+const PresentQueue = present_queue;
 const Window = sdl_window.Window;
 
 pub const interior = @import("layout/window.zig");
@@ -60,12 +61,22 @@ pub const PresentTurn = turn_contract.PresentTurn;
 
 pub const Layout = struct {
     tabs: tabs.Tabs = .{},
+    producer_present_queue: PresentQueue.Queue = .{},
+    pending_events: PresentQueue.Queue = .{},
+    window_wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    sdl_wake_event_type: u32 = 0,
 
     pub fn init(self: *Layout) void {
         self.* = .{};
         self.tabs.free_count = tabs.max_tabs;
         for (0..tabs.max_tabs) |slot| self.tabs.free_slots[slot] = @intCast(tabs.max_tabs - 1 - slot);
         self.assertTabs();
+    }
+
+    pub fn initWindowWake(self: *Layout) !void {
+        const event_type = sdl_c.SDL_RegisterEvents(1);
+        if (event_type == 0) return error.WindowWakeUnavailable;
+        self.sdl_wake_event_type = event_type;
     }
 
     pub fn deinit(self: *Layout) void {
@@ -95,7 +106,7 @@ pub const Layout = struct {
         if (before_height != window_interior.tab_bar.pixel_height) self.applyBody(body_value);
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = app_window.host_events.append(.tab_bar_surface_dirty);
+        _ = self.producer_present_queue.append(.tab_bar_surface_dirty);
         self.assertTabs();
     }
 
@@ -118,7 +129,7 @@ pub const Layout = struct {
         if (before_height != window_interior.tab_bar.pixel_height) self.applyBody(tab.body(window_interior));
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = app_window.host_events.append(.tab_bar_surface_dirty);
+        _ = self.producer_present_queue.append(.tab_bar_surface_dirty);
         self.assertTabs();
     }
 
@@ -128,7 +139,7 @@ pub const Layout = struct {
         self.tabs.active_tab = @intCast(@mod(@as(i32, @intCast(self.tabs.active_tab)) + delta, len_i));
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = app_window.host_events.append(.tab_bar_surface_dirty);
+        _ = self.producer_present_queue.append(.tab_bar_surface_dirty);
     }
 
     pub fn select(self: *Layout, app_window: *Window, index: TabIndex) void {
@@ -136,7 +147,7 @@ pub const Layout = struct {
         self.tabs.active_tab = index;
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = app_window.host_events.append(.tab_bar_surface_dirty);
+        _ = self.producer_present_queue.append(.tab_bar_surface_dirty);
     }
 
     pub fn focusPane(self: *Layout, app_window: *Window, direction: pane.Direction) void {
@@ -160,8 +171,8 @@ pub const Layout = struct {
         self.tabs.active_panes[self.tabs.active_tab] = next;
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = app_window.host_events.append(.{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, current) });
-        _ = app_window.host_events.append(.{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, next) });
+        _ = self.producer_present_queue.append(.{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, current) });
+        _ = self.producer_present_queue.append(.{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, next) });
     }
 
     pub fn configureInputPolicies(self: *Layout, conf: *const Config.UiConfig, input: *HostInput) void {
@@ -174,7 +185,7 @@ pub const Layout = struct {
         input.setTerminalMousePolicy(.{ .bypass_mod = conf.term.mouse_bypass_mod });
     }
 
-    pub fn applyFocusChange(self: *Layout, app_window: *Window, input: *HostInput, events: *HostWakeScheduler.HostEventQueue) void {
+    pub fn applyFocusChange(self: *Layout, app_window: *Window, input: *HostInput, events: *PresentQueue.Queue) void {
         if (input.drainWindowFocusChanged()) |focused| {
             _ = app_window.setFocused(focused);
             self.syncFocus(focused);
@@ -194,7 +205,7 @@ pub const Layout = struct {
         terminal_scrollbar.handlePages(&active_pane.term, &active_pane.scrollbar, input);
     }
 
-    pub fn applyWindowResize(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, input: *HostInput, events: *HostWakeScheduler.HostEventQueue) bool {
+    pub fn applyWindowResize(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, input: *HostInput, events: *PresentQueue.Queue) bool {
         if (!input.drainWindowGeometryChanged()) return false;
         if (!app_window.refreshGeometry()) return false;
         self.applyBody(tab.body(interior.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
@@ -234,10 +245,37 @@ pub const Layout = struct {
         return if (self.tabs.active_count == 1) .quit else .close_tab;
     }
 
-    pub fn render(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar, events: *const HostWakeScheduler.HostEventQueue) PresentTurn {
+    pub fn mergePendingEvents(self: *Layout, drained: PresentQueue.Drain) void {
+        if (drained.overflowed) self.pending_events.markOverflowed();
+        for (drained.events) |event| _ = self.pending_events.append(event);
+    }
+
+    pub fn appendPendingEvent(self: *Layout, event: PresentQueue.Event) void {
+        _ = self.pending_events.append(event);
+    }
+
+    pub fn drainProducedPresentEvents(self: *Layout, out: []PresentQueue.Event) void {
+        self.mergePendingEvents(self.producer_present_queue.drain(out));
+    }
+
+    pub fn updateFrameReady(self: *Layout, app_window: *Window) void {
+        if (!self.pending_events.contains(.frame_ready)) return;
+        app_window.markFrameReady();
+        self.pending_events.remove(.frame_ready);
+    }
+
+    pub fn hasPendingPresent(self: *const Layout) bool {
+        return self.pending_events.hasOverflowed() or self.pending_events.contains(.term_surface_dirty) or self.pending_events.contains(.tab_bar_surface_dirty) or self.pending_events.contains(.window_geometry_changed) or self.pending_events.contains(.window_focus_changed);
+    }
+
+    pub fn pendingEvents(self: *Layout) *PresentQueue.Queue {
+        return &self.pending_events;
+    }
+
+    pub fn render(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) PresentTurn {
         var readiness: [tab.max_panes]PaneSurfaceReadiness = undefined;
         const ready = self.paneSurfaceReadiness(texture_frame, readiness[0..]);
-        const prepare_turn = self.renderTurn(ready, events);
+        const prepare_turn = self.renderTurn(ready, &self.pending_events);
         self.noteRenderTurn(prepare_turn);
         const turn = self.submitUploaded(texture_frame, prepare_turn);
         self.noteRenderTurn(turn);
@@ -249,39 +287,73 @@ pub const Layout = struct {
             .none => {},
             .tab_bar_surface,
             .window_frame,
-            => _ = texture_frame.submitPresentSync(present_turn.frame),
+            => {
+                _ = texture_frame.submitPresentSync(present_turn.frame);
+                self.requestWindowWake();
+            },
             .terminal_frame => {
                 const token = texture_frame.submitPresentSync(present_turn.frame);
                 self.notePresentSubmitted(present_turn.turn, token);
                 self.completePresent(token);
+                self.requestWindowWake();
             },
         }
+    }
+
+    pub fn ackWindowWake(self: *Layout, event: *const sdl_c.SDL_Event) bool {
+        if (self.sdl_wake_event_type == 0) return false;
+        if (event.type != self.sdl_wake_event_type) return false;
+        self.window_wake_pending.store(false, .release);
+        std.debug.print("window wake ack true -> false\n", .{});
+        return true;
     }
 
     pub fn terminalFrameReady(_: *Layout, step: Term.TurnStep) bool {
         return step == .rendered;
     }
 
-    pub fn choosePresentReason(_: *Layout, events: *const HostWakeScheduler.HostEventQueue, terminal_ready: bool) PresentReason {
+    pub fn choosePresentReason(self: *Layout, terminal_ready: bool) PresentReason {
         if (terminal_ready) return .terminal_frame;
-        if (events.hasOverflowed()) return .window_frame;
-        if (events.contains(.tab_bar_surface_dirty)) return .tab_bar_surface;
-        if (events.contains(.window_geometry_changed)) return .window_frame;
-        if (events.contains(.window_focus_changed)) return .window_frame;
+        if (self.pending_events.hasOverflowed()) return .window_frame;
+        if (self.pending_events.contains(.tab_bar_surface_dirty)) return .tab_bar_surface;
+        if (self.pending_events.contains(.window_geometry_changed)) return .window_frame;
+        if (self.pending_events.contains(.window_focus_changed)) return .window_frame;
         return .none;
     }
 
-    pub fn activePaneAddress(self: *Layout) HostWakeScheduler.PaneAddress {
+    pub fn consumePresentedEvents(self: *Layout, reason: PresentReason) void {
+        switch (reason) {
+            .none => {},
+            .tab_bar_surface => self.pending_events.remove(.tab_bar_surface_dirty),
+            .window_frame => {
+                self.pending_events.remove(.window_geometry_changed);
+                self.pending_events.remove(.window_focus_changed);
+            },
+            .terminal_frame => self.pending_events.clear(),
+        }
+    }
+
+    pub fn activePaneAddress(self: *Layout) PresentQueue.SurfaceAddress {
         return self.paneAddress(self.tabs.active_tab, self.tabs.active_panes[self.tabs.active_tab]);
     }
 
-    fn appendActiveTabTermSurfaceDirty(self: *Layout, events: *HostWakeScheduler.HostEventQueue) void {
+    fn appendActiveTabTermSurfaceDirty(self: *Layout, events: *PresentQueue.Queue) void {
         const tab_value = self.activeTab();
         for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| _ = events.append(.{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, pane_value.id) });
     }
 
-    fn initPane(self: *Layout, allocator: std.mem.Allocator, app_window: *Window, slot: TabIndex, pane_value: *pane.Pane, id: pane.PaneId, conf: *const Config.UiConfig, placement: pane.Placement, render_text_handle: render_c.HowlRenderTextHandle) !void {
-        _ = self;
+    fn requestWindowWake(self: *Layout) void {
+        if (self.window_wake_pending.swap(true, .acq_rel)) {
+            std.debug.print("window wake needed true -> true\n", .{});
+            return;
+        }
+        std.debug.print("window wake needed false -> true\n", .{});
+        std.debug.assert(self.sdl_wake_event_type != 0);
+        var event = sdl_c.SDL_Event{ .user = .{ .type = self.sdl_wake_event_type } };
+        _ = sdl_c.SDL_PushEvent(&event);
+    }
+
+    fn initPane(self: *Layout, allocator: std.mem.Allocator, _: *Window, slot: TabIndex, pane_value: *pane.Pane, id: pane.PaneId, conf: *const Config.UiConfig, placement: pane.Placement, render_text_handle: render_c.HowlRenderTextHandle) !void {
         std.debug.assert(slot < tabs.max_tabs);
         const surface_px = render_c.HowlRenderPixelSize{ .width = @intCast(placement.pixel_size.width), .height = @intCast(placement.pixel_size.height) };
         pane_value.* = .{
@@ -292,7 +364,7 @@ pub const Layout = struct {
             .conf = &conf.term,
             .font_size_px = @max(conf.term.font_size, 1),
         };
-        try pane_value.term.initTerminal(allocator, .{ .shell = conf.term.shell, .start_path = conf.term.start_path, .command = conf.term.command }, surface_px, pane_value.font_size_px, conf.term.fonts.primary, conf.term.fonts.mono, conf.term.cursor_shape, conf.term.cursor_blink, render_text_handle, &app_window.host_events, .{ .tab_slot = slot, .pane_id = @intFromEnum(id) });
+        try pane_value.term.initTerminal(allocator, .{ .shell = conf.term.shell, .start_path = conf.term.start_path, .command = conf.term.command }, surface_px, pane_value.font_size_px, conf.term.fonts.primary, conf.term.fonts.mono, conf.term.cursor_shape, conf.term.cursor_blink, render_text_handle, &self.producer_present_queue, .{ .tab_slot = slot, .pane_id = @intFromEnum(id) });
         try pane_value.term.startTerminal();
         pane_value.live = true;
     }
@@ -372,7 +444,7 @@ pub const Layout = struct {
         };
     }
 
-    fn renderTurn(self: *Layout, readiness: []const PaneSurfaceReadiness, events: *const HostWakeScheduler.HostEventQueue) TurnResult {
+    fn renderTurn(self: *Layout, readiness: []const PaneSurfaceReadiness, events: *const PresentQueue.Queue) TurnResult {
         const tab_value = self.activeTab();
         var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle };
         for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| {
@@ -426,7 +498,7 @@ pub const Layout = struct {
         return out[0..tab_value.pane_count];
     }
 
-    fn paneAddress(self: *Layout, tab_index_value: usize, pane_id: pane.PaneId) HostWakeScheduler.PaneAddress {
+    fn paneAddress(self: *Layout, tab_index_value: usize, pane_id: pane.PaneId) PresentQueue.SurfaceAddress {
         std.debug.assert(tab_index_value < self.tabs.active_count);
         return .{ .tab_slot = self.tabs.active_slots[tab_index_value], .pane_id = @intFromEnum(pane_id) };
     }

@@ -11,7 +11,7 @@ const window_icon = @import("window_icon.zig");
 const render_c = @import("howl_render_c");
 const sdl_c = @import("sdl_c");
 const present_scheduler = WindowPolicy.present_scheduler;
-const wake_scheduler = WindowPolicy.wake_scheduler;
+const present_queue = WindowPolicy.present_queue;
 const window = WindowPolicy.sdl_window;
 
 const TabBar = TabBarUnit.TabBar;
@@ -76,6 +76,7 @@ noinline fn start(io: std.Io, options: Args) !void {
 
     const layout = try std.heap.c_allocator.create(WindowPolicy.Layout);
     layout.init();
+    try layout.initWindowWake();
 
     const input = try std.heap.c_allocator.create(Input);
     defer {
@@ -97,69 +98,72 @@ noinline fn start(io: std.Io, options: Args) !void {
 fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture_frame: *TextureFrame.State, tab_bar: *TabBar, layout: *WindowPolicy.Layout, input: *Input) !void {
     var presenter = present_scheduler.Scheduler.init();
     while (true) {
-        var events = wake_scheduler.HostEventQueue.init();
-        var host_event_buffer: [wake_scheduler.max_host_events]wake_scheduler.HostEvent = undefined;
-        mergeHostEvents(&events, app_window.host_events.drain(host_event_buffer[0..]));
+        var present_event_buffer: [present_queue.max_present_events]present_queue.Event = undefined;
+        layout.drainProducedPresentEvents(present_event_buffer[0..]);
         const first_now_ns = nowNs();
-        const closest_deadline_ns = presenter.update(&events, first_now_ns);
-        if (events.contains(.frame_ready)) app_window.markFrameReady();
+        const closest_deadline_ns = presenter.update(layout.pendingEvents(), first_now_ns);
+        layout.updateFrameReady(app_window);
 
-        const wait = present_scheduler.chooseWait(input.hasPendingEvents(), &events, closest_deadline_ns, first_now_ns);
-        if (pumpInput(input, wait)) return;
+        const wait = chooseWait(input.hasPendingEvents(), app_window.hasFrame() and layout.hasPendingPresent(), closest_deadline_ns, first_now_ns);
+        if (pumpInput(layout, input, wait)) return;
 
-        layout.applyFocusChange(app_window, input, &events);
+        layout.applyFocusChange(app_window, input, layout.pendingEvents());
         while (input.drainBindingAction()) |action| try layout.handleBindingAction(conf, app_window, action, texture_frame.textHandle());
         var host_visual_changed = false;
         layout.forwardTerminalInput(conf, app_window, input, &host_visual_changed);
-        _ = layout.applyWindowResize(conf, app_window, input, &events);
-        mergeHostEvents(&events, app_window.host_events.drain(host_event_buffer[0..]));
-        if (host_visual_changed) _ = events.append(.{ .term_surface_dirty = layout.activePaneAddress() });
+        _ = layout.applyWindowResize(conf, app_window, input, layout.pendingEvents());
+        layout.drainProducedPresentEvents(present_event_buffer[0..]);
+        if (host_visual_changed) layout.appendPendingEvent(.{ .term_surface_dirty = layout.activePaneAddress() });
         layout.configureInputPolicies(conf, input);
 
-        const present_pending = events.hasOverflowed() or events.contains(.term_surface_dirty) or events.contains(.tab_bar_surface_dirty) or events.contains(.window_geometry_changed) or events.contains(.window_focus_changed);
-        if (present_pending and app_window.hasFrame()) {
-            const present_turn = layout.render(conf, app_window, texture_frame, tab_bar, &events);
-            const reason = layout.choosePresentReason(&events, layout.terminalFrameReady(present_turn.turn.step));
+        if (layout.hasPendingPresent() and app_window.hasFrame()) {
+            const present_turn = layout.render(conf, app_window, texture_frame, tab_bar);
+            const reason = layout.choosePresentReason(layout.terminalFrameReady(present_turn.turn.step));
             layout.submitPresent(texture_frame, present_turn, reason);
-            if (reason != .none) try presenter.requestFrame(app_window, nowNs());
+            if (reason != .none) {
+                layout.consumePresentedEvents(reason);
+                try presenter.requestFrame(app_window, nowNs());
+            }
         }
     }
 }
 
-fn mergeHostEvents(events: *wake_scheduler.HostEventQueue, drained: wake_scheduler.Drain) void {
-    if (drained.overflowed) events.markOverflowed();
-    for (drained.events) |event| _ = events.append(event);
+fn chooseWait(input_pending: bool, present_ready: bool, closest_deadline_ns: ?u64, now_ns: u64) present_scheduler.Wait {
+    return .{
+        .for_window = !input_pending and !present_ready,
+        .timeout_ms = present_scheduler.waitMsFromDeadline(now_ns, closest_deadline_ns),
+    };
 }
 
-fn pumpInput(input: *Input, wait: present_scheduler.Wait) bool {
+fn pumpInput(layout: *WindowPolicy.Layout, input: *Input, wait: present_scheduler.Wait) bool {
     if (wait.for_window) {
         var event: sdl_c.SDL_Event = undefined;
         const received = if (wait.timeout_ms) |timeout_ms| sdl_c.SDL_WaitEventTimeout(&event, @intCast(timeout_ms)) else sdl_c.SDL_WaitEvent(&event);
         if (received) {
-            if (processSdlEvent(input, &event)) return true;
-            return drainPendingInput(input, 1);
+            if (processSdlEvent(layout, input, &event)) return true;
+            return drainPendingInput(layout, input, 1);
         }
-        return drainPendingInput(input, 0);
+        return drainPendingInput(layout, input, 0);
     }
-    return drainPendingInput(input, 0);
+    return drainPendingInput(layout, input, 0);
 }
 
 fn nowNs() u64 {
     return @max(@as(u64, 1), sdl_c.SDL_GetTicksNS());
 }
 
-fn drainPendingInput(input: *Input, processed_start: usize) bool {
+fn drainPendingInput(layout: *WindowPolicy.Layout, input: *Input, processed_start: usize) bool {
     var processed = processed_start;
     var event: sdl_c.SDL_Event = undefined;
     while (processed < max_sdl_events_per_turn) : (processed += 1) {
         if (!sdl_c.SDL_PollEvent(&event)) break;
-        if (processSdlEvent(input, &event)) return true;
+        if (processSdlEvent(layout, input, &event)) return true;
     }
     return false;
 }
 
-fn processSdlEvent(input: *Input, event: *const sdl_c.SDL_Event) bool {
-    if (wake_scheduler.isSdlWakeEvent(event)) return false;
+fn processSdlEvent(layout: *WindowPolicy.Layout, input: *Input, event: *const sdl_c.SDL_Event) bool {
+    if (layout.ackWindowWake(event)) return false;
     switch (event.type) {
         sdl_c.SDL_EVENT_QUIT,
         sdl_c.SDL_EVENT_TERMINATING,
