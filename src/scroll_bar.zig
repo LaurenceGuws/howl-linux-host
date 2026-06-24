@@ -206,15 +206,13 @@ pub fn scrollState(term: *Term) ScrollState {
 }
 
 pub fn setScrollbackOffset(term: *Term, offset: u32) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return scrollViewport(term.vt, vt_c.HOWL_VT_SCROLL_VIEWPORT_ABSOLUTE, offset);
+    if (!term.triggerInput(.{ .viewport_scroll = .{ .absolute = offset } })) return false;
+    return term.drainInput() catch false;
 }
 
 pub fn scrollViewportToBottom(term: *Term) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return scrollViewport(term.vt, vt_c.HOWL_VT_SCROLL_VIEWPORT_BOTTOM, 0);
+    if (!term.triggerInput(.{ .viewport_scroll = .bottom })) return false;
+    return term.drainInput() catch false;
 }
 
 fn track(origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, focus_t: f32) TrackLayout {
@@ -324,17 +322,6 @@ pub fn setFocused(state: *State, focused: bool) void {
     state.setFocused(focused);
 }
 
-pub fn handlePages(term: *Term, state: *State, input_events: *HostInput) void {
-    const page_steps = input_events.drainScrollPages();
-    var delta_rows: i32 = 0;
-    if (page_steps != 0) {
-        const visible_rows: i32 = @intCast(@max(scrollState(term).visible_rows, 1));
-        const page_rows: i32 = @max(visible_rows - 1, 1);
-        delta_rows += page_steps * page_rows;
-    }
-    if (delta_rows != 0) byRows(term, state, delta_rows);
-}
-
 pub fn byRows(term: *Term, state: *State, delta_rows: i32) void {
     const changed = scrollByRows(term, delta_rows);
     if (changed) state.invalidate();
@@ -397,13 +384,6 @@ fn visibleInfo(handle: vt_c.HowlVtHandle) struct { history_count: u32, scrollbac
 }
 
 fn scrollByRows(term: *Term, delta_rows: i32) bool {
-    term.mutex.lock();
-    defer term.mutex.unlock();
-    return scrollViewport(term.vt, vt_c.HOWL_VT_SCROLL_VIEWPORT_DELTA, delta_rows);
-}
-
-fn scrollViewport(handle: vt_c.HowlVtHandle, kind: u8, value: i64) bool {
-    const result = vt_c.howl_vt_terminal_scroll_viewport(handle, kind, value);
-    std.debug.assert(result.status == vt_c.HOWL_VT_CALL_OK);
-    return result.changed != 0;
+    if (!term.triggerInput(.{ .viewport_scroll = .{ .rows = delta_rows } })) return false;
+    return term.drainInput() catch false;
 }

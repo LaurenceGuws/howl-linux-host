@@ -185,32 +185,17 @@ pub const Layout = struct {
         input.setTerminalMousePolicy(.{ .bypass_mod = conf.term.mouse_bypass_mod });
     }
 
-    pub fn applyFocusChange(self: *Layout, app_window: *Window, input: *HostInput, events: *PresentQueue.Queue) void {
-        if (input.drainWindowFocusChanged()) |focused| {
-            _ = app_window.setFocused(focused);
-            self.syncFocus(focused);
-            _ = events.appendFrom("layout", .window_focus_changed);
-            self.appendActiveTabTermSurfaceDirty(events);
+    pub fn drainInput(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, input: *HostInput) !void {
+        while (input.drainEvent()) |event| {
+            switch (event) {
+                .bytes, .key => self.drainTextInput(event),
+                .mouse => self.drainMouseInput(conf, app_window, event),
+                .scroll_pages => |pages| self.drainScrollPages(pages),
+                .window_focus => |focused| self.drainWindowFocus(app_window, focused),
+                .window_geometry => self.drainWindowGeometry(conf, app_window),
+                .binding => |action| try self.handleBindingAction(conf, app_window, action, texture_frame.textHandle()),
+            }
         }
-    }
-
-    pub fn forwardTerminalInput(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, input: *HostInput, host_visual_changed: *bool) void {
-        const active_pane = self.activePane();
-        const window_interior = interior.interior(app_window, &conf.tab_bar, self.tabs.active_count);
-        const terminal = pane.terminal(active_pane.placement, self.paneTextureSize(active_pane));
-        var input_published = false;
-        var selected = self.termInput(active_pane);
-        input_processor.drainTextInputFastPath(&selected, input, &input_published);
-        input_processor.drainPointerInput(&selected, input, 0, @intCast(window_interior.tab_bar.logical_height), terminal.logical_size.width, terminal.logical_size.height, &input_published, host_visual_changed);
-        terminal_scrollbar.handlePages(&active_pane.term, &active_pane.scrollbar, input);
-    }
-
-    pub fn applyWindowResize(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, input: *HostInput, events: *PresentQueue.Queue) bool {
-        if (!input.drainWindowGeometryChanged()) return false;
-        if (!app_window.refreshGeometry()) return false;
-        self.applyBody(tab.body(interior.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
-        _ = events.appendFrom("layout", .window_geometry_changed);
-        return true;
     }
 
     pub fn handleBindingAction(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, action: HostInput.Bindings.Action, render_text_handle: render_c.HowlRenderTextHandle) !void {
@@ -395,6 +380,45 @@ pub const Layout = struct {
         return &self.activeTab().panes[tab.paneIndex(self.tabs.active_panes[self.tabs.active_tab])];
     }
 
+    fn drainTextInput(self: *Layout, event: HostInput.Event) void {
+        const active_pane = self.activePane();
+        var selected = self.termInput(active_pane);
+        var input_published = false;
+        input_processor.processTextInputEvent(&selected, event, &input_published);
+    }
+
+    fn drainMouseInput(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, event: HostInput.Event) void {
+        const active_pane = self.activePane();
+        const window_interior = interior.interior(app_window, &conf.tab_bar, self.tabs.active_count);
+        const terminal = pane.terminal(active_pane.placement, self.paneTextureSize(active_pane));
+        var selected = self.termInput(active_pane);
+        var input_published = false;
+        var window_visual_changed = false;
+        input_processor.processPointerEvent(&selected, event, 0, @intCast(window_interior.tab_bar.logical_height), terminal.logical_size.width, terminal.logical_size.height, &input_published, &window_visual_changed);
+        if (window_visual_changed) _ = self.pending_events.appendFrom("layout", .{ .term_surface_dirty = self.activePaneAddress() });
+    }
+
+    fn drainScrollPages(self: *Layout, page_steps: i32) void {
+        if (page_steps == 0) return;
+        const active_pane = self.activePane();
+        const visible_rows: i32 = @intCast(@max(terminal_scrollbar.scrollState(&active_pane.term).visible_rows, 1));
+        const page_rows: i32 = @max(visible_rows - 1, 1);
+        terminal_scrollbar.byRows(&active_pane.term, &active_pane.scrollbar, page_steps * page_rows);
+    }
+
+    fn drainWindowFocus(self: *Layout, app_window: *Window, focused: bool) void {
+        _ = app_window.setFocused(focused);
+        self.syncFocus(focused);
+        _ = self.pending_events.appendFrom("layout", .window_focus_changed);
+        self.appendActiveTabTermSurfaceDirty(&self.pending_events);
+    }
+
+    fn drainWindowGeometry(self: *Layout, conf: *const Config.UiConfig, app_window: *Window) void {
+        if (!app_window.refreshGeometry()) return;
+        self.applyBody(tab.body(interior.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
+        _ = self.pending_events.appendFrom("layout", .window_geometry_changed);
+    }
+
     fn applyBody(self: *Layout, body_value: tab.Body) void {
         var tab_index_value: usize = 0;
         while (tab_index_value < self.tabs.active_count) : (tab_index_value += 1) {
@@ -404,7 +428,9 @@ pub const Layout = struct {
             for (placed) |placement| {
                 const pane_value = &tab_value.panes[tab.paneIndex(placement.id)];
                 pane_value.placement = placement;
-                pane_value.term.drainWindowBounds(.{ .width = @intCast(placement.pixel_size.width), .height = @intCast(placement.pixel_size.height) });
+                if (pane_value.term.triggerInput(.{ .surface_resize = .{ .width = @intCast(placement.pixel_size.width), .height = @intCast(placement.pixel_size.height) } })) {
+                    _ = pane_value.term.drainInput() catch false;
+                }
             }
         }
     }
@@ -416,7 +442,9 @@ pub const Layout = struct {
             for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| {
                 pane_value.window_focused = focused;
                 pane_value.widget_focused = tab_index_value == self.tabs.active_tab and pane_value.id == self.tabs.active_panes[self.tabs.active_tab];
-                _ = term_input.publishFocus(&pane_value.term, pane_value.window_focused and pane_value.widget_focused) catch false;
+                if (pane_value.term.triggerInput(.{ .focus = pane_value.window_focused and pane_value.widget_focused })) {
+                    _ = pane_value.term.drainInput() catch false;
+                }
             }
         }
     }
@@ -559,24 +587,31 @@ fn paneOwner(surface: *anyopaque) *pane.Pane {
 
 fn writeBytesToPty(surface: *anyopaque, bytes: []const u8) bool {
     const pane_value = paneOwner(surface);
-    pty_session.publishInputBytes(&pane_value.term, bytes) catch return false;
-    pane_value.term.noteSurfaceActivity();
-    return true;
+    var chunk = std.mem.zeroes(HostInput.Keys.ByteInput);
+    std.debug.assert(bytes.len <= chunk.buf.len);
+    chunk.len = @intCast(bytes.len);
+    @memcpy(chunk.buf[0..bytes.len], bytes);
+    if (!pane_value.term.triggerInput(.{ .bytes = chunk })) return false;
+    const published = pane_value.term.drainInput() catch return false;
+    if (published) pane_value.term.noteSurfaceActivity();
+    return published;
 }
 
 fn writeKeyToPty(surface: *anyopaque, key: HostInput.Keys.Event) bool {
     const key_code = term_input.key(key.key) orelse return false;
     const pane_value = paneOwner(surface);
-    term_input.publishKey(&pane_value.term, key_code, term_input.mods(key.mods)) catch return false;
-    pane_value.term.noteSurfaceActivity();
-    return true;
+    if (!pane_value.term.triggerInput(.{ .key = .{ .key = key_code, .mods = term_input.mods(key.mods) } })) return false;
+    const published = pane_value.term.drainInput() catch return false;
+    if (published) pane_value.term.noteSurfaceActivity();
+    return published;
 }
 
 fn writeMouseToPty(surface: *anyopaque, mouse: HostInput.Mouse.Event) bool {
     const cell = surfacePointCell(surface, mouse);
     if (!cell.inside) return false;
     const pane_value = paneOwner(surface);
-    const published = term_input.publishMouse(&pane_value.term, .{ .kind = term_input.mouseKind(mouse.kind), .button = term_input.mouseButton(mouse.button), .row = @intCast(cell.row), .col = cell.col, .pixel_x = if (mouse.pixel_x < 0) null else @intCast(mouse.pixel_x), .pixel_y = if (mouse.pixel_y < 0) null else @intCast(mouse.pixel_y), .mods = term_input.mods(mouse.mods), .buttons_down = term_input.buttons(mouse.buttons_down) }) catch false;
+    if (!pane_value.term.triggerInput(.{ .mouse = .{ .kind = term_input.mouseKind(mouse.kind), .button = term_input.mouseButton(mouse.button), .row = @intCast(cell.row), .col = cell.col, .pixel_x = if (mouse.pixel_x < 0) null else @intCast(mouse.pixel_x), .pixel_y = if (mouse.pixel_y < 0) null else @intCast(mouse.pixel_y), .mods = term_input.mods(mouse.mods), .buttons_down = term_input.buttons(mouse.buttons_down) } })) return false;
+    const published = pane_value.term.drainInput() catch false;
     if (published) pane_value.term.noteSurfaceActivity();
     return published;
 }

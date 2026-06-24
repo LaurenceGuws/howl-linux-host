@@ -33,5 +33,5 @@ pub const Event = struct {
     pixel_y: i32,
     mods: Mod,
     buttons_down: Buttons,
-    host_only: bool = false,
+    window_only: bool = false,
 };

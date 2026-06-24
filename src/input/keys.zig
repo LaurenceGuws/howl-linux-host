@@ -206,7 +206,6 @@ pub const Bindings = struct {
         zoom_in,
         zoom_out,
         zoom_reset,
-        zoom_stress_toggle,
         terminal_paste,
         terminal_split_right,
         terminal_split_down,

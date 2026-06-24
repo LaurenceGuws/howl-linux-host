@@ -78,6 +78,10 @@ pub const Input = struct {
         bytes: keys.ByteInput,
         key: keys.Event,
         mouse: mouse.Event,
+        scroll_pages: i32,
+        window_focus: bool,
+        window_geometry,
+        binding: Bindings.Action,
     };
     pub const HostMousePolicy = struct {
         /// Capture unpressed mouse motion for host/window UI such as tabs and scrollbars.
@@ -92,12 +96,8 @@ pub const Input = struct {
         bypass_mod: Mod = .{},
     };
 
-    input_events: FixedRing(Event, max_input_events),
-    scroll_pages: i32,
-    binding_buf: FixedRing(Bindings.Action, 64),
+    events: FixedRing(Event, max_input_events),
     bindings: Bindings.Configured,
-    window_geometry_changed: bool,
-    window_focus_changed: ?bool,
     last_mouse_x: i32,
     last_mouse_y: i32,
     mouse_listen_always: bool,
@@ -110,12 +110,8 @@ pub const Input = struct {
 
     pub fn init(self: *Input) void {
         self.* = .{
-            .input_events = .{},
-            .scroll_pages = 0,
-            .binding_buf = .{},
+            .events = .{},
             .bindings = .{},
-            .window_geometry_changed = false,
-            .window_focus_changed = null,
             .last_mouse_x = 0,
             .last_mouse_y = 0,
             .mouse_listen_always = false,
@@ -158,53 +154,26 @@ pub const Input = struct {
         self.mouse_motion_enabled = needs_motion;
     }
 
-    pub fn drainInputEvent(self: *Input) ?Event {
-        return self.input_events.pop();
+    pub fn drainEvent(self: *Input) ?Event {
+        return self.events.pop();
     }
 
-    pub fn drainScrollPages(self: *Input) i32 {
-        const out = self.scroll_pages;
-        self.scroll_pages = 0;
-        return out;
-    }
-
-    pub fn drainBindingAction(self: *Input) ?Bindings.Action {
-        const out = self.binding_buf.pop() orelse return null;
-        return out;
-    }
-
-    pub fn hasPendingEvents(self: *const Input) bool {
-        return self.input_events.hasItems() or
-            self.scroll_pages != 0 or
-            self.binding_buf.hasItems() or
-            self.window_geometry_changed or
-            self.window_focus_changed != null;
-    }
-
-    pub fn drainWindowGeometryChanged(self: *Input) bool {
-        const changed = self.window_geometry_changed;
-        self.window_geometry_changed = false;
-        return changed;
-    }
-
-    pub fn drainWindowFocusChanged(self: *Input) ?bool {
-        const focused = self.window_focus_changed;
-        self.window_focus_changed = null;
-        return focused;
+    pub fn hasEvents(self: *const Input) bool {
+        return self.events.hasItems();
     }
 
     pub fn keyFromLabel(raw: []const u8) ?Key {
         return keys.parseLabel(raw);
     }
 
-    pub fn processEvent(self: *Input, event: *const c.SDL_Event) void {
+    pub fn triggerSdl(self: *Input, event: *const c.SDL_Event) void {
         switch (event.type) {
             c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
-                self.window_focus_changed = true;
+                _ = appendEvent(self, .{ .window_focus = true });
                 return;
             },
             c.SDL_EVENT_WINDOW_FOCUS_LOST => {
-                self.window_focus_changed = false;
+                _ = appendEvent(self, .{ .window_focus = false });
                 return;
             },
             c.SDL_EVENT_WINDOW_EXPOSED => {
@@ -246,7 +215,7 @@ pub const Input = struct {
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
             c.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
             => {
-                self.window_geometry_changed = true;
+                _ = appendEvent(self, .window_geometry);
                 return;
             },
             else => return,
@@ -282,12 +251,16 @@ fn appendMouseEvent(input: *Input, event: mouse.Event) void {
 }
 
 fn appendInputEvent(input: *Input, event: Input.Event) bool {
-    if (!input.input_events.push(event)) return false;
+    return appendEvent(input, event);
+}
+
+fn appendEvent(input: *Input, event: Input.Event) bool {
+    if (!input.events.push(event)) return false;
     return true;
 }
 
 fn appendBindingAction(input: *Input, action: Input.Bindings.Action) void {
-    if (!input.binding_buf.push(action)) return;
+    _ = appendEvent(input, .{ .binding = action });
 }
 
 fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
@@ -296,11 +269,11 @@ fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
     const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
     const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
     if (event.key.key == c.SDLK_PAGEUP and shift and !ctrl and !alt) {
-        input.scroll_pages += 1;
+        _ = appendEvent(input, .{ .scroll_pages = 1 });
         return;
     }
     if (event.key.key == c.SDLK_PAGEDOWN and shift and !ctrl and !alt) {
-        input.scroll_pages -= 1;
+        _ = appendEvent(input, .{ .scroll_pages = -1 });
         return;
     }
     if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
@@ -382,7 +355,7 @@ fn processMouseMotion(input: *Input, event: *const c.SDL_Event) void {
     const terminal_motion_active = modSubset(input.terminal_motion_mod, mods);
     const link_hover_active = input.mouse_link_hover and mods.ctrl;
     const button_down = buttons_down.left or buttons_down.middle or buttons_down.right;
-    const host_only = !button_down and !terminal_motion_active and !input.mouse_terminal_hover;
+    const window_only = !button_down and !terminal_motion_active and !input.mouse_terminal_hover;
     if (!button_down and !input.mouse_listen_always and !input.mouse_terminal_hover and !terminal_motion_active and !link_hover_active) return;
     const pixel_x = @as(i32, @intFromFloat(@round(event.motion.x)));
     const pixel_y = @as(i32, @intFromFloat(@round(event.motion.y)));
@@ -395,7 +368,7 @@ fn processMouseMotion(input: *Input, event: *const c.SDL_Event) void {
         .pixel_y = pixel_y,
         .mods = mods,
         .buttons_down = buttons_down,
-        .host_only = host_only,
+        .window_only = window_only,
     });
 }
 
@@ -423,7 +396,7 @@ fn maybeQueueModifierMouseMove(input: *Input, prev_mods: mouse.Mod, next_mods: m
         .pixel_y = input.last_mouse_y,
         .mods = next_mods,
         .buttons_down = .{},
-        .host_only = !next_terminal_motion and !input.mouse_terminal_hover,
+        .window_only = !next_terminal_motion and !input.mouse_terminal_hover,
     });
 }
 
@@ -701,14 +674,14 @@ test "modifier transitions synthesize passive move for ctrl hover" {
     input.last_mouse_y = 22;
 
     updateModifierState(&input, .{ .ctrl = true });
-    const event = input.drainInputEvent() orelse return error.ExpectedEvent;
+    const event = input.drainEvent() orelse return error.ExpectedEvent;
     switch (event) {
         .mouse => |mouse_event| {
             try std.testing.expectEqual(mouse.Kind.move, mouse_event.kind);
             try std.testing.expectEqual(@as(i32, 11), mouse_event.pixel_x);
             try std.testing.expectEqual(@as(i32, 22), mouse_event.pixel_y);
             try std.testing.expect(mouse_event.mods.ctrl);
-            try std.testing.expect(mouse_event.host_only);
+            try std.testing.expect(mouse_event.window_only);
         },
         else => return error.UnexpectedEvent,
     }
@@ -722,7 +695,7 @@ test "host policy forwards passive terminal hover motion" {
     try std.testing.expect(input.mouse_motion_enabled);
 
     maybeQueueModifierMouseMove(&input, .{}, .{});
-    try std.testing.expectEqual(@as(?Input.Event, null), input.drainInputEvent());
+    try std.testing.expectEqual(@as(?Input.Event, null), input.drainEvent());
 }
 
 test "terminal-bound modifier move does not request redraw by itself" {
@@ -733,11 +706,11 @@ test "terminal-bound modifier move does not request redraw by itself" {
     input.last_mouse_y = 9;
 
     updateModifierState(&input, .{ .ctrl = true });
-    const event = input.drainInputEvent() orelse return error.ExpectedEvent;
+    const event = input.drainEvent() orelse return error.ExpectedEvent;
     switch (event) {
         .mouse => |mouse_event| {
             try std.testing.expectEqual(mouse.Kind.move, mouse_event.kind);
-            try std.testing.expect(!mouse_event.host_only);
+            try std.testing.expect(!mouse_event.window_only);
         },
         else => return error.UnexpectedEvent,
     }
@@ -756,7 +729,7 @@ test "terminal-bound mouse queueing does not request redraw by itself" {
         .buttons_down = .{},
     });
 
-    const event = input.drainInputEvent() orelse return error.ExpectedEvent;
+    const event = input.drainEvent() orelse return error.ExpectedEvent;
     switch (event) {
         .mouse => |mouse_event| try std.testing.expectEqual(mouse.Button.left, mouse_event.button),
         else => return error.UnexpectedEvent,
@@ -770,7 +743,7 @@ test "byte chunking preserves order" {
     appendBytesEvent(&input, bytes);
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(std.testing.allocator);
-    while (input.drainInputEvent()) |event| switch (event) {
+    while (input.drainEvent()) |event| switch (event) {
         .bytes => |chunk| try out.appendSlice(std.testing.allocator, chunk.slice()),
         else => return error.UnexpectedEvent,
     };
@@ -788,8 +761,8 @@ test "alt shifted printable key queues escaped text bytes" {
 
     processKeyDown(&input, &event);
 
-    const first = input.drainInputEvent() orelse return error.ExpectedEvent;
-    const second = input.drainInputEvent() orelse return error.ExpectedEvent;
+    const first = input.drainEvent() orelse return error.ExpectedEvent;
+    const second = input.drainEvent() orelse return error.ExpectedEvent;
     switch (first) {
         .bytes => |chunk| try std.testing.expectEqualStrings("\x1b", chunk.slice()),
         else => return error.UnexpectedEvent,
@@ -811,8 +784,8 @@ test "alt ctrl letter preserves escape prefix" {
 
     processKeyDown(&input, &event);
 
-    const first = input.drainInputEvent() orelse return error.ExpectedEvent;
-    const second = input.drainInputEvent() orelse return error.ExpectedEvent;
+    const first = input.drainEvent() orelse return error.ExpectedEvent;
+    const second = input.drainEvent() orelse return error.ExpectedEvent;
     switch (first) {
         .bytes => |chunk| try std.testing.expectEqualStrings("\x1b", chunk.slice()),
         else => return error.UnexpectedEvent,
@@ -900,7 +873,7 @@ test "input event queue preserves FIFO across wraparound" {
 
     i = 0;
     while (i < 32) : (i += 1) {
-        const event = input.drainInputEvent() orelse return error.ExpectedEvent;
+        const event = input.drainEvent() orelse return error.ExpectedEvent;
         switch (event) {
             .bytes => |chunk| try std.testing.expectEqual(@as(u8, @intCast(i)), chunk.buf[0]),
             else => return error.UnexpectedEvent,
@@ -914,7 +887,7 @@ test "input event queue preserves FIFO across wraparound" {
     }
 
     var expected: usize = 32;
-    while (input.drainInputEvent()) |event| : (expected += 1) {
+    while (input.drainEvent()) |event| : (expected += 1) {
         switch (event) {
             .bytes => |chunk| try std.testing.expectEqual(@as(u8, @intCast(expected % 256)), chunk.buf[0]),
             else => return error.UnexpectedEvent,
@@ -923,18 +896,19 @@ test "input event queue preserves FIFO across wraparound" {
     try std.testing.expectEqual(@as(usize, max_input_events + 32), expected);
 }
 
-test "binding action queue preserves FIFO across wraparound" {
+test "binding events preserve FIFO across wraparound" {
     var input: Input = undefined;
     input.init();
 
-    const capacity = input.binding_buf.buf.len;
+    const capacity = input.events.buf.len;
     var i: usize = 0;
     while (i < capacity) : (i += 1) appendBindingAction(&input, .terminal_next_tab);
-    try std.testing.expectEqual(@as(u16, @intCast(capacity)), input.binding_buf.len);
+    try std.testing.expectEqual(@as(u16, @intCast(capacity)), input.events.len);
 
     i = 0;
     while (i < 16) : (i += 1) {
-        try std.testing.expectEqual(Input.Bindings.Action.terminal_next_tab, input.drainBindingAction().?);
+        const event = input.drainEvent() orelse return error.ExpectedEvent;
+        try std.testing.expectEqual(Input.Bindings.Action.terminal_next_tab, event.binding);
     }
 
     i = 0;
@@ -942,39 +916,41 @@ test "binding action queue preserves FIFO across wraparound" {
 
     var tab_next_remaining = capacity - 16;
     while (tab_next_remaining > 0) : (tab_next_remaining -= 1) {
-        try std.testing.expectEqual(Input.Bindings.Action.terminal_next_tab, input.drainBindingAction().?);
+        const event = input.drainEvent() orelse return error.ExpectedEvent;
+        try std.testing.expectEqual(Input.Bindings.Action.terminal_next_tab, event.binding);
     }
 
     i = 0;
     while (i < 16) : (i += 1) {
-        try std.testing.expectEqual(Input.Bindings.Action.terminal_prev_tab, input.drainBindingAction().?);
+        const event = input.drainEvent() orelse return error.ExpectedEvent;
+        try std.testing.expectEqual(Input.Bindings.Action.terminal_prev_tab, event.binding);
     }
-    try std.testing.expectEqual(@as(?Input.Bindings.Action, null), input.drainBindingAction());
+    try std.testing.expectEqual(@as(?Input.Event, null), input.drainEvent());
 }
 
-test "queued input focus window geometry and bindings count as pending events" {
+test "queued input focus window geometry and bindings count as events" {
     var input: Input = undefined;
     input.init();
 
-    try std.testing.expect(!input.hasPendingEvents());
+    try std.testing.expect(!input.hasEvents());
 
     appendByteEvent(&input, 'x');
-    try std.testing.expect(input.hasPendingEvents());
-    _ = input.drainInputEvent();
-    try std.testing.expect(!input.hasPendingEvents());
+    try std.testing.expect(input.hasEvents());
+    _ = input.drainEvent();
+    try std.testing.expect(!input.hasEvents());
 
-    input.window_focus_changed = true;
-    try std.testing.expect(input.hasPendingEvents());
-    _ = input.drainWindowFocusChanged();
-    try std.testing.expect(!input.hasPendingEvents());
+    _ = appendEvent(&input, .{ .window_focus = true });
+    try std.testing.expect(input.hasEvents());
+    _ = input.drainEvent();
+    try std.testing.expect(!input.hasEvents());
 
-    input.window_geometry_changed = true;
-    try std.testing.expect(input.hasPendingEvents());
-    _ = input.drainWindowGeometryChanged();
-    try std.testing.expect(!input.hasPendingEvents());
+    _ = appendEvent(&input, .window_geometry);
+    try std.testing.expect(input.hasEvents());
+    _ = input.drainEvent();
+    try std.testing.expect(!input.hasEvents());
 
     appendBindingAction(&input, .terminal_next_tab);
-    try std.testing.expect(input.hasPendingEvents());
-    _ = input.drainBindingAction();
-    try std.testing.expect(!input.hasPendingEvents());
+    try std.testing.expect(input.hasEvents());
+    _ = input.drainEvent();
+    try std.testing.expect(!input.hasEvents());
 }

@@ -20,6 +20,7 @@ const vt_state = Vt.state;
 const vt_title = Vt.title;
 
 const history_capacity: u16 = 4096;
+const max_input_events: u16 = 256;
 const max_fallback_font_paths: u8 = @intCast(render_c.HOWL_RENDER_MAX_FALLBACK_FONTS);
 
 const TestingHooks = struct {
@@ -30,6 +31,7 @@ const TestingHooks = struct {
 var testing_hooks: TestingHooks = .{};
 
 pub const VtState = vt_state.State;
+pub const InputEvent = Vt.input.Event;
 
 // Terminal instances own the coalesced surface-present wake edge entered by PTY progress threads
 // and consumed by the main/window control spine. They do not own texture resources, GL calls,
@@ -44,6 +46,8 @@ pub const Term = struct {
     vt_state: VtState = .{},
     mutex: FairMutex = .{},
     present_events: ?*present_queue.Queue = null,
+    input_events: [max_input_events]InputEvent = undefined,
+    input_event_count: u16 = 0,
     present_address: present_queue.SurfaceAddress = .{ .tab_slot = 0, .pane_id = 0 },
     progress_thread: pty_wait_thread.WaitThread = .{},
     host_title: vt_title.HostTitle = .{},
@@ -125,6 +129,8 @@ pub const Term = struct {
             .vt_state = next_vt_state,
             .mutex = .{},
             .present_events = present_events,
+            .input_events = undefined,
+            .input_event_count = 0,
             .present_address = address,
             .progress_thread = .{},
             .host_title = .{},
@@ -203,15 +209,19 @@ pub const Term = struct {
         _ = present_events.appendFrom("term", .tab_bar_surface_dirty);
     }
 
-    pub fn drainWindowBounds(self: *Term, surface_px: render_c.HowlRenderPixelSize) void {
-        self.mutex.lockFair();
-        const changed = surface_layout.syncSurfaceLayoutLocked(self, surface_px) catch |err| {
-            std.debug.panic("terminal surface bounds failed: {}", .{err});
-        };
-        if (changed) self.render.notePrepareNeeded();
-        self.mutex.unlock();
-        if (!changed) return;
-        self.triggerTermSurfaceDirty();
+    pub fn triggerInput(self: *Term, event: InputEvent) bool {
+        if (self.input_event_count == max_input_events) return false;
+        self.input_events[self.input_event_count] = event;
+        self.input_event_count += 1;
+        return true;
+    }
+
+    pub fn drainInput(self: *Term) !bool {
+        const events = self.input_events[0..self.input_event_count];
+        self.input_event_count = 0;
+        const changed = try Vt.input.drainEvents(self, events);
+        if (changed) self.triggerTermSurfaceDirty();
+        return changed;
     }
 
     fn stopProgressThread(self: *Term) void {

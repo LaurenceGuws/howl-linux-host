@@ -198,7 +198,6 @@ const binding_specs = [_]Input.Bindings.Spec{
     .{ .field = "zoom_in", .action = .zoom_in },
     .{ .field = "zoom_out", .action = .zoom_out },
     .{ .field = "zoom_reset", .action = .zoom_reset },
-    .{ .field = "zoom_stress_toggle", .action = .zoom_stress_toggle },
     .{ .field = "paste", .action = .terminal_paste },
 };
 

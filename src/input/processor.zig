@@ -41,24 +41,32 @@ pub const TermInput = struct {
 pub fn drainTextInputFastPath(selected: *TermInput, input_events: *HostInput, input_published: *bool) void {
     var read_index: u16 = 0;
     var write_index: u16 = 0;
-    const event_count = input_events.input_events.len;
-    const event_capacity = input_events.input_events.buf.len;
+    const event_count = input_events.events.len;
+    const event_capacity = input_events.events.buf.len;
     std.debug.assert(event_count <= event_capacity);
-    std.debug.assert(input_events.input_events.head < event_capacity);
+    std.debug.assert(input_events.events.head < event_capacity);
 
     while (read_index < event_count) : (read_index += 1) {
         std.debug.assert(read_index < event_capacity);
         std.debug.assert(write_index <= read_index);
         std.debug.assert(write_index < event_capacity);
-        const source_index = (input_events.input_events.head + read_index) % event_capacity;
+        const source_index = (input_events.events.head + read_index) % event_capacity;
         std.debug.assert(source_index < event_capacity);
-        const event = input_events.input_events.buf[source_index];
+        const event = input_events.events.buf[source_index];
         switch (event) {
             .bytes, .key => processTextInputEvent(selected, event, input_published),
             .mouse => {
-                const target_index = (input_events.input_events.head + write_index) % event_capacity;
+                const target_index = (input_events.events.head + write_index) % event_capacity;
                 std.debug.assert(target_index < event_capacity);
-                input_events.input_events.buf[target_index] = event;
+                input_events.events.buf[target_index] = event;
+                write_index += 1;
+                std.debug.assert(write_index <= event_count);
+                std.debug.assert(write_index <= event_capacity);
+            },
+            .scroll_pages, .window_focus, .window_geometry, .binding => {
+                const target_index = (input_events.events.head + write_index) % event_capacity;
+                std.debug.assert(target_index < event_capacity);
+                input_events.events.buf[target_index] = event;
                 write_index += 1;
                 std.debug.assert(write_index <= event_count);
                 std.debug.assert(write_index <= event_capacity);
@@ -69,14 +77,14 @@ pub fn drainTextInputFastPath(selected: *TermInput, input_events: *HostInput, in
     std.debug.assert(read_index == event_count);
     std.debug.assert(write_index <= read_index);
     std.debug.assert(write_index <= event_capacity);
-    input_events.input_events.len = write_index;
-    std.debug.assert(input_events.input_events.len <= event_capacity);
-    if (write_index == 0) input_events.input_events.head = 0;
-    std.debug.assert(input_events.input_events.head < event_capacity);
+    input_events.events.len = write_index;
+    std.debug.assert(input_events.events.len <= event_capacity);
+    if (write_index == 0) input_events.events.head = 0;
+    std.debug.assert(input_events.events.head < event_capacity);
 }
 
 pub fn drainPointerInput(selected: *TermInput, input_events: *HostInput, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, input_published: *bool, host_visual_changed: *bool) void {
-    while (input_events.drainInputEvent()) |event| {
+    while (input_events.drainEvent()) |event| {
         processPointerEvent(selected, event, origin_x, origin_y, logical_width, logical_height, input_published, host_visual_changed);
     }
 }
@@ -107,13 +115,13 @@ pub fn processTextInputEvent(selected: *TermInput, event: HostInput.Event, input
                 input_published.* = true;
             }
         },
-        .mouse => {},
+        .mouse, .scroll_pages, .window_focus, .window_geometry, .binding => {},
     }
 }
 
 pub fn processPointerEvent(selected: *TermInput, event: HostInput.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, input_published: *bool, host_visual_changed: *bool) void {
     switch (event) {
-        .bytes, .key => {},
+        .bytes, .key, .scroll_pages, .window_focus, .window_geometry, .binding => {},
         .mouse => |mouse_event| {
             const scroll_outcome = selected.process_scrollbar_mouse(selected.surface, mouse_event, origin_x, origin_y, logical_width, logical_height);
             host_visual_changed.* = scroll_outcome.host_visual_changed or host_visual_changed.*;
@@ -121,7 +129,7 @@ pub fn processPointerEvent(selected: *TermInput, event: HostInput.Event, origin_
 
             const terminal_px = selected.surface_layout.render_px;
             const local_mouse = mouseEventInsideContent(mouse_event, origin_x, origin_y, logical_width, logical_height, @intCast(terminal_px.width), @intCast(terminal_px.height)) orelse {
-                if (mouse_event.host_only and selected.clear_hovered_link(selected.surface)) host_visual_changed.* = true;
+                if (mouse_event.window_only and selected.clear_hovered_link(selected.surface)) host_visual_changed.* = true;
                 return;
             };
 
@@ -142,7 +150,7 @@ pub fn processPointerEvent(selected: *TermInput, event: HostInput.Event, origin_
             host_visual_changed.* = link_outcome.host_visual_changed or host_visual_changed.*;
             if (link_outcome.consumed) return;
 
-            if (mouse_event.host_only) {
+            if (mouse_event.window_only) {
                 if (selected.clear_hovered_link(selected.surface)) host_visual_changed.* = true;
                 return;
             }
@@ -263,12 +271,12 @@ test "text fast path compacts mixed input before pointer drain" {
         .pixel_y = 3,
         .mods = .{},
         .buttons_down = .{},
-        .host_only = true,
+        .window_only = true,
     } };
-    input.input_events.buf[0] = .{ .bytes = bytes };
-    input.input_events.buf[1] = mouse_event;
-    input.input_events.buf[2] = .{ .key = .{ .key = .up, .mods = .{} } };
-    input.input_events.len = 3;
+    input.events.buf[0] = .{ .bytes = bytes };
+    input.events.buf[1] = mouse_event;
+    input.events.buf[2] = .{ .key = .{ .key = .up, .mods = .{} } };
+    input.events.len = 3;
 
     var state = TestTermInputState{};
     var selected = state.selected();
@@ -278,8 +286,8 @@ test "text fast path compacts mixed input before pointer drain" {
     drainTextInputFastPath(&selected, &input, &input_published);
     try std.testing.expect(input_published);
     try std.testing.expect(!host_visual_changed);
-    try std.testing.expectEqual(@as(u16, 1), input.input_events.len);
-    switch (input.input_events.buf[input.input_events.head]) {
+    try std.testing.expectEqual(@as(u16, 1), input.events.len);
+    switch (input.events.buf[input.events.head]) {
         .mouse => {},
         else => return error.UnexpectedEvent,
     }
@@ -289,7 +297,7 @@ test "text fast path compacts mixed input before pointer drain" {
     drainPointerInput(&selected, &input, 0, 0, 80, 25, &pointer_input_published, &pointer_host_visual_changed);
     try std.testing.expect(!pointer_input_published);
     try std.testing.expect(!pointer_host_visual_changed);
-    try std.testing.expectEqual(@as(u16, 0), input.input_events.len);
+    try std.testing.expectEqual(@as(u16, 0), input.events.len);
     try std.testing.expectEqualStrings("brkrp", state.order[0..state.order_len]);
 }
 
@@ -306,7 +314,7 @@ test "pointer input rejects leftover strip below snapped terminal" {
         .pixel_y = 565,
         .mods = .{},
         .buttons_down = .{},
-        .host_only = false,
+        .window_only = false,
     } }, 0, 0, 960, 560, &input_published, &host_visual_changed);
 
     try std.testing.expect(!input_published);

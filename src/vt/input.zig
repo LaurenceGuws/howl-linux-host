@@ -1,9 +1,11 @@
 const Input = @import("../input.zig").Input;
 const pty_session = @import("../pty/session.zig");
+const render_c = @import("howl_render_c");
 const std = @import("std");
 const c = @import("howl_vt_c");
 const vt_focus = @import("focus.zig");
 const vt_input_buffer = @import("input_buffer.zig");
+const surface_layout = @import("../render/surface_layout.zig");
 const Term = @import("../term.zig").Term;
 
 const TermInput = struct {
@@ -11,7 +13,7 @@ const TermInput = struct {
     const Modifier = u32;
     const MouseEventKind = u8;
     const MouseButton = u8;
-    const KeyEvent = struct { key: Key, mods: Modifier = 0 };
+    const KeyEvent = struct { key: u32, mods: Modifier = 0 };
     const MouseEvent = struct {
         kind: MouseEventKind,
         button: MouseButton,
@@ -22,6 +24,38 @@ const TermInput = struct {
         mods: Modifier = 0,
         buttons_down: u8 = 0,
     };
+};
+
+pub const Event = union(enum) {
+    bytes: Input.Keys.ByteInput,
+    key: Key,
+    mouse: Mouse,
+    focus: bool,
+    surface_resize: render_c.HowlRenderPixelSize,
+    viewport_scroll: ViewportScroll,
+    paste: Input.Keys.ByteInput,
+};
+
+pub const Key = struct {
+    key: u32,
+    mods: u32,
+};
+
+pub const Mouse = struct {
+    kind: u8,
+    button: u8,
+    row: i32,
+    col: u16,
+    pixel_x: ?u32,
+    pixel_y: ?u32,
+    mods: u32,
+    buttons_down: u8,
+};
+
+pub const ViewportScroll = union(enum) {
+    bottom,
+    rows: i32,
+    absolute: u32,
 };
 
 pub fn key(key_event: Input.Key) ?TermInput.Key {
@@ -125,8 +159,71 @@ pub fn publishFocus(term: *Term, focused: bool) !bool {
     return try pty_session.publishInputBytesLocked(term, try encodeFocusBytes(term, focused));
 }
 
+pub fn drainEvents(term: *Term, events: []const Event) !bool {
+    var changed = false;
+    for (events) |event| {
+        changed = (try drainEvent(term, event)) or changed;
+    }
+    return changed;
+}
+
+fn drainEvent(term: *Term, event: Event) !bool {
+    return switch (event) {
+        .surface_resize => |resize| drainSurfaceResize(term, resize),
+        .bytes => |bytes| try publishBytesFromTrigger(term, bytes.slice()),
+        .mouse => |mouse| try publishMouse(term, .{ .kind = mouse.kind, .button = mouse.button, .row = mouse.row, .col = mouse.col, .pixel_x = mouse.pixel_x, .pixel_y = mouse.pixel_y, .mods = mouse.mods, .buttons_down = mouse.buttons_down }),
+        .key => |key_event| try publishKeyFromTrigger(term, key_event),
+        .focus => |focus| try publishFocus(term, focus),
+        .paste => |paste| try publishPasteFromTrigger(term, paste.slice()),
+        .viewport_scroll => |scroll| scrollViewportByTrigger(term, scroll),
+    };
+}
+
+fn drainSurfaceResize(term: *Term, surface_px: render_c.HowlRenderPixelSize) bool {
+    term.mutex.lockFair();
+    defer term.mutex.unlock();
+    const changed = surface_layout.syncSurfaceLayoutLocked(term, surface_px) catch |err| {
+        std.debug.panic("terminal surface bounds failed: {}", .{err});
+    };
+    if (changed) term.render.notePrepareNeeded();
+    return changed;
+}
+
+fn publishBytesFromTrigger(term: *Term, bytes: []const u8) !bool {
+    if (bytes.len == 0) return false;
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    _ = scrollViewportToBottomLocked(term);
+    return try pty_session.publishInputBytesLocked(term, bytes);
+}
+
+fn publishKeyFromTrigger(term: *Term, key_event: Key) !bool {
+    try publishKey(term, key_event.key, key_event.mods);
+    return true;
+}
+
+fn publishPasteFromTrigger(term: *Term, text: []const u8) !bool {
+    if (text.len == 0) return false;
+    try publishPaste(term, text);
+    return true;
+}
+
+fn scrollViewportByTrigger(term: *Term, scroll: ViewportScroll) bool {
+    term.mutex.lock();
+    defer term.mutex.unlock();
+    return switch (scroll) {
+        .bottom => scrollViewportToBottomLocked(term),
+        .rows => |rows| scrollViewportLocked(term, c.HOWL_VT_SCROLL_VIEWPORT_DELTA, rows),
+        .absolute => |offset| scrollViewportLocked(term, c.HOWL_VT_SCROLL_VIEWPORT_ABSOLUTE, offset),
+    };
+}
+
 fn scrollViewportToBottomLocked(term: *Term) bool {
-    const result = c.howl_vt_terminal_scroll_viewport(term.vt, c.HOWL_VT_SCROLL_VIEWPORT_BOTTOM, 0);
+    return scrollViewportLocked(term, c.HOWL_VT_SCROLL_VIEWPORT_BOTTOM, 0);
+}
+
+fn scrollViewportLocked(term: *Term, mode: u8, value: anytype) bool {
+    const result = c.howl_vt_terminal_scroll_viewport(term.vt, mode, value);
     std.debug.assert(result.status == c.HOWL_VT_CALL_OK);
     return result.changed != 0;
 }

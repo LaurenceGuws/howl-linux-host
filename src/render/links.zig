@@ -25,6 +25,8 @@ pub const Links = struct {
     hover_publish_pending: bool = false,
 };
 
+// Temporary host-side hyperlink hover knowledge. The host should send mouse input only; terminal
+// ownership should eventually publish explicit link outcomes for decoration and opening.
 pub fn handleMouse(context: anytype, mouse_event: HostInput.Mouse.Event) terminal_selection.MouseHandlingOutcome {
     switch (mouse_event.kind) {
         .move => return .{

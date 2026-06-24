@@ -104,16 +104,11 @@ fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture
         const closest_deadline_ns = presenter.update(layout.pendingEvents(), first_now_ns);
         layout.updateFrameReady(app_window);
 
-        const wait = chooseWait(input.hasPendingEvents(), app_window.hasFrame() and layout.hasPendingPresent(), closest_deadline_ns, first_now_ns);
+        const wait = chooseWait(input.hasEvents(), app_window.hasFrame() and layout.hasPendingPresent(), closest_deadline_ns, first_now_ns);
         if (pumpInput(layout, input, wait)) return;
 
-        layout.applyFocusChange(app_window, input, layout.pendingEvents());
-        while (input.drainBindingAction()) |action| try layout.handleBindingAction(conf, app_window, action, texture_frame.textHandle());
-        var host_visual_changed = false;
-        layout.forwardTerminalInput(conf, app_window, input, &host_visual_changed);
-        _ = layout.applyWindowResize(conf, app_window, input, layout.pendingEvents());
+        try layout.drainInput(conf, app_window, texture_frame, input);
         layout.drainProducedPresentEvents(present_event_buffer[0..]);
-        if (host_visual_changed) layout.appendPendingEvent(.{ .term_surface_dirty = layout.activePaneAddress() });
         layout.configureInputPolicies(conf, input);
 
         if (layout.hasPendingPresent() and app_window.hasFrame()) {
@@ -171,7 +166,7 @@ fn processSdlEvent(layout: *WindowPolicy.Layout, input: *Input, event: *const sd
         sdl_c.SDL_EVENT_WINDOW_DESTROYED,
         => return true,
         else => {
-            input.processEvent(event);
+            input.triggerSdl(event);
             return false;
         },
     }
