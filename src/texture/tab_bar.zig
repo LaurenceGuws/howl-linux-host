@@ -78,7 +78,8 @@ pub fn writeCells(surface: *Surface, frame_value: Layout.Frame, cells_visible: u
         if (tab_start >= tab_end) break;
         surface.setStyle(if (i == frame_value.active_tab) Style.active() else Style.inactive());
         surface.drawUtf8(" ");
-        if (@as(usize, i) < frame_value.tab_labels.len and surface.cursor_col < tab_end) surface.drawUtf8Until(frame_value.tab_labels[@intCast(i)], tab_end - 1);
+        const labels = frame_value.tabLabelSlice();
+        if (@as(usize, i) < labels.len and surface.cursor_col < tab_end) surface.drawUtf8Until(labels[@intCast(i)], tab_end - 1);
         while (surface.cursor_col + 1 < tab_end) surface.drawUtf8(" ");
         if (i + 1 < frame_value.tab_count and surface.cursor_col < tab_end) {
             surface.setStyle(Style.separator());

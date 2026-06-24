@@ -7,6 +7,7 @@ const resource_store = @import("resource_store.zig");
 const texture_scroll_bar = @import("scroll_bar.zig");
 const sdl_c = @import("sdl_c");
 const std = @import("std");
+const TabBar = @import("../tab_bar.zig").TabBar;
 const tab_bar_surface_layout = @import("../tab_bar/surface_layout.zig");
 const tab_bar_surface = @import("../tab_bar/surface.zig");
 const texture_tab_bar = @import("tab_bar.zig");
@@ -178,7 +179,7 @@ pub fn deinit(comptime c: type, state: *GenericState(c)) void {
 }
 
 pub fn drainFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.Frame) PresentationToken {
-    std.debug.assert(frame.panes.len > 0);
+    std.debug.assert(frame.paneSlice().len > 0);
     const token = state.next_presentation_token;
     std.debug.assert(token != 0);
     state.next_presentation_token +%= 1;
@@ -193,7 +194,8 @@ pub fn drainFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.F
     c.glClearColor(0.06, 0.09, 0.14, 1.0);
     c.glClear(c.GL_COLOR_BUFFER_BIT);
     drawCachedTabBar(c, state, @max(fb_w, 1), @max(fb_h, 1), frame.tab_bar_height_px);
-    for (frame.panes) |pane| {
+    for (frame.paneSlice()) |pane| {
+        log.debug("edge source=render event=term_draw texture_id={} x={} y={} width={} height={}", .{ pane.term_texture_id, pane.term_texture_rect.x, pane.term_texture_rect.y, pane.term_texture_rect.width, pane.term_texture_rect.height });
         gl_quad.textureRect(
             c,
             @max(fb_w, 1),
@@ -205,8 +207,8 @@ pub fn drainFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.F
             pane.term_texture_rect.height,
         );
     }
-    for (frame.panes) |pane| texture_scroll_bar.draw(c, @max(fb_w, 1), @max(fb_h, 1), pane.scrollbar);
-    for (frame.panes) |pane| texture_scroll_bar.drawChip(c, @max(fb_w, 1), @max(fb_h, 1), pane.scroll_chip);
+    for (frame.paneSlice()) |pane| texture_scroll_bar.draw(c, @max(fb_w, 1), @max(fb_h, 1), pane.scrollbar);
+    for (frame.paneSlice()) |pane| texture_scroll_bar.drawChip(c, @max(fb_w, 1), @max(fb_h, 1), pane.scroll_chip);
     const damage = egl_swap.Damage.fullFrame();
     _ = egl_swap.swapDamaged(c, handle, damage.rects[0..damage.count], @max(fb_w, 1), @max(fb_h, 1), damage.full, false);
     log.debug("edge source=render event=presentation_completed token={}", .{token});
@@ -421,13 +423,14 @@ fn testState() GenericState(FakeC) {
 
 fn testFrame() Layout.Frame {
     return .{
-        .panes = test_frame_panes[0..],
+        .panes = test_frame_panes,
+        .pane_count = test_frame_panes.len,
         .tab_bar_height_px = 0,
         .tab_count = 0,
         .active_tab = 0,
         .tab_bar_revision = 1,
         .tab_bar_font_size_px = 16,
-        .tab_labels = &.{},
+        .tab_labels = [_][]const u8{""} ** TabBar.max_tabs,
     };
 }
 
@@ -464,7 +467,7 @@ test "tab cache refreshes only on revision change" {
     var frame = testFrame();
     frame.tab_bar_height_px = 16;
     frame.tab_count = 1;
-    frame.tab_labels = &.{"shell"};
+    frame.tab_labels[0] = "shell";
 
     const first = drainFrameSync(FakeC, &state, frame);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
@@ -488,7 +491,7 @@ test "tab cache height follows explicit frame tab bar height" {
     var frame = testFrame();
     frame.tab_bar_height_px = 12;
     frame.tab_count = 1;
-    frame.tab_labels = &.{"shell"};
+    frame.tab_labels[0] = "shell";
 
     _ = drainFrameSync(FakeC, &state, frame);
 
@@ -519,7 +522,8 @@ test "drain presentation draws every frame pane and every pane scroll layer" {
         },
     };
     var frame = testFrame();
-    frame.panes = panes[0..];
+    frame.panes[0..panes.len].* = panes;
+    frame.pane_count = panes.len;
     var state = testState();
 
     _ = drainFrameSync(FakeC, &state, frame);

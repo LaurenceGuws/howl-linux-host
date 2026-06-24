@@ -22,6 +22,7 @@ pub fn textureRect(comptime c: type, fb_w: c_int, fb_h: c_int, texture_id: u32, 
     if (texture_id == 0 or width <= 0 or height <= 0) return;
 
     c.glEnable(c.GL_TEXTURE_2D);
+    c.glColor4f(1.0, 1.0, 1.0, 1.0);
     defer c.glDisable(c.GL_TEXTURE_2D);
     c.glBindTexture(c.GL_TEXTURE_2D, texture_id);
     defer c.glBindTexture(c.GL_TEXTURE_2D, 0);

@@ -31,6 +31,7 @@ pub const Queue = struct {
     events: [max_presentation_events]Event = undefined,
     count: u8 = 0,
     overflowed: bool = false,
+    wake: ?Wake = null,
 
     pub fn init() Queue {
         return .{};
@@ -52,7 +53,14 @@ pub const Queue = struct {
     pub fn appendFrom(self: *Queue, owner: []const u8, event: Event) bool {
         const stored = self.append(event);
         printEvent("pub", owner, event, stored);
+        if (stored) self.triggerWake();
         return stored;
+    }
+
+    pub fn setWake(self: *Queue, owner: *anyopaque, trigger: *const fn (*anyopaque) void) void {
+        // Producer queues may be filled by PTY threads while the window owner is blocked in SDL.
+        // The queue only stores the edge; the callback wakes the true window owner to drain it.
+        self.wake = .{ .owner = owner, .trigger = trigger };
     }
 
     pub fn len(self: *const Queue) usize {
@@ -75,6 +83,20 @@ pub const Queue = struct {
             }
         }
         return false;
+    }
+
+    pub fn removeTermSurfaceDirty(self: *Queue, address: SurfaceAddress) void {
+        var write: u8 = 0;
+        var read: u8 = 0;
+        while (read < self.count) : (read += 1) {
+            switch (self.events[read]) {
+                .term_surface_dirty => |queued_address| if (queued_address.eql(address)) continue,
+                else => {},
+            }
+            self.events[write] = self.events[read];
+            write += 1;
+        }
+        self.count = write;
     }
 
     pub fn hasOverflowed(self: *const Queue) bool {
@@ -127,6 +149,16 @@ pub const Queue = struct {
         }
         return null;
     }
+
+    fn triggerWake(self: *Queue) void {
+        const wake = self.wake orelse return;
+        wake.trigger(wake.owner);
+    }
+};
+
+const Wake = struct {
+    owner: *anyopaque,
+    trigger: *const fn (*anyopaque) void,
 };
 
 fn printEvent(direction: []const u8, owner: []const u8, event: Event, stored: bool) void {
@@ -161,6 +193,12 @@ const Mutex = struct {
     }
 };
 
+var wake_count: u8 = 0;
+
+fn testWake(_: *anyopaque) void {
+    wake_count += 1;
+}
+
 test "presentation queue coalesces typed surface events" {
     var queue = Queue.init();
 
@@ -176,6 +214,18 @@ test "presentation queue coalesces typed surface events" {
     try std.testing.expectEqual(@as(u16, 0), drained.events[0].term_surface_dirty.pane_id);
     try std.testing.expect(drained.events[1] == .tab_bar_surface_dirty);
     try std.testing.expect(queue.append(.tab_bar_surface_dirty));
+}
+
+test "presentation queue wakes only stored producer events" {
+    wake_count = 0;
+    var owner: u8 = 0;
+    var queue = Queue.init();
+    queue.setWake(&owner, testWake);
+
+    try std.testing.expect(queue.appendFrom("test", .tab_bar_surface_dirty));
+    try std.testing.expect(!queue.appendFrom("test", .tab_bar_surface_dirty));
+
+    try std.testing.expectEqual(@as(u8, 1), wake_count);
 }
 
 test "presentation queue coalesces duplicate terminal surface addresses" {
@@ -234,4 +284,20 @@ test "presentation queue removes one event class without clearing terminal dirti
     try std.testing.expect(!queue.contains(.window_geometry_dirty));
     try std.testing.expect(queue.hasTermSurfaceDirty(address));
     try std.testing.expectEqual(@as(usize, 1), queue.len());
+}
+
+test "presentation queue removes one terminal dirty address" {
+    var queue = Queue.init();
+    const first = SurfaceAddress{ .tab_slot = 0, .pane_id = 0 };
+    const second = SurfaceAddress{ .tab_slot = 0, .pane_id = 1 };
+
+    _ = queue.append(.{ .term_surface_dirty = first });
+    _ = queue.append(.{ .term_surface_dirty = second });
+    _ = queue.append(.window_focus_dirty);
+    queue.removeTermSurfaceDirty(first);
+
+    try std.testing.expect(!queue.hasTermSurfaceDirty(first));
+    try std.testing.expect(queue.hasTermSurfaceDirty(second));
+    try std.testing.expect(queue.contains(.window_focus_dirty));
+    try std.testing.expectEqual(@as(usize, 2), queue.len());
 }

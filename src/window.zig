@@ -79,6 +79,7 @@ pub const Layout = struct {
         const event_type = sdl_c.SDL_RegisterEvents(1);
         if (event_type == 0) return error.WindowWakeUnavailable;
         self.sdl_wake_event_type = event_type;
+        self.producer_presentation_queue.setWake(self, triggerProducerPresentationWake);
     }
 
     pub fn deinit(self: *Layout) void {
@@ -251,7 +252,11 @@ pub const Layout = struct {
     }
 
     pub fn hasPresentationEvents(self: *const Layout) bool {
-        return self.presentation_events.hasOverflowed() or self.presentation_events.contains(.term_surface_dirty) or self.presentation_events.contains(.tab_bar_surface_dirty) or self.presentation_events.contains(.window_geometry_dirty) or self.presentation_events.contains(.window_focus_dirty);
+        if (self.presentation_events.hasOverflowed()) return true;
+        if (self.hasActiveTermSurfaceDirty()) return true;
+        if (self.presentation_events.contains(.tab_bar_surface_dirty)) return true;
+        if (self.presentation_events.contains(.window_geometry_dirty)) return true;
+        return self.presentation_events.contains(.window_focus_dirty);
     }
 
     pub fn presentationEvents(self: *Layout) *PresentationQueue.Queue {
@@ -259,30 +264,33 @@ pub const Layout = struct {
     }
 
     pub fn render(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) PresentationDrain {
+        self.logPresentationQueue("render");
         var readiness: [tab.max_panes]PaneSurfaceReadiness = undefined;
         const ready = self.paneSurfaceReadiness(texture_frame, readiness[0..]);
         const surface_drain = self.drainSurface(ready, &self.presentation_events);
         self.noteSurfaceDrain(surface_drain);
         const texture_drain = self.drainTexture(texture_frame, surface_drain);
         self.noteSurfaceDrain(texture_drain);
+        drain_log.debug("render surface_step={s} texture_step={s}", .{ @tagName(surface_drain.step), @tagName(texture_drain.step) });
         return .{ .drain = texture_drain, .frame = self.frame(conf, app_window, texture_frame, bar) };
     }
 
     pub fn drainPresentation(self: *Layout, texture_frame: *TextureFrame.State, drained: PresentationDrain, reason: PresentationReason) void {
         drain_log.debug("drain owner=window event=presentation reason={s}", .{@tagName(reason)});
+        self.logPresentationQueue("drain");
         switch (reason) {
             .none => {},
             .tab_bar_surface,
             .window_frame,
             => {
                 _ = texture_frame.drainPresentationSync(drained.frame);
-                self.triggerWindowWake();
+                self.triggerWindowWakeFrom("presentation_completed");
             },
             .terminal_frame => {
                 const token = texture_frame.drainPresentationSync(drained.frame);
                 self.notePresentationInFlight(drained.drain, token);
                 self.completePresentation(token);
-                self.triggerWindowWake();
+                self.triggerWindowWakeFrom("presentation_completed");
             },
         }
     }
@@ -329,12 +337,12 @@ pub const Layout = struct {
         for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| _ = events.appendFrom("layout", .{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, pane_value.id) });
     }
 
-    fn triggerWindowWake(self: *Layout) void {
+    fn triggerWindowWakeFrom(self: *Layout, reason: []const u8) void {
         if (self.window_wake_pending.swap(true, .acq_rel)) {
-            wake_log.debug("wake owner=window state=true->true reason=presentation_completed", .{});
+            wake_log.debug("wake owner=window state=true->true reason={s}", .{reason});
             return;
         }
-        wake_log.debug("wake owner=window state=false->true reason=presentation_completed", .{});
+        wake_log.debug("wake owner=window state=false->true reason={s}", .{reason});
         std.debug.assert(self.sdl_wake_event_type != 0);
         var event = sdl_c.SDL_Event{ .user = .{ .type = self.sdl_wake_event_type } };
         _ = sdl_c.SDL_PushEvent(&event);
@@ -479,20 +487,48 @@ pub const Layout = struct {
         };
     }
 
-    fn drainSurface(self: *Layout, readiness: []const PaneSurfaceReadiness, events: *const PresentationQueue.Queue) DrainResult {
+    fn drainSurface(self: *Layout, readiness: []const PaneSurfaceReadiness, events: *PresentationQueue.Queue) DrainResult {
         const tab_value = self.activeTab();
         var result = DrainResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle };
         for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| {
             std.debug.assert(readiness[index].id == pane_value.id);
-            if (readiness[index].ready and !events.hasTermSurfaceDirty(self.paneAddress(self.tabs.active_tab, pane_value.id))) {
+            const address = self.paneAddress(self.tabs.active_tab, pane_value.id);
+            const term_dirty = events.hasTermSurfaceDirty(address);
+            if (readiness[index].ready and !term_dirty) {
                 result.panes[index] = .{ .id = pane_value.id, .drain = idleDrain() };
                 continue;
             }
             const drain = pane_value.term.drainSurface(readiness[index].ready, pane_value, syncPendingPixelsLocked, hoverDecoration, clearHoverPending);
+            if (term_dirty) self.consumeAcceptedTermSurfaceDirty(events, pane_value.id);
             result.panes[index] = .{ .id = pane_value.id, .drain = drain };
             result.step = aggregateSurfaceDrainStep(result.step, drain.step);
         }
         return result;
+    }
+
+    fn hasActiveTermSurfaceDirty(self: *const Layout) bool {
+        if (self.tabs.active_count == 0) return false;
+        const tab_value = &self.tabs.tabs[self.tabs.active_slots[self.tabs.active_tab]];
+        for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| {
+            if (self.presentation_events.hasTermSurfaceDirty(self.paneAddressConst(self.tabs.active_tab, pane_value.id))) return true;
+        }
+        return false;
+    }
+
+    fn consumeAcceptedTermSurfaceDirty(self: *Layout, events: *PresentationQueue.Queue, pane_id: pane.PaneId) void {
+        events.removeTermSurfaceDirty(self.paneAddress(self.tabs.active_tab, pane_id));
+    }
+
+    fn logPresentationQueue(self: *const Layout, edge: []const u8) void {
+        drain_log.debug("{s} queue_len={} overflow={} term={} tab_bar={} geometry={} focus={}", .{
+            edge,
+            self.presentation_events.len(),
+            self.presentation_events.hasOverflowed(),
+            self.presentation_events.contains(.term_surface_dirty),
+            self.presentation_events.contains(.tab_bar_surface_dirty),
+            self.presentation_events.contains(.window_geometry_dirty),
+            self.presentation_events.contains(.window_focus_dirty),
+        });
     }
 
     fn drainTexture(self: *Layout, texture_frame: *TextureFrame.State, surface_drain: DrainResult) DrainResult {
@@ -538,6 +574,11 @@ pub const Layout = struct {
         return .{ .tab_slot = self.tabs.active_slots[tab_index_value], .pane_id = @intFromEnum(pane_id) };
     }
 
+    fn paneAddressConst(self: *const Layout, tab_index_value: usize, pane_id: pane.PaneId) PresentationQueue.SurfaceAddress {
+        std.debug.assert(tab_index_value < self.tabs.active_count);
+        return .{ .tab_slot = self.tabs.active_slots[tab_index_value], .pane_id = @intFromEnum(pane_id) };
+    }
+
     fn frame(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) Frame {
         const window_interior = interior.interior(app_window, &conf.tab_bar, self.tabs.active_count);
         var title_buf: [TabBar.max_tabs][]const u8 = undefined;
@@ -546,13 +587,17 @@ pub const Layout = struct {
         var panes_buf: [tab.max_panes]FramePane = undefined;
         var facts_buf: [tab.max_panes]PaneFrameFacts = undefined;
         var textures_buf: [tab.max_panes]PaneTexture = undefined;
+        var tab_labels_buf: [TabBar.max_tabs][]const u8 = undefined;
         const tab_value = self.activeTab();
         for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| {
             facts_buf[index] = self.frameFacts(pane_value);
             textures_buf[index] = .{ .id = pane_value.id, .id_value = texture_frame.termTextureId(pane_value.id) };
         }
         const frame_panes = framePanes(tab.body(window_interior), tab_value.split_tree, facts_buf[0..tab_value.pane_count], textures_buf[0..tab_value.pane_count], panes_buf[0..]);
-        return .{ .panes = frame_panes, .tab_bar_height_px = @intCast(window_interior.tab_bar.pixel_height), .tab_count = @intCast(labels.len), .active_tab = snapshot.active_idx, .tab_bar_revision = self.tabBarRevision(), .tab_bar_font_size_px = self.activePane().font_size_px, .tab_labels = snapshot.labels };
+        std.debug.assert(frame_panes.len <= panes_buf.len);
+        std.debug.assert(snapshot.labels.len <= tab_labels_buf.len);
+        @memcpy(tab_labels_buf[0..snapshot.labels.len], snapshot.labels);
+        return .{ .panes = panes_buf, .pane_count = frame_panes.len, .tab_bar_height_px = @intCast(window_interior.tab_bar.pixel_height), .tab_count = @intCast(snapshot.labels.len), .active_tab = snapshot.active_idx, .tab_bar_revision = self.tabBarRevision(), .tab_bar_font_size_px = self.activePane().font_size_px, .tab_labels = tab_labels_buf };
     }
 
     fn frameFacts(self: *Layout, pane_value: *pane.Pane) PaneFrameFacts {
@@ -592,6 +637,11 @@ pub const Layout = struct {
 
 fn paneOwner(surface: *anyopaque) *pane.Pane {
     return @ptrCast(@alignCast(surface));
+}
+
+fn triggerProducerPresentationWake(owner: *anyopaque) void {
+    const layout: *Layout = @ptrCast(@alignCast(owner));
+    layout.triggerWindowWakeFrom("producer_presentation_event");
 }
 
 fn writeBytesToPty(surface: *anyopaque, bytes: []const u8) bool {
@@ -859,26 +909,28 @@ test "render target bottom-left y coordinates map row zero to negative ndc" {
 }
 
 test "frame carries explicit pane draw records and tab bar height" {
-    const frame_panes = [_]FramePane{.{
+    var frame_panes: [tab.max_panes]FramePane = undefined;
+    frame_panes[0] = .{
         .id = .first,
         .term_texture_id = 7,
         .term_texture_rect = .{ .x = 0, .y = 16, .width = 80, .height = 24 },
         .scrollbar = scrollbar.hidden(.{ .x = 0, .y = 16, .width = 80, .height = 24 }),
         .scroll_chip = scroll_chip.hidden(scrollbar.hidden(.{ .x = 0, .y = 16, .width = 80, .height = 24 })),
-    }};
+    };
 
     const frame = Frame{
-        .panes = frame_panes[0..],
+        .panes = frame_panes,
+        .pane_count = 1,
         .tab_bar_height_px = 16,
         .tab_count = 1,
         .active_tab = 0,
         .tab_bar_revision = 1,
         .tab_bar_font_size_px = 16,
-        .tab_labels = &.{"shell"},
+        .tab_labels = [_][]const u8{"shell"} ++ [_][]const u8{""} ** (TabBar.max_tabs - 1),
     };
 
-    try std.testing.expectEqual(@as(usize, 1), frame.panes.len);
-    try std.testing.expectEqual(pane.PaneId.first, frame.panes[0].id);
+    try std.testing.expectEqual(@as(usize, 1), frame.paneSlice().len);
+    try std.testing.expectEqual(pane.PaneId.first, frame.paneSlice()[0].id);
     try std.testing.expectEqual(@as(c_int, 16), frame.tab_bar_height_px);
 }
 
@@ -922,6 +974,36 @@ test "focus transition appends window focus dirty" {
 
     try std.testing.expect(layout.presentation_events.contains(.window_focus_dirty));
     try std.testing.expectEqual(@as(usize, 1), layout.presentation_events.len());
+}
+
+test "accepted terminal dirty cannot keep presentation events hot after no progress" {
+    var layout = Layout{};
+    layout.tabs.active_count = 1;
+    layout.tabs.active_tab = 0;
+    layout.tabs.active_slots[0] = 0;
+    layout.tabs.tabs[0].pane_count = 1;
+    layout.tabs.tabs[0].panes[0].id = .first;
+    _ = layout.presentation_events.append(.{ .term_surface_dirty = .{ .tab_slot = 0, .pane_id = 0 } });
+
+    try std.testing.expect(layout.hasPresentationEvents());
+    try std.testing.expectEqual(PresentationReason.none, layout.choosePresentationReason(false));
+
+    layout.consumeAcceptedTermSurfaceDirty(&layout.presentation_events, .first);
+
+    try std.testing.expect(!layout.hasPresentationEvents());
+    try std.testing.expectEqual(@as(usize, 0), layout.presentation_events.len());
+}
+
+test "inactive terminal dirty does not report drainable presentation events" {
+    var layout = Layout{};
+    layout.tabs.active_count = 1;
+    layout.tabs.active_tab = 0;
+    layout.tabs.active_slots[0] = 0;
+    layout.tabs.tabs[0].pane_count = 0;
+    _ = layout.presentation_events.append(.{ .term_surface_dirty = .{ .tab_slot = 1, .pane_id = 0 } });
+
+    try std.testing.expect(!layout.hasPresentationEvents());
+    try std.testing.expectEqual(PresentationReason.none, layout.choosePresentationReason(false));
 }
 
 fn testWindowWithFocus(focused: bool) Window {

@@ -24,6 +24,7 @@ pub const GlResourceStore = resource_store.GlResourceStore;
 const StoreResourceSlot = GlResourceStore.ResourceSlot;
 const TermSurface = render_c.HowlRenderTermSurface;
 const SurfaceRect = render_c.HowlRenderTermSurfaceRect;
+const log = std.log.scoped(.render_edge);
 
 const DrawTarget = struct {
     texture_id: u64,
@@ -80,6 +81,7 @@ pub fn drainRenderSurface(store: *GlResourceStore, term_surface: *render_c.HowlR
     store.syncRenderResources(surface);
     ensureTexture(term_surface, surface.render_px.width, surface.render_px.height);
     const class = classifyTermSurface(surface) orelse std.debug.panic("trusted render surface has unsupported shape", .{});
+    log.debug("edge source=render event=term_upload class={s} texture_id={} width={} height={} commands={} glyphs={}", .{ @tagName(class), term_surface.term_surface_id, term_surface.width, term_surface.height, surface.commands.count, glyphCount(surface) });
     assertRenderSurfacePatchTermSurface(class, had_matching_term_surface);
     const surface_uploaded = switch (class) {
         .fill,
@@ -97,8 +99,10 @@ pub fn drainRenderSurface(store: *GlResourceStore, term_surface: *render_c.HowlR
     if (!surface_uploaded) {
         term_surface.width = 0;
         term_surface.height = 0;
+        log.debug("edge source=render event=term_upload_completed ok=false texture_id={}", .{term_surface.term_surface_id});
         return false;
     }
+    log.debug("edge source=render event=term_upload_completed ok=true texture_id={} width={} height={}", .{ term_surface.term_surface_id, term_surface.width, term_surface.height });
     return true;
 }
 
@@ -409,6 +413,15 @@ fn glyphCommandValid(surface: *const render_c.HowlRenderTermSurfaceDrain, comman
         if (unpackRenderSurfaceRgba(glyph.color_rgba)[3] == 0) return false;
     }
     return true;
+}
+
+fn glyphCount(surface: *const render_c.HowlRenderTermSurfaceDrain) u32 {
+    const commands = termCommandSlice(surface.commands.ptr, surface.commands.count);
+    var count: u32 = 0;
+    for (commands) |command| {
+        if (command.kind == render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_DRAW_GLYPH_RUN) count += command.glyphs.count;
+    }
+    return count;
 }
 
 fn glyphSpanValid(command: render_c.HowlRenderTermSurfaceCommand) bool {
