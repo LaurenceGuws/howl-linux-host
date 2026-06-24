@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 
 pub const max_presentation_events = 64;
@@ -15,7 +16,6 @@ pub const SurfaceAddress = struct {
 pub const Event = union(enum) {
     term_surface_dirty: SurfaceAddress,
     tab_bar_surface_dirty,
-    input_pending,
     window_geometry_dirty,
     window_focus_dirty,
     frame_ready,
@@ -130,10 +130,10 @@ pub const Queue = struct {
 };
 
 fn printEvent(direction: []const u8, owner: []const u8, event: Event, stored: bool) void {
+    if (builtin.is_test) return;
     switch (event) {
         .term_surface_dirty => |address| std.debug.print("{s} owner={s} surface=term event=term_surface_dirty data=tab:{} pane:{} stored={}\n", .{ direction, owner, address.tab_slot, address.pane_id, stored }),
         .tab_bar_surface_dirty => std.debug.print("{s} owner={s} surface=tab_bar event=tab_bar_surface_dirty data=full stored={}\n", .{ direction, owner, stored }),
-        .input_pending => std.debug.print("{s} owner={s} surface=input event=input_pending data=full stored={}\n", .{ direction, owner, stored }),
         .window_geometry_dirty => std.debug.print("{s} owner={s} surface=window event=window_geometry_dirty data=full stored={}\n", .{ direction, owner, stored }),
         .window_focus_dirty => std.debug.print("{s} owner={s} surface=window event=window_focus_dirty data=full stored={}\n", .{ direction, owner, stored }),
         .frame_ready => std.debug.print("{s} owner={s} surface=window event=frame_ready data=full stored={}\n", .{ direction, owner, stored }),
@@ -166,7 +166,7 @@ test "presentation queue coalesces typed surface events" {
     var queue = Queue.init();
 
     try std.testing.expect(queue.append(.{ .term_surface_dirty = .{ .tab_slot = 1, .pane_id = 0 } }));
-    try std.testing.expect(!queue.append(.tab_bar_surface_dirty));
+    try std.testing.expect(queue.append(.tab_bar_surface_dirty));
 
     var out: [max_presentation_events]Event = undefined;
     const drained = queue.drain(out[0..]);

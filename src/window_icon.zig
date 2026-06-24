@@ -7,7 +7,7 @@ const c = @cImport({
 
 const icon_path = "assets/icon/howl_window_icon.png";
 
-pub fn apply(window_handle: *anyopaque) void {
+pub fn install(window_handle: *anyopaque) void {
     const handle: *c.SDL_Window = @ptrCast(window_handle);
     var file_len: usize = 0;
     const file_ptr = c.SDL_LoadFile(icon_path, &file_len) orelse return;

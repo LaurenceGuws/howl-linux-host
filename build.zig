@@ -269,6 +269,15 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     configureHostTests(tab_bar_tests, deps);
     const run_tab_bar_tests = addTestRunArtifact(b, tab_bar_tests);
 
+    const main_tests = b.addTest(.{
+        .name = "test-main-loop",
+        .root_module = createHostModule(b, deps, "src/main.zig"),
+        .filters = filters,
+    });
+    main_tests.use_llvm = true;
+    configureHostTests(main_tests, deps);
+    const run_main_tests = addTestRunArtifact(b, main_tests);
+
     const retained_tests = b.addTest(.{
         .name = "test-retained-render",
         .root_module = retainedRenderTestModule(b, deps),
@@ -289,16 +298,46 @@ fn wireTestSteps(b: *Build, steps: Steps, deps: HostDeps, target: Build.Resolved
     render_surface_tests.root_module.link_libc = true;
     const run_render_surface_tests = addTestRunArtifact(b, render_surface_tests);
 
+    const presentation_queue_tests = b.addTest(.{
+        .name = "test-presentation-queue",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/window/presentation_queue.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = filters,
+    });
+    const run_presentation_queue_tests = addTestRunArtifact(b, presentation_queue_tests);
+
+    const presentation_scheduler_tests = b.addTest(.{
+        .name = "test-presentation-scheduler",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/window/presentation_scheduler.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = filters,
+    });
+    presentation_scheduler_tests.use_llvm = true;
+    addHostCImports(presentation_scheduler_tests.root_module, deps);
+    const run_presentation_scheduler_tests = addTestRunArtifact(b, presentation_scheduler_tests);
+
     stageTestArtifact(steps.test_unit_build, cli_args_tests);
     stageTestArtifact(steps.test_unit_build, config_env_tests);
     stageTestArtifact(steps.test_unit_build, tab_bar_tests);
+    stageTestArtifact(steps.test_unit_build, main_tests);
     stageTestArtifact(steps.test_unit_build, retained_tests);
     stageTestArtifact(steps.test_unit_build, render_surface_tests);
+    stageTestArtifact(steps.test_unit_build, presentation_queue_tests);
+    stageTestArtifact(steps.test_unit_build, presentation_scheduler_tests);
     steps.test_unit.dependOn(&run_cli_args_tests.step);
     steps.test_unit.dependOn(&run_config_env_tests.step);
     steps.test_unit.dependOn(&run_tab_bar_tests.step);
+    steps.test_unit.dependOn(&run_main_tests.step);
     steps.test_unit.dependOn(&run_retained_tests.step);
     steps.test_unit.dependOn(&run_render_surface_tests.step);
+    steps.test_unit.dependOn(&run_presentation_queue_tests.step);
+    steps.test_unit.dependOn(&run_presentation_scheduler_tests.step);
     steps.test_all.dependOn(steps.test_unit);
 
     const integration_test_mod = b.createModule(.{

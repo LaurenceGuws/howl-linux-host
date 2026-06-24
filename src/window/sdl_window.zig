@@ -215,7 +215,7 @@ test "window title updates only when content changes" {
     FakeOps.reset();
     var window = Window{
         .handle = undefined,
-        .current_title = try std.testing.allocator.dupeZ(u8, "old"),
+        .current_title = try std.heap.c_allocator.dupeZ(u8, "old"),
         .has_frame = true,
         .px_w = 1,
         .px_h = 1,
@@ -223,7 +223,7 @@ test "window title updates only when content changes" {
         .logical_h = 1,
         .focused = true,
     };
-    defer std.testing.allocator.free(window.current_title);
+    defer std.heap.c_allocator.free(window.current_title);
 
     try std.testing.expect(!try window.setTitleWith("old", FakeOps));
     try std.testing.expectEqual(@as(usize, 0), FakeOps.calls);

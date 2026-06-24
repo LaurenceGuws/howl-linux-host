@@ -62,7 +62,7 @@ pub const PresentationDrain = presentation_drain.PresentationDrain;
 pub const Layout = struct {
     tabs: tabs.Tabs = .{},
     producer_presentation_queue: PresentationQueue.Queue = .{},
-    pending_events: PresentationQueue.Queue = .{},
+    presentation_events: PresentationQueue.Queue = .{},
     window_wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     sdl_wake_event_type: u32 = 0,
 
@@ -103,7 +103,7 @@ pub const Layout = struct {
         self.tabs.active_panes[self.tabs.active_count] = .first;
         self.tabs.active_tab = self.tabs.active_count;
         self.tabs.active_count += 1;
-        if (before_height != window_interior.tab_bar.pixel_height) self.applyBody(body_value);
+        if (before_height != window_interior.tab_bar.pixel_height) self.drainBodyLayout(body_value);
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
         _ = self.producer_presentation_queue.appendFrom("layout", .tab_bar_surface_dirty);
@@ -126,7 +126,7 @@ pub const Layout = struct {
         self.tabs.free_count += 1;
         if (self.tabs.active_tab >= self.tabs.active_count) self.tabs.active_tab = self.tabs.active_count - 1;
         const window_interior = interior.interior(app_window, &conf.tab_bar, self.tabs.active_count);
-        if (before_height != window_interior.tab_bar.pixel_height) self.applyBody(tab.body(window_interior));
+        if (before_height != window_interior.tab_bar.pixel_height) self.drainBodyLayout(tab.body(window_interior));
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
         _ = self.producer_presentation_queue.appendFrom("layout", .tab_bar_surface_dirty);
@@ -193,12 +193,12 @@ pub const Layout = struct {
                 .viewport_page_scroll => |pages| self.drainScrollPages(pages),
                 .window_focus => |focused| self.drainWindowFocus(app_window, focused),
                 .window_geometry => self.drainWindowGeometry(conf, app_window),
-                .binding => |action| try self.handleBindingAction(conf, app_window, action, texture_frame.textHandle()),
+                .binding => |action| try self.drainBinding(conf, app_window, action, texture_frame.textHandle()),
             }
         }
     }
 
-    pub fn handleBindingAction(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, action: HostInput.Bindings.Action, render_text_handle: render_c.HowlRenderTextHandle) !void {
+    pub fn drainBinding(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, action: HostInput.Bindings.Action, render_text_handle: render_c.HowlRenderTextHandle) !void {
         switch (action) {
             .terminal_new_tab => try self.openTab(std.heap.c_allocator, conf, app_window, render_text_handle),
             .terminal_close_tab => self.closeActiveTab(conf, app_window),
@@ -229,41 +229,41 @@ pub const Layout = struct {
         return if (self.tabs.active_count == 1) .quit else .close_tab;
     }
 
-    pub fn mergePendingEvents(self: *Layout, drained: PresentationQueue.Drain) void {
-        if (drained.overflowed) self.pending_events.markOverflowed();
-        for (drained.events) |event| _ = self.pending_events.appendFrom("layout", event);
+    pub fn mergePresentationEvents(self: *Layout, drained: PresentationQueue.Drain) void {
+        if (drained.overflowed) self.presentation_events.markOverflowed();
+        for (drained.events) |event| _ = self.presentation_events.appendFrom("layout", event);
     }
 
-    pub fn appendPendingEvent(self: *Layout, event: PresentationQueue.Event) void {
-        _ = self.pending_events.appendFrom("layout", event);
+    pub fn appendPresentationEvent(self: *Layout, event: PresentationQueue.Event) void {
+        _ = self.presentation_events.appendFrom("layout", event);
     }
 
     pub fn drainProducedPresentationEvents(self: *Layout, out: []PresentationQueue.Event) void {
-        self.mergePendingEvents(self.producer_presentation_queue.drainFrom("layout", out));
+        self.mergePresentationEvents(self.producer_presentation_queue.drainFrom("layout", out));
     }
 
     pub fn updateFrameReady(self: *Layout, app_window: *Window) void {
-        if (!self.pending_events.contains(.frame_ready)) return;
+        if (!self.presentation_events.contains(.frame_ready)) return;
         app_window.markFrameReady();
-        self.pending_events.remove(.frame_ready);
+        self.presentation_events.remove(.frame_ready);
     }
 
-    pub fn hasPendingPresentation(self: *const Layout) bool {
-        return self.pending_events.hasOverflowed() or self.pending_events.contains(.term_surface_dirty) or self.pending_events.contains(.tab_bar_surface_dirty) or self.pending_events.contains(.window_geometry_dirty) or self.pending_events.contains(.window_focus_dirty);
+    pub fn hasPresentationEvents(self: *const Layout) bool {
+        return self.presentation_events.hasOverflowed() or self.presentation_events.contains(.term_surface_dirty) or self.presentation_events.contains(.tab_bar_surface_dirty) or self.presentation_events.contains(.window_geometry_dirty) or self.presentation_events.contains(.window_focus_dirty);
     }
 
-    pub fn pendingEvents(self: *Layout) *PresentationQueue.Queue {
-        return &self.pending_events;
+    pub fn presentationEvents(self: *Layout) *PresentationQueue.Queue {
+        return &self.presentation_events;
     }
 
     pub fn render(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) PresentationDrain {
         var readiness: [tab.max_panes]PaneSurfaceReadiness = undefined;
         const ready = self.paneSurfaceReadiness(texture_frame, readiness[0..]);
-        const surface_drain = self.drainSurface(ready, &self.pending_events);
+        const surface_drain = self.drainSurface(ready, &self.presentation_events);
         self.noteSurfaceDrain(surface_drain);
-        const turn = self.drainTexture(texture_frame, surface_drain);
-        self.noteSurfaceDrain(turn);
-        return .{ .drain = turn, .frame = self.frame(conf, app_window, texture_frame, bar) };
+        const texture_drain = self.drainTexture(texture_frame, surface_drain);
+        self.noteSurfaceDrain(texture_drain);
+        return .{ .drain = texture_drain, .frame = self.frame(conf, app_window, texture_frame, bar) };
     }
 
     pub fn drainPresentation(self: *Layout, texture_frame: *TextureFrame.State, drained: PresentationDrain, reason: PresentationReason) void {
@@ -298,22 +298,22 @@ pub const Layout = struct {
 
     pub fn choosePresentationReason(self: *Layout, terminal_ready: bool) PresentationReason {
         if (terminal_ready) return .terminal_frame;
-        if (self.pending_events.hasOverflowed()) return .window_frame;
-        if (self.pending_events.contains(.tab_bar_surface_dirty)) return .tab_bar_surface;
-        if (self.pending_events.contains(.window_geometry_dirty)) return .window_frame;
-        if (self.pending_events.contains(.window_focus_dirty)) return .window_frame;
+        if (self.presentation_events.hasOverflowed()) return .window_frame;
+        if (self.presentation_events.contains(.tab_bar_surface_dirty)) return .tab_bar_surface;
+        if (self.presentation_events.contains(.window_geometry_dirty)) return .window_frame;
+        if (self.presentation_events.contains(.window_focus_dirty)) return .window_frame;
         return .none;
     }
 
     pub fn consumePresentationEvents(self: *Layout, reason: PresentationReason) void {
         switch (reason) {
             .none => {},
-            .tab_bar_surface => self.pending_events.remove(.tab_bar_surface_dirty),
+            .tab_bar_surface => self.presentation_events.remove(.tab_bar_surface_dirty),
             .window_frame => {
-                self.pending_events.remove(.window_geometry_dirty);
-                self.pending_events.remove(.window_focus_dirty);
+                self.presentation_events.remove(.window_geometry_dirty);
+                self.presentation_events.remove(.window_focus_dirty);
             },
-            .terminal_frame => self.pending_events.clear(),
+            .terminal_frame => self.presentation_events.clear(),
         }
     }
 
@@ -395,7 +395,7 @@ pub const Layout = struct {
         var input_published = false;
         var window_visual_changed = false;
         input_processor.processPointerEvent(&selected, event, 0, @intCast(window_interior.tab_bar.logical_height), terminal.logical_size.width, terminal.logical_size.height, &input_published, &window_visual_changed);
-        if (window_visual_changed) _ = self.pending_events.appendFrom("layout", .{ .term_surface_dirty = self.activePaneAddress() });
+        if (window_visual_changed) _ = self.presentation_events.appendFrom("layout", .{ .term_surface_dirty = self.activePaneAddress() });
     }
 
     fn drainScrollPages(self: *Layout, page_steps: i32) void {
@@ -409,17 +409,17 @@ pub const Layout = struct {
     fn drainWindowFocus(self: *Layout, app_window: *Window, focused: bool) void {
         _ = app_window.setFocused(focused);
         self.syncFocus(focused);
-        _ = self.pending_events.appendFrom("layout", .window_focus_dirty);
-        self.appendActiveTabTermSurfaceDirty(&self.pending_events);
+        _ = self.presentation_events.appendFrom("layout", .window_focus_dirty);
+        self.appendActiveTabTermSurfaceDirty(&self.presentation_events);
     }
 
     fn drainWindowGeometry(self: *Layout, conf: *const Config.UiConfig, app_window: *Window) void {
         if (!app_window.refreshGeometry()) return;
-        self.applyBody(tab.body(interior.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
-        _ = self.pending_events.appendFrom("layout", .window_geometry_dirty);
+        self.drainBodyLayout(tab.body(interior.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
+        _ = self.presentation_events.appendFrom("layout", .window_geometry_dirty);
     }
 
-    fn applyBody(self: *Layout, body_value: tab.Body) void {
+    fn drainBodyLayout(self: *Layout, body_value: tab.Body) void {
         var tab_index_value: usize = 0;
         while (tab_index_value < self.tabs.active_count) : (tab_index_value += 1) {
             var placements: [tab.max_panes]pane.Placement = undefined;
@@ -866,7 +866,6 @@ test "frame carries explicit pane draw records and tab bar height" {
         .tab_bar_revision = 1,
         .tab_bar_font_size_px = 16,
         .tab_labels = &.{"shell"},
-        .damage = .fullFrame(),
     };
 
     try std.testing.expectEqual(@as(usize, 1), frame.panes.len);

@@ -4,8 +4,8 @@ const std = @import("std");
 const assert = std.debug.assert;
 
 const FrameTimer = @import("frame_timer.zig").FrameTimer;
-const sdl_window = @import("sdl_window.zig");
 const presentation_queue = @import("presentation_queue.zig");
+const sdl_window = @import("sdl_window.zig");
 
 pub const TimerTopic = enum {
     frame,
@@ -85,22 +85,6 @@ pub const Scheduler = struct {
     }
 };
 
-pub fn chooseWait(pending_events: bool, events: *const presentation_queue.Queue, closest_deadline_ns: ?u64, now_ns: u64) Wait {
-    assert(now_ns > 0);
-    return .{
-        .for_window = !pending_events and events.len() == 0,
-        .timeout_ms = waitMsFromDeadline(now_ns, closest_deadline_ns),
-    };
-}
-
-pub fn waitMsFromDeadline(now_ns: u64, deadline_ns: ?u64) ?u32 {
-    assert(now_ns > 0);
-    const deadline = deadline_ns orelse return null;
-    if (now_ns >= deadline) return 0;
-    const remaining_ns = deadline - now_ns;
-    return @intCast(@max(@as(u64, 1), std.math.divCeil(u64, remaining_ns, std.time.ns_per_ms) catch 1));
-}
-
 fn minOptionalDeadline(current_deadline_ns: ?u64, next_deadline_ns: u64) ?u64 {
     assert(next_deadline_ns > 0);
     return if (current_deadline_ns) |current| @min(current, next_deadline_ns) else next_deadline_ns;
@@ -119,27 +103,15 @@ fn testWindow(has_frame: bool) sdl_window.Window {
     };
 }
 
-test "host event prevents indefinite wait without granting progress admission" {
-    var events = presentation_queue.Queue.init();
-    _ = events.append(.{ .term_surface_dirty = .{ .tab_slot = 0, .pane_id = 0 } });
-
-    const wait = chooseWait(false, &events, null, 1);
-
-    try std.testing.expect(!wait.for_window);
-    try std.testing.expectEqual(@as(?u32, null), wait.timeout_ms);
-}
-
 test "closest frame timer wins when no host event is ready" {
     var scheduler = Scheduler.init();
     scheduler.schedule(.frame, 40_000_000);
     var events = presentation_queue.Queue.init();
 
     const deadline_ns = scheduler.update(&events, 1_000_000);
-    const wait = chooseWait(false, &events, deadline_ns, 1_000_000);
 
     try std.testing.expectEqual(@as(?u64, 40_000_000), deadline_ns);
-    try std.testing.expect(wait.for_window);
-    try std.testing.expectEqual(@as(?u32, 39), wait.timeout_ms);
+    try std.testing.expectEqual(@as(usize, 0), events.len());
 }
 
 test "trigger frame marks frame used and schedules frame topic" {

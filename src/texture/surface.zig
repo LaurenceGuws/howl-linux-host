@@ -2,7 +2,7 @@ const std = @import("std");
 
 // Texture surface type is main/window-thread presentation dispatch vocabulary only.
 // It is not render API, terminal instance ownership, layout placement, or wake policy;
-// those owners hand visible work to texture, and texture chooses the presenter by type.
+// those owners hand visible surfaces to texture, and texture chooses the presenter by type.
 pub const Type = enum { term, tab_bar, scroll_bar };
 
 test "texture surface types stay presentation dispatch vocabulary" {

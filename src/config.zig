@@ -65,7 +65,7 @@ pub const UiConfig = struct {
         self.tab_bar.deinit(alloc);
     }
 
-    pub fn applyProcessOverrides(self: *UiConfig, shell: ?[]const u8, start_path: ?[]const u8, command: ?[]const u8) !void {
+    pub fn configureProcessOverrides(self: *UiConfig, shell: ?[]const u8, start_path: ?[]const u8, command: ?[]const u8) !void {
         if (shell) |value| try overrideOwned(&self.term.shell, value);
         if (start_path) |value| try overrideOptionalOwned(&self.term.start_path, value);
         if (command) |value| try overrideOptionalOwned(&self.term.command, value);

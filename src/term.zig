@@ -283,9 +283,9 @@ pub const Term = struct {
         _ = vt_surface.ackPublishedSourceLocked(self, snapshot_seq);
     }
 
-    pub fn noteSurfaceDrain(self: *Term, turn: DrainResult) void {
-        if (turn.step == .surface_idle) return;
-        if (turn.ready and turn.state_after == .drain_ready) self.noteDrainStep(turn.state_after);
+    pub fn noteSurfaceDrain(self: *Term, drain: DrainResult) void {
+        if (drain.step == .surface_idle) return;
+        if (drain.ready and drain.state_after == .drain_ready) self.noteDrainStep(drain.state_after);
     }
 
     const DriveResult = struct {

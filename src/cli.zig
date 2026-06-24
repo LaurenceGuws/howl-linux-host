@@ -6,6 +6,10 @@ pub const Args = struct {
     start_path: ?[]const u8 = null,
 };
 
+pub fn isHelp(err: anyerror) bool {
+    return err == error.HelpRequested;
+}
+
 pub fn parse(args: []const []const u8) !Args {
     var options = Args{};
     var i: usize = 1;

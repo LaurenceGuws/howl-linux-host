@@ -26,9 +26,9 @@ const child_term_value: [*:0]const u8 = "xterm-256color";
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 pub fn main(init: std.process.Init) !void {
-    const options = cli.parse(try init.minimal.args.toSlice(init.arena.allocator())) catch |err| switch (err) {
-        error.HelpRequested => return,
-        else => |e| return e,
+    const options = cli.parse(try init.minimal.args.toSlice(init.arena.allocator())) catch |err| {
+        if (cli.isHelp(err)) return;
+        return err;
     };
     try start(init.io, options);
 }
@@ -62,7 +62,7 @@ noinline fn start(io: std.Io, options: Args) !void {
     defer resolved_fonts.deinit(std.heap.c_allocator);
     var tab_text_config: tab_bar_surface_layout.TextConfig = undefined;
     tab_bar_surface_layout.initTextConfig(&tab_text_config, @max(conf.term.font_size, 1), resolved_fonts.primary, resolved_fonts.fallbacks);
-    applyTermRenderConfig(&tab_text_config.config, &conf.term);
+    configureTermRender(&tab_text_config.config, &conf.term);
     defer {
         if (texture_frame_created) TextureFrame.deinit(TextureFrame.C, texture_frame);
         std.heap.c_allocator.destroy(texture_frame);
@@ -87,7 +87,7 @@ noinline fn start(io: std.Io, options: Args) !void {
     input.* = try initInput();
     input.setBindings(Input.Bindings.Configured.init(conf));
 
-    applyChildEnvironmentPolicy();
+    configureChildEnvironmentPolicy();
 
     _ = io;
     try layout.openTab(std.heap.c_allocator, conf, app_window, texture_frame.textHandle());
@@ -98,20 +98,20 @@ noinline fn start(io: std.Io, options: Args) !void {
 fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture_frame: *TextureFrame.State, tab_bar: *TabBar, layout: *WindowPolicy.Layout, input: *Input) !void {
     var presenter = presentation_scheduler.Scheduler.init();
     while (true) {
-        var present_event_buffer: [presentation_queue.max_presentation_events]presentation_queue.Event = undefined;
-        layout.drainProducedPresentationEvents(present_event_buffer[0..]);
+        var presentation_event_buffer: [presentation_queue.max_presentation_events]presentation_queue.Event = undefined;
+        layout.drainProducedPresentationEvents(presentation_event_buffer[0..]);
         const first_now_ns = nowNs();
-        const closest_deadline_ns = presenter.update(layout.pendingEvents(), first_now_ns);
+        const closest_deadline_ns = presenter.update(layout.presentationEvents(), first_now_ns);
         layout.updateFrameReady(app_window);
 
-        const wait = chooseWait(input.hasEvents(), app_window.hasFrame() and layout.hasPendingPresentation(), closest_deadline_ns, first_now_ns);
+        const wait = chooseWait(input.hasEvents(), app_window.hasFrame() and layout.hasPresentationEvents(), closest_deadline_ns, first_now_ns);
         if (pumpInput(layout, input, wait)) return;
 
         try layout.drainInput(conf, app_window, texture_frame, input);
-        layout.drainProducedPresentationEvents(present_event_buffer[0..]);
+        layout.drainProducedPresentationEvents(presentation_event_buffer[0..]);
         layout.configureInputPolicies(conf, input);
 
-        if (layout.hasPendingPresentation() and app_window.hasFrame()) {
+        if (layout.hasPresentationEvents() and app_window.hasFrame()) {
             const presentation_drain = layout.render(conf, app_window, texture_frame, tab_bar);
             const reason = layout.choosePresentationReason(layout.terminalPresentationReady(presentation_drain.drain.step));
             layout.drainPresentation(texture_frame, presentation_drain, reason);
@@ -123,11 +123,20 @@ fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture
     }
 }
 
-fn chooseWait(input_pending: bool, present_ready: bool, closest_deadline_ns: ?u64, now_ns: u64) presentation_scheduler.Wait {
+pub fn chooseWait(input_events_available: bool, presentation_events_available: bool, closest_deadline_ns: ?u64, now_ns: u64) presentation_scheduler.Wait {
+    std.debug.assert(now_ns > 0);
     return .{
-        .for_window = !input_pending and !present_ready,
-        .timeout_ms = presentation_scheduler.waitMsFromDeadline(now_ns, closest_deadline_ns),
+        .for_window = !input_events_available and !presentation_events_available,
+        .timeout_ms = waitMsFromDeadline(now_ns, closest_deadline_ns),
     };
+}
+
+fn waitMsFromDeadline(now_ns: u64, deadline_ns: ?u64) ?u32 {
+    std.debug.assert(now_ns > 0);
+    const deadline = deadline_ns orelse return null;
+    if (now_ns >= deadline) return 0;
+    const remaining_ns = deadline - now_ns;
+    return @intCast(@max(@as(u64, 1), std.math.divCeil(u64, remaining_ns, std.time.ns_per_ms) catch 1));
 }
 
 fn pumpInput(layout: *WindowPolicy.Layout, input: *Input, wait: presentation_scheduler.Wait) bool {
@@ -135,29 +144,29 @@ fn pumpInput(layout: *WindowPolicy.Layout, input: *Input, wait: presentation_sch
         var event: sdl_c.SDL_Event = undefined;
         const received = if (wait.timeout_ms) |timeout_ms| sdl_c.SDL_WaitEventTimeout(&event, @intCast(timeout_ms)) else sdl_c.SDL_WaitEvent(&event);
         if (received) {
-            if (processSdlEvent(layout, input, &event)) return true;
-            return drainPendingInput(layout, input, 1);
+            if (triggerSdlEvent(layout, input, &event)) return true;
+            return drainSdlEvents(layout, input, 1);
         }
-        return drainPendingInput(layout, input, 0);
+        return drainSdlEvents(layout, input, 0);
     }
-    return drainPendingInput(layout, input, 0);
+    return drainSdlEvents(layout, input, 0);
 }
 
 fn nowNs() u64 {
     return @max(@as(u64, 1), sdl_c.SDL_GetTicksNS());
 }
 
-fn drainPendingInput(layout: *WindowPolicy.Layout, input: *Input, processed_start: usize) bool {
+fn drainSdlEvents(layout: *WindowPolicy.Layout, input: *Input, processed_start: usize) bool {
     var processed = processed_start;
     var event: sdl_c.SDL_Event = undefined;
     while (processed < max_sdl_events_per_turn) : (processed += 1) {
         if (!sdl_c.SDL_PollEvent(&event)) break;
-        if (processSdlEvent(layout, input, &event)) return true;
+        if (triggerSdlEvent(layout, input, &event)) return true;
     }
     return false;
 }
 
-fn processSdlEvent(layout: *WindowPolicy.Layout, input: *Input, event: *const sdl_c.SDL_Event) bool {
+fn triggerSdlEvent(layout: *WindowPolicy.Layout, input: *Input, event: *const sdl_c.SDL_Event) bool {
     if (layout.ackWindowWake(event)) return false;
     switch (event.type) {
         sdl_c.SDL_EVENT_QUIT,
@@ -182,14 +191,14 @@ fn initVideo() !void {
 fn loadConfig(options: Args) !Config.UiConfig {
     var conf = try Config.UiConfig.load(std.heap.c_allocator);
     errdefer conf.deinit(std.heap.c_allocator);
-    try conf.applyProcessOverrides(options.shell, options.start_path, options.command);
+    try conf.configureProcessOverrides(options.shell, options.start_path, options.command);
     return conf;
 }
 
 fn createWindow(conf: *const Config.UiConfig) !window.Window {
     var app_window = try window.Window.create(conf.window.title.ptr, conf.window.width, conf.window.height, TextureFrame.flags(TextureFrame.C));
     errdefer app_window.deinit();
-    window_icon.apply(app_window.handle);
+    window_icon.install(app_window.handle);
     return app_window;
 }
 
@@ -199,7 +208,7 @@ fn initInput() !Input {
     return input;
 }
 
-fn applyTermRenderConfig(config: *render_c.HowlRenderTextConfig, term: *const Config.Terminal) void {
+fn configureTermRender(config: *render_c.HowlRenderTextConfig, term: *const Config.Terminal) void {
     config.cursor_blink_interval_s = term.cursor_blink_interval;
     config.cursor_blink_inactivity_s = 3.0;
     config.cursor_trail_delay_s = @as(f64, @floatFromInt(term.cursor_trail)) / 1000.0;
@@ -224,7 +233,7 @@ fn cursorColor(value: TermConfig.CursorColor) render_c.HowlVtColor {
     return .{ .kind = @intFromEnum(value.kind), .value = value.value };
 }
 
-fn applyChildEnvironmentPolicy() void {
+fn configureChildEnvironmentPolicy() void {
     std.debug.assert(setenv("TERM", child_term_value, 1) == 0);
 }
 
@@ -234,7 +243,52 @@ fn setCurrentThreadName(name: [:0]const u8) void {
 
 test "child environment policy sets TERM in app config" {
     try std.testing.expect(setenv("TERM", "preexisting-term", 1) == 0);
-    applyChildEnvironmentPolicy();
+    configureChildEnvironmentPolicy();
     const value = std.c.getenv("TERM") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("xterm-256color", std.mem.span(value));
+}
+
+test "wait policy keeps draining input events" {
+    const wait = chooseWait(true, false, null, 1);
+
+    try std.testing.expect(!wait.for_window);
+    try std.testing.expectEqual(@as(?u32, null), wait.timeout_ms);
+}
+
+test "wait policy keeps draining presentation events" {
+    const wait = chooseWait(false, true, null, 1);
+
+    try std.testing.expect(!wait.for_window);
+    try std.testing.expectEqual(@as(?u32, null), wait.timeout_ms);
+}
+
+test "wait policy blocks indefinitely without events or deadline" {
+    const wait = chooseWait(false, false, null, 1);
+
+    try std.testing.expect(wait.for_window);
+    try std.testing.expectEqual(@as(?u32, null), wait.timeout_ms);
+}
+
+test "wait policy blocks with immediate timeout on expired deadline" {
+    const wait = chooseWait(false, false, 10, 10);
+
+    try std.testing.expect(wait.for_window);
+    try std.testing.expectEqual(@as(?u32, 0), wait.timeout_ms);
+}
+
+test "wait policy blocks with finite timeout before future deadline" {
+    const wait = chooseWait(false, false, 40_000_000, 1_000_000);
+
+    try std.testing.expect(wait.for_window);
+    try std.testing.expectEqual(@as(?u32, 39), wait.timeout_ms);
+}
+
+test "wait policy lets events override future deadline" {
+    const input_wait = chooseWait(true, false, 40_000_000, 1_000_000);
+    const presentation_wait = chooseWait(false, true, 40_000_000, 1_000_000);
+
+    try std.testing.expect(!input_wait.for_window);
+    try std.testing.expectEqual(@as(?u32, 39), input_wait.timeout_ms);
+    try std.testing.expect(!presentation_wait.for_window);
+    try std.testing.expectEqual(@as(?u32, 39), presentation_wait.timeout_ms);
 }
