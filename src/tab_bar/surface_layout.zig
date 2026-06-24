@@ -25,6 +25,20 @@ pub fn initTextConfig(out: *TextConfig, font_size_px: u16, primary: ?[:0]u8, fal
         .reserved0 = 0,
         .primary_font_path = if (primary) |path| path.ptr else null,
         .fallback_font_paths = if (fallbacks.len == 0) null else &out.fallback_paths,
+        .cursor_blink_interval_s = -1,
+        .cursor_blink_inactivity_s = -1,
+        .cursor_trail_delay_s = 0,
+        .cursor_trail_decay_fast_s = 0,
+        .cursor_trail_decay_slow_s = 0,
+        .cursor_trail_start_threshold = 0,
+        .reserved1 = 0,
+        .cursor_color = .{ .kind = 0, .value = 0 },
+        .cursor_text_color = .{ .kind = 0, .value = 0 },
+        .cursor_trail_color = .{ .kind = 0, .value = 0 },
+        .cursor_beam_thickness = 1.5,
+        .cursor_underline_thickness = 2.0,
+        .cursor_unfocused_shape = 0,
+        .reserved2 = [_]u8{0} ** 7,
     };
 }
 

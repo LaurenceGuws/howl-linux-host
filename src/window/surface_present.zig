@@ -1,9 +1,6 @@
 const std = @import("std");
 
-// Surface-present owns the widget/surface-to-main wake flag language shared by terminal,
-// scrollbar, tab bar, and future host widgets. It does not own term/render/layout/texture or
-// present submission; the false-to-true atomic edge proves producers cannot flood main with wakes
-// before the main/window control spine consumes the trigger.
+// Coalesces producer progress until the window policy consumes it.
 pub const Trigger = struct {
     triggered: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };

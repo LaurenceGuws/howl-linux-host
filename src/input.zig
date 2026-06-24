@@ -1,7 +1,6 @@
 const std = @import("std");
 const keys = @import("input/keys.zig");
 const mouse = @import("input/mouse.zig");
-const window = @import("events/window.zig");
 const sdl_c = @import("sdl_c");
 
 pub const processor = @import("input/processor.zig");
@@ -97,7 +96,6 @@ pub const Input = struct {
     scroll_pages: i32,
     binding_buf: FixedRing(Bindings.Action, 64),
     bindings: Bindings.Configured,
-    redraw_window: ?*window.Window,
     window_geometry_changed: bool,
     window_focus_changed: ?bool,
     last_mouse_x: i32,
@@ -116,7 +114,6 @@ pub const Input = struct {
             .scroll_pages = 0,
             .binding_buf = .{},
             .bindings = .{},
-            .redraw_window = null,
             .window_geometry_changed = false,
             .window_focus_changed = null,
             .last_mouse_x = 0,
@@ -134,10 +131,6 @@ pub const Input = struct {
 
     pub fn setBindings(self: *Input, bindings: Bindings.Configured) void {
         self.bindings = bindings;
-    }
-
-    pub fn setRedrawWindow(self: *Input, redraw_window: ?*window.Window) void {
-        self.redraw_window = redraw_window;
     }
 
     pub fn setHostMousePolicy(self: *Input, policy: HostMousePolicy) void {
@@ -200,10 +193,6 @@ pub const Input = struct {
         return focused;
     }
 
-    pub fn requestRedraw(self: *Input) void {
-        if (self.redraw_window) |redraw_window| redraw_window.requestRedraw();
-    }
-
     pub fn keyFromLabel(raw: []const u8) ?Key {
         return keys.parseLabel(raw);
     }
@@ -212,16 +201,13 @@ pub const Input = struct {
         switch (event.type) {
             c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
                 self.window_focus_changed = true;
-                self.requestRedraw();
                 return;
             },
             c.SDL_EVENT_WINDOW_FOCUS_LOST => {
                 self.window_focus_changed = false;
-                self.requestRedraw();
                 return;
             },
             c.SDL_EVENT_WINDOW_EXPOSED => {
-                self.requestRedraw();
                 return;
             },
             c.SDL_EVENT_TEXT_INPUT => {
@@ -260,7 +246,6 @@ pub const Input = struct {
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
             c.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
             => {
-                self.requestRedraw();
                 self.window_geometry_changed = true;
                 return;
             },
@@ -303,7 +288,6 @@ fn appendInputEvent(input: *Input, event: Input.Event) bool {
 
 fn appendBindingAction(input: *Input, action: Input.Bindings.Action) void {
     if (!input.binding_buf.push(action)) return;
-    input.requestRedraw();
 }
 
 fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
@@ -313,12 +297,10 @@ fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
     const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
     if (event.key.key == c.SDLK_PAGEUP and shift and !ctrl and !alt) {
         input.scroll_pages += 1;
-        input.requestRedraw();
         return;
     }
     if (event.key.key == c.SDLK_PAGEDOWN and shift and !ctrl and !alt) {
         input.scroll_pages -= 1;
-        input.requestRedraw();
         return;
     }
     if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {
@@ -968,41 +950,6 @@ test "binding action queue preserves FIFO across wraparound" {
         try std.testing.expectEqual(Input.Bindings.Action.terminal_prev_tab, input.drainBindingAction().?);
     }
     try std.testing.expectEqual(@as(?Input.Bindings.Action, null), input.drainBindingAction());
-}
-
-test "redraw-only pending does not count as pending events" {
-    var input: Input = undefined;
-    input.init();
-    var redraw_window = window.Window{
-        .handle = undefined,
-        .current_title = try std.testing.allocator.dupeZ(u8, "redraw"),
-        .has_frame = true,
-        .requested_redraw = false,
-        .px_w = 1,
-        .px_h = 1,
-        .logical_w = 1,
-        .logical_h = 1,
-        .focused = true,
-    };
-    defer std.testing.allocator.free(redraw_window.current_title);
-    input.setRedrawWindow(&redraw_window);
-
-    try std.testing.expect(!input.hasPendingEvents());
-    try std.testing.expectEqual(@as(?bool, null), input.window_focus_changed);
-    try std.testing.expect(!input.window_geometry_changed);
-    try std.testing.expect(!input.input_events.hasItems());
-    try std.testing.expect(!input.binding_buf.hasItems());
-    try std.testing.expectEqual(@as(i32, 0), input.scroll_pages);
-
-    input.requestRedraw();
-
-    try std.testing.expect(redraw_window.hasRequestedRedraw());
-    try std.testing.expect(!input.hasPendingEvents());
-    try std.testing.expectEqual(@as(?bool, null), input.window_focus_changed);
-    try std.testing.expect(!input.window_geometry_changed);
-    try std.testing.expect(!input.input_events.hasItems());
-    try std.testing.expect(!input.binding_buf.hasItems());
-    try std.testing.expectEqual(@as(i32, 0), input.scroll_pages);
 }
 
 test "queued input focus window geometry and bindings count as pending events" {

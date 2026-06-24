@@ -4,7 +4,7 @@ const pty_c = @import("howl_pty_c");
 const render_c = @import("howl_render_c");
 const sdl_c = @import("sdl_c");
 const vt_c = @import("howl_vt_c");
-const surface_present = @import("events/surface_present.zig");
+const surface_present = @import("window/surface_present.zig");
 const surface_layout = @import("render/surface_layout.zig");
 const Pty = @import("pty.zig");
 const Render = @import("render.zig");
@@ -193,7 +193,8 @@ pub const Term = struct {
 
     pub fn triggerSurfacePresent(self: *Term) void {
         const trigger = self.surface_present_trigger orelse return;
-        _ = surface_present.trigger(trigger);
+        const fired = surface_present.trigger(trigger);
+        std.debug.print("term present trigger fired={}\n", .{fired});
     }
 
     fn stopProgressThread(self: *Term) void {
@@ -205,7 +206,7 @@ pub const Term = struct {
     }
 
     // Terminal surface turns own retained render sequencing and VT publish acknowledgement.
-    // Bucket-local callbacks are explicit temporary inputs until hover, cursor, and resize state move to true owners.
+    // Bucket-local callbacks are explicit temporary inputs until hover and resize state move to true owners.
     pub fn renderTurn(
         self: *Term,
         has_present_surface: bool,
@@ -213,13 +214,12 @@ pub const Term = struct {
         sync_pending_pixels_locked: *const fn (*anyopaque, *Term) bool,
         hover_decoration: *const fn (*anyopaque) ?vt_surface.HyperlinkHover,
         clear_hover_pending: *const fn (*anyopaque) void,
-        publish_cursor_info: *const fn (*anyopaque, vt_c.HowlVtRenderStateHandle, u64) anyerror!void,
     ) TurnResult {
         self.mutex.lockFair();
         defer self.mutex.unlock();
         const bootstrap_surface = !has_present_surface;
         const admission_before = self.render.admitRenderTurn(bootstrap_surface);
-        const drive_result = self.driveRenderLocked(admission_before, owner, sync_pending_pixels_locked, hover_decoration, clear_hover_pending, publish_cursor_info);
+        const drive_result = self.driveRenderLocked(admission_before, owner, sync_pending_pixels_locked, hover_decoration, clear_hover_pending);
         return .{
             .state_before = admission_before.state,
             .state_after = drive_result.state_after,
@@ -240,6 +240,12 @@ pub const Term = struct {
         self.mutex.lockFair();
         defer self.mutex.unlock();
         self.render.notePresentSubmitted(snapshot_seq, token);
+    }
+
+    pub fn noteSurfaceActivity(self: *Term) void {
+        self.mutex.lockFair();
+        defer self.mutex.unlock();
+        self.render.noteSurfaceActivity();
     }
 
     pub fn completePresent(self: *Term, token: u64) void {
@@ -270,7 +276,6 @@ pub const Term = struct {
         sync_pending_pixels_locked: *const fn (*anyopaque, *Term) bool,
         hover_decoration: *const fn (*anyopaque) ?vt_surface.HyperlinkHover,
         clear_hover_pending: *const fn (*anyopaque) void,
-        publish_cursor_info: *const fn (*anyopaque, vt_c.HowlVtRenderStateHandle, u64) anyerror!void,
     ) DriveResult {
         return switch (admission.state) {
             .idle => idleDrive(.idle, .surface_idle),
@@ -286,10 +291,6 @@ pub const Term = struct {
                 };
                 defer visible.deinit(self.allocator);
                 clear_hover_pending(owner);
-                publish_cursor_info(owner, visible.state, nowNs()) catch {
-                    self.render.noteRetainedFailure();
-                    break :blk idleDrive(self.render.retainedState(), .failed);
-                };
                 const prepare_result = self.render.prepare(visible.state);
                 break :blk switch (prepare_result) {
                     .idle => idleDrive(self.render.retainedState(), .idle_prepare),
@@ -406,6 +407,20 @@ fn initSurfaceLayout(surface_px: render_c.HowlRenderPixelSize, font_size_px: u16
         .reserved0 = 0,
         .primary_font_path = if (primary_font_path) |path| path.ptr else null,
         .fallback_font_paths = &fallback_paths,
+        .cursor_blink_interval_s = -1,
+        .cursor_blink_inactivity_s = -1,
+        .cursor_trail_delay_s = 0,
+        .cursor_trail_decay_fast_s = 0,
+        .cursor_trail_decay_slow_s = 0,
+        .cursor_trail_start_threshold = 0,
+        .reserved1 = 0,
+        .cursor_color = .{ .kind = 0, .value = 0 },
+        .cursor_text_color = .{ .kind = 0, .value = 0 },
+        .cursor_trail_color = .{ .kind = 0, .value = 0 },
+        .cursor_beam_thickness = 1.5,
+        .cursor_underline_thickness = 2.0,
+        .cursor_unfocused_shape = 0,
+        .reserved2 = [_]u8{0} ** 7,
     };
     var handle: render_c.HowlRenderTextHandle = null;
     if (render_c.howl_render_text_init(&handle, &config) != render_c.HOWL_RENDER_CALL_OK) return error.RenderInitFailed;

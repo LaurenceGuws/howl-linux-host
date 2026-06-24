@@ -1,15 +1,10 @@
-//! Timer/deadline scheduling owner.
-//!
-//! This owner calculates timers, deadlines, and event-loop wait values only. It does not choose
-//! presentation, mutate window/render/texture state, or admit texture presents; those decisions stay
-//! in the main/window event spine, and typed timer events prove this file cannot smuggle render
-//! policy through generic scheduling facts.
+//! Window timer/deadline scheduling owner.
 
 const std = @import("std");
 const assert = std.debug.assert;
 
 const FrameTimer = @import("frame_timer.zig").FrameTimer;
-const window = @import("window.zig");
+const sdl_window = @import("sdl_window.zig");
 
 pub const HostEvent = enum {
     surface_present_triggered,
@@ -18,16 +13,10 @@ pub const HostEvent = enum {
     window_focus_changed,
     redraw_requested,
     frame_ready,
-    cursor_blink,
-    cursor_blink_timeout,
-    cursor_trail,
 };
 
 pub const TimerTopic = enum {
     frame,
-    cursor_blink,
-    cursor_blink_timeout,
-    cursor_trail,
 };
 
 pub const max_host_events = 32;
@@ -124,12 +113,12 @@ pub const Scheduler = struct {
         return closest_deadline_ns;
     }
 
-    pub fn requestFrame(self: *Scheduler, app_window: *window.Window, now_ns: u64) !void {
+    pub fn requestFrame(self: *Scheduler, app_window: *sdl_window.Window, now_ns: u64) !void {
         assert(now_ns > 0);
         try self.requestFrameWithRefresh(app_window, now_ns, try app_window.currentRefreshIntervalNs());
     }
 
-    fn requestFrameWithRefresh(self: *Scheduler, app_window: *window.Window, now_ns: u64, refresh_interval_ns: u64) !void {
+    fn requestFrameWithRefresh(self: *Scheduler, app_window: *sdl_window.Window, now_ns: u64, refresh_interval_ns: u64) !void {
         assert(now_ns > 0);
         assert(refresh_interval_ns > 0);
         app_window.markFrameUsed();
@@ -157,9 +146,6 @@ pub fn waitMsFromDeadline(now_ns: u64, deadline_ns: ?u64) ?u32 {
 fn timerEvent(topic: TimerTopic) HostEvent {
     return switch (topic) {
         .frame => .frame_ready,
-        .cursor_blink => .cursor_blink,
-        .cursor_blink_timeout => .cursor_blink_timeout,
-        .cursor_trail => .cursor_trail,
     };
 }
 
@@ -168,7 +154,7 @@ fn minOptionalDeadline(current_deadline_ns: ?u64, next_deadline_ns: u64) ?u64 {
     return if (current_deadline_ns) |current| @min(current, next_deadline_ns) else next_deadline_ns;
 }
 
-fn testWindow(has_frame: bool) window.Window {
+fn testWindow(has_frame: bool) sdl_window.Window {
     return .{
         .handle = undefined,
         .current_title = undefined,
@@ -192,41 +178,17 @@ test "surface present trigger prevents indefinite wait without granting progress
     try std.testing.expectEqual(@as(?u32, null), wait.timeout_ms);
 }
 
-test "closest real timer topic wins when no host event is ready" {
+test "closest frame timer wins when no host event is ready" {
     var scheduler = Scheduler.init();
     scheduler.schedule(.frame, 40_000_000);
-    scheduler.schedule(.cursor_blink, 9_000_000);
-    scheduler.schedule(.cursor_trail, 11_000_000);
     var events = HostEventQueue.init();
 
     const deadline_ns = scheduler.update(&events, 1_000_000);
     const wait = chooseWait(false, &events, deadline_ns, 1_000_000);
 
-    try std.testing.expectEqual(@as(?u64, 9_000_000), deadline_ns);
+    try std.testing.expectEqual(@as(?u64, 40_000_000), deadline_ns);
     try std.testing.expect(wait.for_window);
-    try std.testing.expectEqual(@as(?u32, 8), wait.timeout_ms);
-}
-
-test "cursor blink and trail timers publish distinct typed events" {
-    var scheduler = Scheduler.init();
-    scheduler.schedule(.cursor_blink, 10_000_000);
-    scheduler.schedule(.cursor_blink_timeout, 11_000_000);
-    scheduler.schedule(.cursor_trail, 12_000_000);
-    var events = HostEventQueue.init();
-
-    const first_deadline_ns = scheduler.update(&events, 10_000_000);
-
-    try std.testing.expect(events.contains(.cursor_blink));
-    try std.testing.expect(!events.contains(.cursor_blink_timeout));
-    try std.testing.expect(!events.contains(.cursor_trail));
-    try std.testing.expectEqual(@as(?u64, 11_000_000), first_deadline_ns);
-
-    _ = events.drain();
-    const second_deadline_ns = scheduler.update(&events, 12_000_000);
-
-    try std.testing.expect(events.contains(.cursor_blink_timeout));
-    try std.testing.expect(events.contains(.cursor_trail));
-    try std.testing.expectEqual(@as(?u64, null), second_deadline_ns);
+    try std.testing.expectEqual(@as(?u32, 39), wait.timeout_ms);
 }
 
 test "request frame marks frame used and schedules frame topic" {
@@ -240,12 +202,12 @@ test "request frame marks frame used and schedules frame topic" {
     try std.testing.expect(scheduler.timers[@intFromEnum(TimerTopic.frame)].active);
 }
 
-test "frame timer publishes frame ready and clears timer" {
+test "frame timer publishes frame ready when deadline passes" {
     var scheduler = Scheduler.init();
-    scheduler.schedule(.frame, 17_000_000);
+    scheduler.schedule(.frame, 16_000_000);
     var events = HostEventQueue.init();
 
-    const deadline_ns = scheduler.update(&events, 17_000_000);
+    const deadline_ns = scheduler.update(&events, 16_000_000);
 
     try std.testing.expect(events.contains(.frame_ready));
     try std.testing.expectEqual(@as(?u64, null), deadline_ns);

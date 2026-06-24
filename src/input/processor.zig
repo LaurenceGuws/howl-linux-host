@@ -27,7 +27,6 @@ pub const TermInput = struct {
     surface: *anyopaque,
     term: *Term,
     surface_layout: *const render_retained.SurfaceLayout,
-    reset_cursor_blink_activity: *const fn (*anyopaque, u64) bool,
     write_bytes_to_pty: *const fn (*anyopaque, []const u8) bool,
     write_key_to_pty: *const fn (*anyopaque, HostInput.Keys.Event) bool,
     write_mouse_to_pty: *const fn (*anyopaque, HostInput.Mouse.Event) bool,
@@ -39,7 +38,7 @@ pub const TermInput = struct {
     process_link_mouse: *const fn (*anyopaque, HostInput.Mouse.Event) MouseHandlingOutcome,
 };
 
-pub fn drainTextInputFastPath(selected: *TermInput, input_events: *HostInput, input_published: *bool, host_visual_changed: *bool) void {
+pub fn drainTextInputFastPath(selected: *TermInput, input_events: *HostInput, input_published: *bool) void {
     var read_index: u16 = 0;
     var write_index: u16 = 0;
     const event_count = input_events.input_events.len;
@@ -55,7 +54,7 @@ pub fn drainTextInputFastPath(selected: *TermInput, input_events: *HostInput, in
         std.debug.assert(source_index < event_capacity);
         const event = input_events.input_events.buf[source_index];
         switch (event) {
-            .bytes, .key => processTextInputEvent(selected, event, input_published, host_visual_changed),
+            .bytes, .key => processTextInputEvent(selected, event, input_published),
             .mouse => {
                 const target_index = (input_events.input_events.head + write_index) % event_capacity;
                 std.debug.assert(target_index < event_capacity);
@@ -96,18 +95,16 @@ pub fn terminalOwnsMouse(selected: *const TermInput, mouse_event: HostInput.Mous
     });
 }
 
-pub fn processTextInputEvent(selected: *TermInput, event: HostInput.Event, input_published: *bool, host_visual_changed: *bool) void {
+pub fn processTextInputEvent(selected: *TermInput, event: HostInput.Event, input_published: *bool) void {
     switch (event) {
         .bytes => |bytes| {
             if (selected.write_bytes_to_pty(selected.surface, bytes.slice())) {
                 input_published.* = true;
-                host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, nowNs()) or host_visual_changed.*;
             }
         },
         .key => |key| {
             if (selected.write_key_to_pty(selected.surface, key)) {
                 input_published.* = true;
-                host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, nowNs()) or host_visual_changed.*;
             }
         },
         .mouse => {},
@@ -131,7 +128,6 @@ pub fn processPointerEvent(selected: *TermInput, event: HostInput.Event, origin_
             if (local_mouse.kind == .wheel) {
                 if (selected.write_mouse_to_pty(selected.surface, local_mouse)) {
                     input_published.* = true;
-                    host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, nowNs()) or host_visual_changed.*;
                 } else {
                     host_visual_changed.* = selected.scroll_viewport_by_wheel(selected.surface, local_mouse) or host_visual_changed.*;
                 }
@@ -153,7 +149,6 @@ pub fn processPointerEvent(selected: *TermInput, event: HostInput.Event, origin_
 
             if (selected.write_mouse_to_pty(selected.surface, local_mouse)) {
                 input_published.* = true;
-                host_visual_changed.* = selected.reset_cursor_blink_activity(selected.surface, nowNs()) or host_visual_changed.*;
             }
         },
     }
@@ -189,7 +184,6 @@ const TestTermInputState = struct {
             .surface = self,
             .term = &self.term,
             .surface_layout = &self.surface_layout,
-            .reset_cursor_blink_activity = resetCursorBlinkActivity,
             .write_bytes_to_pty = writeBytesToPty,
             .write_key_to_pty = writeKeyToPty,
             .write_mouse_to_pty = writeMouseToPty,
@@ -209,11 +203,6 @@ const TestTermInputState = struct {
     fn append(self: *TestTermInputState, value: u8) void {
         self.order[self.order_len] = value;
         self.order_len += 1;
-    }
-
-    fn resetCursorBlinkActivity(surface: *anyopaque, _: u64) bool {
-        state(surface).append('r');
-        return false;
     }
 
     fn writeBytesToPty(surface: *anyopaque, bytes: []const u8) bool {
@@ -285,7 +274,8 @@ test "text fast path compacts mixed input before pointer drain" {
     var selected = state.selected();
     var input_published = false;
     var host_visual_changed = false;
-    drainTextInputFastPath(&selected, &input, &input_published, &host_visual_changed);
+    _ = &host_visual_changed;
+    drainTextInputFastPath(&selected, &input, &input_published);
     try std.testing.expect(input_published);
     try std.testing.expect(!host_visual_changed);
     try std.testing.expectEqual(@as(u16, 1), input.input_events.len);

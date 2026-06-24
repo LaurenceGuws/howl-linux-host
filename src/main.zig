@@ -1,15 +1,17 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const Config = @import("config.zig");
-const Events = @import("events.zig");
 const Input = @import("input.zig").Input;
 const Render = @import("render.zig");
 const TabBarUnit = @import("tab_bar.zig");
 const Texture = @import("texture.zig");
 const WindowPolicy = @import("window.zig");
+const TermConfig = @import("config/term.zig");
 const window_icon = @import("window_icon.zig");
+const render_c = @import("howl_render_c");
 const sdl_c = @import("sdl_c");
-const window = Events.window;
+const scheduler = WindowPolicy.scheduler;
+const window = WindowPolicy.sdl_window;
 
 const TabBar = TabBarUnit.TabBar;
 const TextureFrame = Texture.frame;
@@ -59,6 +61,7 @@ noinline fn start(io: std.Io, options: Args) !void {
     defer resolved_fonts.deinit(std.heap.c_allocator);
     var tab_text_config: tab_bar_surface_layout.TextConfig = undefined;
     tab_bar_surface_layout.initTextConfig(&tab_text_config, @max(conf.term.font_size, 1), resolved_fonts.primary, resolved_fonts.fallbacks);
+    applyTermRenderConfig(&tab_text_config.config, &conf.term);
     defer {
         if (texture_frame_created) TextureFrame.deinit(TextureFrame.C, texture_frame);
         std.heap.c_allocator.destroy(texture_frame);
@@ -81,7 +84,6 @@ noinline fn start(io: std.Io, options: Args) !void {
     }
     input.* = try initInput();
     input.setBindings(Input.Bindings.Configured.init(conf));
-    input.setRedrawWindow(app_window);
 
     applyChildEnvironmentPolicy();
 
@@ -93,7 +95,7 @@ noinline fn start(io: std.Io, options: Args) !void {
 
 fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture_frame: *TextureFrame.State, tab_bar: *TabBar, layout: *WindowPolicy.Layout, input: *Input) !void {
     while (true) {
-        var events = Events.scheduler.HostEventQueue.init();
+        var events = scheduler.HostEventQueue.init();
         const had_layout_trigger = layout.consumeSurfaceUpdateTriggers();
         if (had_layout_trigger) events.append(.surface_present_triggered);
         if (app_window.hasRequestedRedraw()) events.append(.redraw_requested);
@@ -184,6 +186,31 @@ fn initInput() !Input {
     var input: Input = undefined;
     input.init();
     return input;
+}
+
+fn applyTermRenderConfig(config: *render_c.HowlRenderTextConfig, term: *const Config.Terminal) void {
+    config.cursor_blink_interval_s = term.cursor_blink_interval;
+    config.cursor_blink_inactivity_s = 3.0;
+    config.cursor_trail_delay_s = @as(f64, @floatFromInt(term.cursor_trail)) / 1000.0;
+    config.cursor_trail_decay_fast_s = term.cursor_trail_decay_fast;
+    config.cursor_trail_decay_slow_s = term.cursor_trail_decay_slow;
+    config.cursor_trail_start_threshold = term.cursor_trail_start_threshold;
+    config.cursor_color = cursorColor(term.cursor);
+    config.cursor_text_color = cursorColor(term.cursor_text_color);
+    config.cursor_trail_color = cursorColor(term.cursor_trail_color);
+    config.cursor_beam_thickness = term.cursor_beam_thickness;
+    config.cursor_underline_thickness = term.cursor_underline_thickness;
+    config.cursor_unfocused_shape = switch (term.cursor_shape_unfocused) {
+        .unchanged => 0,
+        .block => 1,
+        .underline => 2,
+        .beam => 3,
+        .hollow => 4,
+    };
+}
+
+fn cursorColor(value: TermConfig.CursorColor) render_c.HowlVtColor {
+    return .{ .kind = @intFromEnum(value.kind), .value = value.value };
 }
 
 fn applyChildEnvironmentPolicy() void {

@@ -4,8 +4,6 @@ const TabIndex = @import("tab_bar.zig").TabBar.TabIndex;
 const HostInput = @import("input.zig").Input;
 const terminal_scrollbar = @import("scroll_bar.zig");
 const Config = @import("config.zig");
-const HostScheduler = @import("events/scheduler.zig");
-const Window = @import("events/window.zig").Window;
 const TabBar = @import("tab_bar.zig").TabBar;
 const TextureFrame = @import("texture/frame.zig");
 const Term = @import("term.zig").Term;
@@ -15,10 +13,20 @@ const render_c = @import("howl_render_c");
 const render_links = @import("render/links.zig");
 const render_retained = @import("render/surface_retained.zig");
 const surface_layout = @import("render/surface_layout.zig");
-const surface_present = @import("events/surface_present.zig");
 const term_input = @import("vt/input.zig");
 const vt_surface = @import("vt/surface.zig");
-const vt_c = @import("howl_vt_c");
+
+pub const frame_contract = @import("window/frame.zig");
+pub const geometry = @import("window/geometry.zig");
+pub const scheduler = @import("window/scheduler.zig");
+pub const sdl_window = @import("window/sdl_window.zig");
+pub const status = @import("window/status.zig");
+pub const surface_present = @import("window/surface_present.zig");
+pub const turn_contract = @import("window/turn.zig");
+pub const update_contract = @import("window/update.zig");
+
+const HostScheduler = scheduler;
+const Window = sdl_window.Window;
 
 pub const interior = @import("layout/window.zig");
 pub const tabs = @import("layout/tabs.zig");
@@ -30,106 +38,25 @@ pub const z_index = @import("layout/z_index.zig");
 pub const scrollbar = @import("layout/scrollbar.zig");
 pub const scroll_chip = @import("layout/scroll_chip.zig");
 
-pub const Rect = struct {
-    x: c_int,
-    y: c_int,
-    width: c_int,
-    height: c_int,
-};
-
-pub const Size = struct {
-    width: c_int,
-    height: c_int,
-};
-
-pub const FramePane = struct {
-    id: pane.PaneId,
-    term_texture_id: u32,
-    term_texture_rect: Rect,
-    scrollbar: scrollbar.Placement,
-    scroll_chip: scroll_chip.Placement,
-};
-
-pub const Frame = struct {
-    panes: []const FramePane,
-    tab_bar_height_px: c_int,
-    tab_count: TabIndex,
-    active_tab: TabIndex,
-    tab_bar_revision: u64,
-    tab_bar_font_size_px: u16,
-    tab_labels: []const []const u8,
-};
-
-pub const PaneFrameFacts = struct {
-    id: pane.PaneId,
-    term_texture_size: Size,
-    scroll_view: terminal_scrollbar.View,
-    logical_width: c_int,
-    logical_height: c_int,
-    window_focused: bool,
-    scrollbar_state: *terminal_scrollbar.State,
-};
-
-pub const PaneTexture = struct {
-    id: pane.PaneId,
-    id_value: u32,
-};
-
-pub const UpdateBatch = struct {
-    active_tab: TabIndex,
-    commands: []const UpdateCommand,
-};
-
-pub const UpdateCommand = union(enum) {
-    pane_surface: PaneSurfaceUpdate,
-    tab_bar_cell: TabBarCellUpdate,
-};
-
-pub const PaneSurfaceUpdate = struct {
-    tab_index: TabIndex,
-    pane_id: pane.PaneId,
-    surface: SurfaceUpdate,
-};
-
-pub const SurfaceUpdate = union(enum) {
-    full,
-    partial: Rect,
-};
-
-pub const TabBarCellUpdate = struct {
-    tab_index: TabIndex,
-};
-
-pub const ActiveTabProblem = enum { exited, runtime_failed };
-pub const ActiveTabExitAction = enum { close_tab, quit };
-pub const CursorEvent = enum { blink, blink_timeout, trail };
-pub const PresentReason = enum { none, host_redraw, terminal_frame };
-
-pub const PaneTurn = struct {
-    id: pane.PaneId,
-    turn: Term.TurnResult,
-};
-
-pub const PaneSurfaceReadiness = struct {
-    id: pane.PaneId,
-    ready: bool,
-};
-
-pub const PaneUpload = struct {
-    id: pane.PaneId,
-    upload: Term.UploadedSurface,
-};
-
-pub const TurnResult = struct {
-    panes: [tab.max_panes]PaneTurn,
-    pane_count: usize,
-    step: Term.TurnStep,
-};
-
-pub const PresentTurn = struct {
-    turn: TurnResult,
-    frame: Frame,
-};
+pub const Rect = geometry.Rect;
+pub const Size = geometry.Size;
+pub const FramePane = frame_contract.FramePane;
+pub const Frame = frame_contract.Frame;
+pub const PaneFrameFacts = frame_contract.PaneFrameFacts;
+pub const PaneTexture = frame_contract.PaneTexture;
+pub const UpdateBatch = update_contract.UpdateBatch;
+pub const UpdateCommand = update_contract.UpdateCommand;
+pub const PaneSurfaceUpdate = update_contract.PaneSurfaceUpdate;
+pub const SurfaceUpdate = update_contract.SurfaceUpdate;
+pub const TabBarCellUpdate = update_contract.TabBarCellUpdate;
+pub const ActiveTabProblem = status.ActiveTabProblem;
+pub const ActiveTabExitAction = status.ActiveTabExitAction;
+pub const PresentReason = turn_contract.PresentReason;
+pub const PaneTurn = turn_contract.PaneTurn;
+pub const PaneSurfaceReadiness = turn_contract.PaneSurfaceReadiness;
+pub const PaneUpload = turn_contract.PaneUpload;
+pub const TurnResult = turn_contract.TurnResult;
+pub const PresentTurn = turn_contract.PresentTurn;
 
 pub const Layout = struct {
     tabs: tabs.Tabs = .{},
@@ -260,7 +187,7 @@ pub const Layout = struct {
         const terminal = pane.terminal(active_pane.placement, self.paneTextureSize(active_pane));
         var input_published = false;
         var selected = self.termInput(active_pane);
-        input_processor.drainTextInputFastPath(&selected, input, &input_published, host_visual_changed);
+        input_processor.drainTextInputFastPath(&selected, input, &input_published);
         input_processor.drainPointerInput(&selected, input, 0, @intCast(window_interior.tab_bar.logical_height), terminal.logical_size.width, terminal.logical_size.height, &input_published, host_visual_changed);
         terminal_scrollbar.handlePages(&active_pane.term, &active_pane.scrollbar, input);
     }
@@ -427,7 +354,6 @@ pub const Layout = struct {
             .surface = pane_value,
             .term = &pane_value.term,
             .surface_layout = &pane_value.term.render.surface_layout,
-            .reset_cursor_blink_activity = resetCursorBlinkActivity,
             .write_bytes_to_pty = writeBytesToPty,
             .write_key_to_pty = writeKeyToPty,
             .write_mouse_to_pty = writeMouseToPty,
@@ -445,7 +371,7 @@ pub const Layout = struct {
         var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle };
         for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| {
             std.debug.assert(readiness[index].id == pane_value.id);
-            const turn = pane_value.term.renderTurn(readiness[index].ready, pane_value, syncPendingPixelsLocked, hoverDecoration, clearHoverPending, publishCursorInfo);
+            const turn = pane_value.term.renderTurn(readiness[index].ready, pane_value, syncPendingPixelsLocked, hoverDecoration, clearHoverPending);
             result.panes[index] = .{ .id = pane_value.id, .turn = turn };
             result.step = aggregateTurnStep(result.step, turn.step);
         }
@@ -546,25 +472,28 @@ fn paneOwner(surface: *anyopaque) *pane.Pane {
     return @ptrCast(@alignCast(surface));
 }
 
-fn resetCursorBlinkActivity(surface: *anyopaque, now_ns: u64) bool {
-    return paneOwner(surface).cursor_blink.resetActivity(now_ns);
-}
-
 fn writeBytesToPty(surface: *anyopaque, bytes: []const u8) bool {
-    pty_session.publishInputBytes(&paneOwner(surface).term, bytes) catch return false;
+    const pane_value = paneOwner(surface);
+    pty_session.publishInputBytes(&pane_value.term, bytes) catch return false;
+    pane_value.term.noteSurfaceActivity();
     return true;
 }
 
 fn writeKeyToPty(surface: *anyopaque, key: HostInput.Keys.Event) bool {
     const key_code = term_input.key(key.key) orelse return false;
-    term_input.publishKey(&paneOwner(surface).term, key_code, term_input.mods(key.mods)) catch return false;
+    const pane_value = paneOwner(surface);
+    term_input.publishKey(&pane_value.term, key_code, term_input.mods(key.mods)) catch return false;
+    pane_value.term.noteSurfaceActivity();
     return true;
 }
 
 fn writeMouseToPty(surface: *anyopaque, mouse: HostInput.Mouse.Event) bool {
     const cell = surfacePointCell(surface, mouse);
     if (!cell.inside) return false;
-    return term_input.publishMouse(&paneOwner(surface).term, .{ .kind = term_input.mouseKind(mouse.kind), .button = term_input.mouseButton(mouse.button), .row = @intCast(cell.row), .col = cell.col, .pixel_x = if (mouse.pixel_x < 0) null else @intCast(mouse.pixel_x), .pixel_y = if (mouse.pixel_y < 0) null else @intCast(mouse.pixel_y), .mods = term_input.mods(mouse.mods), .buttons_down = term_input.buttons(mouse.buttons_down) }) catch false;
+    const pane_value = paneOwner(surface);
+    const published = term_input.publishMouse(&pane_value.term, .{ .kind = term_input.mouseKind(mouse.kind), .button = term_input.mouseButton(mouse.button), .row = @intCast(cell.row), .col = cell.col, .pixel_x = if (mouse.pixel_x < 0) null else @intCast(mouse.pixel_x), .pixel_y = if (mouse.pixel_y < 0) null else @intCast(mouse.pixel_y), .mods = term_input.mods(mouse.mods), .buttons_down = term_input.buttons(mouse.buttons_down) }) catch false;
+    if (published) pane_value.term.noteSurfaceActivity();
+    return published;
 }
 
 fn surfacePointCell(_: *anyopaque, mouse: HostInput.Mouse.Event) input_processor.SurfacePointCell {
@@ -612,14 +541,6 @@ fn hoverDecoration(surface: *anyopaque) ?vt_surface.HyperlinkHover {
 
 fn clearHoverPending(surface: *anyopaque) void {
     paneOwner(surface).links.hover_publish_pending = false;
-}
-
-fn publishCursorInfo(surface: *anyopaque, state: vt_c.HowlVtRenderStateHandle, now_ns: u64) !void {
-    _ = now_ns;
-    const pane_value = paneOwner(surface);
-    const collected = try @import("cursor/source.zig").collectCursorInfo(state);
-    pane_value.cursor_render_info = collected.info;
-    pane_value.cursor_text_blinking = collected.text_blinking;
 }
 
 fn aggregateTurnStep(current: Term.TurnStep, next: Term.TurnStep) Term.TurnStep {

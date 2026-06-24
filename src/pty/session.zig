@@ -220,6 +220,7 @@ pub fn publishInputBytes(term: *Term, bytes: []const u8) !void {
 
 pub fn publishInputBytesLocked(term: *Term, encoded: []const u8) !bool {
     if (encoded.len == 0) return false;
+    std.debug.print("pty input publish bytes={}\n", .{encoded.len});
     try ptyPublishInput(term.session, encoded);
     return true;
 }

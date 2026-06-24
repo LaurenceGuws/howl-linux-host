@@ -71,28 +71,6 @@ pub const PreparedUpload = struct {
     }
 };
 
-pub const max_cursor_trail_rects = 16;
-
-pub const HostCursorTrailRect = c.HowlRenderCursorTrailRect;
-
-pub const HostCursorCadence = extern struct {
-    focused: u8,
-    cursor_opacity: u8,
-    text_blink_opacity: u8,
-    effective_shape: u8,
-    cursor_color: vt_c.HowlVtColor,
-    cursor_text_color: vt_c.HowlVtColor,
-    cursor_trail_color: vt_c.HowlVtColor,
-    cursor_beam_thickness: f32,
-    cursor_underline_thickness: f32,
-    cursor_trail_decay_fast_s: f32,
-    cursor_trail_decay_slow_s: f32,
-    cursor_trail_count: u16,
-    reserved0: u16 = 0,
-    cursor_trail_rects: [max_cursor_trail_rects]HostCursorTrailRect,
-    now_ns: u64,
-};
-
 pub const TermSurface = c.HowlRenderTermSurface;
 
 pub const SubmitExecution = struct {
@@ -117,8 +95,7 @@ pub const State = struct {
     snapshot_seq: u64 = 0,
     present_in_flight: ?PresentInFlight = null,
     retained_state: RetainedState = .idle,
-    cursor_animation_pending: bool = false,
-    cursor_cadence: HostCursorCadence = defaultCursorCadence(),
+    surface_activity_seq: u64 = 0,
 
     pub fn init(surface_layout: SurfaceLayout) State {
         return .{ .surface_layout = surface_layout };
@@ -167,7 +144,7 @@ pub const State = struct {
 
     pub fn admitRenderTurn(self: *State, bootstrap_surface: bool) RenderTurnAdmission {
         if (self.presentPending()) self.retained_state = .present_in_flight else if (bootstrap_surface and self.retained_state == .idle) self.retained_state = .prepare_needed;
-        return .{ .state = self.retained_state, .animation_pending = self.cursor_animation_pending };
+        return .{ .state = self.retained_state };
     }
 
     pub fn retainedState(self: *const State) RetainedState {
@@ -217,12 +194,9 @@ pub const State = struct {
         self.layout_epoch = layout_epoch;
     }
 
-    pub fn setHostCursorCadence(self: *State, cadence: *const HostCursorCadence) bool {
-        const changed = !std.mem.eql(u8, std.mem.asBytes(&self.cursor_cadence), std.mem.asBytes(cadence));
-        self.cursor_cadence = cadence.*;
-        self.cursor_animation_pending = cadence.cursor_trail_count != 0 or cadence.cursor_opacity != 255 or cadence.text_blink_opacity != 255;
-        if (changed) self.notePrepareNeeded();
-        return true;
+    pub fn noteSurfaceActivity(self: *State) void {
+        self.surface_activity_seq +%= 1;
+        if (self.surface_activity_seq == 0) self.surface_activity_seq = 1;
     }
 
     pub fn releasePreparedSurface(self: *State) void {
@@ -311,18 +285,10 @@ pub const State = struct {
             .render_state = @ptrCast(state),
             .render_px = self.surface_layout.render_px,
             .layout_epoch = self.layout_epoch,
-            .focused = self.cursor_cadence.focused,
-            .cursor_opacity = self.cursor_cadence.cursor_opacity,
-            .text_blink_opacity = self.cursor_cadence.text_blink_opacity,
-            .effective_shape = self.cursor_cadence.effective_shape,
-            .cursor_trail_count = @intCast(@min(self.cursor_cadence.cursor_trail_count, max_cursor_trail_rects)),
-            .reserved0 = 0,
-            .cursor_color = @bitCast(self.cursor_cadence.cursor_color),
-            .cursor_text_color = @bitCast(self.cursor_cadence.cursor_text_color),
-            .cursor_trail_color = @bitCast(self.cursor_cadence.cursor_trail_color),
-            .cursor_beam_thickness = self.cursor_cadence.cursor_beam_thickness,
-            .cursor_underline_thickness = self.cursor_cadence.cursor_underline_thickness,
-            .cursor_trail_rects = self.cursor_cadence.cursor_trail_rects,
+            .now_ns = 0,
+            .activity_seq = self.surface_activity_seq,
+            .focused = 1,
+            .reserved0 = [_]u8{0} ** 7,
         };
         if (c.howl_render_text_prepare(handle, &prepare_input, &upload) != c.HOWL_RENDER_CALL_OK) return self.failPrepare();
         const surface = upload.term_surface_prepared orelse return self.failPrepare();
@@ -371,14 +337,4 @@ fn surfaceLayoutChanged(current: SurfaceLayout, next: SurfaceLayout) bool {
         current.rows != next.rows or
         current.cell_px.width != next.cell_px.width or
         current.cell_px.height != next.cell_px.height;
-}
-
-fn defaultCursorCadence() HostCursorCadence {
-    var cadence = std.mem.zeroes(HostCursorCadence);
-    cadence.focused = 1;
-    cadence.cursor_opacity = 255;
-    cadence.text_blink_opacity = 255;
-    cadence.cursor_beam_thickness = 1.5;
-    cadence.cursor_underline_thickness = 2.0;
-    return cadence;
 }

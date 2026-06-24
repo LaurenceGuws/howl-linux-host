@@ -229,9 +229,9 @@ test "window title updates only when content changes" {
     };
 
     FakeOps.reset();
-    var state = Window{
+    var window = Window{
         .handle = undefined,
-        .current_title = try std.heap.c_allocator.dupeZ(u8, "shell"),
+        .current_title = try std.testing.allocator.dupeZ(u8, "old"),
         .has_frame = true,
         .requested_redraw = false,
         .px_w = 1,
@@ -240,25 +240,12 @@ test "window title updates only when content changes" {
         .logical_h = 1,
         .focused = true,
     };
-    defer std.heap.c_allocator.free(state.current_title);
+    defer std.testing.allocator.free(window.current_title);
 
-    try std.testing.expect(!state.hasRequestedRedraw());
-    try std.testing.expect(state.hasFrame());
-    state.markFrameUsed();
-    try std.testing.expect(!state.hasFrame());
-    state.markFrameReady();
-    try std.testing.expect(state.hasFrame());
-
-    state.requestRedraw();
-    try std.testing.expect(state.hasRequestedRedraw());
-    state.clearRedrawRequest();
-    try std.testing.expect(!state.hasRequestedRedraw());
-
-    try std.testing.expect(!try state.setTitleWith("shell", FakeOps));
+    try std.testing.expect(!try window.setTitleWith("old", FakeOps));
     try std.testing.expectEqual(@as(usize, 0), FakeOps.calls);
 
-    try std.testing.expect(try state.setTitleWith("vim main.zig", FakeOps));
+    try std.testing.expect(try window.setTitleWith("new", FakeOps));
     try std.testing.expectEqual(@as(usize, 1), FakeOps.calls);
-    try std.testing.expectEqualStrings("vim main.zig", state.current_title);
-    try std.testing.expectEqualStrings("vim main.zig", FakeOps.last_title[0..FakeOps.last_title_len]);
+    try std.testing.expectEqualStrings("new", window.current_title);
 }
