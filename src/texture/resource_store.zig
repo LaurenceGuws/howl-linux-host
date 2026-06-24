@@ -26,11 +26,11 @@ pub const GlResourceStore = struct {
         for (&self.slots) |*slot| deleteSlot(slot);
     }
 
-    pub fn syncRenderResources(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+    pub fn syncRenderResources(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfaceDrain) void {
         self.syncRenderResourcesLocked(surface);
     }
 
-    pub fn syncTabBarResources(self: *GlResourceStore, surface: *const render_c.HowlRenderTabBarSurfacePrepared) void {
+    pub fn syncTabBarResources(self: *GlResourceStore, surface: *const render_c.HowlRenderTabBarSurfaceDrain) void {
         self.validateTabBarSurface(surface);
         const creates = resourceCreateSlice(surface.creates.ptr, surface.creates.count);
         for (creates) |create| self.createTexture(create);
@@ -44,7 +44,7 @@ pub const GlResourceStore = struct {
         glErrorOk("resource retire");
     }
 
-    fn syncRenderResourcesLocked(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+    fn syncRenderResourcesLocked(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfaceDrain) void {
         self.validateSurface(surface);
         const creates = resourceCreateSlice(surface.creates.ptr, surface.creates.count);
         for (creates) |create| self.createTexture(create);
@@ -64,11 +64,11 @@ pub const GlResourceStore = struct {
         std.debug.panic("GL backend invariant failed: {s}: error={}", .{ message, error_code });
     }
 
-    fn validateSurface(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+    fn validateSurface(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfaceDrain) void {
         _ = self.validateSurfaceTransition(surface);
     }
 
-    fn validateSurfaceTransition(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) GlResourceStore {
+    fn validateSurfaceTransition(self: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfaceDrain) GlResourceStore {
         var next = self.*;
         const creates = resourceCreateSlice(surface.creates.ptr, surface.creates.count);
         for (creates) |create| next.noteCreate(create);
@@ -81,8 +81,8 @@ pub const GlResourceStore = struct {
         return next;
     }
 
-    fn validateTabBarSurface(self: *GlResourceStore, surface: *const render_c.HowlRenderTabBarSurfacePrepared) void {
-        if (surface.prepared_version != render_c.HOWL_RENDER_TAB_BAR_SURFACE_PREPARED_VERSION) std.debug.panic("trusted tab_bar_surface has invalid prepared version", .{});
+    fn validateTabBarSurface(self: *GlResourceStore, surface: *const render_c.HowlRenderTabBarSurfaceDrain) void {
+        if (surface.drain_version != render_c.HOWL_RENDER_TAB_BAR_SURFACE_DRAIN_VERSION) std.debug.panic("trusted tab_bar_surface has invalid ready version", .{});
         var next = self.*;
         const creates = resourceCreateSlice(surface.creates.ptr, surface.creates.count);
         for (creates) |create| next.noteCreate(create);
@@ -389,7 +389,7 @@ pub const testing = struct {
         textures.commitUploadMetadata(uploads);
     }
 
-    pub fn validateSurface(textures: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+    pub fn validateSurface(textures: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfaceDrain) void {
         textures.validateSurface(surface);
     }
 };

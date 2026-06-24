@@ -85,7 +85,7 @@ fn progressRuntimeLocked(term: *Term, now_ns: u64) RuntimeProgress {
     }
     const progress = vt_retained.progressRuntimeLocked(term, now_ns) catch return .{ .state_changed = false, .pending_now = false, .deadline_ns = 0 };
     drainTerminalReplyLocked(term);
-    if (progress.state_changed) term.render.notePrepareNeeded();
+    if (progress.state_changed) term.render.noteDrainNeeded();
     return .{
         .state_changed = progress.state_changed,
         .pending_now = progress.obligation.pending_now,
@@ -259,7 +259,7 @@ fn feedTermDataLocked(term: *Term, bytes: []const u8, chunk_len: u32) FeedProgre
     const title = if (result.title_changed != 0) vt_title.copyFromVt(&term.vt_state.title, term.vt) catch null else null;
     drainTerminalReplyLocked(term);
     vt_retained.finishFeed(term, result.state_changed != 0, title);
-    if (result.state_changed != 0) term.render.notePrepareNeeded();
+    if (result.state_changed != 0) term.render.noteDrainNeeded();
     return .{ .ok = true, .title_changed = title != null };
 }
 

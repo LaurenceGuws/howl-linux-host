@@ -74,7 +74,7 @@ pub const C = struct {
 
 pub const State = GenericState(C);
 
-pub const PresentToken = u64;
+pub const PresentationToken = u64;
 
 pub fn GenericState(comptime c: type) type {
     return struct {
@@ -92,10 +92,10 @@ pub fn GenericState(comptime c: type) type {
         tab_text_handle: render_c.HowlRenderTextHandle,
         resource_store: resource_store.GlResourceStore,
         tab_surface: tab_bar_surface.Surface,
-        next_present_token: PresentToken,
+        next_presentation_token: PresentationToken,
 
-        pub fn submitPresentSync(self: *@This(), frame: Layout.Frame) PresentToken {
-            return submitFrameSync(C, self, frame);
+        pub fn drainPresentationSync(self: *@This(), frame: Layout.Frame) PresentationToken {
+            return drainFrameSync(C, self, frame);
         }
 
         pub fn termPresenter(self: *@This(), id: Layout.pane.PaneId) *texture_term.Presenter {
@@ -114,10 +114,10 @@ pub fn GenericState(comptime c: type) type {
             return self.termTextureId(id) != 0;
         }
 
-        pub fn uploadTermSurface(self: *@This(), id: Layout.pane.PaneId, surface: *const render_c.HowlRenderTermSurfacePrepared) TermUpload {
+        pub fn drainTermSurface(self: *@This(), id: Layout.pane.PaneId, surface: *const render_c.HowlRenderTermSurfaceDrain) TermUpload {
             const presenter = self.termPresenter(id);
-            const ok = texture_term.uploadRenderSurface(&self.resource_store, &presenter.term_surface, surface);
-            return .{ .term_surface = presenter.submittedTermSurface(), .ok = ok };
+            const ok = texture_term.drainRenderSurface(&self.resource_store, &presenter.term_surface, surface);
+            return .{ .term_surface = presenter.presentationTermSurface(), .ok = ok };
         }
 
         pub fn textHandle(self: *const @This()) render_c.HowlRenderTextHandle {
@@ -148,7 +148,7 @@ pub fn init(comptime c: type, state: *GenericState(c), handle: *c.SDL_Window, ta
         .tab_text_handle = null,
         .resource_store = .{},
         .tab_surface = .{},
-        .next_present_token = 1,
+        .next_presentation_token = 1,
     };
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MAJOR_VERSION, 2)) return error.GlAttrFailed;
     if (!c.SDL_GL_SetAttribute(c.SDL_GL_CONTEXT_MINOR_VERSION, 1)) return error.GlAttrFailed;
@@ -176,12 +176,12 @@ pub fn deinit(comptime c: type, state: *GenericState(c)) void {
     state.window = null;
 }
 
-pub fn submitFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.Frame) PresentToken {
+pub fn drainFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.Frame) PresentationToken {
     std.debug.assert(frame.panes.len > 0);
-    const token = state.next_present_token;
+    const token = state.next_presentation_token;
     std.debug.assert(token != 0);
-    state.next_present_token +%= 1;
-    if (state.next_present_token == 0) state.next_present_token = 1;
+    state.next_presentation_token +%= 1;
+    if (state.next_presentation_token == 0) state.next_presentation_token = 1;
 
     const handle = state.window orelse unreachable;
     var fb_w: c_int = 0;
@@ -208,7 +208,7 @@ pub fn submitFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.
     for (frame.panes) |pane| texture_scroll_bar.drawChip(c, @max(fb_w, 1), @max(fb_h, 1), pane.scroll_chip);
     const damage = egl_swap.Damage.fullFrame();
     _ = egl_swap.swapDamaged(c, handle, damage.rects[0..damage.count], @max(fb_w, 1), @max(fb_h, 1), damage.full, false);
-    std.debug.print("pub owner=texture surface=frame event=present_completed data=token:{}\n", .{token});
+    std.debug.print("pub owner=texture surface=frame event=presentation_completed data=token:{}\n", .{token});
     return token;
 }
 
@@ -236,7 +236,7 @@ fn updateTabCacheIfNeeded(comptime c: type, state: *GenericState(c), fb_w: c_int
     } else {
         c.glCopyTexSubImage2D(c.GL_TEXTURE_2D, 0, 0, 0, 0, fb_h - bar_h, fb_w, bar_h);
     }
-    uploadTabTextSurface(c, state, fb_w, bar_h, frame);
+    drainTabTextSurface(c, state, fb_w, bar_h, frame);
     state.tab_cache_valid = true;
     state.tab_cache_w = fb_w;
     state.tab_cache_h = bar_h;
@@ -249,12 +249,12 @@ fn initTabText(comptime c: type, state: *GenericState(c), config: *const render_
     state.tab_text_handle = handle;
 }
 
-fn uploadTabTextSurface(comptime c: type, state: *GenericState(c), fb_w: c_int, bar_h: c_int, frame: Layout.Frame) void {
+fn drainTabTextSurface(comptime c: type, state: *GenericState(c), fb_w: c_int, bar_h: c_int, frame: Layout.Frame) void {
     const handle = state.tab_text_handle orelse return;
     const tab_layout = tab_bar_surface_layout.layout(frame.tab_bar_font_size_px, fb_w, bar_h);
     texture_tab_bar.writeCells(&state.tab_surface, frame, tab_layout.visible_cells);
-    var upload = std.mem.zeroes(render_c.HowlRenderTabBarSurfacePreparedUpload);
-    const prepare = render_c.HowlRenderTabBarSurfacePrepare{
+    var output = std.mem.zeroes(render_c.HowlRenderTabBarSurfaceDrainOutput);
+    const input = render_c.HowlRenderTabBarSurfaceDrainInput{
         .render_px = .{ .width = @intCast(@max(fb_w, 1)), .height = @intCast(@max(bar_h, 1)) },
         .grid_px = .{ .width = tab_layout.visible_cells * tab_layout.cell_px.width, .height = tab_layout.cell_px.height },
         .cell_px = tab_layout.cell_px,
@@ -262,13 +262,13 @@ fn uploadTabTextSurface(comptime c: type, state: *GenericState(c), fb_w: c_int, 
         .layout_epoch = frame.tab_bar_revision,
         .cells = state.tab_surface.span(),
     };
-    const status = render_c.howl_render_tab_bar_surface_prepare(handle, &prepare, &upload);
-    if (status != render_c.HOWL_RENDER_CALL_OK) std.debug.panic("trusted tab_bar_surface prepare failed: status={}", .{status});
-    const prepared_tab_bar_surface = upload.tab_bar_surface_prepared orelse std.debug.panic("trusted tab_bar_surface prepare returned no prepared surface", .{});
-    texture_tab_bar.uploadRenderSurface(
+    const status = render_c.howl_render_tab_bar_surface_drain(handle, &input, &output);
+    if (status != render_c.HOWL_RENDER_CALL_OK) std.debug.panic("trusted tab_bar_surface drain failed: status={}", .{status});
+    const ready_tab_bar_surface = output.tab_bar_surface orelse std.debug.panic("trusted tab_bar_surface drain returned no surface", .{});
+    texture_tab_bar.drainRenderSurface(
         &state.resource_store,
-        .{ .tab_bar_surface_id = state.tab_texture_id, .width = prepare.render_px.width, .height = prepare.render_px.height },
-        prepared_tab_bar_surface,
+        .{ .tab_bar_surface_id = state.tab_texture_id, .width = input.render_px.width, .height = input.render_px.height },
+        ready_tab_bar_surface,
     );
 }
 
@@ -414,7 +414,7 @@ fn testState() GenericState(FakeC) {
         .tab_text_handle = null,
         .resource_store = .{},
         .tab_surface = .{},
-        .next_present_token = 1,
+        .next_presentation_token = 1,
     };
 }
 
@@ -438,20 +438,20 @@ const test_frame_panes = [_]Layout.FramePane{.{
     .scroll_chip = Layout.scroll_chip.hidden(Layout.scrollbar.hidden(.{ .x = 0, .y = 0, .width = 80, .height = 25 })),
 }};
 
-test "submit present returns monotonic nonzero tokens" {
+test "drain presentation returns monotonic nonzero tokens" {
     var state = testState();
-    const first = submitFrameSync(FakeC, &state, testFrame());
+    const first = drainFrameSync(FakeC, &state, testFrame());
     try std.testing.expect(first != 0);
 
-    const second = submitFrameSync(FakeC, &state, testFrame());
+    const second = drainFrameSync(FakeC, &state, testFrame());
     try std.testing.expect(second != 0);
     try std.testing.expect(second > first);
 }
 
-test "submit present has no deferred in-flight state" {
+test "drain presentation has no deferred in-flight state" {
     var state = testState();
-    _ = submitFrameSync(FakeC, &state, testFrame());
-    _ = submitFrameSync(FakeC, &state, testFrame());
+    _ = drainFrameSync(FakeC, &state, testFrame());
+    _ = drainFrameSync(FakeC, &state, testFrame());
 }
 
 test "tab cache refreshes only on revision change" {
@@ -465,15 +465,15 @@ test "tab cache refreshes only on revision change" {
     frame.tab_count = 1;
     frame.tab_labels = &.{"shell"};
 
-    const first = submitFrameSync(FakeC, &state, frame);
+    const first = drainFrameSync(FakeC, &state, frame);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
 
-    const second = submitFrameSync(FakeC, &state, frame);
+    const second = drainFrameSync(FakeC, &state, frame);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
     try std.testing.expect(second > first);
 
     frame.tab_bar_revision = 2;
-    const third = submitFrameSync(FakeC, &state, frame);
+    const third = drainFrameSync(FakeC, &state, frame);
     try std.testing.expectEqual(@as(u32, 2), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
     try std.testing.expect(third > second);
     try std.testing.expectEqual(@as(u32, 3), FakeC.egl_swap_calls);
@@ -489,13 +489,13 @@ test "tab cache height follows explicit frame tab bar height" {
     frame.tab_count = 1;
     frame.tab_labels = &.{"shell"};
 
-    _ = submitFrameSync(FakeC, &state, frame);
+    _ = drainFrameSync(FakeC, &state, frame);
 
     try std.testing.expectEqual(@as(c_int, 12), state.tab_cache_h);
     try std.testing.expectEqual(@as(u32, 1), FakeC.copy_tex_image_calls + FakeC.copy_tex_subimage_calls);
 }
 
-test "submit present draws every frame pane and every pane scroll layer" {
+test "drain presentation draws every frame pane and every pane scroll layer" {
     FakeC.quad_begin_calls = 0;
     FakeC.texture_coord_calls = 0;
 
@@ -521,16 +521,16 @@ test "submit present draws every frame pane and every pane scroll layer" {
     frame.panes = panes[0..];
     var state = testState();
 
-    _ = submitFrameSync(FakeC, &state, frame);
+    _ = drainFrameSync(FakeC, &state, frame);
 
     try std.testing.expectEqual(@as(u32, 8), FakeC.texture_coord_calls);
     try std.testing.expectEqual(@as(u32, 6), FakeC.quad_begin_calls);
 }
 
-test "submit present completion is synchronous" {
+test "drain presentation completion is synchronous" {
     var state = testState();
 
-    const token = submitFrameSync(FakeC, &state, testFrame());
+    const token = drainFrameSync(FakeC, &state, testFrame());
 
     try std.testing.expect(token != 0);
 }

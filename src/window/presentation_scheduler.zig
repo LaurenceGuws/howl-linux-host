@@ -1,11 +1,11 @@
-//! Window present timing/deadline scheduling owner.
+//! Window presentation timing/deadline scheduling owner.
 
 const std = @import("std");
 const assert = std.debug.assert;
 
 const FrameTimer = @import("frame_timer.zig").FrameTimer;
 const sdl_window = @import("sdl_window.zig");
-const present_queue = @import("present_queue.zig");
+const presentation_queue = @import("presentation_queue.zig");
 
 pub const TimerTopic = enum {
     frame,
@@ -54,14 +54,14 @@ pub const Scheduler = struct {
         timer.active = false;
     }
 
-    pub fn update(self: *Scheduler, events: *present_queue.Queue, now_ns: u64) ?u64 {
+    pub fn update(self: *Scheduler, events: *presentation_queue.Queue, now_ns: u64) ?u64 {
         assert(now_ns > 0);
         var closest_deadline_ns: ?u64 = null;
         for (&self.timers) |*timer| {
             if (!timer.active) continue;
             assert(timer.deadline_ns > 0);
             if (timer.deadline_ns <= now_ns) {
-                _ = events.appendFrom("present_scheduler", .frame_ready);
+                _ = events.appendFrom("presentation_scheduler", .frame_ready);
                 timer.deadline_ns = 0;
                 timer.active = false;
             } else {
@@ -71,12 +71,12 @@ pub const Scheduler = struct {
         return closest_deadline_ns;
     }
 
-    pub fn requestFrame(self: *Scheduler, app_window: *sdl_window.Window, now_ns: u64) !void {
+    pub fn triggerFrame(self: *Scheduler, app_window: *sdl_window.Window, now_ns: u64) !void {
         assert(now_ns > 0);
-        try self.requestFrameWithRefresh(app_window, now_ns, try app_window.currentRefreshIntervalNs());
+        try self.triggerFrameWithRefresh(app_window, now_ns, try app_window.currentRefreshIntervalNs());
     }
 
-    fn requestFrameWithRefresh(self: *Scheduler, app_window: *sdl_window.Window, now_ns: u64, refresh_interval_ns: u64) !void {
+    fn triggerFrameWithRefresh(self: *Scheduler, app_window: *sdl_window.Window, now_ns: u64, refresh_interval_ns: u64) !void {
         assert(now_ns > 0);
         assert(refresh_interval_ns > 0);
         app_window.markFrameUsed();
@@ -85,7 +85,7 @@ pub const Scheduler = struct {
     }
 };
 
-pub fn chooseWait(pending_events: bool, events: *const present_queue.Queue, closest_deadline_ns: ?u64, now_ns: u64) Wait {
+pub fn chooseWait(pending_events: bool, events: *const presentation_queue.Queue, closest_deadline_ns: ?u64, now_ns: u64) Wait {
     assert(now_ns > 0);
     return .{
         .for_window = !pending_events and events.len() == 0,
@@ -120,7 +120,7 @@ fn testWindow(has_frame: bool) sdl_window.Window {
 }
 
 test "host event prevents indefinite wait without granting progress admission" {
-    var events = present_queue.Queue.init();
+    var events = presentation_queue.Queue.init();
     _ = events.append(.{ .term_surface_dirty = .{ .tab_slot = 0, .pane_id = 0 } });
 
     const wait = chooseWait(false, &events, null, 1);
@@ -132,7 +132,7 @@ test "host event prevents indefinite wait without granting progress admission" {
 test "closest frame timer wins when no host event is ready" {
     var scheduler = Scheduler.init();
     scheduler.schedule(.frame, 40_000_000);
-    var events = present_queue.Queue.init();
+    var events = presentation_queue.Queue.init();
 
     const deadline_ns = scheduler.update(&events, 1_000_000);
     const wait = chooseWait(false, &events, deadline_ns, 1_000_000);
@@ -142,11 +142,11 @@ test "closest frame timer wins when no host event is ready" {
     try std.testing.expectEqual(@as(?u32, 39), wait.timeout_ms);
 }
 
-test "request frame marks frame used and schedules frame topic" {
+test "trigger frame marks frame used and schedules frame topic" {
     var scheduler = Scheduler.init();
     var app_window = testWindow(true);
 
-    try scheduler.requestFrameWithRefresh(&app_window, 1_000, 16_000_000);
+    try scheduler.triggerFrameWithRefresh(&app_window, 1_000, 16_000_000);
 
     try std.testing.expect(!app_window.hasFrame());
     try std.testing.expectEqual(@as(u64, 16_001_000), scheduler.timers[@intFromEnum(TimerTopic.frame)].deadline_ns);
@@ -156,7 +156,7 @@ test "request frame marks frame used and schedules frame topic" {
 test "frame timer publishes frame ready when deadline passes" {
     var scheduler = Scheduler.init();
     scheduler.schedule(.frame, 16_000_000);
-    var events = present_queue.Queue.init();
+    var events = presentation_queue.Queue.init();
 
     const deadline_ns = scheduler.update(&events, 16_000_000);
 

@@ -78,7 +78,7 @@ pub const Input = struct {
         bytes: keys.ByteInput,
         key: keys.Event,
         mouse: mouse.Event,
-        scroll_pages: i32,
+        viewport_page_scroll: i32,
         window_focus: bool,
         window_geometry,
         binding: Bindings.Action,
@@ -269,11 +269,11 @@ fn processKeyDown(input: *Input, event: *const c.SDL_Event) void {
     const alt = (event.key.mod & c.SDL_KMOD_ALT) != 0;
     const shift = (event.key.mod & c.SDL_KMOD_SHIFT) != 0;
     if (event.key.key == c.SDLK_PAGEUP and shift and !ctrl and !alt) {
-        _ = appendEvent(input, .{ .scroll_pages = 1 });
+        _ = appendEvent(input, .{ .viewport_page_scroll = 1 });
         return;
     }
     if (event.key.key == c.SDLK_PAGEDOWN and shift and !ctrl and !alt) {
-        _ = appendEvent(input, .{ .scroll_pages = -1 });
+        _ = appendEvent(input, .{ .viewport_page_scroll = -1 });
         return;
     }
     if (ctrl and event.key.key >= c.SDLK_A and event.key.key <= c.SDLK_Z) {

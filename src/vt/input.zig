@@ -185,7 +185,7 @@ fn drainSurfaceResize(term: *Term, surface_px: render_c.HowlRenderPixelSize) boo
     const changed = surface_layout.syncSurfaceLayoutLocked(term, surface_px) catch |err| {
         std.debug.panic("terminal surface bounds failed: {}", .{err});
     };
-    if (changed) term.render.notePrepareNeeded();
+    if (changed) term.render.noteDrainNeeded();
     return changed;
 }
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 
-pub const max_present_events = 64;
+pub const max_presentation_events = 64;
 
 pub const SurfaceAddress = struct {
     tab_slot: u8,
@@ -16,8 +16,8 @@ pub const Event = union(enum) {
     term_surface_dirty: SurfaceAddress,
     tab_bar_surface_dirty,
     input_pending,
-    window_geometry_changed,
-    window_focus_changed,
+    window_geometry_dirty,
+    window_focus_dirty,
     frame_ready,
 };
 
@@ -28,7 +28,7 @@ pub const Drain = struct {
 
 pub const Queue = struct {
     mutex: Mutex = .{},
-    events: [max_present_events]Event = undefined,
+    events: [max_presentation_events]Event = undefined,
     count: u8 = 0,
     overflowed: bool = false,
 
@@ -40,7 +40,7 @@ pub const Queue = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.indexOf(event)) |_| return false;
-        if (self.count == max_present_events) {
+        if (self.count == max_presentation_events) {
             self.overflowed = true;
             return false;
         }
@@ -116,7 +116,7 @@ pub const Queue = struct {
     pub fn drainFrom(self: *Queue, owner: []const u8, out: []Event) Drain {
         const drained = self.drain(out);
         for (drained.events) |event| printEvent("drain", owner, event, true);
-        if (drained.overflowed) std.debug.print("drain owner={s} surface=present_queue event=overflow data=true\n", .{owner});
+        if (drained.overflowed) std.debug.print("drain owner={s} surface=presentation_queue event=overflow data=true\n", .{owner});
         return drained;
     }
 
@@ -134,8 +134,8 @@ fn printEvent(direction: []const u8, owner: []const u8, event: Event, stored: bo
         .term_surface_dirty => |address| std.debug.print("{s} owner={s} surface=term event=term_surface_dirty data=tab:{} pane:{} stored={}\n", .{ direction, owner, address.tab_slot, address.pane_id, stored }),
         .tab_bar_surface_dirty => std.debug.print("{s} owner={s} surface=tab_bar event=tab_bar_surface_dirty data=full stored={}\n", .{ direction, owner, stored }),
         .input_pending => std.debug.print("{s} owner={s} surface=input event=input_pending data=full stored={}\n", .{ direction, owner, stored }),
-        .window_geometry_changed => std.debug.print("{s} owner={s} surface=window event=window_geometry_changed data=full stored={}\n", .{ direction, owner, stored }),
-        .window_focus_changed => std.debug.print("{s} owner={s} surface=window event=window_focus_changed data=full stored={}\n", .{ direction, owner, stored }),
+        .window_geometry_dirty => std.debug.print("{s} owner={s} surface=window event=window_geometry_dirty data=full stored={}\n", .{ direction, owner, stored }),
+        .window_focus_dirty => std.debug.print("{s} owner={s} surface=window event=window_focus_dirty data=full stored={}\n", .{ direction, owner, stored }),
         .frame_ready => std.debug.print("{s} owner={s} surface=window event=frame_ready data=full stored={}\n", .{ direction, owner, stored }),
     }
 }
@@ -162,13 +162,13 @@ const Mutex = struct {
     }
 };
 
-test "present queue coalesces typed surface events" {
+test "presentation queue coalesces typed surface events" {
     var queue = Queue.init();
 
     try std.testing.expect(queue.append(.{ .term_surface_dirty = .{ .tab_slot = 1, .pane_id = 0 } }));
     try std.testing.expect(!queue.append(.tab_bar_surface_dirty));
 
-    var out: [max_present_events]Event = undefined;
+    var out: [max_presentation_events]Event = undefined;
     const drained = queue.drain(out[0..]);
 
     try std.testing.expect(!drained.overflowed);
@@ -179,7 +179,7 @@ test "present queue coalesces typed surface events" {
     try std.testing.expect(queue.append(.tab_bar_surface_dirty));
 }
 
-test "present queue coalesces duplicate terminal surface addresses" {
+test "presentation queue coalesces duplicate terminal surface addresses" {
     var queue = Queue.init();
     const address = SurfaceAddress{ .tab_slot = 2, .pane_id = 1 };
 
@@ -187,7 +187,7 @@ test "present queue coalesces duplicate terminal surface addresses" {
     try std.testing.expect(!queue.append(.{ .term_surface_dirty = address }));
     try std.testing.expect(queue.hasTermSurfaceDirty(address));
 
-    var out: [max_present_events]Event = undefined;
+    var out: [max_presentation_events]Event = undefined;
     const drained = queue.drain(out[0..]);
 
     try std.testing.expect(!drained.overflowed);
@@ -196,26 +196,26 @@ test "present queue coalesces duplicate terminal surface addresses" {
     try std.testing.expectEqual(@as(u16, 1), drained.events[0].term_surface_dirty.pane_id);
 }
 
-test "present queue records overflow instead of panicking" {
+test "presentation queue records overflow instead of panicking" {
     var queue = Queue.init();
     var index: u8 = 0;
 
-    while (index < max_present_events) : (index += 1) {
+    while (index < max_presentation_events) : (index += 1) {
         _ = queue.append(.{ .term_surface_dirty = .{ .tab_slot = index, .pane_id = 0 } });
     }
-    try std.testing.expectEqual(@as(usize, max_present_events), queue.len());
+    try std.testing.expectEqual(@as(usize, max_presentation_events), queue.len());
     try std.testing.expect(!queue.hasOverflowed());
-    try std.testing.expect(!queue.append(.{ .term_surface_dirty = .{ .tab_slot = max_present_events, .pane_id = 0 } }));
+    try std.testing.expect(!queue.append(.{ .term_surface_dirty = .{ .tab_slot = max_presentation_events, .pane_id = 0 } }));
     try std.testing.expect(queue.hasOverflowed());
     try std.testing.expect(queue.hasTermSurfaceDirty(.{ .tab_slot = 0, .pane_id = 4 }));
 }
 
-test "present queue drain reports overflow atomically" {
+test "presentation queue drain reports overflow atomically" {
     var queue = Queue.init();
     queue.markOverflowed();
     _ = queue.append(.tab_bar_surface_dirty);
 
-    var out: [max_present_events]Event = undefined;
+    var out: [max_presentation_events]Event = undefined;
     const drained = queue.drain(out[0..]);
 
     try std.testing.expect(drained.overflowed);
@@ -224,15 +224,15 @@ test "present queue drain reports overflow atomically" {
     try std.testing.expect(!queue.hasOverflowed());
 }
 
-test "present queue removes one event class without clearing terminal dirties" {
+test "presentation queue removes one event class without clearing terminal dirties" {
     var queue = Queue.init();
     const address = SurfaceAddress{ .tab_slot = 0, .pane_id = 0 };
 
-    _ = queue.append(.window_geometry_changed);
+    _ = queue.append(.window_geometry_dirty);
     _ = queue.append(.{ .term_surface_dirty = address });
-    queue.remove(.window_geometry_changed);
+    queue.remove(.window_geometry_dirty);
 
-    try std.testing.expect(!queue.contains(.window_geometry_changed));
+    try std.testing.expect(!queue.contains(.window_geometry_dirty));
     try std.testing.expect(queue.hasTermSurfaceDirty(address));
     try std.testing.expectEqual(@as(usize, 1), queue.len());
 }

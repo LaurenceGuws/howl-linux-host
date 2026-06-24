@@ -63,7 +63,7 @@ pub fn drainTextInputFastPath(selected: *TermInput, input_events: *HostInput, in
                 std.debug.assert(write_index <= event_count);
                 std.debug.assert(write_index <= event_capacity);
             },
-            .scroll_pages, .window_focus, .window_geometry, .binding => {
+            .viewport_page_scroll, .window_focus, .window_geometry, .binding => {
                 const target_index = (input_events.events.head + write_index) % event_capacity;
                 std.debug.assert(target_index < event_capacity);
                 input_events.events.buf[target_index] = event;
@@ -115,13 +115,13 @@ pub fn processTextInputEvent(selected: *TermInput, event: HostInput.Event, input
                 input_published.* = true;
             }
         },
-        .mouse, .scroll_pages, .window_focus, .window_geometry, .binding => {},
+        .mouse, .viewport_page_scroll, .window_focus, .window_geometry, .binding => {},
     }
 }
 
 pub fn processPointerEvent(selected: *TermInput, event: HostInput.Event, origin_x: i32, origin_y: i32, logical_width: c_int, logical_height: c_int, input_published: *bool, host_visual_changed: *bool) void {
     switch (event) {
-        .bytes, .key, .scroll_pages, .window_focus, .window_geometry, .binding => {},
+        .bytes, .key, .viewport_page_scroll, .window_focus, .window_geometry, .binding => {},
         .mouse => |mouse_event| {
             const scroll_outcome = selected.process_scrollbar_mouse(selected.surface, mouse_event, origin_x, origin_y, logical_width, logical_height);
             host_visual_changed.* = scroll_outcome.host_visual_changed or host_visual_changed.*;

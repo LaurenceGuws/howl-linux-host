@@ -10,8 +10,8 @@ const TermConfig = @import("config/term.zig");
 const window_icon = @import("window_icon.zig");
 const render_c = @import("howl_render_c");
 const sdl_c = @import("sdl_c");
-const present_scheduler = WindowPolicy.present_scheduler;
-const present_queue = WindowPolicy.present_queue;
+const presentation_scheduler = WindowPolicy.presentation_scheduler;
+const presentation_queue = WindowPolicy.presentation_queue;
 const window = WindowPolicy.sdl_window;
 
 const TabBar = TabBarUnit.TabBar;
@@ -96,41 +96,41 @@ noinline fn start(io: std.Io, options: Args) !void {
 }
 
 fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture_frame: *TextureFrame.State, tab_bar: *TabBar, layout: *WindowPolicy.Layout, input: *Input) !void {
-    var presenter = present_scheduler.Scheduler.init();
+    var presenter = presentation_scheduler.Scheduler.init();
     while (true) {
-        var present_event_buffer: [present_queue.max_present_events]present_queue.Event = undefined;
-        layout.drainProducedPresentEvents(present_event_buffer[0..]);
+        var present_event_buffer: [presentation_queue.max_presentation_events]presentation_queue.Event = undefined;
+        layout.drainProducedPresentationEvents(present_event_buffer[0..]);
         const first_now_ns = nowNs();
         const closest_deadline_ns = presenter.update(layout.pendingEvents(), first_now_ns);
         layout.updateFrameReady(app_window);
 
-        const wait = chooseWait(input.hasEvents(), app_window.hasFrame() and layout.hasPendingPresent(), closest_deadline_ns, first_now_ns);
+        const wait = chooseWait(input.hasEvents(), app_window.hasFrame() and layout.hasPendingPresentation(), closest_deadline_ns, first_now_ns);
         if (pumpInput(layout, input, wait)) return;
 
         try layout.drainInput(conf, app_window, texture_frame, input);
-        layout.drainProducedPresentEvents(present_event_buffer[0..]);
+        layout.drainProducedPresentationEvents(present_event_buffer[0..]);
         layout.configureInputPolicies(conf, input);
 
-        if (layout.hasPendingPresent() and app_window.hasFrame()) {
-            const present_turn = layout.render(conf, app_window, texture_frame, tab_bar);
-            const reason = layout.choosePresentReason(layout.terminalFrameReady(present_turn.turn.step));
-            layout.submitPresent(texture_frame, present_turn, reason);
+        if (layout.hasPendingPresentation() and app_window.hasFrame()) {
+            const presentation_drain = layout.render(conf, app_window, texture_frame, tab_bar);
+            const reason = layout.choosePresentationReason(layout.terminalPresentationReady(presentation_drain.drain.step));
+            layout.drainPresentation(texture_frame, presentation_drain, reason);
             if (reason != .none) {
-                layout.consumePresentedEvents(reason);
-                try presenter.requestFrame(app_window, nowNs());
+                layout.consumePresentationEvents(reason);
+                try presenter.triggerFrame(app_window, nowNs());
             }
         }
     }
 }
 
-fn chooseWait(input_pending: bool, present_ready: bool, closest_deadline_ns: ?u64, now_ns: u64) present_scheduler.Wait {
+fn chooseWait(input_pending: bool, present_ready: bool, closest_deadline_ns: ?u64, now_ns: u64) presentation_scheduler.Wait {
     return .{
         .for_window = !input_pending and !present_ready,
-        .timeout_ms = present_scheduler.waitMsFromDeadline(now_ns, closest_deadline_ns),
+        .timeout_ms = presentation_scheduler.waitMsFromDeadline(now_ns, closest_deadline_ns),
     };
 }
 
-fn pumpInput(layout: *WindowPolicy.Layout, input: *Input, wait: present_scheduler.Wait) bool {
+fn pumpInput(layout: *WindowPolicy.Layout, input: *Input, wait: presentation_scheduler.Wait) bool {
     if (wait.for_window) {
         var event: sdl_c.SDL_Event = undefined;
         const received = if (wait.timeout_ms) |timeout_ms| sdl_c.SDL_WaitEventTimeout(&event, @intCast(timeout_ms)) else sdl_c.SDL_WaitEvent(&event);

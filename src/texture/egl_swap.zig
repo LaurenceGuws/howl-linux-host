@@ -302,7 +302,7 @@ pub const Damage = struct {
         return .{ .full = true, .count = 0 };
     }
 
-    pub fn fromRenderFrame(frame: *const render_c.HowlRenderTermSurfacePrepared) Damage {
+    pub fn fromRenderFrame(frame: *const render_c.HowlRenderTermSurfaceDrain) Damage {
         std.debug.assert(frame.render_px.width > 0);
         std.debug.assert(frame.render_px.height > 0);
         if (frame.damage.count == 0) return fullFrame();
@@ -371,8 +371,8 @@ fn damageItem(kind: u8, rect: render_c.HowlRenderTermSurfaceRect) render_c.HowlR
     return .{ .kind = kind, .reserved0 = 0, .reserved1 = 0, .rect = rect };
 }
 
-fn frameWithDamage(item: *const render_c.HowlRenderTermSurfaceDamageItem, count: u32) render_c.HowlRenderTermSurfacePrepared {
-    var frame = std.mem.zeroes(render_c.HowlRenderTermSurfacePrepared);
+fn frameWithDamage(item: *const render_c.HowlRenderTermSurfaceDamageItem, count: u32) render_c.HowlRenderTermSurfaceDrain {
+    var frame = std.mem.zeroes(render_c.HowlRenderTermSurfaceDrain);
     frame.render_px = .{ .width = 80, .height = 25 };
     frame.damage = .{ .ptr = item, .count = count, .count_max = max_rects };
     return frame;

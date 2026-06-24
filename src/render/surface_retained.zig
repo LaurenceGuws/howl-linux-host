@@ -4,35 +4,35 @@ const vt_c = @import("howl_vt_c");
 
 const fallback_clear_rgba = 0x202040ff;
 
-pub const PrepareResult = enum { idle, prepared, failed };
-pub const SubmitResult = enum { idle, stale, needs_prepare, rendered, failed };
+pub const DrainSurfaceResult = enum { idle, ready, failed };
+pub const DrainTextureResult = enum { idle, stale, needs_drain, rendered, failed };
 
 pub const RetainedState = enum {
     idle,
-    prepare_needed,
-    submit_ready,
-    present_in_flight,
+    drain_needed,
+    drain_ready,
+    presentation_in_flight,
     failed,
 };
 
-pub const PresentInFlight = struct {
+pub const PresentationInFlight = struct {
     snapshot_seq: u64,
     token: u64,
 };
 
-pub const RenderTurnAdmission = struct {
+pub const DrainAdmission = struct {
     state: RetainedState,
     animation_pending: bool = false,
 
-    pub fn hasRetainedTurn(self: RenderTurnAdmission) bool {
+    pub fn hasRetainedDrain(self: DrainAdmission) bool {
         return switch (self.state) {
-            .prepare_needed, .submit_ready, .present_in_flight => true,
+            .drain_needed, .drain_ready, .presentation_in_flight => true,
             .idle, .failed => false,
         };
     }
 
-    pub fn needsRenderTurn(self: RenderTurnAdmission) bool {
-        return self.animation_pending or self.hasRetainedTurn();
+    pub fn needsRenderDrain(self: DrainAdmission) bool {
+        return self.animation_pending or self.hasRetainedDrain();
     }
 };
 
@@ -50,50 +50,50 @@ pub const SurfaceLayout = struct {
     cell_px: c.HowlRenderCellSize,
 };
 
-pub const PreparedInfo = struct {
+pub const SurfaceDrainInfo = struct {
     snapshot_seq: u64 = 0,
     render_px: c.HowlRenderPixelSize = .{ .width = 0, .height = 0 },
 };
 
-pub const PreparedUploadStatus = enum {
+pub const SurfaceDrainStatus = enum {
     missing,
     invalid,
     command_bound_overflow,
 };
 
-pub const PreparedUpload = struct {
-    info: PreparedInfo,
-    term_surface_status: PreparedUploadStatus,
-    term_surface_prepared: ?*const c.HowlRenderTermSurfacePrepared,
+pub const SurfaceDrainOutput = struct {
+    info: SurfaceDrainInfo,
+    term_surface_status: SurfaceDrainStatus,
+    term_surface: ?*const c.HowlRenderTermSurfaceDrain,
 
-    pub fn deinit(self: *PreparedUpload) void {
+    pub fn deinit(self: *SurfaceDrainOutput) void {
         self.* = undefined;
     }
 };
 
 pub const TermSurface = c.HowlRenderTermSurface;
 
-pub const SubmitExecution = struct {
+pub const DrainTextureInput = struct {
     term_surface: TermSurface,
 };
 
-pub const SubmitOutput = struct {
+pub const DrainTextureOutput = struct {
     term_surface: TermSurface = .{ .term_surface_id = 0, .width = 0, .height = 0 },
 };
 
-pub const PreparedHandle = ?*const c.HowlRenderTermSurfacePrepared;
+pub const SurfaceDrainHandle = ?*const c.HowlRenderTermSurfaceDrain;
 
 pub const State = struct {
     surface_layout: SurfaceLayout,
     layout_epoch: u64 = 1,
-    prepared_surface: PreparedHandle = null,
+    drained_surface: SurfaceDrainHandle = null,
     text_handle: c.HowlRenderTextHandle = null,
     owns_text_handle: bool = false,
-    surface: c.HowlRenderTermSurfacePrepared = emptySurface(),
+    surface: c.HowlRenderTermSurfaceDrain = emptySurface(),
     damage: [1]c.HowlRenderTermSurfaceDamageItem = undefined,
     commands: [1]c.HowlRenderTermSurfaceCommand = undefined,
     snapshot_seq: u64 = 0,
-    present_in_flight: ?PresentInFlight = null,
+    presentation_in_flight: ?PresentationInFlight = null,
     retained_state: RetainedState = .idle,
     surface_activity_seq: u64 = 0,
 
@@ -105,7 +105,7 @@ pub const State = struct {
         if (self.owns_text_handle) if (self.text_handle) |handle| c.howl_render_text_deinit(handle);
         self.text_handle = null;
         self.owns_text_handle = false;
-        self.prepared_surface = null;
+        self.drained_surface = null;
     }
 
     pub fn initText(self: *State, config: *const c.HowlRenderTextConfig) bool {
@@ -142,8 +142,8 @@ pub const State = struct {
         if (self.layout_epoch == 0) self.layout_epoch = 1;
     }
 
-    pub fn admitRenderTurn(self: *State, bootstrap_surface: bool) RenderTurnAdmission {
-        if (self.presentPending()) self.retained_state = .present_in_flight else if (bootstrap_surface and self.retained_state == .idle) self.retained_state = .prepare_needed;
+    pub fn admitDrain(self: *State, bootstrap_surface: bool) DrainAdmission {
+        if (self.presentationPending()) self.retained_state = .presentation_in_flight else if (bootstrap_surface and self.retained_state == .idle) self.retained_state = .drain_needed;
         return .{ .state = self.retained_state };
     }
 
@@ -155,38 +155,38 @@ pub const State = struct {
         self.retained_state = .failed;
     }
 
-    pub fn notePrepareNeeded(self: *State) void {
-        if (self.presentPending()) {
-            self.retained_state = .present_in_flight;
+    pub fn noteDrainNeeded(self: *State) void {
+        if (self.presentationPending()) {
+            self.retained_state = .presentation_in_flight;
             return;
         }
-        self.releasePreparedSurface();
-        self.retained_state = .prepare_needed;
+        self.releaseSurfaceDrain();
+        self.retained_state = .drain_needed;
     }
 
-    pub fn notePresentSubmitted(self: *State, snapshot_seq: u64, token: u64) void {
+    pub fn notePresentationInFlight(self: *State, snapshot_seq: u64, token: u64) void {
         std.debug.assert(snapshot_seq != 0);
         std.debug.assert(token != 0);
-        std.debug.assert(self.present_in_flight == null);
-        self.present_in_flight = .{ .snapshot_seq = snapshot_seq, .token = token };
-        self.retained_state = .present_in_flight;
+        std.debug.assert(self.presentation_in_flight == null);
+        self.presentation_in_flight = .{ .snapshot_seq = snapshot_seq, .token = token };
+        self.retained_state = .presentation_in_flight;
     }
 
-    pub fn completePresent(self: *State, token: u64) ?u64 {
+    pub fn completePresentation(self: *State, token: u64) ?u64 {
         std.debug.assert(token != 0);
-        const present = self.present_in_flight orelse return null;
+        const present = self.presentation_in_flight orelse return null;
         if (present.token != token) return null;
-        self.present_in_flight = null;
-        self.retained_state = if (self.prepared_surface != null) .submit_ready else .idle;
+        self.presentation_in_flight = null;
+        self.retained_state = if (self.drained_surface != null) .drain_ready else .idle;
         return present.snapshot_seq;
     }
 
-    pub fn presentPending(self: *const State) bool {
-        return self.present_in_flight != null;
+    pub fn presentationPending(self: *const State) bool {
+        return self.presentation_in_flight != null;
     }
 
-    pub fn preparedSurfaceHandle(self: *const State) PreparedHandle {
-        return self.prepared_surface;
+    pub fn drainedSurfaceHandle(self: *const State) SurfaceDrainHandle {
+        return self.drained_surface;
     }
 
     pub fn setLayoutEpoch(self: *State, layout_epoch: u64) void {
@@ -199,57 +199,57 @@ pub const State = struct {
         if (self.surface_activity_seq == 0) self.surface_activity_seq = 1;
     }
 
-    pub fn releasePreparedSurface(self: *State) void {
-        self.prepared_surface = null;
+    pub fn releaseSurfaceDrain(self: *State) void {
+        self.drained_surface = null;
     }
 
-    pub fn forgetPreparedSurfaceHandle(self: *State) void {
-        self.prepared_surface = null;
+    pub fn forgetSurfaceDrainHandle(self: *State) void {
+        self.drained_surface = null;
     }
 
-    pub fn prepare(self: *State, render_state: ?*anyopaque) PrepareResult {
-        const state: vt_c.HowlVtRenderStateHandle = @ptrCast(render_state orelse return self.prepareFullSurface(self.snapshot_seq + 1));
-        if (self.text_handle) |handle| return self.prepareTextSurface(handle, state);
-        const snapshot_seq = readRenderStateU64(state, vt_c.HOWL_VT_RENDER_STATE_DATA_SNAPSHOT_SEQ) catch return self.failPrepare();
-        return self.prepareFullSurface(@max(snapshot_seq, self.snapshot_seq + 1));
+    pub fn drainSurface(self: *State, render_state: ?*anyopaque) DrainSurfaceResult {
+        const state: vt_c.HowlVtRenderStateHandle = @ptrCast(render_state orelse return self.drainFullSurface(self.snapshot_seq + 1));
+        if (self.text_handle) |handle| return self.drainTextSurface(handle, state);
+        const snapshot_seq = readRenderStateU64(state, vt_c.HOWL_VT_RENDER_STATE_DATA_SNAPSHOT_SEQ) catch return self.failDrain();
+        return self.drainFullSurface(@max(snapshot_seq, self.snapshot_seq + 1));
     }
 
-    pub fn submit(self: *State, execution: *const SubmitExecution, result: *SubmitOutput) SubmitResult {
+    pub fn drainTexture(self: *State, execution: *const DrainTextureInput, result: *DrainTextureOutput) DrainTextureResult {
         if (self.text_handle) |handle| {
-            if (c.howl_render_text_submit_term_surface(handle, execution.term_surface, &result.term_surface) != c.HOWL_RENDER_CALL_OK) return .failed;
-            self.prepared_surface = null;
+            if (c.howl_render_text_surface_drain_completed(handle, execution.term_surface, &result.term_surface) != c.HOWL_RENDER_CALL_OK) return .failed;
+            self.drained_surface = null;
             self.retained_state = .idle;
             return .rendered;
         }
         result.term_surface = execution.term_surface;
-        self.prepared_surface = null;
+        self.drained_surface = null;
         self.retained_state = .idle;
         return .rendered;
     }
 
-    pub fn submitWithTermSurface(self: *State, term_surface: TermSurface, result: *SubmitOutput) SubmitResult {
-        const execution: SubmitExecution = .{ .term_surface = term_surface };
-        return self.submit(&execution, result);
+    pub fn drainTextureWithTermSurface(self: *State, term_surface: TermSurface, result: *DrainTextureOutput) DrainTextureResult {
+        const execution: DrainTextureInput = .{ .term_surface = term_surface };
+        return self.drainTexture(&execution, result);
     }
 
-    pub fn preparedUpload(self: *State, upload_out: *PreparedUpload) bool {
-        const surface = self.prepared_surface orelse {
+    pub fn drainedSurface(self: *State, upload_out: *SurfaceDrainOutput) bool {
+        const surface = self.drained_surface orelse {
             upload_out.* = .{
                 .info = .{},
                 .term_surface_status = .missing,
-                .term_surface_prepared = null,
+                .term_surface = null,
             };
             return true;
         };
         upload_out.* = .{
             .info = .{ .snapshot_seq = self.snapshot_seq, .render_px = self.surface_layout.render_px },
             .term_surface_status = .invalid,
-            .term_surface_prepared = surface,
+            .term_surface = surface,
         };
         return true;
     }
 
-    fn prepareFullSurface(self: *State, snapshot_seq: u64) PrepareResult {
+    fn drainFullSurface(self: *State, snapshot_seq: u64) DrainSurfaceResult {
         std.debug.assert(snapshot_seq != 0);
         self.snapshot_seq = snapshot_seq;
         self.damage[0] = .{
@@ -268,20 +268,20 @@ pub const State = struct {
             .glyphs = .{ .ptr = null, .count = 0, .count_max = 0 },
         };
         self.surface = emptySurface();
-        self.surface.token = .{ .snapshot_seq = snapshot_seq, .prepare_seq = snapshot_seq, .layout_epoch = self.layout_epoch, .resource_epoch = 0 };
+        self.surface.token = .{ .snapshot_seq = snapshot_seq, .drain_seq = snapshot_seq, .layout_epoch = self.layout_epoch, .resource_epoch = 0 };
         self.surface.render_px = self.surface_layout.render_px;
         self.surface.cell_px = self.surface_layout.cell_px;
         self.surface.grid = .{ .cols = self.surface_layout.cols, .rows = self.surface_layout.rows };
         self.surface.damage = .{ .ptr = &self.damage, .count = 1, .count_max = 1 };
         self.surface.commands = .{ .ptr = &self.commands, .count = 1, .count_max = 1 };
-        self.prepared_surface = &self.surface;
-        self.retained_state = .submit_ready;
-        return .prepared;
+        self.drained_surface = &self.surface;
+        self.retained_state = .drain_ready;
+        return .ready;
     }
 
-    fn prepareTextSurface(self: *State, handle: c.HowlRenderTextHandle, state: vt_c.HowlVtRenderStateHandle) PrepareResult {
-        var upload = std.mem.zeroes(c.HowlRenderTextPreparedUpload);
-        const prepare_input = c.HowlRenderTextPrepare{
+    fn drainTextSurface(self: *State, handle: c.HowlRenderTextHandle, state: vt_c.HowlVtRenderStateHandle) DrainSurfaceResult {
+        var upload = std.mem.zeroes(c.HowlRenderTextSurfaceDrain);
+        const drain_input = c.HowlRenderTextSurfaceDrainInput{
             .render_state = @ptrCast(state),
             .render_px = self.surface_layout.render_px,
             .layout_epoch = self.layout_epoch,
@@ -290,27 +290,27 @@ pub const State = struct {
             .focused = 1,
             .reserved0 = [_]u8{0} ** 7,
         };
-        if (c.howl_render_text_prepare(handle, &prepare_input, &upload) != c.HOWL_RENDER_CALL_OK) return self.failPrepare();
-        const surface = upload.term_surface_prepared orelse return self.failPrepare();
+        if (c.howl_render_text_surface_drain(handle, &drain_input, &upload) != c.HOWL_RENDER_CALL_OK) return self.failDrain();
+        const surface = upload.term_surface orelse return self.failDrain();
         std.debug.assert(upload.snapshot_seq != 0);
         self.snapshot_seq = upload.snapshot_seq;
-        self.prepared_surface = surface;
-        self.retained_state = .submit_ready;
-        return .prepared;
+        self.drained_surface = surface;
+        self.retained_state = .drain_ready;
+        return .ready;
     }
 
-    fn failPrepare(self: *State) PrepareResult {
-        self.releasePreparedSurface();
+    fn failDrain(self: *State) DrainSurfaceResult {
+        self.releaseSurfaceDrain();
         self.retained_state = .failed;
         return .failed;
     }
 };
 
-fn emptySurface() c.HowlRenderTermSurfacePrepared {
+fn emptySurface() c.HowlRenderTermSurfaceDrain {
     return .{
-        .prepared_version = c.HOWL_RENDER_TERM_SURFACE_PREPARED_VERSION,
+        .drain_version = c.HOWL_RENDER_TERM_SURFACE_DRAIN_VERSION,
         .reserved0 = 0,
-        .token = .{ .snapshot_seq = 0, .prepare_seq = 0, .layout_epoch = 0, .resource_epoch = 0 },
+        .token = .{ .snapshot_seq = 0, .drain_seq = 0, .layout_epoch = 0, .resource_epoch = 0 },
         .render_px = .{ .width = 0, .height = 0 },
         .cell_px = .{ .width = 0, .height = 0 },
         .grid = .{ .cols = 0, .rows = 0 },

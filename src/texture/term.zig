@@ -66,12 +66,12 @@ pub const Presenter = struct {
         self.term_surface.height = 0;
     }
 
-    pub fn submittedTermSurface(self: *const Presenter) render_c.HowlRenderTermSurface {
+    pub fn presentationTermSurface(self: *const Presenter) render_c.HowlRenderTermSurface {
         return self.term_surface;
     }
 };
 
-pub fn uploadRenderSurface(store: *GlResourceStore, term_surface: *render_c.HowlRenderTermSurface, surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
+pub fn drainRenderSurface(store: *GlResourceStore, term_surface: *render_c.HowlRenderTermSurface, surface: *const render_c.HowlRenderTermSurfaceDrain) bool {
     std.debug.assert(surface.render_px.width > 0);
     std.debug.assert(surface.render_px.height > 0);
     const had_matching_term_surface = term_surface.term_surface_id != 0 and
@@ -90,7 +90,7 @@ pub fn uploadRenderSurface(store: *GlResourceStore, term_surface: *render_c.Howl
         .glyph,
         .glyph_patch,
         => blk: {
-            uploadTermSurfaceCommands(store, term_surface.*, surface);
+            drainTermSurfaceCommands(store, term_surface.*, surface);
             break :blk true;
         },
     };
@@ -139,7 +139,7 @@ pub fn ensureTexture(term_surface: *render_c.HowlRenderTermSurface, width: u16, 
     term_surface.height = height;
 }
 
-pub fn classifyTermSurface(surface: *const render_c.HowlRenderTermSurfacePrepared) ?TermSurfaceClass {
+pub fn classifyTermSurface(surface: *const render_c.HowlRenderTermSurfaceDrain) ?TermSurfaceClass {
     if (sprite(surface)) return .sprite;
     if (spritePatch(surface)) return .sprite_patch;
     if (glyphs(surface)) return .glyph;
@@ -155,7 +155,7 @@ fn assertRenderSurfacePatchTermSurface(class: TermSurfaceClass, had_matching_ter
     if (!had_matching_term_surface) std.debug.panic("trusted render surface patch requires matching term surface", .{});
 }
 
-fn uploadFillCommands(term_surface: TermSurface, render_surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
+fn uploadFillCommands(term_surface: TermSurface, render_surface: *const render_c.HowlRenderTermSurfaceDrain) bool {
     std.debug.assert(fillOnly(render_surface) or fillPatch(render_surface));
     std.debug.assert(term_surface.term_surface_id != 0);
     std.debug.assert(term_surface.width == render_surface.render_px.width);
@@ -173,11 +173,11 @@ fn uploadFillCommands(term_surface: TermSurface, render_surface: *const render_c
     return true;
 }
 
-fn uploadTermSurfaceCommands(store: *GlResourceStore, term_surface: TermSurface, render_surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+fn drainTermSurfaceCommands(store: *GlResourceStore, term_surface: TermSurface, render_surface: *const render_c.HowlRenderTermSurfaceDrain) void {
     uploadSurfaceCommands(store, termDrawTarget(term_surface), render_surface);
 }
 
-fn uploadSurfaceCommands(store: *GlResourceStore, target: DrawTarget, render_surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+fn uploadSurfaceCommands(store: *GlResourceStore, target: DrawTarget, render_surface: *const render_c.HowlRenderTermSurfaceDrain) void {
     std.debug.assert(target.texture_id != 0);
     std.debug.assert(target.width == render_surface.render_px.width);
     std.debug.assert(target.height == render_surface.render_px.height);
@@ -244,7 +244,7 @@ fn termDrawTarget(term_surface: TermSurface) DrawTarget {
     return .{ .texture_id = term_surface.term_surface_id, .width = term_surface.width, .height = term_surface.height };
 }
 
-pub fn fillOnly(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
+pub fn fillOnly(surface: *const render_c.HowlRenderTermSurfaceDrain) bool {
     if (!resourceFreeCommands(surface)) return false;
     const commands = termCommandSlice(surface.commands.ptr, surface.commands.count);
     var has_full_clear = false;
@@ -257,7 +257,7 @@ pub fn fillOnly(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
     return fillCoverage(surface, commands);
 }
 
-pub fn fillPatch(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
+pub fn fillPatch(surface: *const render_c.HowlRenderTermSurfaceDrain) bool {
     if (!resourceFreeCommands(surface)) return false;
     const commands = termCommandSlice(surface.commands.ptr, surface.commands.count);
     for (commands) |command| {
@@ -268,7 +268,7 @@ pub fn fillPatch(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
     return true;
 }
 
-fn fillCoverage(surface: *const render_c.HowlRenderTermSurfacePrepared, commands: []const render_c.HowlRenderTermSurfaceCommand) bool {
+fn fillCoverage(surface: *const render_c.HowlRenderTermSurfaceDrain, commands: []const render_c.HowlRenderTermSurfaceCommand) bool {
     var covered_area: u64 = 0;
     for (commands, 0..) |command, index| {
         if (command.kind != render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_FILL_RECT) return false;
@@ -282,7 +282,7 @@ fn fillCoverage(surface: *const render_c.HowlRenderTermSurfacePrepared, commands
     return covered_area == surface_area;
 }
 
-pub fn sprite(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
+pub fn sprite(surface: *const render_c.HowlRenderTermSurfaceDrain) bool {
     if (!hasCommands(surface)) return false;
     const commands = termCommandSlice(surface.commands.ptr, surface.commands.count);
     var sprite_count: u32 = 0;
@@ -302,7 +302,7 @@ pub fn sprite(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
     return sprite_count > 0;
 }
 
-pub fn spritePatch(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
+pub fn spritePatch(surface: *const render_c.HowlRenderTermSurfaceDrain) bool {
     if (!hasCommands(surface)) return false;
     const commands = termCommandSlice(surface.commands.ptr, surface.commands.count);
     var sprite_count: u32 = 0;
@@ -322,7 +322,7 @@ pub fn spritePatch(surface: *const render_c.HowlRenderTermSurfacePrepared) bool 
     return sprite_count > 0;
 }
 
-pub fn glyphs(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
+pub fn glyphs(surface: *const render_c.HowlRenderTermSurfaceDrain) bool {
     if (!hasCommands(surface)) return false;
     const commands = termCommandSlice(surface.commands.ptr, surface.commands.count);
     var glyph_count: u32 = 0;
@@ -343,7 +343,7 @@ pub fn glyphs(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
     return glyph_count > 0;
 }
 
-pub fn glyphPatch(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
+pub fn glyphPatch(surface: *const render_c.HowlRenderTermSurfaceDrain) bool {
     if (!hasCommands(surface)) return false;
     const commands = termCommandSlice(surface.commands.ptr, surface.commands.count);
     var glyph_count: u32 = 0;
@@ -392,7 +392,7 @@ fn spriteCommand(command: render_c.HowlRenderTermSurfaceCommand) bool {
     return true;
 }
 
-fn glyphCommandValid(surface: *const render_c.HowlRenderTermSurfacePrepared, command: render_c.HowlRenderTermSurfaceCommand) bool {
+fn glyphCommandValid(surface: *const render_c.HowlRenderTermSurfaceDrain, command: render_c.HowlRenderTermSurfaceCommand) bool {
     if (command.kind != render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_DRAW_GLYPH_RUN) return false;
     if (command.rect.x_px != 0 or command.rect.y_px != 0) return false;
     if (command.rect.width_px != 0 or command.rect.height_px != 0) return false;
@@ -412,18 +412,18 @@ fn glyphCommandValid(surface: *const render_c.HowlRenderTermSurfacePrepared, com
 }
 
 fn glyphSpanValid(command: render_c.HowlRenderTermSurfaceCommand) bool {
-    return glyphSpanCountValid(command.glyphs.ptr, command.glyphs.count, command.glyphs.count_max, render_c.HOWL_RENDER_TERM_SURFACE_PREPARED_GLYPHS_PER_RUN_MAX);
+    return glyphSpanCountValid(command.glyphs.ptr, command.glyphs.count, command.glyphs.count_max, render_c.HOWL_RENDER_TERM_SURFACE_DRAIN_GLYPHS_PER_RUN_MAX);
 }
 
-fn hasCommands(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
+fn hasCommands(surface: *const render_c.HowlRenderTermSurfaceDrain) bool {
     return surface.commands.count != 0;
 }
 
-fn resourceFreeCommands(surface: *const render_c.HowlRenderTermSurfacePrepared) bool {
+fn resourceFreeCommands(surface: *const render_c.HowlRenderTermSurfaceDrain) bool {
     return surface.creates.count == 0 and surface.uploads.count == 0 and surface.retires.count == 0 and hasCommands(surface);
 }
 
-fn fullClear(surface: *const render_c.HowlRenderTermSurfacePrepared, command: render_c.HowlRenderTermSurfaceCommand) bool {
+fn fullClear(surface: *const render_c.HowlRenderTermSurfaceDrain, command: render_c.HowlRenderTermSurfaceCommand) bool {
     if (command.kind != render_c.HOWL_RENDER_TERM_SURFACE_COMMAND_CLEAR_RECT) return false;
     if (command.rect.x_px != 0) return false;
     if (command.rect.y_px != 0) return false;
@@ -432,7 +432,7 @@ fn fullClear(surface: *const render_c.HowlRenderTermSurfacePrepared, command: re
     return true;
 }
 
-fn resourceHasFutureUpload(surface: *const render_c.HowlRenderTermSurfacePrepared, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
+fn resourceHasFutureUpload(surface: *const render_c.HowlRenderTermSurfaceDrain, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
     const uploads = resource_store.termResourceUploadSlice(surface.uploads.ptr, surface.uploads.count);
     for (uploads) |upload| {
         if (!resource_store.sameResource(upload.resource, resource)) continue;
@@ -441,7 +441,7 @@ fn resourceHasFutureUpload(surface: *const render_c.HowlRenderTermSurfacePrepare
     return false;
 }
 
-fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderTermSurfacePrepared, command: render_c.HowlRenderTermSurfaceCommand, command_index: u32) bool {
+fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderTermSurfaceDrain, command: render_c.HowlRenderTermSurfaceCommand, command_index: u32) bool {
     const glyph_refs = glyphRefSlice(command.glyphs.ptr, command.glyphs.count);
     for (glyph_refs) |glyph| if (resourceHasFutureUpload(surface, glyph.atlas_resource, command_index)) return true;
     return false;
@@ -680,7 +680,7 @@ pub const testing = struct {
     pub const ResourceSlot = resource_store.testing.ResourceSlot;
     pub const SurfaceClass = TermSurfaceClass;
 
-    pub fn classifyTermSurface(surface: *const render_c.HowlRenderTermSurfacePrepared) ?SurfaceClass {
+    pub fn classifyTermSurface(surface: *const render_c.HowlRenderTermSurfaceDrain) ?SurfaceClass {
         return @import("term.zig").classifyTermSurface(surface);
     }
 
@@ -688,7 +688,7 @@ pub const testing = struct {
         resource_store.testing.commitUploadMetadata(store, uploads);
     }
 
-    pub fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderTermSurfacePrepared, command: render_c.HowlRenderTermSurfaceCommand, command_index: u32) bool {
+    pub fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderTermSurfaceDrain, command: render_c.HowlRenderTermSurfaceCommand, command_index: u32) bool {
         return @import("term.zig").glyphCommandHasFutureUpload(surface, command, command_index);
     }
 
@@ -704,7 +704,7 @@ pub const testing = struct {
         @import("term.zig").stageFillUploadTile(tile, width, rows, rgba);
     }
 
-    pub fn resourceHasFutureUpload(surface: *const render_c.HowlRenderTermSurfacePrepared, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
+    pub fn resourceHasFutureUpload(surface: *const render_c.HowlRenderTermSurfaceDrain, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
         return @import("term.zig").resourceHasFutureUpload(surface, resource, command_index);
     }
 
@@ -712,7 +712,7 @@ pub const testing = struct {
         return @import("term.zig").spriteUploadCoversCommand(slot, command_rect);
     }
 
-    pub fn validateSurface(store: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfacePrepared) void {
+    pub fn validateSurface(store: *GlResourceStore, surface: *const render_c.HowlRenderTermSurfaceDrain) void {
         resource_store.testing.validateSurface(store, surface);
     }
 };

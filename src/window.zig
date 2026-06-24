@@ -19,14 +19,14 @@ const vt_surface = @import("vt/surface.zig");
 
 pub const frame_contract = @import("window/frame.zig");
 pub const geometry = @import("window/geometry.zig");
-pub const present_scheduler = @import("window/present_scheduler.zig");
+pub const presentation_scheduler = @import("window/presentation_scheduler.zig");
 pub const sdl_window = @import("window/sdl_window.zig");
 pub const status = @import("window/status.zig");
-pub const turn_contract = @import("window/turn.zig");
+pub const presentation_drain = @import("window/presentation_drain.zig");
 pub const update_contract = @import("window/update.zig");
-pub const present_queue = @import("window/present_queue.zig");
+pub const presentation_queue = @import("window/presentation_queue.zig");
 
-const PresentQueue = present_queue;
+const PresentationQueue = presentation_queue;
 const Window = sdl_window.Window;
 
 pub const interior = @import("layout/window.zig");
@@ -52,17 +52,17 @@ pub const SurfaceUpdate = update_contract.SurfaceUpdate;
 pub const TabBarCellUpdate = update_contract.TabBarCellUpdate;
 pub const ActiveTabProblem = status.ActiveTabProblem;
 pub const ActiveTabExitAction = status.ActiveTabExitAction;
-pub const PresentReason = turn_contract.PresentReason;
-pub const PaneTurn = turn_contract.PaneTurn;
-pub const PaneSurfaceReadiness = turn_contract.PaneSurfaceReadiness;
-pub const PaneUpload = turn_contract.PaneUpload;
-pub const TurnResult = turn_contract.TurnResult;
-pub const PresentTurn = turn_contract.PresentTurn;
+pub const PresentationReason = presentation_drain.PresentationReason;
+pub const PaneDrain = presentation_drain.PaneDrain;
+pub const PaneSurfaceReadiness = presentation_drain.PaneSurfaceReadiness;
+pub const PanePresentation = presentation_drain.PanePresentation;
+pub const DrainResult = presentation_drain.DrainResult;
+pub const PresentationDrain = presentation_drain.PresentationDrain;
 
 pub const Layout = struct {
     tabs: tabs.Tabs = .{},
-    producer_present_queue: PresentQueue.Queue = .{},
-    pending_events: PresentQueue.Queue = .{},
+    producer_presentation_queue: PresentationQueue.Queue = .{},
+    pending_events: PresentationQueue.Queue = .{},
     window_wake_pending: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     sdl_wake_event_type: u32 = 0,
 
@@ -106,7 +106,7 @@ pub const Layout = struct {
         if (before_height != window_interior.tab_bar.pixel_height) self.applyBody(body_value);
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = self.producer_present_queue.appendFrom("layout", .tab_bar_surface_dirty);
+        _ = self.producer_presentation_queue.appendFrom("layout", .tab_bar_surface_dirty);
         self.assertTabs();
     }
 
@@ -129,7 +129,7 @@ pub const Layout = struct {
         if (before_height != window_interior.tab_bar.pixel_height) self.applyBody(tab.body(window_interior));
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = self.producer_present_queue.appendFrom("layout", .tab_bar_surface_dirty);
+        _ = self.producer_presentation_queue.appendFrom("layout", .tab_bar_surface_dirty);
         self.assertTabs();
     }
 
@@ -139,7 +139,7 @@ pub const Layout = struct {
         self.tabs.active_tab = @intCast(@mod(@as(i32, @intCast(self.tabs.active_tab)) + delta, len_i));
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = self.producer_present_queue.appendFrom("layout", .tab_bar_surface_dirty);
+        _ = self.producer_presentation_queue.appendFrom("layout", .tab_bar_surface_dirty);
     }
 
     pub fn select(self: *Layout, app_window: *Window, index: TabIndex) void {
@@ -147,7 +147,7 @@ pub const Layout = struct {
         self.tabs.active_tab = index;
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = self.producer_present_queue.appendFrom("layout", .tab_bar_surface_dirty);
+        _ = self.producer_presentation_queue.appendFrom("layout", .tab_bar_surface_dirty);
     }
 
     pub fn focusPane(self: *Layout, app_window: *Window, direction: pane.Direction) void {
@@ -171,8 +171,8 @@ pub const Layout = struct {
         self.tabs.active_panes[self.tabs.active_tab] = next;
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = self.producer_present_queue.appendFrom("layout", .{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, current) });
-        _ = self.producer_present_queue.appendFrom("layout", .{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, next) });
+        _ = self.producer_presentation_queue.appendFrom("layout", .{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, current) });
+        _ = self.producer_presentation_queue.appendFrom("layout", .{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, next) });
     }
 
     pub fn configureInputPolicies(self: *Layout, conf: *const Config.UiConfig, input: *HostInput) void {
@@ -190,7 +190,7 @@ pub const Layout = struct {
             switch (event) {
                 .bytes, .key => self.drainTextInput(event),
                 .mouse => self.drainMouseInput(conf, app_window, event),
-                .scroll_pages => |pages| self.drainScrollPages(pages),
+                .viewport_page_scroll => |pages| self.drainScrollPages(pages),
                 .window_focus => |focused| self.drainWindowFocus(app_window, focused),
                 .window_geometry => self.drainWindowGeometry(conf, app_window),
                 .binding => |action| try self.handleBindingAction(conf, app_window, action, texture_frame.textHandle()),
@@ -229,17 +229,17 @@ pub const Layout = struct {
         return if (self.tabs.active_count == 1) .quit else .close_tab;
     }
 
-    pub fn mergePendingEvents(self: *Layout, drained: PresentQueue.Drain) void {
+    pub fn mergePendingEvents(self: *Layout, drained: PresentationQueue.Drain) void {
         if (drained.overflowed) self.pending_events.markOverflowed();
         for (drained.events) |event| _ = self.pending_events.appendFrom("layout", event);
     }
 
-    pub fn appendPendingEvent(self: *Layout, event: PresentQueue.Event) void {
+    pub fn appendPendingEvent(self: *Layout, event: PresentationQueue.Event) void {
         _ = self.pending_events.appendFrom("layout", event);
     }
 
-    pub fn drainProducedPresentEvents(self: *Layout, out: []PresentQueue.Event) void {
-        self.mergePendingEvents(self.producer_present_queue.drainFrom("layout", out));
+    pub fn drainProducedPresentationEvents(self: *Layout, out: []PresentationQueue.Event) void {
+        self.mergePendingEvents(self.producer_presentation_queue.drainFrom("layout", out));
     }
 
     pub fn updateFrameReady(self: *Layout, app_window: *Window) void {
@@ -248,38 +248,38 @@ pub const Layout = struct {
         self.pending_events.remove(.frame_ready);
     }
 
-    pub fn hasPendingPresent(self: *const Layout) bool {
-        return self.pending_events.hasOverflowed() or self.pending_events.contains(.term_surface_dirty) or self.pending_events.contains(.tab_bar_surface_dirty) or self.pending_events.contains(.window_geometry_changed) or self.pending_events.contains(.window_focus_changed);
+    pub fn hasPendingPresentation(self: *const Layout) bool {
+        return self.pending_events.hasOverflowed() or self.pending_events.contains(.term_surface_dirty) or self.pending_events.contains(.tab_bar_surface_dirty) or self.pending_events.contains(.window_geometry_dirty) or self.pending_events.contains(.window_focus_dirty);
     }
 
-    pub fn pendingEvents(self: *Layout) *PresentQueue.Queue {
+    pub fn pendingEvents(self: *Layout) *PresentationQueue.Queue {
         return &self.pending_events;
     }
 
-    pub fn render(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) PresentTurn {
+    pub fn render(self: *Layout, conf: *const Config.UiConfig, app_window: *Window, texture_frame: *TextureFrame.State, bar: *TabBar) PresentationDrain {
         var readiness: [tab.max_panes]PaneSurfaceReadiness = undefined;
         const ready = self.paneSurfaceReadiness(texture_frame, readiness[0..]);
-        const prepare_turn = self.renderTurn(ready, &self.pending_events);
-        self.noteRenderTurn(prepare_turn);
-        const turn = self.submitUploaded(texture_frame, prepare_turn);
-        self.noteRenderTurn(turn);
-        return .{ .turn = turn, .frame = self.frame(conf, app_window, texture_frame, bar) };
+        const surface_drain = self.drainSurface(ready, &self.pending_events);
+        self.noteSurfaceDrain(surface_drain);
+        const turn = self.drainTexture(texture_frame, surface_drain);
+        self.noteSurfaceDrain(turn);
+        return .{ .drain = turn, .frame = self.frame(conf, app_window, texture_frame, bar) };
     }
 
-    pub fn submitPresent(self: *Layout, texture_frame: *TextureFrame.State, present_turn: PresentTurn, reason: PresentReason) void {
+    pub fn drainPresentation(self: *Layout, texture_frame: *TextureFrame.State, drained: PresentationDrain, reason: PresentationReason) void {
         switch (reason) {
             .none => {},
             .tab_bar_surface,
             .window_frame,
             => {
-                _ = texture_frame.submitPresentSync(present_turn.frame);
-                self.requestWindowWake();
+                _ = texture_frame.drainPresentationSync(drained.frame);
+                self.triggerWindowWake();
             },
             .terminal_frame => {
-                const token = texture_frame.submitPresentSync(present_turn.frame);
-                self.notePresentSubmitted(present_turn.turn, token);
-                self.completePresent(token);
-                self.requestWindowWake();
+                const token = texture_frame.drainPresentationSync(drained.frame);
+                self.notePresentationInFlight(drained.drain, token);
+                self.completePresentation(token);
+                self.triggerWindowWake();
             },
         }
     }
@@ -292,41 +292,41 @@ pub const Layout = struct {
         return true;
     }
 
-    pub fn terminalFrameReady(_: *Layout, step: Term.TurnStep) bool {
+    pub fn terminalPresentationReady(_: *Layout, step: Term.SurfaceDrainStep) bool {
         return step == .rendered;
     }
 
-    pub fn choosePresentReason(self: *Layout, terminal_ready: bool) PresentReason {
+    pub fn choosePresentationReason(self: *Layout, terminal_ready: bool) PresentationReason {
         if (terminal_ready) return .terminal_frame;
         if (self.pending_events.hasOverflowed()) return .window_frame;
         if (self.pending_events.contains(.tab_bar_surface_dirty)) return .tab_bar_surface;
-        if (self.pending_events.contains(.window_geometry_changed)) return .window_frame;
-        if (self.pending_events.contains(.window_focus_changed)) return .window_frame;
+        if (self.pending_events.contains(.window_geometry_dirty)) return .window_frame;
+        if (self.pending_events.contains(.window_focus_dirty)) return .window_frame;
         return .none;
     }
 
-    pub fn consumePresentedEvents(self: *Layout, reason: PresentReason) void {
+    pub fn consumePresentationEvents(self: *Layout, reason: PresentationReason) void {
         switch (reason) {
             .none => {},
             .tab_bar_surface => self.pending_events.remove(.tab_bar_surface_dirty),
             .window_frame => {
-                self.pending_events.remove(.window_geometry_changed);
-                self.pending_events.remove(.window_focus_changed);
+                self.pending_events.remove(.window_geometry_dirty);
+                self.pending_events.remove(.window_focus_dirty);
             },
             .terminal_frame => self.pending_events.clear(),
         }
     }
 
-    pub fn activePaneAddress(self: *Layout) PresentQueue.SurfaceAddress {
+    pub fn activePaneAddress(self: *Layout) PresentationQueue.SurfaceAddress {
         return self.paneAddress(self.tabs.active_tab, self.tabs.active_panes[self.tabs.active_tab]);
     }
 
-    fn appendActiveTabTermSurfaceDirty(self: *Layout, events: *PresentQueue.Queue) void {
+    fn appendActiveTabTermSurfaceDirty(self: *Layout, events: *PresentationQueue.Queue) void {
         const tab_value = self.activeTab();
         for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| _ = events.appendFrom("layout", .{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, pane_value.id) });
     }
 
-    fn requestWindowWake(self: *Layout) void {
+    fn triggerWindowWake(self: *Layout) void {
         if (self.window_wake_pending.swap(true, .acq_rel)) {
             std.debug.print("pub owner=window surface=window event=wake_needed data=true->true\n", .{});
             return;
@@ -347,7 +347,7 @@ pub const Layout = struct {
             .conf = &conf.term,
             .font_size_px = @max(conf.term.font_size, 1),
         };
-        try pane_value.term.initTerminal(allocator, .{ .shell = conf.term.shell, .start_path = conf.term.start_path, .command = conf.term.command }, surface_px, pane_value.font_size_px, conf.term.fonts.primary, conf.term.fonts.mono, conf.term.cursor_shape, conf.term.cursor_blink, render_text_handle, &self.producer_present_queue, .{ .tab_slot = slot, .pane_id = @intFromEnum(id) });
+        try pane_value.term.initTerminal(allocator, .{ .shell = conf.term.shell, .start_path = conf.term.start_path, .command = conf.term.command }, surface_px, pane_value.font_size_px, conf.term.fonts.primary, conf.term.fonts.mono, conf.term.cursor_shape, conf.term.cursor_blink, render_text_handle, &self.producer_presentation_queue, .{ .tab_slot = slot, .pane_id = @intFromEnum(id) });
         try pane_value.term.startTerminal();
         pane_value.live = true;
     }
@@ -409,14 +409,14 @@ pub const Layout = struct {
     fn drainWindowFocus(self: *Layout, app_window: *Window, focused: bool) void {
         _ = app_window.setFocused(focused);
         self.syncFocus(focused);
-        _ = self.pending_events.appendFrom("layout", .window_focus_changed);
+        _ = self.pending_events.appendFrom("layout", .window_focus_dirty);
         self.appendActiveTabTermSurfaceDirty(&self.pending_events);
     }
 
     fn drainWindowGeometry(self: *Layout, conf: *const Config.UiConfig, app_window: *Window) void {
         if (!app_window.refreshGeometry()) return;
         self.applyBody(tab.body(interior.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
-        _ = self.pending_events.appendFrom("layout", .window_geometry_changed);
+        _ = self.pending_events.appendFrom("layout", .window_geometry_dirty);
     }
 
     fn applyBody(self: *Layout, body_value: tab.Body) void {
@@ -470,52 +470,52 @@ pub const Layout = struct {
         };
     }
 
-    fn renderTurn(self: *Layout, readiness: []const PaneSurfaceReadiness, events: *const PresentQueue.Queue) TurnResult {
+    fn drainSurface(self: *Layout, readiness: []const PaneSurfaceReadiness, events: *const PresentationQueue.Queue) DrainResult {
         const tab_value = self.activeTab();
-        var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle };
+        var result = DrainResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle };
         for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| {
             std.debug.assert(readiness[index].id == pane_value.id);
             if (readiness[index].ready and !events.hasTermSurfaceDirty(self.paneAddress(self.tabs.active_tab, pane_value.id))) {
-                result.panes[index] = .{ .id = pane_value.id, .turn = idleTurn() };
+                result.panes[index] = .{ .id = pane_value.id, .drain = idleDrain() };
                 continue;
             }
-            const turn = pane_value.term.renderTurn(readiness[index].ready, pane_value, syncPendingPixelsLocked, hoverDecoration, clearHoverPending);
-            result.panes[index] = .{ .id = pane_value.id, .turn = turn };
-            result.step = aggregateTurnStep(result.step, turn.step);
+            const drain = pane_value.term.drainSurface(readiness[index].ready, pane_value, syncPendingPixelsLocked, hoverDecoration, clearHoverPending);
+            result.panes[index] = .{ .id = pane_value.id, .drain = drain };
+            result.step = aggregateSurfaceDrainStep(result.step, drain.step);
         }
         return result;
     }
 
-    fn submitUploaded(self: *Layout, texture_frame: *TextureFrame.State, prepare_turn: TurnResult) TurnResult {
+    fn drainTexture(self: *Layout, texture_frame: *TextureFrame.State, surface_drain: DrainResult) DrainResult {
         const tab_value = self.activeTab();
-        var result = TurnResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle };
-        for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| result.panes[index] = .{ .id = pane_value.id, .turn = idleTurn() };
-        for (prepare_turn.panes[0..prepare_turn.pane_count]) |pane_turn| {
-            const prepared = pane_turn.turn.upload orelse continue;
-            const uploaded = texture_frame.uploadTermSurface(pane_turn.id, prepared.frame);
-            const pane_value = &tab_value.panes[tab.paneIndex(pane_turn.id)];
-            const submit = pane_value.term.submitUploaded(.{ .prepared = prepared, .term_surface = uploaded.term_surface, .ok = uploaded.ok });
-            const turn = Term.TurnResult{ .state_before = .submit_ready, .state_after = pane_value.term.render.retainedState(), .prepared = false, .step = submitStep(submit.result), .present_snapshot_seq = if (submit.result == .rendered) submit.snapshot_seq else 0, .upload = null };
-            result.panes[tab.paneIndex(pane_turn.id)] = .{ .id = pane_turn.id, .turn = turn };
-            result.step = aggregateTurnStep(result.step, turn.step);
+        var result = DrainResult{ .panes = undefined, .pane_count = tab_value.pane_count, .step = .surface_idle };
+        for (tab_value.panes[0..tab_value.pane_count], 0..) |*pane_value, index| result.panes[index] = .{ .id = pane_value.id, .drain = idleDrain() };
+        for (surface_drain.panes[0..surface_drain.pane_count]) |pane_drain| {
+            const ready = pane_drain.drain.upload orelse continue;
+            const uploaded = texture_frame.drainTermSurface(pane_drain.id, ready.frame);
+            const pane_value = &tab_value.panes[tab.paneIndex(pane_drain.id)];
+            const drain_texture = pane_value.term.drainTexture(.{ .ready = ready, .term_surface = uploaded.term_surface, .ok = uploaded.ok });
+            const drain = Term.DrainResult{ .state_before = .drain_ready, .state_after = pane_value.term.render.retainedState(), .ready = false, .step = drainTextureStep(drain_texture.result), .presentation_snapshot_seq = if (drain_texture.result == .rendered) drain_texture.snapshot_seq else 0, .upload = null };
+            result.panes[tab.paneIndex(pane_drain.id)] = .{ .id = pane_drain.id, .drain = drain };
+            result.step = aggregateSurfaceDrainStep(result.step, drain.step);
         }
         return result;
     }
 
-    fn noteRenderTurn(self: *Layout, turn: TurnResult) void {
-        for (turn.panes[0..turn.pane_count]) |pane_turn| self.activeTab().panes[tab.paneIndex(pane_turn.id)].term.noteRenderTurn(pane_turn.turn);
+    fn noteSurfaceDrain(self: *Layout, drain: DrainResult) void {
+        for (drain.panes[0..drain.pane_count]) |pane_drain| self.activeTab().panes[tab.paneIndex(pane_drain.id)].term.noteSurfaceDrain(pane_drain.drain);
     }
 
-    fn notePresentSubmitted(self: *Layout, turn: TurnResult, token: u64) void {
-        for (turn.panes[0..turn.pane_count]) |pane_turn| {
-            if (pane_turn.turn.step != .rendered) continue;
-            self.activeTab().panes[tab.paneIndex(pane_turn.id)].term.notePresentSubmitted(pane_turn.turn.present_snapshot_seq, token);
+    fn notePresentationInFlight(self: *Layout, drain: DrainResult, token: u64) void {
+        for (drain.panes[0..drain.pane_count]) |pane_drain| {
+            if (pane_drain.drain.step != .rendered) continue;
+            self.activeTab().panes[tab.paneIndex(pane_drain.id)].term.notePresentationInFlight(pane_drain.drain.presentation_snapshot_seq, token);
         }
     }
 
-    fn completePresent(self: *Layout, token: u64) void {
+    fn completePresentation(self: *Layout, token: u64) void {
         const tab_value = self.activeTab();
-        for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| pane_value.term.completePresent(token);
+        for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| pane_value.term.completePresentation(token);
     }
 
     fn paneSurfaceReadiness(self: *Layout, texture_frame: *const TextureFrame.State, out: []PaneSurfaceReadiness) []PaneSurfaceReadiness {
@@ -524,7 +524,7 @@ pub const Layout = struct {
         return out[0..tab_value.pane_count];
     }
 
-    fn paneAddress(self: *Layout, tab_index_value: usize, pane_id: pane.PaneId) PresentQueue.SurfaceAddress {
+    fn paneAddress(self: *Layout, tab_index_value: usize, pane_id: pane.PaneId) PresentationQueue.SurfaceAddress {
         std.debug.assert(tab_index_value < self.tabs.active_count);
         return .{ .tab_slot = self.tabs.active_slots[tab_index_value], .pane_id = @intFromEnum(pane_id) };
     }
@@ -665,31 +665,31 @@ fn clearHoverPending(surface: *anyopaque) void {
     paneOwner(surface).links.hover_publish_pending = false;
 }
 
-fn aggregateTurnStep(current: Term.TurnStep, next: Term.TurnStep) Term.TurnStep {
-    return if (turnStepRank(next) > turnStepRank(current)) next else current;
+fn aggregateSurfaceDrainStep(current: Term.SurfaceDrainStep, next: Term.SurfaceDrainStep) Term.SurfaceDrainStep {
+    return if (surfaceDrainStepRank(next) > surfaceDrainStepRank(current)) next else current;
 }
 
-fn turnStepRank(step: Term.TurnStep) u8 {
+fn surfaceDrainStepRank(step: Term.SurfaceDrainStep) u8 {
     return switch (step) {
         .surface_idle => 0,
-        .idle_prepare => 1,
-        .idle_submit => 2,
+        .idle_drain => 1,
+        .idle_texture => 2,
         .failed => 3,
-        .blocked_present => 4,
+        .blocked_presentation => 4,
         .rendered => 5,
     };
 }
 
-fn submitStep(result: render_retained.SubmitResult) Term.TurnStep {
+fn drainTextureStep(result: render_retained.DrainTextureResult) Term.SurfaceDrainStep {
     return switch (result) {
         .rendered => .rendered,
         .failed => .failed,
-        .idle, .stale, .needs_prepare => .idle_submit,
+        .idle, .stale, .needs_drain => .idle_texture,
     };
 }
 
-fn idleTurn() Term.TurnResult {
-    return .{ .state_before = .idle, .state_after = .idle, .prepared = false, .step = .surface_idle, .present_snapshot_seq = 0, .upload = null };
+fn idleDrain() Term.DrainResult {
+    return .{ .state_before = .idle, .state_after = .idle, .ready = false, .step = .surface_idle, .presentation_snapshot_seq = 0, .upload = null };
 }
 
 pub fn framePanes(tab_body: tab.Body, split_tree: splits.Tree, facts: []const PaneFrameFacts, textures: []const PaneTexture, out: []FramePane) []FramePane {

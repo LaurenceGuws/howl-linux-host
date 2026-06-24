@@ -87,12 +87,12 @@ pub fn writeCells(surface: *Surface, frame_value: Layout.Frame, cells_visible: u
     }
 }
 
-pub fn uploadRenderSurface(store: *GlResourceStore, tab_bar_surface: TabBarSurface, render_surface: *const render_c.HowlRenderTabBarSurfacePrepared) void {
+pub fn drainRenderSurface(store: *GlResourceStore, tab_bar_surface: TabBarSurface, render_surface: *const render_c.HowlRenderTabBarSurfaceDrain) void {
     store.syncTabBarResources(render_surface);
     uploadCommands(store, drawTarget(tab_bar_surface), render_surface);
 }
 
-fn uploadCommands(store: *GlResourceStore, target: DrawTarget, render_surface: *const render_c.HowlRenderTabBarSurfacePrepared) void {
+fn uploadCommands(store: *GlResourceStore, target: DrawTarget, render_surface: *const render_c.HowlRenderTabBarSurfaceDrain) void {
     std.debug.assert(target.texture_id != 0);
     std.debug.assert(target.width == render_surface.render_px.width);
     std.debug.assert(target.height == render_surface.render_px.height);
@@ -159,7 +159,7 @@ fn drawTarget(tab_bar_surface: TabBarSurface) DrawTarget {
     return .{ .texture_id = tab_bar_surface.tab_bar_surface_id, .width = tab_bar_surface.width, .height = tab_bar_surface.height };
 }
 
-fn resourceHasFutureUpload(surface: *const render_c.HowlRenderTabBarSurfacePrepared, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
+fn resourceHasFutureUpload(surface: *const render_c.HowlRenderTabBarSurfaceDrain, resource: render_c.HowlRenderResourceId, command_index: u32) bool {
     const uploads = resource_store.tabBarResourceUploadSlice(surface.uploads.ptr, surface.uploads.count);
     for (uploads) |upload| {
         if (!resource_store.sameResource(upload.resource, resource)) continue;
@@ -168,7 +168,7 @@ fn resourceHasFutureUpload(surface: *const render_c.HowlRenderTabBarSurfacePrepa
     return false;
 }
 
-fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderTabBarSurfacePrepared, command: render_c.HowlRenderTabBarSurfaceCommand, command_index: u32) bool {
+fn glyphCommandHasFutureUpload(surface: *const render_c.HowlRenderTabBarSurfaceDrain, command: render_c.HowlRenderTabBarSurfaceCommand, command_index: u32) bool {
     const glyphs = glyphRefSlice(command.glyphs.ptr, command.glyphs.count);
     for (glyphs) |glyph| if (resourceHasFutureUpload(surface, glyph.atlas_resource, command_index)) return true;
     return false;
