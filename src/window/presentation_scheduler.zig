@@ -6,6 +6,7 @@ const assert = std.debug.assert;
 const FrameTimer = @import("frame_timer.zig").FrameTimer;
 const presentation_queue = @import("presentation_queue.zig");
 const sdl_window = @import("sdl_window.zig");
+const log = std.log.scoped(.presentation_scheduler);
 
 pub const TimerTopic = enum {
     frame,
@@ -62,6 +63,7 @@ pub const Scheduler = struct {
             assert(timer.deadline_ns > 0);
             if (timer.deadline_ns <= now_ns) {
                 _ = events.appendFrom("presentation_scheduler", .frame_ready);
+                log.debug("edge source=render event=frame_ready deadline_ns={} now_ns={}", .{ timer.deadline_ns, now_ns });
                 timer.deadline_ns = 0;
                 timer.active = false;
             } else {
@@ -81,6 +83,7 @@ pub const Scheduler = struct {
         assert(refresh_interval_ns > 0);
         app_window.markFrameUsed();
         const timeout_ns = self.frame_timer.computeTimeoutNs(now_ns, refresh_interval_ns);
+        log.debug("trigger owner=presentation_scheduler event=frame_deadline now_ns={} timeout_ns={}", .{ now_ns, timeout_ns });
         self.schedule(.frame, now_ns + timeout_ns);
     }
 };

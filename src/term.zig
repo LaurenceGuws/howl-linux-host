@@ -18,6 +18,8 @@ const render_retained = Render.surface_retained;
 const FairMutex = Sync.FairMutex;
 const vt_state = Vt.state;
 const vt_title = Vt.title;
+const input_log = std.log.scoped(.term_input);
+const surface_log = std.log.scoped(.term_surface);
 
 const history_capacity: u16 = 4096;
 const max_input_events: u16 = 256;
@@ -201,18 +203,24 @@ pub const Term = struct {
 
     pub fn triggerTermSurfaceDirty(self: *Term) void {
         const presentation_events = self.presentation_events orelse return;
-        _ = presentation_events.appendFrom("term", .{ .term_surface_dirty = self.presentation_address });
+        const stored = presentation_events.appendFrom("term", .{ .term_surface_dirty = self.presentation_address });
+        surface_log.debug("trigger owner=term queue=presentation event=term_surface_dirty tab={} pane={} stored={}", .{ self.presentation_address.tab_slot, self.presentation_address.pane_id, stored });
     }
 
     pub fn triggerTabBarSurfaceDirty(self: *Term) void {
         const presentation_events = self.presentation_events orelse return;
-        _ = presentation_events.appendFrom("term", .tab_bar_surface_dirty);
+        const stored = presentation_events.appendFrom("term", .tab_bar_surface_dirty);
+        surface_log.debug("trigger owner=term queue=presentation event=tab_bar_surface_dirty stored={}", .{stored});
     }
 
     pub fn triggerInput(self: *Term, event: InputEvent) bool {
-        if (self.input_event_count == max_input_events) return false;
+        if (self.input_event_count == max_input_events) {
+            input_log.debug("trigger owner=term queue=input event={s} stored=false", .{@tagName(event)});
+            return false;
+        }
         self.input_events[self.input_event_count] = event;
         self.input_event_count += 1;
+        input_log.debug("trigger owner=term queue=input event={s} stored=true", .{@tagName(event)});
         return true;
     }
 
@@ -220,6 +228,7 @@ pub const Term = struct {
         const events = self.input_events[0..self.input_event_count];
         self.input_event_count = 0;
         const changed = try Vt.input.drainEvents(self, events);
+        input_log.debug("drain owner=term queue=input count={} changed={}", .{ events.len, changed });
         if (changed) self.triggerTermSurfaceDirty();
         return changed;
     }

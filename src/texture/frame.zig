@@ -11,6 +11,7 @@ const tab_bar_surface_layout = @import("../tab_bar/surface_layout.zig");
 const tab_bar_surface = @import("../tab_bar/surface.zig");
 const texture_tab_bar = @import("tab_bar.zig");
 const texture_term = @import("term.zig");
+const log = std.log.scoped(.render_edge);
 
 // Current tab frames can expose at most two visible terminal panes. Keep this local to avoid a
 // texture->tab owner dependency while the dying bucket still sits under tab; if Tab.max_frame_panes
@@ -208,7 +209,7 @@ pub fn drainFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.F
     for (frame.panes) |pane| texture_scroll_bar.drawChip(c, @max(fb_w, 1), @max(fb_h, 1), pane.scroll_chip);
     const damage = egl_swap.Damage.fullFrame();
     _ = egl_swap.swapDamaged(c, handle, damage.rects[0..damage.count], @max(fb_w, 1), @max(fb_h, 1), damage.full, false);
-    std.debug.print("pub owner=texture surface=frame event=presentation_completed data=token:{}\n", .{token});
+    log.debug("edge source=render event=presentation_completed token={}", .{token});
     return token;
 }
 

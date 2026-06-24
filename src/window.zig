@@ -16,6 +16,8 @@ const render_retained = @import("render/surface_retained.zig");
 const surface_layout = @import("render/surface_layout.zig");
 const term_input = @import("vt/input.zig");
 const vt_surface = @import("vt/surface.zig");
+const drain_log = std.log.scoped(.window_drain);
+const wake_log = std.log.scoped(.window_wake);
 
 pub const frame_contract = @import("window/frame.zig");
 pub const geometry = @import("window/geometry.zig");
@@ -267,6 +269,7 @@ pub const Layout = struct {
     }
 
     pub fn drainPresentation(self: *Layout, texture_frame: *TextureFrame.State, drained: PresentationDrain, reason: PresentationReason) void {
+        drain_log.debug("drain owner=window event=presentation reason={s}", .{@tagName(reason)});
         switch (reason) {
             .none => {},
             .tab_bar_surface,
@@ -288,7 +291,7 @@ pub const Layout = struct {
         if (self.sdl_wake_event_type == 0) return false;
         if (event.type != self.sdl_wake_event_type) return false;
         self.window_wake_pending.store(false, .release);
-        std.debug.print("drain owner=window surface=window event=wake_needed data=true->false\n", .{});
+        wake_log.debug("wake owner=window state=true->false reason=sdl_wake", .{});
         return true;
     }
 
@@ -328,10 +331,10 @@ pub const Layout = struct {
 
     fn triggerWindowWake(self: *Layout) void {
         if (self.window_wake_pending.swap(true, .acq_rel)) {
-            std.debug.print("pub owner=window surface=window event=wake_needed data=true->true\n", .{});
+            wake_log.debug("wake owner=window state=true->true reason=presentation_completed", .{});
             return;
         }
-        std.debug.print("pub owner=window surface=window event=wake_needed data=false->true\n", .{});
+        wake_log.debug("wake owner=window state=false->true reason=presentation_completed", .{});
         std.debug.assert(self.sdl_wake_event_type != 0);
         var event = sdl_c.SDL_Event{ .user = .{ .type = self.sdl_wake_event_type } };
         _ = sdl_c.SDL_PushEvent(&event);
@@ -407,14 +410,18 @@ pub const Layout = struct {
     }
 
     fn drainWindowFocus(self: *Layout, app_window: *Window, focused: bool) void {
-        _ = app_window.setFocused(focused);
+        const changed = app_window.setFocused(focused);
+        drain_log.debug("drain owner=window event=focus focused={} changed={}", .{ focused, changed });
+        if (!changed) return;
         self.syncFocus(focused);
         _ = self.presentation_events.appendFrom("layout", .window_focus_dirty);
         self.appendActiveTabTermSurfaceDirty(&self.presentation_events);
     }
 
     fn drainWindowGeometry(self: *Layout, conf: *const Config.UiConfig, app_window: *Window) void {
-        if (!app_window.refreshGeometry()) return;
+        const changed = app_window.refreshGeometry();
+        drain_log.debug("drain owner=window event=geometry changed={}", .{changed});
+        if (!changed) return;
         self.drainBodyLayout(tab.body(interior.interior(app_window, &conf.tab_bar, self.tabs.active_count)));
         _ = self.presentation_events.appendFrom("layout", .window_geometry_dirty);
     }
@@ -440,8 +447,10 @@ pub const Layout = struct {
         while (tab_index_value < self.tabs.active_count) : (tab_index_value += 1) {
             const tab_value = self.tabAt(tab_index_value);
             for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| {
+                const next_widget_focused = tab_index_value == self.tabs.active_tab and pane_value.id == self.tabs.active_panes[self.tabs.active_tab];
+                if (pane_value.window_focused == focused and pane_value.widget_focused == next_widget_focused) continue;
                 pane_value.window_focused = focused;
-                pane_value.widget_focused = tab_index_value == self.tabs.active_tab and pane_value.id == self.tabs.active_panes[self.tabs.active_tab];
+                pane_value.widget_focused = next_widget_focused;
                 if (pane_value.term.triggerInput(.{ .focus = pane_value.window_focused and pane_value.widget_focused })) {
                     _ = pane_value.term.drainInput() catch false;
                 }
@@ -871,4 +880,59 @@ test "frame carries explicit pane draw records and tab bar height" {
     try std.testing.expectEqual(@as(usize, 1), frame.panes.len);
     try std.testing.expectEqual(pane.PaneId.first, frame.panes[0].id);
     try std.testing.expectEqual(@as(c_int, 16), frame.tab_bar_height_px);
+}
+
+test "repeated same focus event does not append window focus dirty" {
+    var layout = Layout{};
+    var app_window = testWindowWithFocus(true);
+
+    layout.drainWindowFocus(&app_window, true);
+
+    try std.testing.expect(!layout.presentation_events.contains(.window_focus_dirty));
+    try std.testing.expectEqual(@as(usize, 0), layout.presentation_events.len());
+}
+
+test "repeated same focus event does not append term surface dirty" {
+    var layout = Layout{};
+    layout.tabs.active_count = 1;
+    layout.tabs.active_tab = 0;
+    layout.tabs.active_slots[0] = 0;
+    layout.tabs.active_panes[0] = .first;
+    layout.tabs.tabs[0].pane_count = 1;
+    layout.tabs.tabs[0].panes[0].id = .first;
+    layout.tabs.tabs[0].panes[0].window_focused = true;
+    layout.tabs.tabs[0].panes[0].widget_focused = true;
+    var app_window = testWindowWithFocus(true);
+
+    layout.drainWindowFocus(&app_window, true);
+
+    try std.testing.expect(!layout.presentation_events.hasTermSurfaceDirty(.{ .tab_slot = 0, .pane_id = 0 }));
+    try std.testing.expectEqual(@as(usize, 0), layout.presentation_events.len());
+}
+
+test "focus transition appends window focus dirty" {
+    var layout = Layout{};
+    layout.tabs.active_count = 1;
+    layout.tabs.active_tab = 0;
+    layout.tabs.active_slots[0] = 0;
+    layout.tabs.tabs[0].pane_count = 0;
+    var app_window = testWindowWithFocus(false);
+
+    layout.drainWindowFocus(&app_window, true);
+
+    try std.testing.expect(layout.presentation_events.contains(.window_focus_dirty));
+    try std.testing.expectEqual(@as(usize, 1), layout.presentation_events.len());
+}
+
+fn testWindowWithFocus(focused: bool) Window {
+    return .{
+        .handle = undefined,
+        .current_title = undefined,
+        .has_frame = true,
+        .px_w = 1,
+        .px_h = 1,
+        .logical_w = 1,
+        .logical_h = 1,
+        .focused = focused,
+    };
 }

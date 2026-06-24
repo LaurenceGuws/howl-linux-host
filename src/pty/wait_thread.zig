@@ -3,6 +3,7 @@ const pty_pump = @import("../pty/pump.zig");
 const Term = @import("../term.zig").Term;
 const sdl_c = @import("sdl_c");
 const std = @import("std");
+const log = std.log.scoped(.pty_edge);
 
 pub const TransportWait = union(enum) {
     indefinite,
@@ -49,6 +50,9 @@ fn progressThreadMainWith(target_value: ProgressThreadTarget, comptime Ops: type
         if (!waitForTransport(target_value, Ops)) continue;
         while (!target_value.progress.stop.load(.acquire)) {
             const progress = Ops.driveProgress(target_value.term, nowNs());
+            if (progress.term_surface_dirty or progress.tab_bar_surface_dirty or !progress.alive) {
+                log.debug("edge source=pty term_surface_dirty={} tab_bar_surface_dirty={} keep={} alive={}", .{ progress.term_surface_dirty, progress.tab_bar_surface_dirty, progress.keep, progress.alive });
+            }
             if (progress.term_surface_dirty or !progress.alive) triggerWake(target_value, Ops);
             if (progress.tab_bar_surface_dirty) Ops.triggerTabBarSurfaceDirty(target_value.term);
             if (!progress.alive) return;
@@ -69,6 +73,7 @@ fn waitForTransport(target_value: ProgressThreadTarget, comptime Ops: type) bool
 
 fn triggerWake(target_value: ProgressThreadTarget, comptime Ops: type) void {
     _ = target_value.progress;
+    log.debug("trigger owner=pty queue=presentation event=term_surface_dirty", .{});
     Ops.triggerTermSurfaceDirty(target_value.term);
 }
 

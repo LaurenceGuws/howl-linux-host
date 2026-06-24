@@ -13,6 +13,7 @@ const sdl_c = @import("sdl_c");
 const presentation_scheduler = WindowPolicy.presentation_scheduler;
 const presentation_queue = WindowPolicy.presentation_queue;
 const window = WindowPolicy.sdl_window;
+const log = std.log.scoped(.main_loop);
 
 const TabBar = TabBarUnit.TabBar;
 const TextureFrame = Texture.frame;
@@ -22,6 +23,26 @@ const max_sdl_events_per_turn = 256;
 
 pub const Args = cli.Args;
 const child_term_value: [*:0]const u8 = "xterm-256color";
+
+pub const std_options: std.Options = .{
+    .log_level = .warn,
+    .log_scope_levels = &.{
+        .{ .scope = .main_loop, .level = .debug },
+        .{ .scope = .sdl_edge, .level = .debug },
+        .{ .scope = .window_drain, .level = .debug },
+        .{ .scope = .window_wake, .level = .debug },
+        .{ .scope = .presentation_queue, .level = .debug },
+        .{ .scope = .presentation_scheduler, .level = .debug },
+        .{ .scope = .term_input, .level = .debug },
+        .{ .scope = .term_surface, .level = .debug },
+        .{ .scope = .pty_edge, .level = .debug },
+        .{ .scope = .render_edge, .level = .debug },
+    },
+    // Dev diagnostics while host ABI/SDL/GL boundaries are still moving.
+    .allow_stack_tracing = true,
+    .enable_segfault_handler = true,
+    .unexpected_error_tracing = true,
+};
 
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
@@ -105,6 +126,7 @@ fn runMainLoop(conf: *const Config.UiConfig, app_window: *window.Window, texture
         layout.updateFrameReady(app_window);
 
         const wait = chooseWait(input.hasEvents(), app_window.hasFrame() and layout.hasPresentationEvents(), closest_deadline_ns, first_now_ns);
+        log.debug("drain owner=main_loop input_events={} presentation_events={} deadline_ns={?} for_window={} timeout_ms={?}", .{ input.hasEvents(), app_window.hasFrame() and layout.hasPresentationEvents(), closest_deadline_ns, wait.for_window, wait.timeout_ms });
         if (pumpInput(layout, input, wait)) return;
 
         try layout.drainInput(conf, app_window, texture_frame, input);

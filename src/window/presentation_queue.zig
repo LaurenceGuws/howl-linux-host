@@ -1,6 +1,6 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const assert = std.debug.assert;
+const log = std.log.scoped(.presentation_queue);
 
 pub const max_presentation_events = 64;
 
@@ -116,7 +116,7 @@ pub const Queue = struct {
     pub fn drainFrom(self: *Queue, owner: []const u8, out: []Event) Drain {
         const drained = self.drain(out);
         for (drained.events) |event| printEvent("drain", owner, event, true);
-        if (drained.overflowed) std.debug.print("drain owner={s} surface=presentation_queue event=overflow data=true\n", .{owner});
+        if (drained.overflowed) log.debug("drain owner={s} queue=presentation event=overflow", .{owner});
         return drained;
     }
 
@@ -130,13 +130,12 @@ pub const Queue = struct {
 };
 
 fn printEvent(direction: []const u8, owner: []const u8, event: Event, stored: bool) void {
-    if (builtin.is_test) return;
     switch (event) {
-        .term_surface_dirty => |address| std.debug.print("{s} owner={s} surface=term event=term_surface_dirty data=tab:{} pane:{} stored={}\n", .{ direction, owner, address.tab_slot, address.pane_id, stored }),
-        .tab_bar_surface_dirty => std.debug.print("{s} owner={s} surface=tab_bar event=tab_bar_surface_dirty data=full stored={}\n", .{ direction, owner, stored }),
-        .window_geometry_dirty => std.debug.print("{s} owner={s} surface=window event=window_geometry_dirty data=full stored={}\n", .{ direction, owner, stored }),
-        .window_focus_dirty => std.debug.print("{s} owner={s} surface=window event=window_focus_dirty data=full stored={}\n", .{ direction, owner, stored }),
-        .frame_ready => std.debug.print("{s} owner={s} surface=window event=frame_ready data=full stored={}\n", .{ direction, owner, stored }),
+        .term_surface_dirty => |address| log.debug("{s} owner={s} queue=presentation event=term_surface_dirty tab={} pane={} stored={}", .{ direction, owner, address.tab_slot, address.pane_id, stored }),
+        .tab_bar_surface_dirty => log.debug("{s} owner={s} queue=presentation event=tab_bar_surface_dirty stored={}", .{ direction, owner, stored }),
+        .window_geometry_dirty => log.debug("{s} owner={s} queue=presentation event=window_geometry_dirty stored={}", .{ direction, owner, stored }),
+        .window_focus_dirty => log.debug("{s} owner={s} queue=presentation event=window_focus_dirty stored={}", .{ direction, owner, stored }),
+        .frame_ready => log.debug("{s} owner={s} queue=presentation event=frame_ready stored={}", .{ direction, owner, stored }),
     }
 }
 

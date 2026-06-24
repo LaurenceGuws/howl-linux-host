@@ -5,6 +5,7 @@ const vt_retained = @import("../vt/surface_retained.zig");
 const vt_title = @import("../vt/title.zig");
 const FairMutex = @import("../sync.zig").FairMutex;
 const std = @import("std");
+const log = std.log.scoped(.pty_edge);
 
 const transport_mode: pty_session.TransportPumpMode = .normal;
 const transport_backlog_bytes: u32 = pty_session.transport_chunk_bytes * 16;
@@ -54,6 +55,9 @@ fn driveOnceWith(term: anytype, now_ns: u64, comptime Ops: type) Outcome {
     const alive = Ops.isAlive(term);
     const keep = backlog or transport.hit_limit or runtime.pending_now;
     const term_surface_dirty = transport.reads != 0 or transport.bytes_read != 0 or runtime.state_changed;
+    if (term_surface_dirty or transport.title_changed or !alive) {
+        log.debug("edge source=pty reads={} bytes={} title_changed={} runtime_changed={} keep={} alive={}", .{ transport.reads, transport.bytes_read, transport.title_changed, runtime.state_changed, keep, alive });
+    }
     return .{ .keep = keep, .term_surface_dirty = term_surface_dirty, .tab_bar_surface_dirty = transport.title_changed, .alive = alive };
 }
 

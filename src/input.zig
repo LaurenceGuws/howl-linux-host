@@ -2,6 +2,7 @@ const std = @import("std");
 const keys = @import("input/keys.zig");
 const mouse = @import("input/mouse.zig");
 const sdl_c = @import("sdl_c");
+const log = std.log.scoped(.sdl_edge);
 
 pub const processor = @import("input/processor.zig");
 
@@ -169,11 +170,13 @@ pub const Input = struct {
     pub fn triggerSdl(self: *Input, event: *const c.SDL_Event) void {
         switch (event.type) {
             c.SDL_EVENT_WINDOW_FOCUS_GAINED => {
-                _ = appendEvent(self, .{ .window_focus = true });
+                const queued = appendEvent(self, .{ .window_focus = true });
+                log.debug("edge source=sdl event=window_focus focused=true queued={}", .{queued});
                 return;
             },
             c.SDL_EVENT_WINDOW_FOCUS_LOST => {
-                _ = appendEvent(self, .{ .window_focus = false });
+                const queued = appendEvent(self, .{ .window_focus = false });
+                log.debug("edge source=sdl event=window_focus focused=false queued={}", .{queued});
                 return;
             },
             c.SDL_EVENT_WINDOW_EXPOSED => {
@@ -215,7 +218,8 @@ pub const Input = struct {
             c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED,
             c.SDL_EVENT_WINDOW_DISPLAY_CHANGED,
             => {
-                _ = appendEvent(self, .window_geometry);
+                const queued = appendEvent(self, .window_geometry);
+                log.debug("edge source=sdl event=window_geometry queued={}", .{queued});
                 return;
             },
             else => return,
