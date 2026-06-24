@@ -208,7 +208,7 @@ pub fn submitFrameSync(comptime c: type, state: *GenericState(c), frame: Layout.
     for (frame.panes) |pane| texture_scroll_bar.drawChip(c, @max(fb_w, 1), @max(fb_h, 1), pane.scroll_chip);
     const damage = egl_swap.Damage.fullFrame();
     _ = egl_swap.swapDamaged(c, handle, damage.rects[0..damage.count], @max(fb_w, 1), @max(fb_h, 1), damage.full, false);
-    std.debug.print("texture present completed token={}\n", .{token});
+    std.debug.print("pub owner=texture surface=frame event=present_completed data=token:{}\n", .{token});
     return token;
 }
 

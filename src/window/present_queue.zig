@@ -49,6 +49,12 @@ pub const Queue = struct {
         return true;
     }
 
+    pub fn appendFrom(self: *Queue, owner: []const u8, event: Event) bool {
+        const stored = self.append(event);
+        printEvent("pub", owner, event, stored);
+        return stored;
+    }
+
     pub fn len(self: *const Queue) usize {
         return self.count + @intFromBool(self.overflowed);
     }
@@ -107,6 +113,13 @@ pub const Queue = struct {
         return .{ .events = drained, .overflowed = drained_overflowed };
     }
 
+    pub fn drainFrom(self: *Queue, owner: []const u8, out: []Event) Drain {
+        const drained = self.drain(out);
+        for (drained.events) |event| printEvent("drain", owner, event, true);
+        if (drained.overflowed) std.debug.print("drain owner={s} surface=present_queue event=overflow data=true\n", .{owner});
+        return drained;
+    }
+
     fn indexOf(self: *const Queue, event: Event) ?u8 {
         var index: u8 = 0;
         while (index < self.count) : (index += 1) {
@@ -115,6 +128,17 @@ pub const Queue = struct {
         return null;
     }
 };
+
+fn printEvent(direction: []const u8, owner: []const u8, event: Event, stored: bool) void {
+    switch (event) {
+        .term_surface_dirty => |address| std.debug.print("{s} owner={s} surface=term event=term_surface_dirty data=tab:{} pane:{} stored={}\n", .{ direction, owner, address.tab_slot, address.pane_id, stored }),
+        .tab_bar_surface_dirty => std.debug.print("{s} owner={s} surface=tab_bar event=tab_bar_surface_dirty data=full stored={}\n", .{ direction, owner, stored }),
+        .input_pending => std.debug.print("{s} owner={s} surface=input event=input_pending data=full stored={}\n", .{ direction, owner, stored }),
+        .window_geometry_changed => std.debug.print("{s} owner={s} surface=window event=window_geometry_changed data=full stored={}\n", .{ direction, owner, stored }),
+        .window_focus_changed => std.debug.print("{s} owner={s} surface=window event=window_focus_changed data=full stored={}\n", .{ direction, owner, stored }),
+        .frame_ready => std.debug.print("{s} owner={s} surface=window event=frame_ready data=full stored={}\n", .{ direction, owner, stored }),
+    }
+}
 
 fn sameEvent(a: Event, b: Event) bool {
     switch (a) {

@@ -129,9 +129,7 @@ pub const Term = struct {
             .progress_thread = .{},
             .host_title = .{},
         };
-        std.debug.print("pty init\n", .{});
         self.progress_thread.init();
-        std.debug.print("pty started\n", .{});
         session_owned_by_local = false;
         vt_owned_by_local = false;
         render_owned_by_local = false;
@@ -197,14 +195,23 @@ pub const Term = struct {
 
     pub fn triggerTermSurfaceDirty(self: *Term) void {
         const present_events = self.present_events orelse return;
-        const stored = present_events.append(.{ .term_surface_dirty = self.present_address });
-        std.debug.print("present event term_surface_dirty stored={}\n", .{stored});
+        _ = present_events.appendFrom("term", .{ .term_surface_dirty = self.present_address });
     }
 
     pub fn triggerTabBarSurfaceDirty(self: *Term) void {
         const present_events = self.present_events orelse return;
-        const stored = present_events.append(.tab_bar_surface_dirty);
-        std.debug.print("present event tab_bar_surface_dirty stored={}\n", .{stored});
+        _ = present_events.appendFrom("term", .tab_bar_surface_dirty);
+    }
+
+    pub fn drainWindowBounds(self: *Term, surface_px: render_c.HowlRenderPixelSize) void {
+        self.mutex.lockFair();
+        const changed = surface_layout.syncSurfaceLayoutLocked(self, surface_px) catch |err| {
+            std.debug.panic("terminal surface bounds failed: {}", .{err});
+        };
+        if (changed) self.render.notePrepareNeeded();
+        self.mutex.unlock();
+        if (!changed) return;
+        self.triggerTermSurfaceDirty();
     }
 
     fn stopProgressThread(self: *Term) void {

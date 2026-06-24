@@ -89,7 +89,7 @@ pub fn syncPendingSurfacePixels(surface_resize: *SurfaceResize, term: *Term) boo
         surface_resize.last_resize_ns = 0;
         break :blk readSurfacePixelsLocked(surface_resize);
     };
-    syncSurfaceLayout(term, surface_px) catch return false;
+    _ = syncSurfaceLayout(term, surface_px) catch return false;
     return retainedRenderPixelsMatch(term, surface_px);
 }
 
@@ -104,30 +104,32 @@ pub fn syncPendingSurfacePixelsLocked(surface_resize: *SurfaceResize, term: *Ter
         surface_resize.last_resize_ns = 0;
         break :blk readSurfacePixelsLocked(surface_resize);
     };
-    syncSurfaceLayoutLocked(term, surface_px) catch return false;
+    _ = syncSurfaceLayoutLocked(term, surface_px) catch return false;
     return retainedRenderPixelsMatchLocked(term, surface_px);
 }
 
-pub fn syncSurfaceLayout(term: *Term, surface_px: c.HowlRenderPixelSize) !void {
+pub fn syncSurfaceLayout(term: *Term, surface_px: c.HowlRenderPixelSize) !bool {
     const sync = try deriveSurfaceLayout(term, surface_px);
-    if (!sync.changed) return;
+    if (!sync.changed) return false;
     if (sync.grid_changed) {
         try pty_session.resize(term, sync.layout.cols, sync.layout.rows);
         try resizeTermVt(term, sync.layout.rows, sync.layout.cols);
     }
     try setTermCellPixelSize(term, sync.layout.cell_px.width, sync.layout.cell_px.height);
     commitSurfaceLayout(term, sync.layout);
+    return true;
 }
 
-pub fn syncSurfaceLayoutLocked(term: *Term, surface_px: c.HowlRenderPixelSize) !void {
+pub fn syncSurfaceLayoutLocked(term: *Term, surface_px: c.HowlRenderPixelSize) !bool {
     const sync = try deriveSurfaceLayoutLocked(term, surface_px);
-    if (!sync.changed) return;
+    if (!sync.changed) return false;
     if (sync.grid_changed) {
         try pty_session.resizeLocked(term, sync.layout.cols, sync.layout.rows);
         try resizeTermVtLocked(term, sync.layout.rows, sync.layout.cols);
     }
     try setTermCellPixelSizeLocked(term, sync.layout.cell_px.width, sync.layout.cell_px.height);
     commitSurfaceLayoutLocked(term, sync.layout);
+    return true;
 }
 
 pub fn readSurfacePixels(surface_resize: *SurfaceResize) c.HowlRenderPixelSize {
@@ -138,7 +140,7 @@ pub fn readSurfacePixels(surface_resize: *SurfaceResize) c.HowlRenderPixelSize {
 
 pub fn syncCurrentSurfaceLayout(surface_resize: *SurfaceResize, term: *Term) bool {
     const surface_px = readSurfacePixels(surface_resize);
-    syncSurfaceLayout(term, surface_px) catch return false;
+    _ = syncSurfaceLayout(term, surface_px) catch return false;
     return true;
 }
 

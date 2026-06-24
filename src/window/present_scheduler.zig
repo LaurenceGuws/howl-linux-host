@@ -61,7 +61,7 @@ pub const Scheduler = struct {
             if (!timer.active) continue;
             assert(timer.deadline_ns > 0);
             if (timer.deadline_ns <= now_ns) {
-                _ = events.append(.frame_ready);
+                _ = events.appendFrom("present_scheduler", .frame_ready);
                 timer.deadline_ns = 0;
                 timer.active = false;
             } else {
