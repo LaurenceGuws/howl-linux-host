@@ -1,9 +1,6 @@
 const std = @import("std");
 const vt_c = @import("howl_vt_c");
 const Term = @import("../term.zig").Term;
-const terminal_links = @import("../render/links.zig");
-
-pub const HyperlinkHover = terminal_links.HyperlinkHover;
 
 pub const VisibleInfo = struct {
     rows: u16,
@@ -24,20 +21,19 @@ pub const RenderStateCapture = struct {
     }
 };
 
-pub fn captureRenderState(term: *Term, hover: ?HyperlinkHover) !RenderStateCapture {
+pub fn captureRenderState(term: *Term) !RenderStateCapture {
     term.mutex.lockFair();
     defer term.mutex.unlock();
-    return captureRenderStateLockedWith(term, hover, RenderStateCaptureOps);
+    return captureRenderStateLockedWith(term, RenderStateCaptureOps);
 }
 
-pub fn captureRenderStateLocked(term: *Term, hover: ?HyperlinkHover) !RenderStateCapture {
-    return captureRenderStateLockedWith(term, hover, RenderStateCaptureOps);
+pub fn captureRenderStateLocked(term: *Term) !RenderStateCapture {
+    return captureRenderStateLockedWith(term, RenderStateCaptureOps);
 }
 
-fn captureRenderStateLockedWith(term: anytype, hover: ?HyperlinkHover, comptime Ops: type) !RenderStateCapture {
+fn captureRenderStateLockedWith(term: anytype, comptime Ops: type) !RenderStateCapture {
     const state = term.vt_state.render_state orelse return error.MissingRenderState;
     try requireVtOk(Ops.update(state, term.vt));
-    if (hover) |value| try requireVtOk(Ops.updateHover(state, value));
     const info = try renderStateInfo(state);
     return .{ .state = state, .info = info };
 }
@@ -45,10 +41,6 @@ fn captureRenderStateLockedWith(term: anytype, hover: ?HyperlinkHover, comptime 
 const RenderStateCaptureOps = struct {
     fn update(state: vt_c.HowlVtRenderStateHandle, handle: vt_c.HowlVtHandle) i32 {
         return vt_c.howl_vt_render_state_update(state, handle);
-    }
-
-    fn updateHover(state: vt_c.HowlVtRenderStateHandle, hover: HyperlinkHover) i32 {
-        return vt_c.howl_vt_render_state_update_highlights_for_hyperlink(state, 1, hover.row, hover.col, hover.underline_style);
     }
 };
 
@@ -146,14 +138,10 @@ test "render-state capture update failure does not touch cursor facts" {
             update_calls += 1;
             return vt_c.HOWL_VT_CALL_FAILED;
         }
-
-        fn updateHover(_: vt_c.HowlVtRenderStateHandle, _: HyperlinkHover) i32 {
-            unreachable;
-        }
     };
 
     var term = FakeTerm{};
-    try std.testing.expectError(error.VtCallFailed, captureRenderStateLockedWith(&term, null, FakeOps));
+    try std.testing.expectError(error.VtCallFailed, captureRenderStateLockedWith(&term, FakeOps));
     try std.testing.expectEqual(@as(u8, 1), FakeOps.update_calls);
 }
 

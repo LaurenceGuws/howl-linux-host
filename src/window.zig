@@ -11,11 +11,9 @@ const Term = @import("term.zig").Term;
 const input_processor = @import("input/processor.zig");
 const pty_session = @import("pty/session.zig");
 const render_c = @import("howl_render_c");
-const render_links = @import("render/links.zig");
 const render_retained = @import("render/surface_retained.zig");
 const surface_layout = @import("render/surface_layout.zig");
 const term_input = @import("vt/input.zig");
-const vt_surface = @import("vt/surface.zig");
 const drain_log = std.log.scoped(.window_drain);
 const wake_log = std.log.scoped(.window_wake);
 
@@ -174,15 +172,13 @@ pub const Layout = struct {
         self.tabs.active_panes[self.tabs.active_tab] = next;
         self.syncFocus(app_window.focused);
         app_window.setTitle(self.activePane().term.titleSlice());
-        _ = self.producer_presentation_queue.appendFrom("layout", .{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, current) });
-        _ = self.producer_presentation_queue.appendFrom("layout", .{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, next) });
+        _ = self.presentation_events.appendFrom("layout", .window_focus_dirty);
     }
 
     pub fn configureInputPolicies(self: *Layout, conf: *const Config.UiConfig, input: *HostInput) void {
         const active_pane = self.activePane();
         input.setHostMousePolicy(.{
             .listen_always = conf.window.mouse.listen_always,
-            .link_hover = active_pane.conf.link_hover != .off,
             .terminal_hover = term_input.wouldReportUnpressedMouseMotion(&active_pane.term),
         });
         input.setTerminalMousePolicy(.{ .bypass_mod = conf.term.mouse_bypass_mod });
@@ -328,15 +324,6 @@ pub const Layout = struct {
         }
     }
 
-    pub fn activePaneAddress(self: *Layout) PresentationQueue.SurfaceAddress {
-        return self.paneAddress(self.tabs.active_tab, self.tabs.active_panes[self.tabs.active_tab]);
-    }
-
-    fn appendActiveTabTermSurfaceDirty(self: *Layout, events: *PresentationQueue.Queue) void {
-        const tab_value = self.activeTab();
-        for (tab_value.panes[0..tab_value.pane_count]) |*pane_value| _ = events.appendFrom("layout", .{ .term_surface_dirty = self.paneAddress(self.tabs.active_tab, pane_value.id) });
-    }
-
     fn triggerWindowWakeFrom(self: *Layout, reason: []const u8) void {
         if (self.window_wake_pending.swap(true, .acq_rel)) {
             wake_log.debug("wake owner=window state=true->true reason={s}", .{reason});
@@ -406,7 +393,7 @@ pub const Layout = struct {
         var input_published = false;
         var window_visual_changed = false;
         input_processor.processPointerEvent(&selected, event, 0, @intCast(window_interior.tab_bar.logical_height), terminal.logical_size.width, terminal.logical_size.height, &input_published, &window_visual_changed);
-        if (window_visual_changed) _ = self.presentation_events.appendFrom("layout", .{ .term_surface_dirty = self.activePaneAddress() });
+        if (window_visual_changed) _ = self.presentation_events.appendFrom("layout", .window_focus_dirty);
     }
 
     fn drainScrollPages(self: *Layout, page_steps: i32) void {
@@ -423,7 +410,6 @@ pub const Layout = struct {
         if (!changed) return;
         self.syncFocus(focused);
         _ = self.presentation_events.appendFrom("layout", .window_focus_dirty);
-        self.appendActiveTabTermSurfaceDirty(&self.presentation_events);
     }
 
     fn drainWindowGeometry(self: *Layout, conf: *const Config.UiConfig, app_window: *Window) void {
@@ -480,10 +466,8 @@ pub const Layout = struct {
             .write_mouse_to_pty = writeMouseToPty,
             .surface_point_cell = surfacePointCell,
             .process_scrollbar_mouse = processScrollbarMouse,
-            .clear_hovered_link = clearHoveredLink,
             .scroll_viewport_by_wheel = scrollViewportByWheel,
             .process_selection_mouse = processSelectionMouse,
-            .process_link_mouse = processLinkMouse,
         };
     }
 
@@ -498,7 +482,7 @@ pub const Layout = struct {
                 result.panes[index] = .{ .id = pane_value.id, .drain = idleDrain() };
                 continue;
             }
-            const drain = pane_value.term.drainSurface(readiness[index].ready, pane_value, syncPendingPixelsLocked, hoverDecoration, clearHoverPending);
+            const drain = pane_value.term.drainSurface(readiness[index].ready, pane_value, syncPendingPixelsLocked);
             if (term_dirty) self.consumeAcceptedTermSurfaceDirty(events, pane_value.id);
             result.panes[index] = .{ .id = pane_value.id, .drain = drain };
             result.step = aggregateSurfaceDrainStep(result.step, drain.step);
@@ -685,10 +669,6 @@ fn processScrollbarMouse(surface: *anyopaque, mouse: HostInput.Mouse.Event, orig
     return .{ .consumed = changed, .host_visual_changed = changed };
 }
 
-fn clearHoveredLink(surface: *anyopaque) bool {
-    return render_links.clearHoveredLink(paneOwner(surface));
-}
-
 fn scrollViewportByWheel(surface: *anyopaque, mouse: HostInput.Mouse.Event) bool {
     const delta: i32 = switch (mouse.button) {
         .wheel_up => -3,
@@ -704,24 +684,10 @@ fn processSelectionMouse(_: *anyopaque, _: HostInput.Mouse.Event) input_processo
     return .{ .consumed = false, .host_visual_changed = false };
 }
 
-fn processLinkMouse(surface: *anyopaque, mouse: HostInput.Mouse.Event) input_processor.MouseHandlingOutcome {
-    _ = surface;
-    _ = mouse;
-    return .{ .consumed = false, .host_visual_changed = false };
-}
-
 fn syncPendingPixelsLocked(surface: *anyopaque, term_value: *Term) bool {
     _ = surface;
     _ = term_value;
     return true;
-}
-
-fn hoverDecoration(surface: *anyopaque) ?vt_surface.HyperlinkHover {
-    return render_links.hoverDecoration(paneOwner(surface));
-}
-
-fn clearHoverPending(surface: *anyopaque) void {
-    paneOwner(surface).links.hover_publish_pending = false;
 }
 
 fn aggregateSurfaceDrainStep(current: Term.SurfaceDrainStep, next: Term.SurfaceDrainStep) Term.SurfaceDrainStep {

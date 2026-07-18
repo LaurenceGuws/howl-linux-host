@@ -32,10 +32,8 @@ pub const TermInput = struct {
     write_mouse_to_pty: *const fn (*anyopaque, HostInput.Mouse.Event) bool,
     surface_point_cell: *const fn (*anyopaque, HostInput.Mouse.Event) SurfacePointCell,
     process_scrollbar_mouse: *const fn (*anyopaque, HostInput.Mouse.Event, i32, i32, c_int, c_int) ScrollMouseOutcome,
-    clear_hovered_link: *const fn (*anyopaque) bool,
     scroll_viewport_by_wheel: *const fn (*anyopaque, HostInput.Mouse.Event) bool,
     process_selection_mouse: *const fn (*anyopaque, HostInput.Mouse.Event) MouseHandlingOutcome,
-    process_link_mouse: *const fn (*anyopaque, HostInput.Mouse.Event) MouseHandlingOutcome,
 };
 
 pub fn drainTextInputFastPath(selected: *TermInput, input_events: *HostInput, input_published: *bool) void {
@@ -129,7 +127,6 @@ pub fn processPointerEvent(selected: *TermInput, event: HostInput.Event, origin_
 
             const terminal_px = selected.surface_layout.render_px;
             const local_mouse = mouseEventInsideContent(mouse_event, origin_x, origin_y, logical_width, logical_height, @intCast(terminal_px.width), @intCast(terminal_px.height)) orelse {
-                if (mouse_event.window_only and selected.clear_hovered_link(selected.surface)) host_visual_changed.* = true;
                 return;
             };
 
@@ -146,12 +143,7 @@ pub fn processPointerEvent(selected: *TermInput, event: HostInput.Event, origin_
             host_visual_changed.* = selection_outcome.host_visual_changed or host_visual_changed.*;
             if (selection_outcome.consumed) return;
 
-            const link_outcome = selected.process_link_mouse(selected.surface, local_mouse);
-            host_visual_changed.* = link_outcome.host_visual_changed or host_visual_changed.*;
-            if (link_outcome.consumed) return;
-
             if (mouse_event.window_only) {
-                if (selected.clear_hovered_link(selected.surface)) host_visual_changed.* = true;
                 return;
             }
 
@@ -197,10 +189,8 @@ const TestTermInputState = struct {
             .write_mouse_to_pty = writeMouseToPty,
             .surface_point_cell = surfacePointCell,
             .process_scrollbar_mouse = processScrollBarMouse,
-            .clear_hovered_link = clearHoveredLink,
             .scroll_viewport_by_wheel = scrollViewportByWheel,
             .process_selection_mouse = processSelectionMouse,
-            .process_link_mouse = processLinkMouse,
         };
     }
 
@@ -241,19 +231,11 @@ const TestTermInputState = struct {
         return .{ .consumed = true, .host_visual_changed = false };
     }
 
-    fn clearHoveredLink(_: *anyopaque) bool {
-        return false;
-    }
-
     fn scrollViewportByWheel(surface: *anyopaque, _: HostInput.Mouse.Event) bool {
         return state(surface).wheel_changed;
     }
 
     fn processSelectionMouse(_: *anyopaque, _: HostInput.Mouse.Event) MouseHandlingOutcome {
-        return .{ .consumed = false, .host_visual_changed = false };
-    }
-
-    fn processLinkMouse(_: *anyopaque, _: HostInput.Mouse.Event) MouseHandlingOutcome {
         return .{ .consumed = false, .host_visual_changed = false };
     }
 };

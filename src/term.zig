@@ -248,14 +248,12 @@ pub const Term = struct {
         has_presentation_surface: bool,
         owner: *anyopaque,
         sync_pending_pixels_locked: *const fn (*anyopaque, *Term) bool,
-        hover_decoration: *const fn (*anyopaque) ?vt_surface.HyperlinkHover,
-        clear_hover_pending: *const fn (*anyopaque) void,
     ) DrainResult {
         self.mutex.lockFair();
         defer self.mutex.unlock();
         const bootstrap_surface = !has_presentation_surface;
         const admission_before = self.render.admitDrain(bootstrap_surface);
-        const drive_result = self.driveRenderLocked(admission_before, owner, sync_pending_pixels_locked, hover_decoration, clear_hover_pending);
+        const drive_result = self.driveRenderLocked(admission_before, owner, sync_pending_pixels_locked);
         return .{
             .state_before = admission_before.state,
             .state_after = drive_result.state_after,
@@ -310,8 +308,6 @@ pub const Term = struct {
         admission: render_retained.DrainAdmission,
         owner: *anyopaque,
         sync_pending_pixels_locked: *const fn (*anyopaque, *Term) bool,
-        hover_decoration: *const fn (*anyopaque) ?vt_surface.HyperlinkHover,
-        clear_hover_pending: *const fn (*anyopaque) void,
     ) DriveResult {
         return switch (admission.state) {
             .idle => idleDrive(.idle, .surface_idle),
@@ -320,13 +316,11 @@ pub const Term = struct {
             .failed => idleDrive(.failed, .failed),
             .drain_needed => blk: {
                 _ = sync_pending_pixels_locked(owner, self);
-                var visible = vt_surface.captureRenderStateLocked(self, hover_decoration(owner)) catch {
-                    clear_hover_pending(owner);
+                var visible = vt_surface.captureRenderStateLocked(self) catch {
                     self.render.noteRetainedFailure();
                     break :blk idleDrive(self.render.retainedState(), .failed);
                 };
                 defer visible.deinit(self.allocator);
-                clear_hover_pending(owner);
                 const drain_result = self.render.drainSurface(visible.state);
                 break :blk switch (drain_result) {
                     .idle => idleDrive(self.render.retainedState(), .idle_drain),

@@ -87,8 +87,6 @@ pub const Input = struct {
     pub const HostMousePolicy = struct {
         /// Capture unpressed mouse motion for host/window UI such as tabs and scrollbars.
         listen_always: bool = false,
-        /// Capture unpressed mouse motion for link hover without publishing it to the PTY.
-        link_hover: bool = false,
         /// Capture and forward passive unpressed motion when VT mouse any-event reporting is active.
         terminal_hover: bool = false,
     };
@@ -102,7 +100,6 @@ pub const Input = struct {
     last_mouse_x: i32,
     last_mouse_y: i32,
     mouse_listen_always: bool,
-    mouse_link_hover: bool,
     mouse_terminal_hover: bool,
     terminal_motion_mod: Mod,
     current_mods: Mod,
@@ -116,7 +113,6 @@ pub const Input = struct {
             .last_mouse_x = 0,
             .last_mouse_y = 0,
             .mouse_listen_always = false,
-            .mouse_link_hover = false,
             .mouse_terminal_hover = false,
             .terminal_motion_mod = .{},
             .current_mods = .{},
@@ -132,7 +128,6 @@ pub const Input = struct {
 
     pub fn setHostMousePolicy(self: *Input, policy: HostMousePolicy) void {
         self.mouse_listen_always = policy.listen_always;
-        self.mouse_link_hover = policy.link_hover;
         self.mouse_terminal_hover = policy.terminal_hover;
         self.updateMouseMotionEvents();
     }
@@ -144,11 +139,9 @@ pub const Input = struct {
 
     fn updateMouseMotionEvents(self: *Input) void {
         const terminal_motion_active = modSubset(self.terminal_motion_mod, self.current_mods);
-        const link_hover_active = self.mouse_link_hover and self.current_mods.ctrl;
         const needs_motion = self.mouse_button_down or
             self.mouse_listen_always or
             self.mouse_terminal_hover or
-            link_hover_active or
             terminal_motion_active;
         if (self.mouse_motion_enabled == needs_motion) return;
         c.SDL_SetEventEnabled(c.SDL_EVENT_MOUSE_MOTION, needs_motion);
@@ -357,10 +350,9 @@ fn processMouseMotion(input: *Input, event: *const c.SDL_Event) void {
     const buttons_down = sdlButtons(event.motion.state);
     const mods = sdlMods(c.SDL_GetModState());
     const terminal_motion_active = modSubset(input.terminal_motion_mod, mods);
-    const link_hover_active = input.mouse_link_hover and mods.ctrl;
     const button_down = buttons_down.left or buttons_down.middle or buttons_down.right;
     const window_only = !button_down and !terminal_motion_active and !input.mouse_terminal_hover;
-    if (!button_down and !input.mouse_listen_always and !input.mouse_terminal_hover and !terminal_motion_active and !link_hover_active) return;
+    if (!button_down and !input.mouse_listen_always and !input.mouse_terminal_hover and !terminal_motion_active) return;
     const pixel_x = @as(i32, @intFromFloat(@round(event.motion.x)));
     const pixel_y = @as(i32, @intFromFloat(@round(event.motion.y)));
     input.last_mouse_x = pixel_x;
@@ -389,9 +381,7 @@ fn maybeQueueModifierMouseMove(input: *Input, prev_mods: mouse.Mod, next_mods: m
 
     const prev_terminal_motion = modSubset(input.terminal_motion_mod, prev_mods);
     const next_terminal_motion = modSubset(input.terminal_motion_mod, next_mods);
-    const prev_link_hover = input.mouse_link_hover and prev_mods.ctrl;
-    const next_link_hover = input.mouse_link_hover and next_mods.ctrl;
-    if (prev_terminal_motion == next_terminal_motion and prev_link_hover == next_link_hover) return;
+    if (prev_terminal_motion == next_terminal_motion) return;
 
     appendMouseEvent(input, .{
         .kind = .move,
@@ -670,25 +660,15 @@ test "mod subset requires at least one configured mod" {
     try std.testing.expect(!modSubset(.{ .ctrl = true }, .{ .shift = true }));
 }
 
-test "modifier transitions synthesize passive move for ctrl hover" {
+test "modifier transitions do not synthesize host link hover motion" {
     var input: Input = undefined;
     input.init();
-    input.setHostMousePolicy(.{ .link_hover = true });
     input.last_mouse_x = 11;
     input.last_mouse_y = 22;
 
     updateModifierState(&input, .{ .ctrl = true });
-    const event = input.drainEvent() orelse return error.ExpectedEvent;
-    switch (event) {
-        .mouse => |mouse_event| {
-            try std.testing.expectEqual(mouse.Kind.move, mouse_event.kind);
-            try std.testing.expectEqual(@as(i32, 11), mouse_event.pixel_x);
-            try std.testing.expectEqual(@as(i32, 22), mouse_event.pixel_y);
-            try std.testing.expect(mouse_event.mods.ctrl);
-            try std.testing.expect(mouse_event.window_only);
-        },
-        else => return error.UnexpectedEvent,
-    }
+
+    try std.testing.expectEqual(@as(?Input.Event, null), input.drainEvent());
 }
 
 test "host policy forwards passive terminal hover motion" {

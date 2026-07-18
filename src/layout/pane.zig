@@ -4,7 +4,6 @@ const std = @import("std");
 
 const Layout = @import("../window.zig");
 const Term = @import("../term.zig").Term;
-const render_links = @import("../render/links.zig");
 const terminal_scrollbar = @import("../scroll_bar.zig");
 const Config = @import("../config.zig");
 
@@ -21,7 +20,6 @@ pub const Pane = struct {
     placement: Placement,
     term: Term,
     scrollbar: terminal_scrollbar.State = .{},
-    links: render_links.Links = .{},
     window_focused: bool = true,
     widget_focused: bool = true,
     font_size_px: u16 = 1,
